@@ -21,6 +21,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
+- Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in dry-run it reports only, in exec mode it blocks on fail.
 - Optional one-shot dedupe bypass (`FORCE_SEND_ONCE=true`) sends once per current `stage6Hash+mode`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
@@ -67,6 +68,9 @@ Use `.env.example` as baseline.
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
+- `PREFLIGHT_ENABLED`
+- `DAILY_MAX_NOTIONAL`
+- `ALLOW_ENTRY_OUTSIDE_RTH`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `REGIME_AUTO_ENABLED`

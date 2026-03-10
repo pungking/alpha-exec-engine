@@ -28,6 +28,9 @@ jobs:
       ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
       ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN: ${{ vars.ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN }}
       ORDER_IDEMPOTENCY_TTL_DAYS: ${{ vars.ORDER_IDEMPOTENCY_TTL_DAYS }}
+      PREFLIGHT_ENABLED: ${{ vars.PREFLIGHT_ENABLED }}
+      DAILY_MAX_NOTIONAL: ${{ vars.DAILY_MAX_NOTIONAL }}
+      ALLOW_ENTRY_OUTSIDE_RTH: ${{ vars.ALLOW_ENTRY_OUTSIDE_RTH }}
       FORCE_SEND_ONCE: ${{ vars.FORCE_SEND_ONCE }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
@@ -134,6 +137,10 @@ jobs:
             const idemp = preview?.idempotency || {};
             lines.push(
               `- idempotency: \`enabled=${idemp.enabled ?? "N/A"} enforce=${idemp.enforced ?? "N/A"} new=${idemp.newCount ?? "N/A"} duplicate=${idemp.duplicateCount ?? "N/A"}\``
+            );
+            const preflight = preview?.preflight || {};
+            lines.push(
+              `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
             );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");

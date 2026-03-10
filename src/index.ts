@@ -99,6 +99,24 @@ type DryExecBuildResult = {
   };
 };
 
+type PreflightStatus = "pass" | "warn" | "fail" | "skip";
+
+type PreflightResult = {
+  enabled: boolean;
+  enforced: boolean;
+  blocking: boolean;
+  status: PreflightStatus;
+  code: string;
+  message: string;
+  requiredNotional: number;
+  dailyMaxNotional: number;
+  allowEntryOutsideRth: boolean;
+  accountStatus: string | null;
+  buyingPower: number | null;
+  marketOpen: boolean | null;
+  nextOpen: string | null;
+};
+
 type SidecarRunState = {
   lastStage6Sha256: string;
   lastStage6FileId: string;
@@ -348,10 +366,20 @@ function readNumberEnv(key: string, fallback: number): number {
   return n;
 }
 
+function readNonNegativeNumberEnv(key: string, fallback: number): number {
+  const n = readNumberEnv(key, fallback);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return n;
+}
+
 function parseConviction(value: string): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+function sumNotional(payloads: DryExecOrderPayload[]): number {
+  return payloads.reduce((acc, row) => acc + row.notional, 0);
 }
 
 function buildOrderIdempotencyKey(stage6Hash: string, symbol: string, side: "buy"): string {
@@ -982,10 +1010,154 @@ function buildDryExecPayloads(
   };
 }
 
+async function fetchAlpacaJson(path: string): Promise<unknown> {
+  const baseUrl = (process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
+  const keyId = (process.env.ALPACA_KEY_ID || "").trim();
+  const secret = (process.env.ALPACA_SECRET_KEY || "").trim();
+
+  if (!baseUrl) throw new Error("ALPACA_BASE_URL missing");
+  if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: {
+      "APCA-API-KEY-ID": keyId,
+      "APCA-API-SECRET-KEY": secret
+    }
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`alpaca ${path} failed (${response.status}): ${text.slice(0, 160)}`);
+  }
+  return response.json();
+}
+
+async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightResult> {
+  const cfg = loadRuntimeConfig();
+  const enabled = readBoolEnv("PREFLIGHT_ENABLED", true);
+  const enforced = enabled && cfg.execEnabled;
+  const allowEntryOutsideRth = readBoolEnv("ALLOW_ENTRY_OUTSIDE_RTH", false);
+  const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
+  const requiredNotional = roundToCent(sumNotional(dryExec.payloads));
+
+  const makeResult = (
+    status: PreflightStatus,
+    code: string,
+    message: string,
+    patch?: Partial<PreflightResult>
+  ): PreflightResult => ({
+    enabled,
+    enforced,
+    blocking: status === "fail" && enforced,
+    status,
+    code,
+    message,
+    requiredNotional,
+    dailyMaxNotional,
+    allowEntryOutsideRth,
+    accountStatus: null,
+    buyingPower: null,
+    marketOpen: null,
+    nextOpen: null,
+    ...(patch || {})
+  });
+
+  const failOrWarn = (
+    code: string,
+    message: string,
+    patch?: Partial<PreflightResult>
+  ): PreflightResult => makeResult(enforced ? "fail" : "warn", code, message, patch);
+
+  if (!enabled) {
+    return makeResult("skip", "PREFLIGHT_DISABLED", "preflight disabled by env");
+  }
+
+  if (requiredNotional <= 0) {
+    return makeResult("skip", "PREFLIGHT_NO_PAYLOAD", "no payload to preflight");
+  }
+
+  if (dailyMaxNotional > 0 && requiredNotional > dailyMaxNotional) {
+    return failOrWarn(
+      "PREFLIGHT_DAILY_NOTIONAL_LIMIT",
+      `required notional ${requiredNotional.toFixed(2)} exceeds daily max ${dailyMaxNotional.toFixed(2)}`
+    );
+  }
+
+  let account: Record<string, unknown>;
+  try {
+    account = (await fetchAlpacaJson("/v2/account")) as Record<string, unknown>;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return failOrWarn("PREFLIGHT_ACCOUNT_FETCH_FAILED", msg);
+  }
+
+  const accountStatusRaw = String(account.status ?? "").trim();
+  const accountStatus = accountStatusRaw ? accountStatusRaw.toUpperCase() : "UNKNOWN";
+  const isTradingBlocked = account.trading_blocked === true || account.account_blocked === true;
+  const isSuspended = account.trade_suspended_by_user === true || account.trading_suspended_by_user === true;
+  const isStatusBlocked = accountStatus !== "ACTIVE";
+
+  if (isTradingBlocked || isSuspended || isStatusBlocked) {
+    return failOrWarn("PREFLIGHT_ACCOUNT_BLOCKED", `account not tradable (status=${accountStatus})`, {
+      accountStatus
+    });
+  }
+
+  const buyingPower = toFinitePositiveNumber(account.buying_power);
+  if (buyingPower == null) {
+    return failOrWarn("PREFLIGHT_BUYING_POWER_MISSING", "buying_power unavailable", {
+      accountStatus
+    });
+  }
+  if (requiredNotional > buyingPower) {
+    return failOrWarn(
+      "PREFLIGHT_BUYING_POWER_SHORT",
+      `required ${requiredNotional.toFixed(2)} exceeds buying power ${buyingPower.toFixed(2)}`,
+      { accountStatus, buyingPower }
+    );
+  }
+
+  if (!allowEntryOutsideRth) {
+    let clock: Record<string, unknown>;
+    try {
+      clock = (await fetchAlpacaJson("/v2/clock")) as Record<string, unknown>;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return failOrWarn("PREFLIGHT_CLOCK_FETCH_FAILED", msg, { accountStatus, buyingPower });
+    }
+
+    const marketOpen = clock.is_open === true;
+    const nextOpen = typeof clock.next_open === "string" ? clock.next_open : null;
+
+    if (!marketOpen) {
+      return failOrWarn("PREFLIGHT_MARKET_CLOSED", "market is closed for new entry", {
+        accountStatus,
+        buyingPower,
+        marketOpen,
+        nextOpen
+      });
+    }
+
+    return makeResult("pass", "PREFLIGHT_PASS", "preflight passed", {
+      accountStatus,
+      buyingPower,
+      marketOpen,
+      nextOpen
+    });
+  }
+
+  return makeResult("pass", "PREFLIGHT_PASS", "preflight passed (RTH guard disabled)", {
+    accountStatus,
+    buyingPower,
+    marketOpen: null,
+    nextOpen: null
+  });
+}
+
 function buildSimulationMessage(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
-  dryExec: DryExecBuildResult
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
 ): string {
   const cfg = loadRuntimeConfig();
   const lines: string[] = [];
@@ -1047,6 +1219,19 @@ function buildSimulationMessage(
   lines.push(
     `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount}`
   );
+  lines.push("");
+  lines.push("Preflight Gate");
+  lines.push(
+    `Status: ${preflight.status.toUpperCase()} | code=${preflight.code} | enforced=${preflight.enforced} | blocking=${preflight.blocking}`
+  );
+  lines.push(`Message: ${preflight.message}`);
+  lines.push(
+    `Required: $${preflight.requiredNotional.toFixed(2)} | DailyMax: $${preflight.dailyMaxNotional.toFixed(2)} | BuyingPower: ${preflight.buyingPower != null ? `$${preflight.buyingPower.toFixed(2)}` : "N/A"}`
+  );
+  lines.push(
+    `RTH Guard: ${!preflight.allowEntryOutsideRth} | MarketOpen: ${preflight.marketOpen == null ? "N/A" : preflight.marketOpen} | NextOpen: ${preflight.nextOpen ?? "N/A"}`
+  );
+  lines.push(`Account: ${preflight.accountStatus ?? "N/A"}`);
 
   lines.push("");
   lines.push(`Mode: READ_ONLY=${cfg.readOnly}, EXEC_ENABLED=${cfg.execEnabled}`);
@@ -1056,11 +1241,12 @@ function buildSimulationMessage(
 async function sendSimulationTelegram(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
-  dryExec: DryExecBuildResult
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result, actionable, dryExec);
+  const text = buildSimulationMessage(result, actionable, dryExec, preflight);
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
@@ -1131,7 +1317,11 @@ async function saveRunState(
   console.log(`[STATE] saved ${STATE_PATH}`);
 }
 
-async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuildResult): Promise<void> {
+async function saveDryExecPreview(
+  result: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
+): Promise<void> {
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -1146,6 +1336,7 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     idempotency: dryExec.idempotency,
+    preflight,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
     payloads: dryExec.payloads,
@@ -1281,6 +1472,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const idempotencyEnabled = readBoolEnv("ORDER_IDEMPOTENCY_ENABLED", true);
   const idempotencyEnforceDryRun = readBoolEnv("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN", false);
   const idempotencyTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_IDEMPOTENCY_TTL_DAYS", 30));
+  const preflightEnabled = readBoolEnv("PREFLIGHT_ENABLED", true);
+  const allowEntryOutsideRth = readBoolEnv("ALLOW_ENTRY_OUTSIDE_RTH", false);
+  const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -1296,6 +1490,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
     `ORDER_IDEMP_ENFORCE_DRY_RUN=${idempotencyEnforceDryRun}`,
     `ORDER_IDEMP_TTL_DAYS=${idempotencyTtlDays}`,
+    `PREFLIGHT_ENABLED=${preflightEnabled}`,
+    `ALLOW_ENTRY_OUTSIDE_RTH=${allowEntryOutsideRth}`,
+    `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -1308,10 +1505,11 @@ function printRunSummary(
   event: "sent" | "dedupe",
   stage6: Stage6LoadResult,
   actionableCount: number,
-  dryExec: DryExecBuildResult
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking}`
   );
 }
 
@@ -1357,14 +1555,37 @@ async function main() {
   if (!shouldSend(priorState, stage6, mode) && !forceSendBypassDedupe) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
     await sendHeartbeatOnDedupe(stage6, mode);
-    printRunSummary("dedupe", stage6, actionable.length, dryExec);
+    const dedupePreflight: PreflightResult = {
+      enabled: readBoolEnv("PREFLIGHT_ENABLED", true),
+      enforced: false,
+      blocking: false,
+      status: "skip",
+      code: "PREFLIGHT_NOT_RUN_DEDUPE",
+      message: "dedupe skip: preflight not executed",
+      requiredNotional: roundToCent(sumNotional(dryExec.payloads)),
+      dailyMaxNotional: readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000),
+      allowEntryOutsideRth: readBoolEnv("ALLOW_ENTRY_OUTSIDE_RTH", false),
+      accountStatus: null,
+      buyingPower: null,
+      marketOpen: null,
+      nextOpen: null
+    };
+    printRunSummary("dedupe", stage6, actionable.length, dryExec, dedupePreflight);
     return;
   }
   const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
-  await sendSimulationTelegram(stage6, actionable, finalDryExec);
-  await saveDryExecPreview(stage6, finalDryExec);
+  const preflight = await runPreflightGate(finalDryExec);
+  console.log(
+    `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
+  );
+  if (preflight.blocking) {
+    throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
+  }
+
+  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight);
+  await saveDryExecPreview(stage6, finalDryExec, preflight);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
-  printRunSummary("sent", stage6, actionable.length, finalDryExec);
+  printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight);
 }
 
 main().catch((error) => {
