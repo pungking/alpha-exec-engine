@@ -19,6 +19,8 @@ jobs:
       READ_ONLY: ${{ vars.READ_ONLY }}
       POLICY_VERSION: stage6-exec-v1.0-rc1
       TZ: ${{ vars.TZ }}
+      DRY_NOTIONAL_PER_TRADE: ${{ vars.DRY_NOTIONAL_PER_TRADE }}
+      DRY_MAX_ORDERS: ${{ vars.DRY_MAX_ORDERS }}
 
       ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}

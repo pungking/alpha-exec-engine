@@ -11,7 +11,9 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Loads the latest `STAGE6_ALPHA_FINAL_*.json` from `GDRIVE_STAGE6_FOLDER`.
 - Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
 - Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
+- Builds Alpaca order payload previews only (no live order send in dry-run).
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
+- Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 
 ## Safety Defaults
 - `EXEC_ENABLED=false`
@@ -42,6 +44,8 @@ Use `.env.example` as baseline.
 - `EXEC_ENABLED`
 - `READ_ONLY`
 - `TZ`
+- `DRY_NOTIONAL_PER_TRADE`
+- `DRY_MAX_ORDERS`
 - `GDRIVE_ROOT_FOLDER_ID`
 - `GDRIVE_STAGE6_FOLDER`
 - `GDRIVE_REPORT_FOLDER`

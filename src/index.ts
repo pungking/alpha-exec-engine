@@ -43,6 +43,31 @@ type Stage6CandidateSummary = {
   conviction: string;
 };
 
+type DryExecOrderPayload = {
+  symbol: string;
+  side: "buy";
+  type: "limit";
+  time_in_force: "day";
+  order_class: "bracket";
+  limit_price: number;
+  notional: number;
+  take_profit: { limit_price: number };
+  stop_loss: { stop_price: number };
+  client_order_id: string;
+};
+
+type DryExecSkipReason = {
+  symbol: string;
+  reason: string;
+};
+
+type DryExecBuildResult = {
+  payloads: DryExecOrderPayload[];
+  skipped: DryExecSkipReason[];
+  notionalPerOrder: number;
+  maxOrders: number;
+};
+
 type SidecarRunState = {
   lastStage6Sha256: string;
   lastStage6FileId: string;
@@ -52,6 +77,7 @@ type SidecarRunState = {
 };
 
 const STATE_PATH = "state/last-run.json";
+const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 function hasValue(value: string | undefined): boolean {
@@ -235,6 +261,28 @@ function parsePrice(value: unknown): string {
   return "N/A";
 }
 
+function parseNumericPrice(label: string): number | null {
+  if (!label || label === "N/A") return null;
+  const normalized = label.replace(/[^0-9.-]/g, "");
+  const n = Number(normalized);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function readPositiveNumberEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function readPositiveIntEnv(key: string, fallback: number): number {
+  const n = Math.floor(readPositiveNumberEnv(key, fallback));
+  if (n <= 0) return fallback;
+  return n;
+}
+
 function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
   if (!payload || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
@@ -306,7 +354,53 @@ function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6Ca
   return candidates.filter((row) => ACTIONABLE_VERDICTS.has(row.verdict));
 }
 
-function buildSimulationMessage(result: Stage6LoadResult, actionable: Stage6CandidateSummary[]): string {
+function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: string): DryExecBuildResult {
+  const notionalPerOrder = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
+  const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
+  const payloads: DryExecOrderPayload[] = [];
+  const skipped: DryExecSkipReason[] = [];
+
+  actionable.forEach((row) => {
+    if (payloads.length >= maxOrders) {
+      skipped.push({ symbol: row.symbol, reason: "max_orders_reached" });
+      return;
+    }
+
+    const entry = parseNumericPrice(row.entry);
+    const target = parseNumericPrice(row.target);
+    const stop = parseNumericPrice(row.stop);
+
+    if (!entry || !target || !stop) {
+      skipped.push({ symbol: row.symbol, reason: "missing_or_invalid_price" });
+      return;
+    }
+    if (!(target > entry && stop < entry)) {
+      skipped.push({ symbol: row.symbol, reason: "invalid_price_geometry" });
+      return;
+    }
+
+    payloads.push({
+      symbol: row.symbol,
+      side: "buy",
+      type: "limit",
+      time_in_force: "day",
+      order_class: "bracket",
+      limit_price: Number(entry.toFixed(2)),
+      notional: Number(notionalPerOrder.toFixed(2)),
+      take_profit: { limit_price: Number(target.toFixed(2)) },
+      stop_loss: { stop_price: Number(stop.toFixed(2)) },
+      client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`
+    });
+  });
+
+  return { payloads, skipped, notionalPerOrder, maxOrders };
+}
+
+function buildSimulationMessage(
+  result: Stage6LoadResult,
+  actionable: Stage6CandidateSummary[],
+  dryExec: DryExecBuildResult
+): string {
   const lines: string[] = [];
   lines.push("🧪 Sidecar Dry-Run Report");
   lines.push(`Stage6: ${result.fileName}`);
@@ -339,15 +433,37 @@ function buildSimulationMessage(result: Stage6LoadResult, actionable: Stage6Cand
   }
 
   lines.push("");
+  lines.push("Dry-Exec Payload Preview");
+  lines.push(
+    `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders}`
+  );
+  if (dryExec.payloads.length === 0) {
+    lines.push("N/A (no payload generated)");
+  } else {
+    dryExec.payloads.forEach((order, index) => {
+      lines.push(
+        `${index + 1}) ${order.symbol} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}`
+      );
+    });
+  }
+  if (dryExec.skipped.length > 0) {
+    const skippedLog = dryExec.skipped.map((s) => `${s.symbol}:${s.reason}`).join(", ");
+    lines.push(`Skipped: ${skippedLog}`);
+  }
+
+  lines.push("");
   lines.push("Mode: READ_ONLY=true, EXEC_ENABLED=false");
   return lines.join("\n");
 }
 
-async function sendSimulationTelegram(result: Stage6LoadResult): Promise<void> {
+async function sendSimulationTelegram(
+  result: Stage6LoadResult,
+  actionable: Stage6CandidateSummary[],
+  dryExec: DryExecBuildResult
+): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const actionable = getActionableCandidates(result.candidates);
-  const text = buildSimulationMessage(result, actionable);
+  const text = buildSimulationMessage(result, actionable, dryExec);
 
   const body = new URLSearchParams({
     chat_id: chatId,
@@ -392,9 +508,30 @@ async function saveRunState(result: Stage6LoadResult, mode: string): Promise<voi
   console.log(`[STATE] saved ${STATE_PATH}`);
 }
 
+async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuildResult): Promise<void> {
+  await mkdir("state", { recursive: true });
+  const preview = {
+    stage6File: result.fileName,
+    stage6FileId: result.fileId,
+    stage6Hash: result.sha256,
+    generatedAt: new Date().toISOString(),
+    notionalPerOrder: dryExec.notionalPerOrder,
+    maxOrders: dryExec.maxOrders,
+    payloadCount: dryExec.payloads.length,
+    skippedCount: dryExec.skipped.length,
+    payloads: dryExec.payloads,
+    skipped: dryExec.skipped
+  };
+  await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
+  console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
+  console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
+}
+
 function buildRunModeLabel(): string {
   const cfg = loadRuntimeConfig();
-  return `READ_ONLY=${cfg.readOnly};EXEC_ENABLED=${cfg.execEnabled}`;
+  const notional = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
+  const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
+  return `READ_ONLY=${cfg.readOnly};EXEC_ENABLED=${cfg.execEnabled};NOTIONAL=${notional};MAX_ORDERS=${maxOrders}`;
 }
 
 function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mode: string): boolean {
@@ -406,13 +543,16 @@ async function main() {
   printStartupSummary();
   const stage6 = await loadLatestStage6FromDrive();
   printStage6Lock(stage6);
+  const actionable = getActionableCandidates(stage6.candidates);
+  const dryExec = buildDryExecPayloads(actionable, stage6.sha256);
   const mode = buildRunModeLabel();
   const priorState = await loadRunState();
   if (!shouldSend(priorState, stage6, mode)) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
     return;
   }
-  await sendSimulationTelegram(stage6);
+  await sendSimulationTelegram(stage6, actionable, dryExec);
+  await saveDryExecPreview(stage6, dryExec);
   await saveRunState(stage6, mode);
 }
 
