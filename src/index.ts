@@ -61,6 +61,16 @@ type DryExecSkipReason = {
   reason: string;
 };
 
+type RegimeProfile = "default" | "risk_off";
+
+type RegimeSelection = {
+  profile: RegimeProfile;
+  source: "forced" | "market_snapshot" | "finnhub" | "env_fallback";
+  vix: number | null;
+  riskOnThreshold: number;
+  riskOffThreshold: number;
+};
+
 type DryExecBuildResult = {
   payloads: DryExecOrderPayload[];
   skipped: DryExecSkipReason[];
@@ -70,6 +80,7 @@ type DryExecBuildResult = {
   minConviction: number;
   minStopDistancePct: number;
   maxStopDistancePct: number;
+  regime: RegimeSelection;
 };
 
 type SidecarRunState = {
@@ -296,10 +307,76 @@ function readBoolEnv(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function readNumberEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return n;
+}
+
 function parseConviction(value: string): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+function readProfilePositiveNumber(
+  profile: RegimeProfile,
+  defaultKey: string,
+  riskOffKey: string,
+  legacyKey: string,
+  fallback: number
+): number {
+  const legacy = readPositiveNumberEnv(legacyKey, fallback);
+  const scopedKey = profile === "risk_off" ? riskOffKey : defaultKey;
+  return readPositiveNumberEnv(scopedKey, legacy);
+}
+
+function readProfilePositiveInt(
+  profile: RegimeProfile,
+  defaultKey: string,
+  riskOffKey: string,
+  legacyKey: string,
+  fallback: number
+): number {
+  const legacy = readPositiveIntEnv(legacyKey, fallback);
+  const scopedKey = profile === "risk_off" ? riskOffKey : defaultKey;
+  return readPositiveIntEnv(scopedKey, legacy);
+}
+
+function toFinitePositiveNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function getNestedValue(obj: unknown, path: string[]): unknown {
+  return path.reduce<unknown>((acc, key) => {
+    if (!acc || typeof acc !== "object") return undefined;
+    return (acc as Record<string, unknown>)[key];
+  }, obj);
+}
+
+function extractVixFromMarketSnapshot(payload: unknown): number | null {
+  const paths = [
+    ["benchmarks", "vix", "close"],
+    ["data", "benchmarks", "vix", "close"],
+    ["snapshot", "benchmarks", "vix", "close"],
+    ["marketPulse", "vix", "price"],
+    ["marketPulse", "vix"],
+    ["vix"]
+  ];
+
+  for (const path of paths) {
+    const candidate = getNestedValue(payload, path);
+    const parsed = toFinitePositiveNumber(candidate);
+    if (parsed != null) return parsed;
+  }
+  return null;
 }
 
 function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
@@ -341,8 +418,110 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
     .slice(0, 6);
 }
 
-async function loadLatestStage6FromDrive(): Promise<Stage6LoadResult> {
-  const accessToken = await getGoogleAccessToken();
+async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<number | null> {
+  const folderId = process.env.GDRIVE_ROOT_FOLDER_ID || "";
+  if (!folderId) return null;
+
+  const query = [
+    `'${folderId}' in parents`,
+    "trashed=false",
+    "name contains 'MARKET_REGIME_SNAPSHOT'"
+  ].join(" and ");
+
+  const params = new URLSearchParams({
+    q: query,
+    orderBy: "modifiedTime desc",
+    pageSize: "1",
+    fields: "files(id,name,modifiedTime)"
+  });
+
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!response.ok) return null;
+
+  const data = (await response.json()) as DriveListResponse;
+  const file = data.files?.[0];
+  if (!file?.id) return null;
+
+  const raw = await downloadStage6Json(accessToken, file.id);
+  const parsed = JSON.parse(raw) as unknown;
+  return extractVixFromMarketSnapshot(parsed);
+}
+
+async function fetchFinnhubVix(): Promise<number | null> {
+  const token = process.env.FINNHUB_API_KEY?.trim();
+  if (!token) return null;
+
+  const candidates = ["VIX", "^VIX", "CBOE:VIX"];
+  for (const symbol of candidates) {
+    try {
+      const params = new URLSearchParams({ symbol, token });
+      const response = await fetch(`https://finnhub.io/api/v1/quote?${params.toString()}`);
+      if (!response.ok) continue;
+      const data = (await response.json()) as { c?: unknown };
+      const parsed = toFinitePositiveNumber(data.c);
+      if (parsed != null) return parsed;
+    } catch {
+      // Try the next symbol.
+    }
+  }
+  return null;
+}
+
+async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelection> {
+  const forced = (process.env.REGIME_FORCE_PROFILE || "auto").trim().toLowerCase();
+  const riskOffThreshold = readPositiveNumberEnv("VIX_RISK_OFF_THRESHOLD", 25);
+  const riskOnThresholdRaw = readPositiveNumberEnv("VIX_RISK_ON_THRESHOLD", 22);
+  const riskOnThreshold = Math.min(riskOnThresholdRaw, riskOffThreshold);
+
+  if (forced === "default" || forced === "risk_off") {
+    return {
+      profile: forced,
+      source: "forced",
+      vix: null,
+      riskOnThreshold,
+      riskOffThreshold
+    };
+  }
+
+  if (!readBoolEnv("REGIME_AUTO_ENABLED", false)) {
+    return {
+      profile: "default",
+      source: "env_fallback",
+      vix: null,
+      riskOnThreshold,
+      riskOffThreshold
+    };
+  }
+
+  const snapshotVix = await fetchLatestMarketSnapshotVix(accessToken);
+  const finnhubVix = snapshotVix == null ? await fetchFinnhubVix() : null;
+  const vix = snapshotVix ?? finnhubVix;
+  const source: RegimeSelection["source"] =
+    snapshotVix != null ? "market_snapshot" : finnhubVix != null ? "finnhub" : "env_fallback";
+
+  if (vix == null) {
+    return {
+      profile: "default",
+      source,
+      vix: null,
+      riskOnThreshold,
+      riskOffThreshold
+    };
+  }
+
+  const profile: RegimeProfile = vix >= riskOffThreshold ? "risk_off" : "default";
+  return {
+    profile,
+    source,
+    vix,
+    riskOnThreshold,
+    riskOffThreshold
+  };
+}
+
+async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6LoadResult> {
   const meta = await fetchLatestStage6Metadata(accessToken);
   const jsonText = await downloadStage6Json(accessToken, meta.id);
   const parsed = JSON.parse(jsonText) as unknown;
@@ -373,13 +552,53 @@ function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6Ca
   return candidates.filter((row) => ACTIONABLE_VERDICTS.has(row.verdict));
 }
 
-function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: string): DryExecBuildResult {
-  const notionalPerOrder = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
-  const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
-  const maxTotalNotional = readPositiveNumberEnv("DRY_MAX_TOTAL_NOTIONAL", notionalPerOrder * maxOrders);
-  const minConviction = readPositiveNumberEnv("DRY_MIN_CONVICTION", 70);
-  const minStopDistancePct = readPositiveNumberEnv("DRY_MIN_STOP_DISTANCE_PCT", 2);
-  const maxStopDistancePct = readPositiveNumberEnv("DRY_MAX_STOP_DISTANCE_PCT", 25);
+function buildDryExecPayloads(
+  actionable: Stage6CandidateSummary[],
+  stage6Hash: string,
+  regime: RegimeSelection
+): DryExecBuildResult {
+  const notionalPerOrder = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_NOTIONAL_PER_TRADE",
+    "DRY_RISK_OFF_NOTIONAL_PER_TRADE",
+    "DRY_NOTIONAL_PER_TRADE",
+    1000
+  );
+  const maxOrders = readProfilePositiveInt(
+    regime.profile,
+    "DRY_DEFAULT_MAX_ORDERS",
+    "DRY_RISK_OFF_MAX_ORDERS",
+    "DRY_MAX_ORDERS",
+    3
+  );
+  const maxTotalNotional = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MAX_TOTAL_NOTIONAL",
+    "DRY_RISK_OFF_MAX_TOTAL_NOTIONAL",
+    "DRY_MAX_TOTAL_NOTIONAL",
+    notionalPerOrder * maxOrders
+  );
+  const minConviction = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MIN_CONVICTION",
+    "DRY_RISK_OFF_MIN_CONVICTION",
+    "DRY_MIN_CONVICTION",
+    70
+  );
+  const minStopDistancePct = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MIN_STOP_DISTANCE_PCT",
+    "DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT",
+    "DRY_MIN_STOP_DISTANCE_PCT",
+    2
+  );
+  const maxStopDistancePct = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MAX_STOP_DISTANCE_PCT",
+    "DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT",
+    "DRY_MAX_STOP_DISTANCE_PCT",
+    25
+  );
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
   let allocatedNotional = 0;
@@ -441,7 +660,8 @@ function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: 
     maxTotalNotional,
     minConviction,
     minStopDistancePct,
-    maxStopDistancePct
+    maxStopDistancePct,
+    regime
   };
 }
 
@@ -483,6 +703,9 @@ function buildSimulationMessage(
 
   lines.push("");
   lines.push("Dry-Exec Payload Preview");
+  lines.push(
+    `Regime: ${dryExec.regime.profile.toUpperCase()} | source=${dryExec.regime.source} | vix=${dryExec.regime.vix?.toFixed(2) ?? "N/A"} | on<=${dryExec.regime.riskOnThreshold} off>=${dryExec.regime.riskOffThreshold}`
+  );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
@@ -587,8 +810,13 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
     stage6FileId: result.fileId,
     stage6Hash: result.sha256,
     generatedAt: new Date().toISOString(),
+    regime: dryExec.regime,
     notionalPerOrder: dryExec.notionalPerOrder,
     maxOrders: dryExec.maxOrders,
+    maxTotalNotional: dryExec.maxTotalNotional,
+    minConviction: dryExec.minConviction,
+    minStopDistancePct: dryExec.minStopDistancePct,
+    maxStopDistancePct: dryExec.maxStopDistancePct,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
     payloads: dryExec.payloads,
@@ -599,24 +827,19 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
-function buildRunModeLabel(): string {
+function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const cfg = loadRuntimeConfig();
-  const notional = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
-  const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
-  const maxTotalNotional = readPositiveNumberEnv("DRY_MAX_TOTAL_NOTIONAL", notional * maxOrders);
-  const minConviction = readPositiveNumberEnv("DRY_MIN_CONVICTION", 70);
-  const minStopDistancePct = readPositiveNumberEnv("DRY_MIN_STOP_DISTANCE_PCT", 2);
-  const maxStopDistancePct = readPositiveNumberEnv("DRY_MAX_STOP_DISTANCE_PCT", 25);
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
-    `NOTIONAL=${notional}`,
-    `MAX_ORDERS=${maxOrders}`,
-    `MAX_TOTAL_NOTIONAL=${maxTotalNotional}`,
-    `MIN_CONV=${minConviction}`,
-    `STOP_MIN=${minStopDistancePct}`,
-    `STOP_MAX=${maxStopDistancePct}`,
+    `PROFILE=${dryExec.regime.profile}`,
+    `NOTIONAL=${dryExec.notionalPerOrder}`,
+    `MAX_ORDERS=${dryExec.maxOrders}`,
+    `MAX_TOTAL_NOTIONAL=${dryExec.maxTotalNotional}`,
+    `MIN_CONV=${dryExec.minConviction}`,
+    `STOP_MIN=${dryExec.minStopDistancePct}`,
+    `STOP_MAX=${dryExec.maxStopDistancePct}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -628,11 +851,17 @@ function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mod
 
 async function main() {
   printStartupSummary();
-  const stage6 = await loadLatestStage6FromDrive();
+  const accessToken = await getGoogleAccessToken();
+  const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
+  const regime = await resolveRegimeSelection(accessToken);
+  const regimeVix = regime.vix == null ? "N/A" : regime.vix.toFixed(2);
+  console.log(
+    `[REGIME] profile=${regime.profile.toUpperCase()} source=${regime.source} vix=${regimeVix} on<=${regime.riskOnThreshold} off>=${regime.riskOffThreshold}`
+  );
   const actionable = getActionableCandidates(stage6.candidates);
-  const dryExec = buildDryExecPayloads(actionable, stage6.sha256);
-  const mode = buildRunModeLabel();
+  const dryExec = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  const mode = buildRunModeLabel(dryExec);
   const priorState = await loadRunState();
   if (!shouldSend(priorState, stage6, mode)) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);

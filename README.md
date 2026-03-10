@@ -14,6 +14,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Builds Alpaca order payload previews only (no live order send in dry-run).
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
+- Supports regime auto profile switch by VIX (default/risk-off presets).
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
@@ -41,6 +42,7 @@ Use `.env.example` as baseline.
 - `GDRIVE_CLIENT_ID`
 - `GDRIVE_CLIENT_SECRET`
 - `GDRIVE_REFRESH_TOKEN`
+- `FINNHUB_API_KEY` (optional fallback source for VIX)
 
 ### Variables (GitHub Actions)
 - `ALPACA_BASE_URL`
@@ -54,11 +56,21 @@ Use `.env.example` as baseline.
 - `DRY_MIN_STOP_DISTANCE_PCT`
 - `DRY_MAX_STOP_DISTANCE_PCT`
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
+- `REGIME_AUTO_ENABLED`
+- `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
+- `VIX_RISK_ON_THRESHOLD`
+- `VIX_RISK_OFF_THRESHOLD`
 - `GDRIVE_ROOT_FOLDER_ID`
 - `GDRIVE_STAGE6_FOLDER`
 - `GDRIVE_REPORT_FOLDER`
 - `TELEGRAM_PRIMARY_CHAT_ID`
 - `TELEGRAM_SIMULATION_CHAT_ID`
+
+### Ops Presets (2 profiles)
+- `DRY_DEFAULT_*` : market normal profile
+- `DRY_RISK_OFF_*` : high-volatility defensive profile
+
+If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 
 ### Runtime Guard
 `src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.
