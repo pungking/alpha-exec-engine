@@ -1,84 +1,97 @@
-# alpha-exec-engine (Sidecar)
+name: sidecar-dry-run
 
-Execution/simulation sidecar for `US_Alpha_Seeker`.
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
+    - cron: "7 * * * 1-5"
 
-## Scope
-- Reads Stage6 outputs and applies execution policy.
-- Sends execution/simulation Telegram events.
-- Does **not** modify the analysis engine logic.
+concurrency:
+  group: sidecar-dry-run-${{ github.ref }}
+  cancel-in-progress: true
 
-## Current Dry-Run Behavior
-- Loads the latest `STAGE6_ALPHA_FINAL_*.json` from `GDRIVE_STAGE6_FOLDER`.
-- Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
-- Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
-- Builds Alpaca order payload previews only (no live order send in dry-run).
-- Payload gate includes conviction floor + stop-distance sanity range.
-- Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
-- Supports regime auto profile switch by VIX (default/risk-off presets).
-- Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
-- Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
-- Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
+      READ_ONLY: ${{ vars.READ_ONLY }}
+      POLICY_VERSION: stage6-exec-v1.0-rc1
+      TZ: ${{ vars.TZ }}
+      DRY_NOTIONAL_PER_TRADE: ${{ vars.DRY_NOTIONAL_PER_TRADE }}
+      DRY_MAX_ORDERS: ${{ vars.DRY_MAX_ORDERS }}
+      DRY_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_MAX_TOTAL_NOTIONAL }}
+      DRY_MIN_CONVICTION: ${{ vars.DRY_MIN_CONVICTION }}
+      DRY_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_MIN_STOP_DISTANCE_PCT }}
+      DRY_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_MAX_STOP_DISTANCE_PCT }}
+      TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
+      REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
+      REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
+      VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
+      VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
 
-## Safety Defaults
-- `EXEC_ENABLED=false`
-- `READ_ONLY=true`
+      DRY_DEFAULT_NOTIONAL_PER_TRADE: ${{ vars.DRY_DEFAULT_NOTIONAL_PER_TRADE }}
+      DRY_DEFAULT_MAX_ORDERS: ${{ vars.DRY_DEFAULT_MAX_ORDERS }}
+      DRY_DEFAULT_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_DEFAULT_MAX_TOTAL_NOTIONAL }}
+      DRY_DEFAULT_MIN_CONVICTION: ${{ vars.DRY_DEFAULT_MIN_CONVICTION }}
+      DRY_DEFAULT_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_DEFAULT_MIN_STOP_DISTANCE_PCT }}
+      DRY_DEFAULT_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_DEFAULT_MAX_STOP_DISTANCE_PCT }}
 
-These defaults must stay until dry-run validation is complete.
+      DRY_RISK_OFF_NOTIONAL_PER_TRADE: ${{ vars.DRY_RISK_OFF_NOTIONAL_PER_TRADE }}
+      DRY_RISK_OFF_MAX_ORDERS: ${{ vars.DRY_RISK_OFF_MAX_ORDERS }}
+      DRY_RISK_OFF_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_RISK_OFF_MAX_TOTAL_NOTIONAL }}
+      DRY_RISK_OFF_MIN_CONVICTION: ${{ vars.DRY_RISK_OFF_MIN_CONVICTION }}
+      DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT }}
+      DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT }}
 
-## Quick Start
-```bash
-npm install
-npm run build
-node dist/src/index.js
-```
+      ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      ALPACA_BASE_URL: ${{ vars.ALPACA_BASE_URL }}
 
-## Environment
-Use `.env.example` as baseline.
+      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+      GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ vars.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_MARKET_SNAPSHOT_FOLDER_ID: ${{ vars.GDRIVE_MARKET_SNAPSHOT_FOLDER_ID }}
+      GDRIVE_STAGE6_FOLDER: ${{ vars.GDRIVE_STAGE6_FOLDER }}
+      GDRIVE_REPORT_FOLDER: ${{ vars.GDRIVE_REPORT_FOLDER }}
 
-### Secrets (GitHub Actions)
-- `ALPACA_KEY_ID`
-- `ALPACA_SECRET_KEY`
-- `TELEGRAM_TOKEN`
-- `GDRIVE_CLIENT_ID`
-- `GDRIVE_CLIENT_SECRET`
-- `GDRIVE_REFRESH_TOKEN`
-- `FINNHUB_API_KEY` (optional fallback source for VIX)
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_PRIMARY_CHAT_ID: ${{ vars.TELEGRAM_PRIMARY_CHAT_ID }}
+      TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
 
-### Variables (GitHub Actions)
-- `ALPACA_BASE_URL`
-- `EXEC_ENABLED`
-- `READ_ONLY`
-- `TZ`
-- `DRY_NOTIONAL_PER_TRADE`
-- `DRY_MAX_ORDERS`
-- `DRY_MAX_TOTAL_NOTIONAL`
-- `DRY_MIN_CONVICTION`
-- `DRY_MIN_STOP_DISTANCE_PCT`
-- `DRY_MAX_STOP_DISTANCE_PCT`
-- `TELEGRAM_HEARTBEAT_ON_DEDUPE`
-- `REGIME_AUTO_ENABLED`
-- `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
-- `VIX_RISK_ON_THRESHOLD`
-- `VIX_RISK_OFF_THRESHOLD`
-- `GDRIVE_ROOT_FOLDER_ID`
-- `GDRIVE_STAGE6_FOLDER`
-- `GDRIVE_REPORT_FOLDER`
-- `TELEGRAM_PRIMARY_CHAT_ID`
-- `TELEGRAM_SIMULATION_CHAT_ID`
+    steps:
+      - uses: actions/checkout@v4
 
-### Ops Presets (2 profiles)
-- `DRY_DEFAULT_*` : market normal profile
-- `DRY_RISK_OFF_*` : high-volatility defensive profile
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
 
-If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
+      - name: Restore sidecar state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            sidecar-state-${{ github.ref_name }}-
 
-### Runtime Guard
-`src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.
+      - name: Install
+        run: npm ci
 
-## Workflow
-- `sidecar-ci`: typecheck/build gate on push/PR.
-- `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
+      - name: Build
+        run: npm run build
 
-## Policy
-- Version: `stage6-exec-v1.0-rc1`
-- Source of truth: `STAGE6_ALPHA_FINAL_*.json`
+      - name: Run dry-run bootstrap
+        run: node dist/src/index.js
+
+      - name: Save sidecar state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}

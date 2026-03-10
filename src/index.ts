@@ -69,6 +69,12 @@ type RegimeSelection = {
   vix: number | null;
   riskOnThreshold: number;
   riskOffThreshold: number;
+  diagnostics: string[];
+};
+
+type VixLookupResult = {
+  vix: number | null;
+  reason: string;
 };
 
 type DryExecBuildResult = {
@@ -418,9 +424,13 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
     .slice(0, 6);
 }
 
-async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<number | null> {
-  const folderId = process.env.GDRIVE_ROOT_FOLDER_ID || "";
-  if (!folderId) return null;
+async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<VixLookupResult> {
+  const explicitFolderId = process.env.GDRIVE_MARKET_SNAPSHOT_FOLDER_ID?.trim() || "";
+  const fallbackFolderId = process.env.GDRIVE_ROOT_FOLDER_ID || "";
+  const folderId = explicitFolderId || fallbackFolderId;
+  if (!folderId) {
+    return { vix: null, reason: "snapshot folder not configured (set GDRIVE_MARKET_SNAPSHOT_FOLDER_ID)" };
+  }
 
   const query = [
     `'${folderId}' in parents`,
@@ -438,35 +448,57 @@ async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<number
   const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
-  if (!response.ok) return null;
+  if (!response.ok) {
+    const text = await response.text();
+    return {
+      vix: null,
+      reason: `snapshot list failed (${response.status}) in folder ${folderId}: ${text.slice(0, 120)}`
+    };
+  }
 
   const data = (await response.json()) as DriveListResponse;
   const file = data.files?.[0];
-  if (!file?.id) return null;
+  if (!file?.id) {
+    return { vix: null, reason: `snapshot not found in folder ${folderId}` };
+  }
 
-  const raw = await downloadStage6Json(accessToken, file.id);
-  const parsed = JSON.parse(raw) as unknown;
-  return extractVixFromMarketSnapshot(parsed);
+  try {
+    const raw = await downloadStage6Json(accessToken, file.id);
+    const parsed = JSON.parse(raw) as unknown;
+    const vix = extractVixFromMarketSnapshot(parsed);
+    if (vix == null) {
+      return { vix: null, reason: `snapshot parse miss: VIX field not found in ${file.name}` };
+    }
+    return { vix, reason: `snapshot ok: ${file.name}` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { vix: null, reason: `snapshot parse/download failed for ${file.name}: ${message.slice(0, 120)}` };
+  }
 }
 
-async function fetchFinnhubVix(): Promise<number | null> {
+async function fetchFinnhubVix(): Promise<VixLookupResult> {
   const token = process.env.FINNHUB_API_KEY?.trim();
-  if (!token) return null;
+  if (!token) return { vix: null, reason: "FINNHUB_API_KEY missing" };
 
   const candidates = ["VIX", "^VIX", "CBOE:VIX"];
+  const attempts: string[] = [];
   for (const symbol of candidates) {
     try {
       const params = new URLSearchParams({ symbol, token });
       const response = await fetch(`https://finnhub.io/api/v1/quote?${params.toString()}`);
-      if (!response.ok) continue;
+      if (!response.ok) {
+        attempts.push(`${symbol}:${response.status}`);
+        continue;
+      }
       const data = (await response.json()) as { c?: unknown };
       const parsed = toFinitePositiveNumber(data.c);
-      if (parsed != null) return parsed;
+      if (parsed != null) return { vix: parsed, reason: `finnhub ok: ${symbol}` };
+      attempts.push(`${symbol}:invalid_quote`);
     } catch {
-      // Try the next symbol.
+      attempts.push(`${symbol}:network_error`);
     }
   }
-  return null;
+  return { vix: null, reason: `finnhub failed (${attempts.join(", ") || "no candidates"})` };
 }
 
 async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelection> {
@@ -474,6 +506,7 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
   const riskOffThreshold = readPositiveNumberEnv("VIX_RISK_OFF_THRESHOLD", 25);
   const riskOnThresholdRaw = readPositiveNumberEnv("VIX_RISK_ON_THRESHOLD", 22);
   const riskOnThreshold = Math.min(riskOnThresholdRaw, riskOffThreshold);
+  const diagnostics: string[] = [];
 
   if (forced === "default" || forced === "risk_off") {
     return {
@@ -481,7 +514,8 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
       source: "forced",
       vix: null,
       riskOnThreshold,
-      riskOffThreshold
+      riskOffThreshold,
+      diagnostics: [`forced profile=${forced}`]
     };
   }
 
@@ -491,15 +525,18 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
       source: "env_fallback",
       vix: null,
       riskOnThreshold,
-      riskOffThreshold
+      riskOffThreshold,
+      diagnostics: ["regime auto disabled (REGIME_AUTO_ENABLED=false)"]
     };
   }
 
-  const snapshotVix = await fetchLatestMarketSnapshotVix(accessToken);
-  const finnhubVix = snapshotVix == null ? await fetchFinnhubVix() : null;
-  const vix = snapshotVix ?? finnhubVix;
+  const snapshot = await fetchLatestMarketSnapshotVix(accessToken);
+  if (snapshot.reason) diagnostics.push(`snapshot: ${snapshot.reason}`);
+  const finnhub = snapshot.vix == null ? await fetchFinnhubVix() : { vix: null, reason: "skipped (snapshot hit)" };
+  if (snapshot.vix == null && finnhub.reason) diagnostics.push(`finnhub: ${finnhub.reason}`);
+  const vix = snapshot.vix ?? finnhub.vix;
   const source: RegimeSelection["source"] =
-    snapshotVix != null ? "market_snapshot" : finnhubVix != null ? "finnhub" : "env_fallback";
+    snapshot.vix != null ? "market_snapshot" : finnhub.vix != null ? "finnhub" : "env_fallback";
 
   if (vix == null) {
     return {
@@ -507,7 +544,8 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
       source,
       vix: null,
       riskOnThreshold,
-      riskOffThreshold
+      riskOffThreshold,
+      diagnostics
     };
   }
 
@@ -517,7 +555,8 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
     source,
     vix,
     riskOnThreshold,
-    riskOffThreshold
+    riskOffThreshold,
+    diagnostics
   };
 }
 
@@ -859,6 +898,9 @@ async function main() {
   console.log(
     `[REGIME] profile=${regime.profile.toUpperCase()} source=${regime.source} vix=${regimeVix} on<=${regime.riskOnThreshold} off>=${regime.riskOffThreshold}`
   );
+  if (regime.diagnostics.length > 0) {
+    regime.diagnostics.forEach((line) => console.log(`[REGIME_DIAG] ${line}`));
+  }
   const actionable = getActionableCandidates(stage6.candidates);
   const dryExec = buildDryExecPayloads(actionable, stage6.sha256, regime);
   const mode = buildRunModeLabel(dryExec);
