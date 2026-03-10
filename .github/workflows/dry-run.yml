@@ -2,6 +2,13 @@ name: sidecar-dry-run
 
 on:
   workflow_dispatch:
+  schedule:
+    # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
+    - cron: "7 * * * 1-5"
+
+concurrency:
+  group: sidecar-dry-run-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   dry-run:
@@ -37,6 +44,15 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Restore sidecar state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            sidecar-state-${{ github.ref_name }}-
+
       - name: Install
         run: npm ci
 
@@ -45,3 +61,10 @@ jobs:
 
       - name: Run dry-run bootstrap
         run: node dist/src/index.js
+
+      - name: Save sidecar state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}

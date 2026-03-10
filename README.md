@@ -7,6 +7,12 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Sends execution/simulation Telegram events.
 - Does **not** modify the analysis engine logic.
 
+## Current Dry-Run Behavior
+- Loads the latest `STAGE6_ALPHA_FINAL_*.json` from `GDRIVE_STAGE6_FOLDER`.
+- Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
+- Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
+- Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
+
 ## Safety Defaults
 - `EXEC_ENABLED=false`
 - `READ_ONLY=true`
@@ -44,6 +50,10 @@ Use `.env.example` as baseline.
 
 ### Runtime Guard
 `src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.
+
+## Workflow
+- `sidecar-ci`: typecheck/build gate on push/PR.
+- `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

@@ -1,5 +1,6 @@
 import { loadRuntimeConfig } from "../config/policy.js";
 import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 function mask(value: string): string {
   if (!value) return "";
@@ -41,6 +42,17 @@ type Stage6CandidateSummary = {
   stop: string;
   conviction: string;
 };
+
+type SidecarRunState = {
+  lastStage6Sha256: string;
+  lastStage6FileId: string;
+  lastStage6FileName: string;
+  lastMode: string;
+  lastSentAt: string;
+};
+
+const STATE_PATH = "state/last-run.json";
+const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
@@ -290,12 +302,19 @@ function printStage6Lock(result: Stage6LoadResult) {
   console.log(`[STAGE6_CANDIDATES] count=${result.candidateSymbols.length} | symbols=${symbolLog}`);
 }
 
-function buildSimulationMessage(result: Stage6LoadResult): string {
+function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6CandidateSummary[] {
+  return candidates.filter((row) => ACTIONABLE_VERDICTS.has(row.verdict));
+}
+
+function buildSimulationMessage(result: Stage6LoadResult, actionable: Stage6CandidateSummary[]): string {
   const lines: string[] = [];
   lines.push("🧪 Sidecar Dry-Run Report");
   lines.push(`Stage6: ${result.fileName}`);
   lines.push(`Hash: ${result.sha256.slice(0, 12)} | MD5: ${result.md5Checksum}`);
   lines.push(`Candidates: ${result.candidateSymbols.length}`);
+  lines.push(
+    `Policy Gate: raw ${result.candidates.length} -> actionable ${actionable.length} (BUY/STRONG_BUY only)`
+  );
   lines.push("");
 
   if (result.candidates.length === 0) {
@@ -310,6 +329,16 @@ function buildSimulationMessage(result: Stage6LoadResult): string {
   }
 
   lines.push("");
+  lines.push("Actionable Candidates");
+  if (actionable.length === 0) {
+    lines.push("N/A (all filtered by policy gate)");
+  } else {
+    actionable.forEach((row, index) => {
+      lines.push(`${index + 1}) ${row.symbol} | ${row.verdict} | ${row.entry}→${row.target} / ${row.stop}`);
+    });
+  }
+
+  lines.push("");
   lines.push("Mode: READ_ONLY=true, EXEC_ENABLED=false");
   return lines.join("\n");
 }
@@ -317,7 +346,8 @@ function buildSimulationMessage(result: Stage6LoadResult): string {
 async function sendSimulationTelegram(result: Stage6LoadResult): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result);
+  const actionable = getActionableCandidates(result.candidates);
+  const text = buildSimulationMessage(result, actionable);
 
   const body = new URLSearchParams({
     chat_id: chatId,
@@ -338,11 +368,52 @@ async function sendSimulationTelegram(result: Stage6LoadResult): Promise<void> {
   console.log(`[TELEGRAM_SIM] sent to ${mask(chatId)}`);
 }
 
+async function loadRunState(): Promise<SidecarRunState | null> {
+  try {
+    const raw = await readFile(STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as SidecarRunState;
+    if (!parsed?.lastStage6Sha256) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function saveRunState(result: Stage6LoadResult, mode: string): Promise<void> {
+  await mkdir("state", { recursive: true });
+  const nextState: SidecarRunState = {
+    lastStage6Sha256: result.sha256,
+    lastStage6FileId: result.fileId,
+    lastStage6FileName: result.fileName,
+    lastMode: mode,
+    lastSentAt: new Date().toISOString()
+  };
+  await writeFile(STATE_PATH, JSON.stringify(nextState, null, 2), "utf8");
+  console.log(`[STATE] saved ${STATE_PATH}`);
+}
+
+function buildRunModeLabel(): string {
+  const cfg = loadRuntimeConfig();
+  return `READ_ONLY=${cfg.readOnly};EXEC_ENABLED=${cfg.execEnabled}`;
+}
+
+function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mode: string): boolean {
+  if (!state) return true;
+  return !(state.lastStage6Sha256 === result.sha256 && state.lastMode === mode);
+}
+
 async function main() {
   printStartupSummary();
   const stage6 = await loadLatestStage6FromDrive();
   printStage6Lock(stage6);
+  const mode = buildRunModeLabel();
+  const priorState = await loadRunState();
+  if (!shouldSend(priorState, stage6, mode)) {
+    console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
+    return;
+  }
   await sendSimulationTelegram(stage6);
+  await saveRunState(stage6, mode);
 }
 
 main().catch((error) => {
