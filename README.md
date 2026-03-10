@@ -14,6 +14,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Builds Alpaca order payload previews only (no live order send in dry-run).
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
+- Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
 - Supports VIX source priority (`realtime_first` vs `snapshot_first`) with snapshot staleness guard.
 - Realtime chain: `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot`.

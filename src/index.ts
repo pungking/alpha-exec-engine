@@ -357,6 +357,44 @@ function buildOrderIdempotencyKey(stage6Hash: string, symbol: string, side: "buy
   return `${stage6Hash}:${symbol}:${side}`;
 }
 
+function roundToCent(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function validateAndNormalizePayload(payload: DryExecOrderPayload): { ok: true; payload: DryExecOrderPayload } | { ok: false; reason: string } {
+  const limit = roundToCent(payload.limit_price);
+  const takeProfit = roundToCent(payload.take_profit.limit_price);
+  const stopLoss = roundToCent(payload.stop_loss.stop_price);
+  const notional = roundToCent(payload.notional);
+
+  if (![limit, takeProfit, stopLoss, notional].every((n) => Number.isFinite(n))) {
+    return { ok: false, reason: "payload_invalid_non_finite_number" };
+  }
+  if (limit <= 0 || takeProfit <= 0 || stopLoss <= 0) {
+    return { ok: false, reason: "payload_invalid_non_positive_price" };
+  }
+  if (notional < 1) {
+    return { ok: false, reason: "payload_invalid_notional_too_small" };
+  }
+  if (!(takeProfit > limit && stopLoss < limit)) {
+    return { ok: false, reason: "payload_invalid_price_geometry" };
+  }
+  if (!/^[A-Za-z0-9_-]{1,48}$/.test(payload.client_order_id)) {
+    return { ok: false, reason: "payload_invalid_client_order_id" };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      ...payload,
+      limit_price: limit,
+      notional,
+      take_profit: { limit_price: takeProfit },
+      stop_loss: { stop_price: stopLoss }
+    }
+  };
+}
+
 function readProfilePositiveNumber(
   profile: RegimeProfile,
   defaultKey: string,
@@ -901,19 +939,25 @@ function buildDryExecPayloads(
       return;
     }
 
-    payloads.push({
+    const candidatePayload: DryExecOrderPayload = {
       symbol: row.symbol,
       side: "buy",
       type: "limit",
       time_in_force: "day",
       order_class: "bracket",
-      limit_price: Number(entry.toFixed(2)),
-      notional: Number(notionalPerOrder.toFixed(2)),
-      take_profit: { limit_price: Number(target.toFixed(2)) },
-      stop_loss: { stop_price: Number(stop.toFixed(2)) },
+      limit_price: entry,
+      notional: notionalPerOrder,
+      take_profit: { limit_price: target },
+      stop_loss: { stop_price: stop },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
       idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy")
-    });
+    };
+    const normalized = validateAndNormalizePayload(candidatePayload);
+    if (!normalized.ok) {
+      skipped.push({ symbol: row.symbol, reason: normalized.reason });
+      return;
+    }
+    payloads.push(normalized.payload);
     allocatedNotional += notionalPerOrder;
   });
 
@@ -981,6 +1025,7 @@ function buildSimulationMessage(
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
+  lines.push("Payload Validation: price/notional finite check + geometry + client_order_id format");
   lines.push(
     `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
   );
