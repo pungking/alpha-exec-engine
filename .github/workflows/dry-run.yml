@@ -1,0 +1,47 @@
+name: sidecar-dry-run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
+      READ_ONLY: ${{ vars.READ_ONLY }}
+      POLICY_VERSION: stage6-exec-v1.0-rc1
+      TZ: ${{ vars.TZ }}
+
+      ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      ALPACA_BASE_URL: ${{ vars.ALPACA_BASE_URL }}
+
+      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+      GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ vars.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_STAGE6_FOLDER: ${{ vars.GDRIVE_STAGE6_FOLDER }}
+      GDRIVE_REPORT_FOLDER: ${{ vars.GDRIVE_REPORT_FOLDER }}
+
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_PRIMARY_CHAT_ID: ${{ vars.TELEGRAM_PRIMARY_CHAT_ID }}
+      TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run dry-run bootstrap
+        run: node dist/src/index.js
