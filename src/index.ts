@@ -65,7 +65,7 @@ type RegimeProfile = "default" | "risk_off";
 
 type RegimeSelection = {
   profile: RegimeProfile;
-  source: "forced" | "market_snapshot" | "finnhub" | "cnbc_rapidapi" | "env_fallback";
+  source: "forced" | "market_snapshot" | "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "env_fallback";
   vix: number | null;
   riskOnThreshold: number;
   riskOffThreshold: number;
@@ -76,7 +76,7 @@ type VixLookupResult = {
   vix: number | null;
   reason: string;
   modifiedTime?: string;
-  source?: "market_snapshot" | "finnhub" | "cnbc_rapidapi" | "env_fallback";
+  source?: "market_snapshot" | "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "env_fallback";
 };
 
 type DryExecBuildResult = {
@@ -519,6 +519,51 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
   return { vix: null, reason: `finnhub failed (${attempts.join(", ") || "no candidates"})`, source: "finnhub" };
 }
 
+async function fetchCnbcDirectVix(): Promise<VixLookupResult> {
+  const symbols = ".VIX";
+  const url =
+    `https://quote.cnbc.com/quote-html-webservice/quote.htm?partnerId=2&requestMethod=quick&` +
+    `exthrs=1&noform=1&fund=1&output=json&players=null&symbols=${encodeURIComponent(symbols)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return {
+        vix: null,
+        reason: `cnbc direct failed (${response.status}): ${text.slice(0, 120)}`,
+        source: "cnbc_direct"
+      };
+    }
+
+    const data = (await response.json()) as Record<string, unknown>;
+    const quickQuoteResult = data.QuickQuoteResult as Record<string, unknown> | undefined;
+    const rawQuotes = quickQuoteResult?.QuickQuote;
+    const quotes = Array.isArray(rawQuotes) ? rawQuotes : [];
+    const vixRow = quotes.find((row) => {
+      if (!row || typeof row !== "object") return false;
+      const symbol = String((row as Record<string, unknown>).symbol || "").toUpperCase();
+      return symbol === ".VIX" || symbol === "VIX";
+    }) as Record<string, unknown> | undefined;
+    if (!vixRow) {
+      return { vix: null, reason: "cnbc direct parse miss: .VIX not found", source: "cnbc_direct" };
+    }
+
+    const vix = toFinitePositiveNumber(vixRow.last ?? vixRow.last_trade ?? vixRow.price);
+    if (vix == null) {
+      return { vix: null, reason: "cnbc direct parse miss: invalid VIX value", source: "cnbc_direct" };
+    }
+    return { vix, reason: "cnbc direct ok: .VIX", source: "cnbc_direct" };
+  } catch {
+    return { vix: null, reason: "cnbc direct network error", source: "cnbc_direct" };
+  }
+}
+
 async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
   const key = process.env.CNBC_RAPIDAPI_KEY?.trim() || process.env.RAPID_API_KEY?.trim() || "";
   if (!key) {
@@ -526,18 +571,19 @@ async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
   }
 
   const host = process.env.CNBC_RAPIDAPI_HOST?.trim() || "cnbc.p.rapidapi.com";
+  const endpoint = process.env.CNBC_RAPIDAPI_ENDPOINT?.trim() || "/market/get-quote";
   const symbols = ".VIX";
-  const params = new URLSearchParams({
-    symbol: symbols,
-    requestMethod: "quick",
-    exthrs: "1",
-    noform: "1",
-    fund: "1",
-    output: "json"
-  });
+  const symbolParam = process.env.CNBC_RAPIDAPI_SYMBOL_PARAM?.trim() || "symbol";
+  const params = new URLSearchParams();
+  params.set(symbolParam, symbols);
+  params.set("requestMethod", "quick");
+  params.set("exthrs", "1");
+  params.set("noform", "1");
+  params.set("fund", "1");
+  params.set("output", "json");
 
   try {
-    const response = await fetch(`https://${host}/market/get-quote?${params.toString()}`, {
+    const response = await fetch(`https://${host}${endpoint}?${params.toString()}`, {
       method: "GET",
       headers: {
         "X-RapidAPI-Key": key,
@@ -548,7 +594,7 @@ async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
       const text = await response.text();
       return {
         vix: null,
-        reason: `cnbc rapidapi failed (${response.status}): ${text.slice(0, 120)}`,
+        reason: `cnbc rapidapi failed (${response.status}) host=${host} endpoint=${endpoint}: ${text.slice(0, 120)}`,
         source: "cnbc_rapidapi"
       };
     }
@@ -645,6 +691,10 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
     diagnostics.push(`finnhub: ${finnhub.reason}`);
     if (finnhub.vix != null) return finnhub;
 
+    const cnbcDirect = await fetchCnbcDirectVix();
+    diagnostics.push(`cnbc-direct: ${cnbcDirect.reason}`);
+    if (cnbcDirect.vix != null) return cnbcDirect;
+
     const cnbc = await fetchCnbcRapidApiVix();
     diagnostics.push(`cnbc: ${cnbc.reason}`);
     if (cnbc.vix != null) return cnbc;
@@ -667,7 +717,10 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
     }
   } else {
     const realtime = await resolveRealtimeVix();
-    if (realtime.vix != null && (realtime.source === "finnhub" || realtime.source === "cnbc_rapidapi")) {
+    if (
+      realtime.vix != null &&
+      (realtime.source === "finnhub" || realtime.source === "cnbc_direct" || realtime.source === "cnbc_rapidapi")
+    ) {
       vix = realtime.vix;
       source = realtime.source;
     } else if (snapshotFresh.usableVix != null) {

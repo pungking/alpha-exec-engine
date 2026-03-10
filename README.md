@@ -16,6 +16,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
 - Supports VIX source priority (`realtime_first` vs `snapshot_first`) with snapshot staleness guard.
+- Realtime chain: `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
@@ -67,6 +68,8 @@ Use `.env.example` as baseline.
 - `VIX_RISK_ON_THRESHOLD`
 - `VIX_RISK_OFF_THRESHOLD`
 - `CNBC_RAPIDAPI_HOST` (optional, default `cnbc.p.rapidapi.com`)
+- `CNBC_RAPIDAPI_ENDPOINT` (optional, default `/market/get-quote`)
+- `CNBC_RAPIDAPI_SYMBOL_PARAM` (optional, default `symbol`)
 - `GDRIVE_ROOT_FOLDER_ID`
 - `GDRIVE_MARKET_SNAPSHOT_FOLDER_ID` (optional explicit folder for `MARKET_REGIME_SNAPSHOT.json`)
 - `GDRIVE_STAGE6_FOLDER`
