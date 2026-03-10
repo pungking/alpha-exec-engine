@@ -711,7 +711,11 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
     } else {
       const realtime = await resolveRealtimeVix();
       vix = realtime.vix;
-      if (realtime.source === "finnhub" || realtime.source === "cnbc_rapidapi") {
+      if (
+        realtime.source === "finnhub" ||
+        realtime.source === "cnbc_direct" ||
+        realtime.source === "cnbc_rapidapi"
+      ) {
         source = realtime.source;
       }
     }
