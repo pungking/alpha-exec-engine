@@ -987,6 +987,7 @@ function buildSimulationMessage(
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult
 ): string {
+  const cfg = loadRuntimeConfig();
   const lines: string[] = [];
   lines.push("🧪 Sidecar Dry-Run Report");
   lines.push(`Stage6: ${result.fileName}`);
@@ -1048,7 +1049,7 @@ function buildSimulationMessage(
   );
 
   lines.push("");
-  lines.push("Mode: READ_ONLY=true, EXEC_ENABLED=false");
+  lines.push(`Mode: READ_ONLY=${cfg.readOnly}, EXEC_ENABLED=${cfg.execEnabled}`);
   return lines.join("\n");
 }
 
