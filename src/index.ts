@@ -117,6 +117,60 @@ type PreflightResult = {
   nextOpen: string | null;
 };
 
+type OrderLifecycleStatus =
+  | "planned"
+  | "submitted"
+  | "accepted"
+  | "partially_filled"
+  | "filled"
+  | "canceled"
+  | "rejected"
+  | "expired";
+
+type OrderLifecycleHistoryEntry = {
+  at: string;
+  from: OrderLifecycleStatus | null;
+  to: OrderLifecycleStatus;
+  reason: string;
+  source: string;
+};
+
+type OrderLedgerRecord = {
+  idempotencyKey: string;
+  symbol: string;
+  side: "buy";
+  stage6Hash: string;
+  stage6File: string;
+  mode: string;
+  clientOrderId: string;
+  status: OrderLifecycleStatus;
+  statusReason: string;
+  preflightCode: string;
+  regimeProfile: RegimeProfile;
+  notional: number;
+  limitPrice: number;
+  takeProfitPrice: number;
+  stopLossPrice: number;
+  brokerOrderId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  history: OrderLifecycleHistoryEntry[];
+};
+
+type OrderLedgerState = {
+  orders: Record<string, OrderLedgerRecord>;
+  updatedAt: string;
+};
+
+type OrderLedgerUpdateResult = {
+  enabled: boolean;
+  targetStatus: OrderLifecycleStatus | "none";
+  upserted: number;
+  transitioned: number;
+  unchanged: number;
+  pruned: number;
+};
+
 type SidecarRunState = {
   lastStage6Sha256: string;
   lastStage6FileId: string;
@@ -144,7 +198,19 @@ type OrderIdempotencyState = {
 const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
+const ORDER_LEDGER_PATH = "state/order-ledger.json";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
+
+const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
+  planned: new Set(["submitted", "accepted", "canceled", "rejected", "expired"]),
+  submitted: new Set(["accepted", "partially_filled", "filled", "canceled", "rejected", "expired"]),
+  accepted: new Set(["partially_filled", "filled", "canceled", "rejected", "expired"]),
+  partially_filled: new Set(["partially_filled", "filled", "canceled", "rejected", "expired"]),
+  filled: new Set(),
+  canceled: new Set(),
+  rejected: new Set(),
+  expired: new Set()
+};
 
 function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
@@ -380,6 +446,11 @@ function parseConviction(value: string): number | null {
 
 function sumNotional(payloads: DryExecOrderPayload[]): number {
   return payloads.reduce((acc, row) => acc + row.notional, 0);
+}
+
+function isTransitionAllowed(from: OrderLifecycleStatus, to: OrderLifecycleStatus): boolean {
+  if (from === to) return true;
+  return ORDER_TRANSITIONS[from].has(to);
 }
 
 function buildOrderIdempotencyKey(stage6Hash: string, symbol: string, side: "buy"): string {
@@ -1157,7 +1228,8 @@ function buildSimulationMessage(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  ledger: OrderLedgerUpdateResult
 ): string {
   const cfg = loadRuntimeConfig();
   const lines: string[] = [];
@@ -1219,6 +1291,9 @@ function buildSimulationMessage(
   lines.push(
     `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount}`
   );
+  lines.push(
+    `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
+  );
   lines.push("");
   lines.push("Preflight Gate");
   lines.push(
@@ -1242,11 +1317,12 @@ async function sendSimulationTelegram(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  ledger: OrderLedgerUpdateResult
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result, actionable, dryExec, preflight);
+  const text = buildSimulationMessage(result, actionable, dryExec, preflight, ledger);
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
@@ -1320,7 +1396,8 @@ async function saveRunState(
 async function saveDryExecPreview(
   result: Stage6LoadResult,
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  ledger: OrderLedgerUpdateResult
 ): Promise<void> {
   await mkdir("state", { recursive: true });
   const preview = {
@@ -1336,6 +1413,7 @@ async function saveDryExecPreview(
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     idempotency: dryExec.idempotency,
+    orderLifecycle: ledger,
     preflight,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
@@ -1463,6 +1541,155 @@ async function applyOrderIdempotency(
   };
 }
 
+async function loadOrderLedgerState(): Promise<OrderLedgerState> {
+  try {
+    const raw = await readFile(ORDER_LEDGER_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<OrderLedgerState>;
+    const orders =
+      parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
+        ? (parsed.orders as Record<string, OrderLedgerRecord>)
+        : {};
+    return {
+      orders,
+      updatedAt: typeof parsed?.updatedAt === "string" ? parsed.updatedAt : ""
+    };
+  } catch {
+    return { orders: {}, updatedAt: "" };
+  }
+}
+
+async function saveOrderLedgerState(state: OrderLedgerState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(ORDER_LEDGER_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${ORDER_LEDGER_PATH}`);
+}
+
+function pruneOrderLedgerState(state: OrderLedgerState, ttlDays: number): number {
+  const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - ttlMs;
+  let removed = 0;
+  for (const [key, row] of Object.entries(state.orders)) {
+    const ts = Date.parse(row.updatedAt);
+    if (!Number.isFinite(ts) || ts < cutoff) {
+      delete state.orders[key];
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+async function updateOrderLedger(
+  stage6: Stage6LoadResult,
+  mode: string,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
+): Promise<OrderLedgerUpdateResult> {
+  const cfg = loadRuntimeConfig();
+  const enabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
+  const ttlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
+  const targetStatus: OrderLifecycleStatus = cfg.execEnabled ? "submitted" : "planned";
+  const source = cfg.execEnabled ? "execution_pipeline" : "dry_run_pipeline";
+  const reason = cfg.execEnabled ? "order_submitted_to_broker" : "dry_run_payload_prepared";
+
+  if (!enabled) {
+    return { enabled, targetStatus: "none", upserted: 0, transitioned: 0, unchanged: 0, pruned: 0 };
+  }
+
+  const state = await loadOrderLedgerState();
+  const now = new Date().toISOString();
+  const pruned = pruneOrderLedgerState(state, ttlDays);
+  let upserted = 0;
+  let transitioned = 0;
+  let unchanged = 0;
+  let changed = pruned > 0;
+
+  for (const payload of dryExec.payloads) {
+    const key = payload.idempotencyKey;
+    const existing = state.orders[key];
+    if (!existing) {
+      upserted += 1;
+      changed = true;
+      state.orders[key] = {
+        idempotencyKey: key,
+        symbol: payload.symbol,
+        side: payload.side,
+        stage6Hash: stage6.sha256,
+        stage6File: stage6.fileName,
+        mode,
+        clientOrderId: payload.client_order_id,
+        status: targetStatus,
+        statusReason: reason,
+        preflightCode: preflight.code,
+        regimeProfile: dryExec.regime.profile,
+        notional: payload.notional,
+        limitPrice: payload.limit_price,
+        takeProfitPrice: payload.take_profit.limit_price,
+        stopLossPrice: payload.stop_loss.stop_price,
+        brokerOrderId: null,
+        createdAt: now,
+        updatedAt: now,
+        history: [
+          {
+            at: now,
+            from: null,
+            to: targetStatus,
+            reason,
+            source
+          }
+        ]
+      };
+      continue;
+    }
+
+    const canTransition = isTransitionAllowed(existing.status, targetStatus);
+    const shouldTransition = canTransition && existing.status !== targetStatus;
+
+    if (shouldTransition) {
+      transitioned += 1;
+      changed = true;
+      existing.history.push({
+        at: now,
+        from: existing.status,
+        to: targetStatus,
+        reason,
+        source
+      });
+      existing.status = targetStatus;
+      existing.statusReason = reason;
+    } else {
+      unchanged += 1;
+      if (!canTransition) {
+        console.warn(
+          `[ORDER_LEDGER] invalid transition key=${key} from=${existing.status} to=${targetStatus} (ignored)`
+        );
+      }
+    }
+
+    existing.stage6Hash = stage6.sha256;
+    existing.stage6File = stage6.fileName;
+    existing.mode = mode;
+    existing.clientOrderId = payload.client_order_id;
+    existing.preflightCode = preflight.code;
+    existing.regimeProfile = dryExec.regime.profile;
+    existing.notional = payload.notional;
+    existing.limitPrice = payload.limit_price;
+    existing.takeProfitPrice = payload.take_profit.limit_price;
+    existing.stopLossPrice = payload.stop_loss.stop_price;
+    existing.updatedAt = now;
+  }
+
+  if (changed) {
+    state.updatedAt = now;
+    await saveOrderLedgerState(state);
+  }
+
+  console.log(
+    `[ORDER_LEDGER] enabled=${enabled} target=${targetStatus} ttlDays=${ttlDays} upserted=${upserted} transitioned=${transitioned} unchanged=${unchanged} pruned=${pruned}`
+  );
+
+  return { enabled, targetStatus, upserted, transitioned, unchanged, pruned };
+}
+
 function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const cfg = loadRuntimeConfig();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
@@ -1475,6 +1702,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const preflightEnabled = readBoolEnv("PREFLIGHT_ENABLED", true);
   const allowEntryOutsideRth = readBoolEnv("ALLOW_ENTRY_OUTSIDE_RTH", false);
   const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
+  const orderLifecycleEnabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
+  const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -1493,6 +1722,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `PREFLIGHT_ENABLED=${preflightEnabled}`,
     `ALLOW_ENTRY_OUTSIDE_RTH=${allowEntryOutsideRth}`,
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
+    `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
+    `ORDER_LEDGER_TTL_DAYS=${orderLedgerTtlDays}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -1506,10 +1737,11 @@ function printRunSummary(
   stage6: Stage6LoadResult,
   actionableCount: number,
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  ledger: OrderLedgerUpdateResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -1570,7 +1802,15 @@ async function main() {
       marketOpen: null,
       nextOpen: null
     };
-    printRunSummary("dedupe", stage6, actionable.length, dryExec, dedupePreflight);
+    const dedupeLedger: OrderLedgerUpdateResult = {
+      enabled: readBoolEnv("ORDER_LIFECYCLE_ENABLED", true),
+      targetStatus: "none",
+      upserted: 0,
+      transitioned: 0,
+      unchanged: 0,
+      pruned: 0
+    };
+    printRunSummary("dedupe", stage6, actionable.length, dryExec, dedupePreflight, dedupeLedger);
     return;
   }
   const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
@@ -1582,10 +1822,11 @@ async function main() {
     throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
   }
 
-  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight);
-  await saveDryExecPreview(stage6, finalDryExec, preflight);
+  const ledger = await updateOrderLedger(stage6, mode, finalDryExec, preflight);
+  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger);
+  await saveDryExecPreview(stage6, finalDryExec, preflight, ledger);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
-  printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight);
+  printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight, ledger);
 }
 
 main().catch((error) => {

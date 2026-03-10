@@ -31,6 +31,8 @@ jobs:
       PREFLIGHT_ENABLED: ${{ vars.PREFLIGHT_ENABLED }}
       DAILY_MAX_NOTIONAL: ${{ vars.DAILY_MAX_NOTIONAL }}
       ALLOW_ENTRY_OUTSIDE_RTH: ${{ vars.ALLOW_ENTRY_OUTSIDE_RTH }}
+      ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
+      ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
       FORCE_SEND_ONCE: ${{ vars.FORCE_SEND_ONCE }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
@@ -142,6 +144,10 @@ jobs:
             lines.push(
               `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
             );
+            const lifecycle = preview?.orderLifecycle || {};
+            lines.push(
+              `- lifecycle: \`enabled=${lifecycle.enabled ?? "N/A"} target=${lifecycle.targetStatus ?? "N/A"} upserted=${lifecycle.upserted ?? "N/A"} transitioned=${lifecycle.transitioned ?? "N/A"} unchanged=${lifecycle.unchanged ?? "N/A"}\``
+            );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
           }
@@ -152,6 +158,17 @@ jobs:
             lines.push(`- idempotency key store: \`${count}\` keys`);
           } else {
             lines.push("- idempotency key store: not found");
+          }
+          const lifecyclePath = "state/order-ledger.json";
+          if (fs.existsSync(lifecyclePath)) {
+            const lifecycle = JSON.parse(fs.readFileSync(lifecyclePath, "utf8"));
+            const count =
+              lifecycle?.orders && typeof lifecycle.orders === "object"
+                ? Object.keys(lifecycle.orders).length
+                : 0;
+            lines.push(`- order lifecycle store: \`${count}\` keys`);
+          } else {
+            lines.push("- order lifecycle store: not found");
           }
 
           lines.push("");
@@ -167,6 +184,7 @@ jobs:
             state/last-run.json
             state/last-dry-exec-preview.json
             state/order-idempotency.json
+            state/order-ledger.json
           if-no-files-found: warn
 
       - name: Save sidecar state

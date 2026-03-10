@@ -22,6 +22,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
 - Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in dry-run it reports only, in exec mode it blocks on fail.
+- Adds lifecycle state machine ledger (`state/order-ledger.json`) with transition validation and history trail.
 - Optional one-shot dedupe bypass (`FORCE_SEND_ONCE=true`) sends once per current `stage6Hash+mode`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
@@ -71,6 +72,8 @@ Use `.env.example` as baseline.
 - `PREFLIGHT_ENABLED`
 - `DAILY_MAX_NOTIONAL`
 - `ALLOW_ENTRY_OUTSIDE_RTH`
+- `ORDER_LIFECYCLE_ENABLED`
+- `ORDER_LEDGER_TTL_DAYS`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `REGIME_AUTO_ENABLED`
@@ -102,7 +105,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json` as run artifacts.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`
