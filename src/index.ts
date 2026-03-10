@@ -1085,6 +1085,21 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   ].join(";");
 }
 
+function formatVix(vix: number | null): string {
+  return vix == null ? "N/A" : vix.toFixed(2);
+}
+
+function printRunSummary(
+  event: "sent" | "dedupe",
+  stage6: Stage6LoadResult,
+  actionableCount: number,
+  dryExec: DryExecBuildResult
+): void {
+  console.log(
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`
+  );
+}
+
 function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mode: string): boolean {
   if (!state) return true;
   return !(state.lastStage6Sha256 === result.sha256 && state.lastMode === mode);
@@ -1110,11 +1125,13 @@ async function main() {
   if (!shouldSend(priorState, stage6, mode)) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
     await sendHeartbeatOnDedupe(stage6, mode);
+    printRunSummary("dedupe", stage6, actionable.length, dryExec);
     return;
   }
   await sendSimulationTelegram(stage6, actionable, dryExec);
   await saveDryExecPreview(stage6, dryExec);
   await saveRunState(stage6, mode);
+  printRunSummary("sent", stage6, actionable.length, dryExec);
 }
 
 main().catch((error) => {

@@ -89,6 +89,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 ## Workflow
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
+  - Publishes concise run summary to GitHub Step Summary.
+  - Uploads `state/last-run.json` and `state/last-dry-exec-preview.json` as run artifacts.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

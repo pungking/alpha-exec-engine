@@ -96,6 +96,54 @@ jobs:
       - name: Run dry-run bootstrap
         run: node dist/src/index.js
 
+      - name: Publish run summary
+        if: always()
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const statePath = "state/last-run.json";
+          const previewPath = "state/last-dry-exec-preview.json";
+
+          const lines = [];
+          lines.push("## Sidecar Dry-Run Summary");
+
+          if (fs.existsSync(statePath)) {
+            const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+            lines.push(`- lastSentAt: \`${state.lastSentAt || "N/A"}\``);
+            lines.push(`- stage6File: \`${state.lastStage6FileName || "N/A"}\``);
+            lines.push(`- stage6Hash: \`${(state.lastStage6Sha256 || "").slice(0, 12) || "N/A"}\``);
+          } else {
+            lines.push("- state/last-run.json: not found");
+          }
+
+          if (fs.existsSync(previewPath)) {
+            const preview = JSON.parse(fs.readFileSync(previewPath, "utf8"));
+            const regime = preview?.regime?.profile || "N/A";
+            const source = preview?.regime?.source || "N/A";
+            const vix = Number.isFinite(preview?.regime?.vix) ? preview.regime.vix.toFixed(2) : "N/A";
+            lines.push(`- regime: \`${regime}\` (source=${source}, vix=${vix})`);
+            lines.push(
+              `- payloads/skipped: \`${preview.payloadCount ?? 0}/${preview.skippedCount ?? 0}\``
+            );
+          } else {
+            lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
+          }
+
+          lines.push("");
+          fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
+          NODE
+
+      - name: Upload sidecar state artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-state-${{ github.run_id }}
+          path: |
+            state/last-run.json
+            state/last-dry-exec-preview.json
+          if-no-files-found: warn
+
       - name: Save sidecar state
         if: always()
         uses: actions/cache/save@v4
