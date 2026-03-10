@@ -29,6 +29,17 @@ type Stage6LoadResult = {
   md5Checksum: string;
   sha256: string;
   candidateSymbols: string[];
+  candidates: Stage6CandidateSummary[];
+};
+
+type Stage6CandidateSummary = {
+  symbol: string;
+  verdict: string;
+  expectedReturn: string;
+  entry: string;
+  target: string;
+  stop: string;
+  conviction: string;
 };
 
 function hasValue(value: string | undefined): boolean {
@@ -206,12 +217,58 @@ function extractCandidateSymbols(payload: unknown): string[] {
   return Array.from(new Set(symbols));
 }
 
+function parsePrice(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) return `$${value.toFixed(2)}`;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  return "N/A";
+}
+
+function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
+  if (!payload || typeof payload !== "object") return [];
+  const root = payload as Record<string, unknown>;
+  const raw = root.alpha_candidates;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const node = item as Record<string, unknown>;
+      const symbol = typeof node.symbol === "string" ? node.symbol.trim().toUpperCase() : "";
+      if (!symbol) return null;
+      const verdictRaw = node.finalVerdict ?? node.aiVerdict ?? node.verdict;
+      const convictionRaw = node.convictionScore ?? node.rawConvictionScore;
+      const expectedReturnRaw = node.expectedReturn ?? node.gatedExpectedReturn ?? node.rawExpectedReturn;
+      const entryRaw = node.entryPrice ?? node.otePrice ?? node.supportLevel;
+      const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
+      const stopRaw = node.stopLoss ?? node.ictStopLoss;
+
+      return {
+        symbol,
+        verdict: typeof verdictRaw === "string" && verdictRaw.trim() ? verdictRaw.trim().toUpperCase() : "N/A",
+        expectedReturn:
+          typeof expectedReturnRaw === "string" && expectedReturnRaw.trim() ? expectedReturnRaw.trim() : "N/A",
+        entry: parsePrice(entryRaw),
+        target: parsePrice(targetRaw),
+        stop: parsePrice(stopRaw),
+        conviction:
+          typeof convictionRaw === "number" && Number.isFinite(convictionRaw)
+            ? convictionRaw.toFixed(0)
+            : typeof convictionRaw === "string" && convictionRaw.trim()
+              ? convictionRaw.trim()
+              : "N/A"
+      };
+    })
+    .filter((row): row is Stage6CandidateSummary => row !== null)
+    .slice(0, 6);
+}
+
 async function loadLatestStage6FromDrive(): Promise<Stage6LoadResult> {
   const accessToken = await getGoogleAccessToken();
   const meta = await fetchLatestStage6Metadata(accessToken);
   const jsonText = await downloadStage6Json(accessToken, meta.id);
   const parsed = JSON.parse(jsonText) as unknown;
   const symbols = extractCandidateSymbols(parsed);
+  const candidates = parseCandidateSummaries(parsed);
   const sha256 = createHash("sha256").update(jsonText).digest("hex");
 
   return {
@@ -220,7 +277,8 @@ async function loadLatestStage6FromDrive(): Promise<Stage6LoadResult> {
     modifiedTime: meta.modifiedTime,
     md5Checksum: meta.md5Checksum,
     sha256,
-    candidateSymbols: symbols
+    candidateSymbols: symbols,
+    candidates
   };
 }
 
@@ -232,10 +290,59 @@ function printStage6Lock(result: Stage6LoadResult) {
   console.log(`[STAGE6_CANDIDATES] count=${result.candidateSymbols.length} | symbols=${symbolLog}`);
 }
 
+function buildSimulationMessage(result: Stage6LoadResult): string {
+  const lines: string[] = [];
+  lines.push("🧪 Sidecar Dry-Run Report");
+  lines.push(`Stage6: ${result.fileName}`);
+  lines.push(`Hash: ${result.sha256.slice(0, 12)} | MD5: ${result.md5Checksum}`);
+  lines.push(`Candidates: ${result.candidateSymbols.length}`);
+  lines.push("");
+
+  if (result.candidates.length === 0) {
+    lines.push("Top6 summary: N/A");
+  } else {
+    lines.push("Top6 Summary");
+    result.candidates.forEach((row, index) => {
+      lines.push(
+        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | ${row.entry}→${row.target} / ${row.stop}`
+      );
+    });
+  }
+
+  lines.push("");
+  lines.push("Mode: READ_ONLY=true, EXEC_ENABLED=false");
+  return lines.join("\n");
+}
+
+async function sendSimulationTelegram(result: Stage6LoadResult): Promise<void> {
+  const token = process.env.TELEGRAM_TOKEN || "";
+  const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
+  const text = buildSimulationMessage(result);
+
+  const body = new URLSearchParams({
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: "true"
+  });
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    throw new Error(`Telegram send failed (${response.status}): ${raw.slice(0, 240)}`);
+  }
+  console.log(`[TELEGRAM_SIM] sent to ${mask(chatId)}`);
+}
+
 async function main() {
   printStartupSummary();
   const stage6 = await loadLatestStage6FromDrive();
   printStage6Lock(stage6);
+  await sendSimulationTelegram(stage6);
 }
 
 main().catch((error) => {
