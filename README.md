@@ -12,7 +12,10 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
 - Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
 - Builds Alpaca order payload previews only (no live order send in dry-run).
+- Payload gate includes conviction floor + stop-distance sanity range.
+- Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
+- Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 
 ## Safety Defaults
@@ -46,6 +49,11 @@ Use `.env.example` as baseline.
 - `TZ`
 - `DRY_NOTIONAL_PER_TRADE`
 - `DRY_MAX_ORDERS`
+- `DRY_MAX_TOTAL_NOTIONAL`
+- `DRY_MIN_CONVICTION`
+- `DRY_MIN_STOP_DISTANCE_PCT`
+- `DRY_MAX_STOP_DISTANCE_PCT`
+- `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `GDRIVE_ROOT_FOLDER_ID`
 - `GDRIVE_STAGE6_FOLDER`
 - `GDRIVE_REPORT_FOLDER`

@@ -66,6 +66,10 @@ type DryExecBuildResult = {
   skipped: DryExecSkipReason[];
   notionalPerOrder: number;
   maxOrders: number;
+  maxTotalNotional: number;
+  minConviction: number;
+  minStopDistancePct: number;
+  maxStopDistancePct: number;
 };
 
 type SidecarRunState = {
@@ -283,6 +287,21 @@ function readPositiveIntEnv(key: string, fallback: number): number {
   return n;
 }
 
+function readBoolEnv(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseConviction(value: string): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
   if (!payload || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
@@ -357,12 +376,23 @@ function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6Ca
 function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: string): DryExecBuildResult {
   const notionalPerOrder = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
   const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
+  const maxTotalNotional = readPositiveNumberEnv("DRY_MAX_TOTAL_NOTIONAL", notionalPerOrder * maxOrders);
+  const minConviction = readPositiveNumberEnv("DRY_MIN_CONVICTION", 70);
+  const minStopDistancePct = readPositiveNumberEnv("DRY_MIN_STOP_DISTANCE_PCT", 2);
+  const maxStopDistancePct = readPositiveNumberEnv("DRY_MAX_STOP_DISTANCE_PCT", 25);
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
+  let allocatedNotional = 0;
 
   actionable.forEach((row) => {
     if (payloads.length >= maxOrders) {
       skipped.push({ symbol: row.symbol, reason: "max_orders_reached" });
+      return;
+    }
+
+    const conviction = parseConviction(row.conviction);
+    if (conviction == null || conviction < minConviction) {
+      skipped.push({ symbol: row.symbol, reason: "conviction_below_floor" });
       return;
     }
 
@@ -378,6 +408,15 @@ function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: 
       skipped.push({ symbol: row.symbol, reason: "invalid_price_geometry" });
       return;
     }
+    const stopDistancePct = ((entry - stop) / entry) * 100;
+    if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
+      skipped.push({ symbol: row.symbol, reason: "stop_distance_out_of_range" });
+      return;
+    }
+    if (allocatedNotional + notionalPerOrder > maxTotalNotional) {
+      skipped.push({ symbol: row.symbol, reason: "max_total_notional_reached" });
+      return;
+    }
 
     payloads.push({
       symbol: row.symbol,
@@ -391,9 +430,19 @@ function buildDryExecPayloads(actionable: Stage6CandidateSummary[], stage6Hash: 
       stop_loss: { stop_price: Number(stop.toFixed(2)) },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`
     });
+    allocatedNotional += notionalPerOrder;
   });
 
-  return { payloads, skipped, notionalPerOrder, maxOrders };
+  return {
+    payloads,
+    skipped,
+    notionalPerOrder,
+    maxOrders,
+    maxTotalNotional,
+    minConviction,
+    minStopDistancePct,
+    maxStopDistancePct
+  };
 }
 
 function buildSimulationMessage(
@@ -435,7 +484,10 @@ function buildSimulationMessage(
   lines.push("");
   lines.push("Dry-Exec Payload Preview");
   lines.push(
-    `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders}`
+    `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
+  );
+  lines.push(
+    `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
   );
   if (dryExec.payloads.length === 0) {
     lines.push("N/A (no payload generated)");
@@ -465,6 +517,26 @@ async function sendSimulationTelegram(
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
   const text = buildSimulationMessage(result, actionable, dryExec);
 
+  await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
+}
+
+async function sendHeartbeatOnDedupe(stage6: Stage6LoadResult, mode: string): Promise<void> {
+  const enabled = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
+  if (!enabled) return;
+  const token = process.env.TELEGRAM_TOKEN || "";
+  const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
+  const text = [
+    "💓 Sidecar Heartbeat",
+    `Dedupe skip: same hash/mode`,
+    `Stage6: ${stage6.fileName}`,
+    `Hash: ${stage6.sha256.slice(0, 12)}`,
+    `Mode: ${mode}`
+  ].join("\n");
+
+  await sendTelegramMessage(token, chatId, text, "TELEGRAM_HEARTBEAT");
+}
+
+async function sendTelegramMessage(token: string, chatId: string, text: string, tag: string): Promise<void> {
   const body = new URLSearchParams({
     chat_id: chatId,
     text,
@@ -481,7 +553,7 @@ async function sendSimulationTelegram(
     const raw = await response.text();
     throw new Error(`Telegram send failed (${response.status}): ${raw.slice(0, 240)}`);
   }
-  console.log(`[TELEGRAM_SIM] sent to ${mask(chatId)}`);
+  console.log(`[${tag}] sent to ${mask(chatId)}`);
 }
 
 async function loadRunState(): Promise<SidecarRunState | null> {
@@ -531,7 +603,22 @@ function buildRunModeLabel(): string {
   const cfg = loadRuntimeConfig();
   const notional = readPositiveNumberEnv("DRY_NOTIONAL_PER_TRADE", 1000);
   const maxOrders = readPositiveIntEnv("DRY_MAX_ORDERS", 3);
-  return `READ_ONLY=${cfg.readOnly};EXEC_ENABLED=${cfg.execEnabled};NOTIONAL=${notional};MAX_ORDERS=${maxOrders}`;
+  const maxTotalNotional = readPositiveNumberEnv("DRY_MAX_TOTAL_NOTIONAL", notional * maxOrders);
+  const minConviction = readPositiveNumberEnv("DRY_MIN_CONVICTION", 70);
+  const minStopDistancePct = readPositiveNumberEnv("DRY_MIN_STOP_DISTANCE_PCT", 2);
+  const maxStopDistancePct = readPositiveNumberEnv("DRY_MAX_STOP_DISTANCE_PCT", 25);
+  const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
+  return [
+    `READ_ONLY=${cfg.readOnly}`,
+    `EXEC_ENABLED=${cfg.execEnabled}`,
+    `NOTIONAL=${notional}`,
+    `MAX_ORDERS=${maxOrders}`,
+    `MAX_TOTAL_NOTIONAL=${maxTotalNotional}`,
+    `MIN_CONV=${minConviction}`,
+    `STOP_MIN=${minStopDistancePct}`,
+    `STOP_MAX=${maxStopDistancePct}`,
+    `HEARTBEAT=${heartbeatOnDedupe}`
+  ].join(";");
 }
 
 function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mode: string): boolean {
@@ -549,6 +636,7 @@ async function main() {
   const priorState = await loadRunState();
   if (!shouldSend(priorState, stage6, mode)) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
+    await sendHeartbeatOnDedupe(stage6, mode);
     return;
   }
   await sendSimulationTelegram(stage6, actionable, dryExec);
