@@ -65,7 +65,7 @@ type RegimeProfile = "default" | "risk_off";
 
 type RegimeSelection = {
   profile: RegimeProfile;
-  source: "forced" | "market_snapshot" | "finnhub" | "env_fallback";
+  source: "forced" | "market_snapshot" | "finnhub" | "cnbc_rapidapi" | "env_fallback";
   vix: number | null;
   riskOnThreshold: number;
   riskOffThreshold: number;
@@ -75,6 +75,8 @@ type RegimeSelection = {
 type VixLookupResult = {
   vix: number | null;
   reason: string;
+  modifiedTime?: string;
+  source?: "market_snapshot" | "finnhub" | "cnbc_rapidapi" | "env_fallback";
 };
 
 type DryExecBuildResult = {
@@ -452,14 +454,15 @@ async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<VixLoo
     const text = await response.text();
     return {
       vix: null,
-      reason: `snapshot list failed (${response.status}) in folder ${folderId}: ${text.slice(0, 120)}`
+      reason: `snapshot list failed (${response.status}) in folder ${folderId}: ${text.slice(0, 120)}`,
+      source: "market_snapshot"
     };
   }
 
   const data = (await response.json()) as DriveListResponse;
   const file = data.files?.[0];
   if (!file?.id) {
-    return { vix: null, reason: `snapshot not found in folder ${folderId}` };
+    return { vix: null, reason: `snapshot not found in folder ${folderId}`, source: "market_snapshot" };
   }
 
   try {
@@ -467,18 +470,33 @@ async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<VixLoo
     const parsed = JSON.parse(raw) as unknown;
     const vix = extractVixFromMarketSnapshot(parsed);
     if (vix == null) {
-      return { vix: null, reason: `snapshot parse miss: VIX field not found in ${file.name}` };
+      return {
+        vix: null,
+        reason: `snapshot parse miss: VIX field not found in ${file.name}`,
+        modifiedTime: file.modifiedTime,
+        source: "market_snapshot"
+      };
     }
-    return { vix, reason: `snapshot ok: ${file.name}` };
+    return {
+      vix,
+      reason: `snapshot ok: ${file.name}`,
+      modifiedTime: file.modifiedTime,
+      source: "market_snapshot"
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { vix: null, reason: `snapshot parse/download failed for ${file.name}: ${message.slice(0, 120)}` };
+    return {
+      vix: null,
+      reason: `snapshot parse/download failed for ${file.name}: ${message.slice(0, 120)}`,
+      modifiedTime: file.modifiedTime,
+      source: "market_snapshot"
+    };
   }
 }
 
 async function fetchFinnhubVix(): Promise<VixLookupResult> {
   const token = process.env.FINNHUB_API_KEY?.trim();
-  if (!token) return { vix: null, reason: "FINNHUB_API_KEY missing" };
+  if (!token) return { vix: null, reason: "FINNHUB_API_KEY missing", source: "finnhub" };
 
   const candidates = ["VIX", "^VIX", "CBOE:VIX"];
   const attempts: string[] = [];
@@ -492,20 +510,105 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
       }
       const data = (await response.json()) as { c?: unknown };
       const parsed = toFinitePositiveNumber(data.c);
-      if (parsed != null) return { vix: parsed, reason: `finnhub ok: ${symbol}` };
+      if (parsed != null) return { vix: parsed, reason: `finnhub ok: ${symbol}`, source: "finnhub" };
       attempts.push(`${symbol}:invalid_quote`);
     } catch {
       attempts.push(`${symbol}:network_error`);
     }
   }
-  return { vix: null, reason: `finnhub failed (${attempts.join(", ") || "no candidates"})` };
+  return { vix: null, reason: `finnhub failed (${attempts.join(", ") || "no candidates"})`, source: "finnhub" };
+}
+
+async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
+  const key = process.env.CNBC_RAPIDAPI_KEY?.trim() || process.env.RAPID_API_KEY?.trim() || "";
+  if (!key) {
+    return { vix: null, reason: "CNBC_RAPIDAPI_KEY/RAPID_API_KEY missing", source: "cnbc_rapidapi" };
+  }
+
+  const host = process.env.CNBC_RAPIDAPI_HOST?.trim() || "cnbc.p.rapidapi.com";
+  const symbols = ".VIX";
+  const params = new URLSearchParams({
+    symbol: symbols,
+    requestMethod: "quick",
+    exthrs: "1",
+    noform: "1",
+    fund: "1",
+    output: "json"
+  });
+
+  try {
+    const response = await fetch(`https://${host}/market/get-quote?${params.toString()}`, {
+      method: "GET",
+      headers: {
+        "X-RapidAPI-Key": key,
+        "X-RapidAPI-Host": host
+      }
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return {
+        vix: null,
+        reason: `cnbc rapidapi failed (${response.status}): ${text.slice(0, 120)}`,
+        source: "cnbc_rapidapi"
+      };
+    }
+
+    const data = (await response.json()) as Record<string, unknown>;
+    const quickQuoteResult = data.QuickQuoteResult as Record<string, unknown> | undefined;
+    const rawQuotes = quickQuoteResult?.QuickQuote;
+    const quotes = Array.isArray(rawQuotes) ? rawQuotes : [];
+    const vixRow = quotes.find((row) => {
+      if (!row || typeof row !== "object") return false;
+      const symbol = String((row as Record<string, unknown>).symbol || "").toUpperCase();
+      return symbol === ".VIX" || symbol === "VIX";
+    }) as Record<string, unknown> | undefined;
+    if (!vixRow) {
+      return { vix: null, reason: "cnbc rapidapi parse miss: .VIX not found", source: "cnbc_rapidapi" };
+    }
+
+    const vix = toFinitePositiveNumber(vixRow.last ?? vixRow.last_trade ?? vixRow.price);
+    if (vix == null) {
+      return { vix: null, reason: "cnbc rapidapi parse miss: invalid VIX value", source: "cnbc_rapidapi" };
+    }
+    return { vix, reason: "cnbc rapidapi ok: .VIX", source: "cnbc_rapidapi" };
+  } catch {
+    return { vix: null, reason: "cnbc rapidapi network error", source: "cnbc_rapidapi" };
+  }
+}
+
+function evaluateSnapshotFreshness(
+  snapshot: VixLookupResult,
+  maxAgeMin: number
+): { usableVix: number | null; diag?: string } {
+  if (snapshot.vix == null) return { usableVix: null };
+  if (maxAgeMin <= 0) return { usableVix: snapshot.vix };
+  if (!snapshot.modifiedTime) {
+    return { usableVix: null, diag: `snapshot stale guard: modifiedTime missing (maxAge=${maxAgeMin}m)` };
+  }
+
+  const modifiedTs = Date.parse(snapshot.modifiedTime);
+  if (!Number.isFinite(modifiedTs)) {
+    return { usableVix: null, diag: `snapshot stale guard: invalid modifiedTime (${snapshot.modifiedTime})` };
+  }
+
+  const ageMin = (Date.now() - modifiedTs) / 60000;
+  if (ageMin <= maxAgeMin) {
+    return { usableVix: snapshot.vix };
+  }
+  return {
+    usableVix: null,
+    diag: `snapshot stale guard: age=${ageMin.toFixed(1)}m > max=${maxAgeMin}m`
+  };
 }
 
 async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelection> {
   const forced = (process.env.REGIME_FORCE_PROFILE || "auto").trim().toLowerCase();
+  const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
+  const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
   const riskOffThreshold = readPositiveNumberEnv("VIX_RISK_OFF_THRESHOLD", 25);
   const riskOnThresholdRaw = readPositiveNumberEnv("VIX_RISK_ON_THRESHOLD", 22);
   const riskOnThreshold = Math.min(riskOnThresholdRaw, riskOffThreshold);
+  const snapshotMaxAgeMin = Math.max(0, readNumberEnv("REGIME_SNAPSHOT_MAX_AGE_MIN", 10));
   const diagnostics: string[] = [];
 
   if (forced === "default" || forced === "risk_off") {
@@ -530,13 +633,48 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
     };
   }
 
+  diagnostics.push(`auto source priority=${sourcePriority} snapshotMaxAge=${snapshotMaxAgeMin}m`);
+
   const snapshot = await fetchLatestMarketSnapshotVix(accessToken);
   if (snapshot.reason) diagnostics.push(`snapshot: ${snapshot.reason}`);
-  const finnhub = snapshot.vix == null ? await fetchFinnhubVix() : { vix: null, reason: "skipped (snapshot hit)" };
-  if (snapshot.vix == null && finnhub.reason) diagnostics.push(`finnhub: ${finnhub.reason}`);
-  const vix = snapshot.vix ?? finnhub.vix;
-  const source: RegimeSelection["source"] =
-    snapshot.vix != null ? "market_snapshot" : finnhub.vix != null ? "finnhub" : "env_fallback";
+  const snapshotFresh = evaluateSnapshotFreshness(snapshot, snapshotMaxAgeMin);
+  if (snapshotFresh.diag) diagnostics.push(snapshotFresh.diag);
+
+  const resolveRealtimeVix = async (): Promise<VixLookupResult> => {
+    const finnhub = await fetchFinnhubVix();
+    diagnostics.push(`finnhub: ${finnhub.reason}`);
+    if (finnhub.vix != null) return finnhub;
+
+    const cnbc = await fetchCnbcRapidApiVix();
+    diagnostics.push(`cnbc: ${cnbc.reason}`);
+    if (cnbc.vix != null) return cnbc;
+    return { vix: null, reason: "realtime providers exhausted", source: "env_fallback" };
+  };
+
+  let vix: number | null = null;
+  let source: RegimeSelection["source"] = "env_fallback";
+
+  if (sourcePriority === "snapshot_first") {
+    if (snapshotFresh.usableVix != null) {
+      vix = snapshotFresh.usableVix;
+      source = "market_snapshot";
+    } else {
+      const realtime = await resolveRealtimeVix();
+      vix = realtime.vix;
+      if (realtime.source === "finnhub" || realtime.source === "cnbc_rapidapi") {
+        source = realtime.source;
+      }
+    }
+  } else {
+    const realtime = await resolveRealtimeVix();
+    if (realtime.vix != null && (realtime.source === "finnhub" || realtime.source === "cnbc_rapidapi")) {
+      vix = realtime.vix;
+      source = realtime.source;
+    } else if (snapshotFresh.usableVix != null) {
+      vix = snapshotFresh.usableVix;
+      source = "market_snapshot";
+    }
+  }
 
   if (vix == null) {
     return {
@@ -869,6 +1007,9 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
 function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const cfg = loadRuntimeConfig();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
+  const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
+  const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
+  const snapshotMaxAgeMin = Math.max(0, readNumberEnv("REGIME_SNAPSHOT_MAX_AGE_MIN", 10));
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -879,6 +1020,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `MIN_CONV=${dryExec.minConviction}`,
     `STOP_MIN=${dryExec.minStopDistancePct}`,
     `STOP_MAX=${dryExec.maxStopDistancePct}`,
+    `SOURCE_PRIORITY=${sourcePriority}`,
+    `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
