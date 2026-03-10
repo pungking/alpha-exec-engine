@@ -19,6 +19,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Supports VIX source priority (`realtime_first` vs `snapshot_first`) with snapshot staleness guard.
 - Realtime chain: `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
+- Data quality guard scores VIX source health/mismatch/staleness and can force defensive profile + block new entries.
+- Regime hysteresis + minimum hold time reduce profile flapping (`risk_off` recovery only after on-threshold and hold).
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
 - Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in dry-run it reports only, in exec mode it blocks on fail.
@@ -80,6 +82,11 @@ Use `.env.example` as baseline.
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
 - `REGIME_VIX_SOURCE_PRIORITY` (`realtime_first|snapshot_first`)
 - `REGIME_SNAPSHOT_MAX_AGE_MIN` (set `0` to disable stale guard)
+- `REGIME_QUALITY_GUARD_ENABLED`
+- `REGIME_QUALITY_MIN_SCORE`
+- `REGIME_HYSTERESIS_ENABLED`
+- `REGIME_MIN_HOLD_MIN`
+- `REGIME_VIX_MISMATCH_PCT`
 - `VIX_RISK_ON_THRESHOLD`
 - `VIX_RISK_OFF_THRESHOLD`
 - `CNBC_RAPIDAPI_HOST` (optional, default `cnbc.p.rapidapi.com`)
@@ -105,7 +112,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

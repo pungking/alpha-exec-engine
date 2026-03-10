@@ -39,6 +39,11 @@ jobs:
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
       REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
       REGIME_SNAPSHOT_MAX_AGE_MIN: ${{ vars.REGIME_SNAPSHOT_MAX_AGE_MIN }}
+      REGIME_QUALITY_GUARD_ENABLED: ${{ vars.REGIME_QUALITY_GUARD_ENABLED }}
+      REGIME_QUALITY_MIN_SCORE: ${{ vars.REGIME_QUALITY_MIN_SCORE }}
+      REGIME_HYSTERESIS_ENABLED: ${{ vars.REGIME_HYSTERESIS_ENABLED }}
+      REGIME_MIN_HOLD_MIN: ${{ vars.REGIME_MIN_HOLD_MIN }}
+      REGIME_VIX_MISMATCH_PCT: ${{ vars.REGIME_VIX_MISMATCH_PCT }}
       VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
       VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
 
@@ -133,6 +138,12 @@ jobs:
             const source = preview?.regime?.source || "N/A";
             const vix = Number.isFinite(preview?.regime?.vix) ? preview.regime.vix.toFixed(2) : "N/A";
             lines.push(`- regime: \`${regime}\` (source=${source}, vix=${vix})`);
+            const quality = preview?.regime?.quality || {};
+            const hysteresis = preview?.regime?.hysteresis || {};
+            const entryGuard = preview?.regime?.entryGuard || {};
+            lines.push(
+              `- regime_guard: \`quality=${quality.status ?? "N/A"}(${quality.score ?? "N/A"}/${quality.minScore ?? "N/A"}) force=${quality.forceRiskOff ?? "N/A"} hysteresis=${hysteresis.reason ?? "N/A"} hold=${hysteresis.holdRemainingMin ?? "N/A"} blocked=${entryGuard.blocked ?? "N/A"}\``
+            );
             lines.push(
               `- payloads/skipped: \`${preview.payloadCount ?? 0}/${preview.skippedCount ?? 0}\``
             );
@@ -170,6 +181,15 @@ jobs:
           } else {
             lines.push("- order lifecycle store: not found");
           }
+          const regimeStatePath = "state/regime-guard-state.json";
+          if (fs.existsSync(regimeStatePath)) {
+            const regimeState = JSON.parse(fs.readFileSync(regimeStatePath, "utf8"));
+            lines.push(
+              `- regime guard state: \`profile=${regimeState.lastProfile || "N/A"} switchedAt=${regimeState.lastSwitchedAt || "N/A"}\``
+            );
+          } else {
+            lines.push("- regime guard state: not found");
+          }
 
           lines.push("");
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
@@ -185,6 +205,7 @@ jobs:
             state/last-dry-exec-preview.json
             state/order-idempotency.json
             state/order-ledger.json
+            state/regime-guard-state.json
           if-no-files-found: warn
 
       - name: Save sidecar state

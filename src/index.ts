@@ -64,13 +64,46 @@ type DryExecSkipReason = {
 
 type RegimeProfile = "default" | "risk_off";
 
+type RegimeQualityStatus = "high" | "medium" | "low";
+
+type RegimeQualityGuard = {
+  enabled: boolean;
+  score: number;
+  minScore: number;
+  status: RegimeQualityStatus;
+  forceRiskOff: boolean;
+  reasons: string[];
+};
+
+type RegimeHysteresisMeta = {
+  enabled: boolean;
+  minHoldMin: number;
+  previousProfile: RegimeProfile | null;
+  desiredProfile: RegimeProfile;
+  appliedProfile: RegimeProfile;
+  holdRemainingMin: number;
+  reason: string;
+};
+
+type RegimeEntryGuard = {
+  blocked: boolean;
+  reason: string;
+};
+
 type RegimeSelection = {
   profile: RegimeProfile;
+  baseProfile: RegimeProfile;
   source: "forced" | "market_snapshot" | "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "env_fallback";
   vix: number | null;
+  sourcePriority: "snapshot_first" | "realtime_first";
+  snapshotVix: number | null;
+  snapshotAgeMin: number | null;
   riskOnThreshold: number;
   riskOffThreshold: number;
   diagnostics: string[];
+  quality: RegimeQualityGuard;
+  hysteresis: RegimeHysteresisMeta;
+  entryGuard: RegimeEntryGuard;
 };
 
 type VixLookupResult = {
@@ -78,6 +111,12 @@ type VixLookupResult = {
   reason: string;
   modifiedTime?: string;
   source?: "market_snapshot" | "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "env_fallback";
+};
+
+type RegimeGuardState = {
+  lastProfile: RegimeProfile;
+  lastSwitchedAt: string;
+  updatedAt: string;
 };
 
 type DryExecBuildResult = {
@@ -199,6 +238,7 @@ const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
+const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
@@ -436,6 +476,17 @@ function readNonNegativeNumberEnv(key: string, fallback: number): number {
   const n = readNumberEnv(key, fallback);
   if (!Number.isFinite(n) || n < 0) return fallback;
   return n;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function computeAgeMinutes(isoTs: string | null | undefined): number | null {
+  if (!isoTs) return null;
+  const ts = Date.parse(isoTs);
+  if (!Number.isFinite(ts)) return null;
+  return (Date.now() - ts) / 60000;
 }
 
 function parseConviction(value: string): number | null {
@@ -813,6 +864,187 @@ function evaluateSnapshotFreshness(
   };
 }
 
+async function loadRegimeGuardState(): Promise<RegimeGuardState | null> {
+  try {
+    const raw = await readFile(REGIME_GUARD_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<RegimeGuardState>;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (parsed.lastProfile !== "default" && parsed.lastProfile !== "risk_off") return null;
+    if (typeof parsed.lastSwitchedAt !== "string" || typeof parsed.updatedAt !== "string") return null;
+    return {
+      lastProfile: parsed.lastProfile,
+      lastSwitchedAt: parsed.lastSwitchedAt,
+      updatedAt: parsed.updatedAt
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveRegimeGuardState(state: RegimeGuardState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(REGIME_GUARD_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${REGIME_GUARD_STATE_PATH}`);
+}
+
+function evaluateRegimeQuality(selection: RegimeSelection): RegimeQualityGuard {
+  const enabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
+  const minScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
+  const vixMismatchPct = readPositiveNumberEnv("REGIME_VIX_MISMATCH_PCT", 8);
+  const reasons: string[] = [];
+  let score = 100;
+
+  if (selection.vix == null) {
+    score -= 65;
+    reasons.push("vix_missing");
+  }
+
+  if (selection.source === "market_snapshot") {
+    score -= 20;
+    reasons.push("realtime_source_unavailable");
+  } else if (selection.source === "env_fallback") {
+    score -= 35;
+    reasons.push("all_vix_sources_unavailable");
+  }
+
+  if (selection.snapshotAgeMin != null && selection.snapshotAgeMin > 30) {
+    score -= 10;
+    reasons.push(`snapshot_age_high:${selection.snapshotAgeMin.toFixed(1)}m`);
+  }
+
+  if (selection.snapshotVix != null && selection.vix != null && selection.snapshotAgeMin != null && selection.snapshotAgeMin <= 30) {
+    const mismatchPct = (Math.abs(selection.vix - selection.snapshotVix) / Math.max(selection.snapshotVix, 0.01)) * 100;
+    if (mismatchPct >= vixMismatchPct) {
+      score -= 15;
+      reasons.push(`vix_source_mismatch:${mismatchPct.toFixed(1)}%`);
+    }
+  }
+
+  if (selection.diagnostics.some((line) => line.includes("snapshot stale guard"))) {
+    score -= 10;
+    reasons.push("snapshot_stale");
+  }
+  if (selection.diagnostics.some((line) => line.includes("finnhub failed"))) {
+    score -= 5;
+    reasons.push("finnhub_unavailable");
+  }
+  if (selection.diagnostics.some((line) => line.includes("cnbc-direct") && line.includes("failed"))) {
+    score -= 10;
+    reasons.push("cnbc_direct_unavailable");
+  }
+  if (selection.diagnostics.some((line) => line.includes("cnbc rapidapi failed"))) {
+    score -= 5;
+    reasons.push("cnbc_rapidapi_unavailable");
+  }
+
+  score = clamp(Math.round(score), 0, 100);
+  const status: RegimeQualityStatus = score >= 80 ? "high" : score >= minScore ? "medium" : "low";
+  const forceRiskOff = enabled && score < minScore;
+
+  return {
+    enabled,
+    score,
+    minScore,
+    status,
+    forceRiskOff,
+    reasons
+  };
+}
+
+async function applyRegimeGuards(base: RegimeSelection): Promise<RegimeSelection> {
+  const quality = evaluateRegimeQuality(base);
+  const hysteresisEnabled = readBoolEnv("REGIME_HYSTERESIS_ENABLED", true);
+  const minHoldMin = Math.max(0, readNonNegativeNumberEnv("REGIME_MIN_HOLD_MIN", 30));
+  const nowIso = new Date().toISOString();
+  const state = await loadRegimeGuardState();
+  const previousProfile = state?.lastProfile ?? null;
+
+  let desiredProfile = base.profile;
+  let entryGuard: RegimeEntryGuard = { blocked: false, reason: "none" };
+
+  if (quality.forceRiskOff) {
+    desiredProfile = "risk_off";
+    entryGuard = {
+      blocked: true,
+      reason: `data_quality_low(score=${quality.score}<${quality.minScore})`
+    };
+  }
+
+  // Hysteresis band: while in risk_off, recover only below riskOn threshold.
+  if (base.vix != null && previousProfile === "risk_off" && desiredProfile === "default" && base.vix > base.riskOnThreshold) {
+    desiredProfile = "risk_off";
+  }
+
+  let appliedProfile = desiredProfile;
+  let holdRemainingMin = 0;
+  let hysteresisReason = "none";
+
+  const shouldBypassHold = quality.forceRiskOff && desiredProfile === "risk_off";
+  if (hysteresisEnabled && previousProfile && previousProfile !== desiredProfile && !shouldBypassHold) {
+    const switchedAt = Date.parse(state?.lastSwitchedAt || "");
+    if (Number.isFinite(switchedAt)) {
+      const elapsedMin = (Date.now() - switchedAt) / 60000;
+      if (elapsedMin < minHoldMin) {
+        appliedProfile = previousProfile;
+        holdRemainingMin = Math.max(0, minHoldMin - elapsedMin);
+        hysteresisReason = "min_hold";
+      } else {
+        hysteresisReason = "min_hold_satisfied";
+      }
+    }
+  }
+
+  if (hysteresisEnabled && previousProfile === "risk_off" && desiredProfile === "default" && appliedProfile === "risk_off") {
+    if (hysteresisReason === "none") hysteresisReason = "hysteresis_band";
+  }
+
+  const shouldSave =
+    !state ||
+    state.lastProfile !== appliedProfile ||
+    !state.lastSwitchedAt ||
+    !state.updatedAt ||
+    (computeAgeMinutes(state.updatedAt) ?? 9999) > 60;
+
+  if (shouldSave) {
+    await saveRegimeGuardState({
+      lastProfile: appliedProfile,
+      lastSwitchedAt: !state || state.lastProfile !== appliedProfile ? nowIso : state.lastSwitchedAt,
+      updatedAt: nowIso
+    });
+  }
+
+  return {
+    ...base,
+    baseProfile: base.profile,
+    profile: appliedProfile,
+    quality,
+    hysteresis: {
+      enabled: hysteresisEnabled,
+      minHoldMin,
+      previousProfile,
+      desiredProfile,
+      appliedProfile,
+      holdRemainingMin: Number(holdRemainingMin.toFixed(1)),
+      reason: hysteresisReason
+    },
+    entryGuard
+  };
+}
+
+function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSelection): DryExecBuildResult {
+  if (!regime.entryGuard.blocked || dryExec.payloads.length === 0) return dryExec;
+  const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
+    symbol: row.symbol,
+    reason: `entry_blocked:${regime.entryGuard.reason}`
+  }));
+
+  return {
+    ...dryExec,
+    payloads: [],
+    skipped: [...dryExec.skipped, ...blockedSkips]
+  };
+}
+
 async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelection> {
   const forced = (process.env.REGIME_FORCE_PROFILE || "auto").trim().toLowerCase();
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
@@ -823,26 +1055,55 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
   const snapshotMaxAgeMin = Math.max(0, readNumberEnv("REGIME_SNAPSHOT_MAX_AGE_MIN", 10));
   const diagnostics: string[] = [];
 
+  const buildSelection = (
+    profile: RegimeProfile,
+    source: RegimeSelection["source"],
+    vix: number | null,
+    snapshotVix: number | null,
+    snapshotAgeMin: number | null,
+    diag: string[]
+  ): RegimeSelection => ({
+    profile,
+    baseProfile: profile,
+    source,
+    vix,
+    sourcePriority,
+    snapshotVix,
+    snapshotAgeMin,
+    riskOnThreshold,
+    riskOffThreshold,
+    diagnostics: diag,
+    quality: {
+      enabled: readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true),
+      score: 100,
+      minScore: readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60),
+      status: "high",
+      forceRiskOff: false,
+      reasons: []
+    },
+    hysteresis: {
+      enabled: readBoolEnv("REGIME_HYSTERESIS_ENABLED", true),
+      minHoldMin: Math.max(0, readNonNegativeNumberEnv("REGIME_MIN_HOLD_MIN", 30)),
+      previousProfile: null,
+      desiredProfile: profile,
+      appliedProfile: profile,
+      holdRemainingMin: 0,
+      reason: "none"
+    },
+    entryGuard: {
+      blocked: false,
+      reason: "none"
+    }
+  });
+
   if (forced === "default" || forced === "risk_off") {
-    return {
-      profile: forced,
-      source: "forced",
-      vix: null,
-      riskOnThreshold,
-      riskOffThreshold,
-      diagnostics: [`forced profile=${forced}`]
-    };
+    return buildSelection(forced, "forced", null, null, null, [`forced profile=${forced}`]);
   }
 
   if (!readBoolEnv("REGIME_AUTO_ENABLED", false)) {
-    return {
-      profile: "default",
-      source: "env_fallback",
-      vix: null,
-      riskOnThreshold,
-      riskOffThreshold,
-      diagnostics: ["regime auto disabled (REGIME_AUTO_ENABLED=false)"]
-    };
+    return buildSelection("default", "env_fallback", null, null, null, [
+      "regime auto disabled (REGIME_AUTO_ENABLED=false)"
+    ]);
   }
 
   diagnostics.push(`auto source priority=${sourcePriority} snapshotMaxAge=${snapshotMaxAgeMin}m`);
@@ -851,6 +1112,7 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
   if (snapshot.reason) diagnostics.push(`snapshot: ${snapshot.reason}`);
   const snapshotFresh = evaluateSnapshotFreshness(snapshot, snapshotMaxAgeMin);
   if (snapshotFresh.diag) diagnostics.push(snapshotFresh.diag);
+  const snapshotAgeMin = computeAgeMinutes(snapshot.modifiedTime);
 
   const resolveRealtimeVix = async (): Promise<VixLookupResult> => {
     const finnhub = await fetchFinnhubVix();
@@ -900,25 +1162,11 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
   }
 
   if (vix == null) {
-    return {
-      profile: "default",
-      source,
-      vix: null,
-      riskOnThreshold,
-      riskOffThreshold,
-      diagnostics
-    };
+    return buildSelection("default", source, null, snapshot.vix ?? null, snapshotAgeMin, diagnostics);
   }
 
   const profile: RegimeProfile = vix >= riskOffThreshold ? "risk_off" : "default";
-  return {
-    profile,
-    source,
-    vix,
-    riskOnThreshold,
-    riskOffThreshold,
-    diagnostics
-  };
+  return buildSelection(profile, source, vix, snapshot.vix ?? null, snapshotAgeMin, diagnostics);
 }
 
 async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6LoadResult> {
@@ -1266,8 +1514,14 @@ function buildSimulationMessage(
   lines.push("");
   lines.push("Dry-Exec Payload Preview");
   lines.push(
-    `Regime: ${dryExec.regime.profile.toUpperCase()} | source=${dryExec.regime.source} | vix=${dryExec.regime.vix?.toFixed(2) ?? "N/A"} | on<=${dryExec.regime.riskOnThreshold} off>=${dryExec.regime.riskOffThreshold}`
+    `Regime: ${dryExec.regime.profile.toUpperCase()} (base=${dryExec.regime.baseProfile.toUpperCase()}) | source=${dryExec.regime.source} | vix=${dryExec.regime.vix?.toFixed(2) ?? "N/A"} | on<=${dryExec.regime.riskOnThreshold} off>=${dryExec.regime.riskOffThreshold}`
   );
+  lines.push(
+    `Regime Guard: quality=${dryExec.regime.quality.status.toUpperCase()}(${dryExec.regime.quality.score}/${dryExec.regime.quality.minScore}) forceRiskOff=${dryExec.regime.quality.forceRiskOff} | hysteresis=${dryExec.regime.hysteresis.reason} holdRemain=${dryExec.regime.hysteresis.holdRemainingMin}m | entryBlocked=${dryExec.regime.entryGuard.blocked}`
+  );
+  if (dryExec.regime.entryGuard.blocked) {
+    lines.push(`Entry Guard Reason: ${dryExec.regime.entryGuard.reason}`);
+  }
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
@@ -1704,6 +1958,11 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
   const orderLifecycleEnabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
   const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
+  const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
+  const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
+  const regimeHysteresisEnabled = readBoolEnv("REGIME_HYSTERESIS_ENABLED", true);
+  const regimeMinHoldMin = Math.max(0, readNonNegativeNumberEnv("REGIME_MIN_HOLD_MIN", 30));
+  const regimeVixMismatchPct = readPositiveNumberEnv("REGIME_VIX_MISMATCH_PCT", 8);
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -1724,6 +1983,11 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
     `ORDER_LEDGER_TTL_DAYS=${orderLedgerTtlDays}`,
+    `REGIME_QUALITY_GUARD_ENABLED=${regimeQualityEnabled}`,
+    `REGIME_QUALITY_MIN_SCORE=${regimeQualityMinScore}`,
+    `REGIME_HYSTERESIS_ENABLED=${regimeHysteresisEnabled}`,
+    `REGIME_MIN_HOLD_MIN=${regimeMinHoldMin}`,
+    `REGIME_VIX_MISMATCH_PCT=${regimeVixMismatchPct}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -1755,16 +2019,27 @@ async function main() {
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
-  const regime = await resolveRegimeSelection(accessToken);
+  const baseRegime = await resolveRegimeSelection(accessToken);
+  const regime = await applyRegimeGuards(baseRegime);
   const regimeVix = regime.vix == null ? "N/A" : regime.vix.toFixed(2);
   console.log(
-    `[REGIME] profile=${regime.profile.toUpperCase()} source=${regime.source} vix=${regimeVix} on<=${regime.riskOnThreshold} off>=${regime.riskOffThreshold}`
+    `[REGIME] profile=${regime.profile.toUpperCase()} base=${regime.baseProfile.toUpperCase()} source=${regime.source} vix=${regimeVix} on<=${regime.riskOnThreshold} off>=${regime.riskOffThreshold}`
   );
+  console.log(
+    `[REGIME_QUALITY] score=${regime.quality.score} status=${regime.quality.status.toUpperCase()} min=${regime.quality.minScore} forceRiskOff=${regime.quality.forceRiskOff} reasons=${regime.quality.reasons.join("|") || "none"}`
+  );
+  console.log(
+    `[REGIME_HYST] prev=${regime.hysteresis.previousProfile ?? "none"} desired=${regime.hysteresis.desiredProfile} applied=${regime.hysteresis.appliedProfile} holdRemainingMin=${regime.hysteresis.holdRemainingMin} reason=${regime.hysteresis.reason}`
+  );
+  if (regime.entryGuard.blocked) {
+    console.warn(`[ENTRY_GUARD] blocked=true reason=${regime.entryGuard.reason}`);
+  }
   if (regime.diagnostics.length > 0) {
     regime.diagnostics.forEach((line) => console.log(`[REGIME_DIAG] ${line}`));
   }
   const actionable = getActionableCandidates(stage6.candidates);
-  const dryExec = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  const dryExecBase = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  const dryExec = applyEntryGuardToDryExec(dryExecBase, regime);
   const mode = buildRunModeLabel(dryExec);
   const priorState = await loadRunState();
   const forceSendOnce = readBoolEnv("FORCE_SEND_ONCE", false);
