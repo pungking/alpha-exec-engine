@@ -18,6 +18,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Supports VIX source priority (`realtime_first` vs `snapshot_first`) with snapshot staleness guard.
 - Realtime chain: `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
+- Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
+- Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
@@ -60,6 +62,9 @@ Use `.env.example` as baseline.
 - `DRY_MIN_CONVICTION`
 - `DRY_MIN_STOP_DISTANCE_PCT`
 - `DRY_MAX_STOP_DISTANCE_PCT`
+- `ORDER_IDEMPOTENCY_ENABLED`
+- `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
+- `ORDER_IDEMPOTENCY_TTL_DAYS`
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
@@ -90,7 +95,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
-  - Uploads `state/last-run.json` and `state/last-dry-exec-preview.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json` as run artifacts.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

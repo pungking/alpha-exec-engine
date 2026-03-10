@@ -25,6 +25,9 @@ jobs:
       DRY_MIN_CONVICTION: ${{ vars.DRY_MIN_CONVICTION }}
       DRY_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_MIN_STOP_DISTANCE_PCT }}
       DRY_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_MAX_STOP_DISTANCE_PCT }}
+      ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
+      ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN: ${{ vars.ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN }}
+      ORDER_IDEMPOTENCY_TTL_DAYS: ${{ vars.ORDER_IDEMPOTENCY_TTL_DAYS }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
@@ -104,6 +107,7 @@ jobs:
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
           const statePath = "state/last-run.json";
           const previewPath = "state/last-dry-exec-preview.json";
+          const idempPath = "state/order-idempotency.json";
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
@@ -126,8 +130,20 @@ jobs:
             lines.push(
               `- payloads/skipped: \`${preview.payloadCount ?? 0}/${preview.skippedCount ?? 0}\``
             );
+            const idemp = preview?.idempotency || {};
+            lines.push(
+              `- idempotency: \`enabled=${idemp.enabled ?? "N/A"} enforce=${idemp.enforced ?? "N/A"} new=${idemp.newCount ?? "N/A"} duplicate=${idemp.duplicateCount ?? "N/A"}\``
+            );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
+          }
+
+          if (fs.existsSync(idempPath)) {
+            const idemp = JSON.parse(fs.readFileSync(idempPath, "utf8"));
+            const count = idemp?.orders && typeof idemp.orders === "object" ? Object.keys(idemp.orders).length : 0;
+            lines.push(`- idempotency key store: \`${count}\` keys`);
+          } else {
+            lines.push("- idempotency key store: not found");
           }
 
           lines.push("");
@@ -142,6 +158,7 @@ jobs:
           path: |
             state/last-run.json
             state/last-dry-exec-preview.json
+            state/order-idempotency.json
           if-no-files-found: warn
 
       - name: Save sidecar state

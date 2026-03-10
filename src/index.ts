@@ -54,6 +54,7 @@ type DryExecOrderPayload = {
   take_profit: { limit_price: number };
   stop_loss: { stop_price: number };
   client_order_id: string;
+  idempotencyKey: string;
 };
 
 type DryExecSkipReason = {
@@ -89,6 +90,13 @@ type DryExecBuildResult = {
   minStopDistancePct: number;
   maxStopDistancePct: number;
   regime: RegimeSelection;
+  idempotency: {
+    enabled: boolean;
+    enforced: boolean;
+    ttlDays: number;
+    newCount: number;
+    duplicateCount: number;
+  };
 };
 
 type SidecarRunState = {
@@ -99,8 +107,24 @@ type SidecarRunState = {
   lastSentAt: string;
 };
 
+type OrderIdempotencyState = {
+  orders: Record<
+    string,
+    {
+      symbol: string;
+      side: "buy";
+      stage6Hash: string;
+      stage6File: string;
+      firstSeenAt: string;
+      lastSeenAt: string;
+    }
+  >;
+  updatedAt: string;
+};
+
 const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
+const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 function hasValue(value: string | undefined): boolean {
@@ -327,6 +351,10 @@ function parseConviction(value: string): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+function buildOrderIdempotencyKey(stage6Hash: string, symbol: string, side: "buy"): string {
+  return `${stage6Hash}:${symbol}:${side}`;
 }
 
 function readProfilePositiveNumber(
@@ -883,7 +911,8 @@ function buildDryExecPayloads(
       notional: Number(notionalPerOrder.toFixed(2)),
       take_profit: { limit_price: Number(target.toFixed(2)) },
       stop_loss: { stop_price: Number(stop.toFixed(2)) },
-      client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`
+      client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
+      idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy")
     });
     allocatedNotional += notionalPerOrder;
   });
@@ -897,7 +926,14 @@ function buildDryExecPayloads(
     minConviction,
     minStopDistancePct,
     maxStopDistancePct,
-    regime
+    regime,
+    idempotency: {
+      enabled: false,
+      enforced: false,
+      ttlDays: 0,
+      newCount: 0,
+      duplicateCount: 0
+    }
   };
 }
 
@@ -961,6 +997,9 @@ function buildSimulationMessage(
     const skippedLog = dryExec.skipped.map((s) => `${s.symbol}:${s.reason}`).join(", ");
     lines.push(`Skipped: ${skippedLog}`);
   }
+  lines.push(
+    `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount}`
+  );
 
   lines.push("");
   lines.push("Mode: READ_ONLY=true, EXEC_ENABLED=false");
@@ -1053,6 +1092,7 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
     minConviction: dryExec.minConviction,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
+    idempotency: dryExec.idempotency,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
     payloads: dryExec.payloads,
@@ -1063,12 +1103,131 @@ async function saveDryExecPreview(result: Stage6LoadResult, dryExec: DryExecBuil
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
+async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
+  try {
+    const raw = await readFile(ORDER_IDEMPOTENCY_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<OrderIdempotencyState>;
+    const orders =
+      parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
+        ? (parsed.orders as OrderIdempotencyState["orders"])
+        : {};
+    const updatedAt = typeof parsed?.updatedAt === "string" ? parsed.updatedAt : "";
+    return { orders, updatedAt };
+  } catch {
+    return { orders: {}, updatedAt: "" };
+  }
+}
+
+async function saveOrderIdempotencyState(state: OrderIdempotencyState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(ORDER_IDEMPOTENCY_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${ORDER_IDEMPOTENCY_PATH}`);
+}
+
+function pruneOrderIdempotencyState(state: OrderIdempotencyState, ttlDays: number): number {
+  const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
+  const cutoff = Date.now() - ttlMs;
+  let removed = 0;
+  for (const [key, entry] of Object.entries(state.orders)) {
+    const ts = Date.parse(entry.lastSeenAt);
+    if (!Number.isFinite(ts) || ts < cutoff) {
+      delete state.orders[key];
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+async function applyOrderIdempotency(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult
+): Promise<DryExecBuildResult> {
+  const cfg = loadRuntimeConfig();
+  const enabled = readBoolEnv("ORDER_IDEMPOTENCY_ENABLED", true);
+  const enforceDryRun = readBoolEnv("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN", false);
+  const ttlDays = Math.max(1, readPositiveNumberEnv("ORDER_IDEMPOTENCY_TTL_DAYS", 30));
+  const enforced = enabled && (cfg.execEnabled || enforceDryRun);
+
+  if (!enabled) {
+    return {
+      ...dryExec,
+      idempotency: {
+        enabled,
+        enforced,
+        ttlDays,
+        newCount: 0,
+        duplicateCount: 0
+      }
+    };
+  }
+
+  const state = await loadOrderIdempotencyState();
+  const pruned = pruneOrderIdempotencyState(state, ttlDays);
+  const now = new Date().toISOString();
+  const payloads: DryExecOrderPayload[] = [];
+  const skipped = [...dryExec.skipped];
+  let duplicateCount = 0;
+  let newCount = 0;
+  let changed = pruned > 0;
+
+  for (const payload of dryExec.payloads) {
+    const key = payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
+    payload.idempotencyKey = key;
+    const existing = state.orders[key];
+    if (existing) {
+      duplicateCount += 1;
+      if (enforced) {
+        skipped.push({ symbol: payload.symbol, reason: "idempotency_duplicate" });
+        continue;
+      }
+      payloads.push(payload);
+      continue;
+    }
+
+    newCount += 1;
+    payloads.push(payload);
+    state.orders[key] = {
+      symbol: payload.symbol,
+      side: payload.side,
+      stage6Hash: stage6.sha256,
+      stage6File: stage6.fileName,
+      firstSeenAt: now,
+      lastSeenAt: now
+    };
+    changed = true;
+  }
+
+  if (changed) {
+    state.updatedAt = now;
+    await saveOrderIdempotencyState(state);
+  }
+  console.log(
+    `[ORDER_IDEMP] enabled=${enabled} enforce=${enforced} ttlDays=${ttlDays} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
+  );
+
+  return {
+    ...dryExec,
+    payloads,
+    skipped,
+    idempotency: {
+      enabled,
+      enforced,
+      ttlDays,
+      newCount,
+      duplicateCount
+    }
+  };
+}
+
 function buildRunModeLabel(dryExec: DryExecBuildResult): string {
   const cfg = loadRuntimeConfig();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
   const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
   const snapshotMaxAgeMin = Math.max(0, readNumberEnv("REGIME_SNAPSHOT_MAX_AGE_MIN", 10));
+  const idempotencyEnabled = readBoolEnv("ORDER_IDEMPOTENCY_ENABLED", true);
+  const idempotencyEnforceDryRun = readBoolEnv("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN", false);
+  const idempotencyTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_IDEMPOTENCY_TTL_DAYS", 30));
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -1081,6 +1240,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `STOP_MAX=${dryExec.maxStopDistancePct}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
+    `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
+    `ORDER_IDEMP_ENFORCE_DRY_RUN=${idempotencyEnforceDryRun}`,
+    `ORDER_IDEMP_TTL_DAYS=${idempotencyTtlDays}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -1096,7 +1258,7 @@ function printRunSummary(
   dryExec: DryExecBuildResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced}`
   );
 }
 
@@ -1128,10 +1290,11 @@ async function main() {
     printRunSummary("dedupe", stage6, actionable.length, dryExec);
     return;
   }
-  await sendSimulationTelegram(stage6, actionable, dryExec);
-  await saveDryExecPreview(stage6, dryExec);
+  const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
+  await sendSimulationTelegram(stage6, actionable, finalDryExec);
+  await saveDryExecPreview(stage6, finalDryExec);
   await saveRunState(stage6, mode);
-  printRunSummary("sent", stage6, actionable.length, dryExec);
+  printRunSummary("sent", stage6, actionable.length, finalDryExec);
 }
 
 main().catch((error) => {
