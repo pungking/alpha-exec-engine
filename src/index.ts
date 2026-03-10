@@ -105,6 +105,7 @@ type SidecarRunState = {
   lastStage6FileName: string;
   lastMode: string;
   lastSentAt: string;
+  lastForceSendKey?: string;
 };
 
 type OrderIdempotencyState = {
@@ -1110,14 +1111,20 @@ async function loadRunState(): Promise<SidecarRunState | null> {
   }
 }
 
-async function saveRunState(result: Stage6LoadResult, mode: string): Promise<void> {
+async function saveRunState(
+  result: Stage6LoadResult,
+  mode: string,
+  previous: SidecarRunState | null,
+  consumedForceSendKey?: string
+): Promise<void> {
   await mkdir("state", { recursive: true });
   const nextState: SidecarRunState = {
     lastStage6Sha256: result.sha256,
     lastStage6FileId: result.fileId,
     lastStage6FileName: result.fileName,
     lastMode: mode,
-    lastSentAt: new Date().toISOString()
+    lastSentAt: new Date().toISOString(),
+    lastForceSendKey: consumedForceSendKey ?? previous?.lastForceSendKey ?? ""
   };
   await writeFile(STATE_PATH, JSON.stringify(nextState, null, 2), "utf8");
   console.log(`[STATE] saved ${STATE_PATH}`);
@@ -1329,7 +1336,24 @@ async function main() {
   const dryExec = buildDryExecPayloads(actionable, stage6.sha256, regime);
   const mode = buildRunModeLabel(dryExec);
   const priorState = await loadRunState();
-  if (!shouldSend(priorState, stage6, mode)) {
+  const forceSendOnce = readBoolEnv("FORCE_SEND_ONCE", false);
+  const forceSendKey = `${stage6.sha256}:${mode}`;
+  const forceSendAlreadyConsumed = priorState?.lastForceSendKey === forceSendKey;
+  const forceSendBypassDedupe = forceSendOnce && !forceSendAlreadyConsumed;
+
+  if (forceSendOnce) {
+    if (forceSendBypassDedupe) {
+      console.warn(
+        `[FORCE_SEND_ONCE] bypassing dedupe for one run key=${stage6.sha256.slice(0, 12)} (hash/mode scope)`
+      );
+    } else {
+      console.warn(
+        `[FORCE_SEND_ONCE] already consumed for current hash/mode key=${stage6.sha256.slice(0, 12)}`
+      );
+    }
+  }
+
+  if (!shouldSend(priorState, stage6, mode) && !forceSendBypassDedupe) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
     await sendHeartbeatOnDedupe(stage6, mode);
     printRunSummary("dedupe", stage6, actionable.length, dryExec);
@@ -1338,7 +1362,7 @@ async function main() {
   const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
   await sendSimulationTelegram(stage6, actionable, finalDryExec);
   await saveDryExecPreview(stage6, finalDryExec);
-  await saveRunState(stage6, mode);
+  await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
   printRunSummary("sent", stage6, actionable.length, finalDryExec);
 }
 
