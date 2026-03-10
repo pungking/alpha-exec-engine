@@ -834,11 +834,7 @@ function buildDryExecPayloads(
   let allocatedNotional = 0;
 
   actionable.forEach((row) => {
-    if (payloads.length >= maxOrders) {
-      skipped.push({ symbol: row.symbol, reason: "max_orders_reached" });
-      return;
-    }
-
+    // Quality gate first: keep skip reasons deterministic and diagnosis-friendly.
     const conviction = parseConviction(row.conviction);
     if (conviction == null || conviction < minConviction) {
       skipped.push({ symbol: row.symbol, reason: "conviction_below_floor" });
@@ -860,6 +856,12 @@ function buildDryExecPayloads(
     const stopDistancePct = ((entry - stop) / entry) * 100;
     if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
       skipped.push({ symbol: row.symbol, reason: "stop_distance_out_of_range" });
+      return;
+    }
+
+    // Capacity / exposure gate after quality checks.
+    if (payloads.length >= maxOrders) {
+      skipped.push({ symbol: row.symbol, reason: "max_orders_reached" });
       return;
     }
     if (allocatedNotional + notionalPerOrder > maxTotalNotional) {
