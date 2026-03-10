@@ -1,0 +1,80 @@
+{
+  "stage6File": "STAGE6_ALPHA_FINAL_2026-03-10_19-36-49.json",
+  "stage6FileId": "1bPV3waewVep57td8sS11Zx6Xij5P1OBK",
+  "stage6Hash": "98e5e1b081bf06223e56b474a4016d2854f0f458a64b8330506d26e5b4d6eaf6",
+  "generatedAt": "2026-03-10T14:14:24.310Z",
+  "regime": {
+    "profile": "default",
+    "source": "cnbc_direct",
+    "vix": 24.72,
+    "riskOnThreshold": 22,
+    "riskOffThreshold": 25,
+    "diagnostics": [
+      "auto source priority=realtime_first snapshotMaxAge=10m",
+      "snapshot: snapshot ok: MARKET_REGIME_SNAPSHOT.json",
+      "snapshot stale guard: age=230.8m > max=10m",
+      "finnhub: finnhub failed (VIX:invalid_quote, ^VIX:invalid_quote, CBOE:VIX:invalid_quote)",
+      "cnbc-direct: cnbc direct ok: .VIX"
+    ]
+  },
+  "notionalPerOrder": 800,
+  "maxOrders": 3,
+  "maxTotalNotional": 3000,
+  "minConviction": 70,
+  "minStopDistancePct": 2,
+  "maxStopDistancePct": 25,
+  "payloadCount": 2,
+  "skippedCount": 4,
+  "payloads": [
+    {
+      "symbol": "UTHR",
+      "side": "buy",
+      "type": "limit",
+      "time_in_force": "day",
+      "order_class": "bracket",
+      "limit_price": 346.69,
+      "notional": 800,
+      "take_profit": {
+        "limit_price": 583.92
+      },
+      "stop_loss": {
+        "stop_price": 262.98
+      },
+      "client_order_id": "dry_98e5e1b0_uthr"
+    },
+    {
+      "symbol": "VIST",
+      "side": "buy",
+      "type": "limit",
+      "time_in_force": "day",
+      "order_class": "bracket",
+      "limit_price": 41.18,
+      "notional": 800,
+      "take_profit": {
+        "limit_price": 76.92
+      },
+      "stop_loss": {
+        "stop_price": 31.16
+      },
+      "client_order_id": "dry_98e5e1b0_vist"
+    }
+  ],
+  "skipped": [
+    {
+      "symbol": "ECPG",
+      "reason": "stop_distance_out_of_range"
+    },
+    {
+      "symbol": "ZVRA",
+      "reason": "stop_distance_out_of_range"
+    },
+    {
+      "symbol": "LIFE",
+      "reason": "conviction_below_floor"
+    },
+    {
+      "symbol": "INVA",
+      "reason": "conviction_below_floor"
+    }
+  ]
+}
