@@ -424,6 +424,11 @@ async function fetchCnbcDirectQuotes(symbols: string[]): Promise<CnbcQuoteFetchR
 }
 
 async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
+  const rapidEnabled = readBoolEnv("CNBC_RAPIDAPI_ENABLED", false);
+  if (!rapidEnabled) {
+    return { vix: null, source: "cnbc_rapidapi", reason: "cnbc rapidapi disabled" };
+  }
+
   const key = process.env.CNBC_RAPIDAPI_KEY?.trim() || process.env.RAPID_API_KEY?.trim() || "";
   if (!key) {
     return { vix: null, source: "cnbc_rapidapi", reason: "CNBC_RAPIDAPI_KEY/RAPID_API_KEY missing" };

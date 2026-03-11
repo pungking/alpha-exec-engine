@@ -102,6 +102,7 @@ Use `.env.example` as baseline.
 - `GUARD_QUALITY_MIN_SCORE`
 - `VIX_RISK_ON_THRESHOLD`
 - `VIX_RISK_OFF_THRESHOLD`
+- `CNBC_RAPIDAPI_ENABLED` (recommended default: `false`; enable only if endpoint is verified)
 - `CNBC_RAPIDAPI_HOST` (optional, default `cnbc.p.rapidapi.com`)
 - `CNBC_RAPIDAPI_ENDPOINT` (optional, default `/market/get-quote`)
 - `CNBC_RAPIDAPI_SYMBOL_PARAM` (optional, default `symbol`)

@@ -782,6 +782,11 @@ async function fetchCnbcDirectVix(): Promise<VixLookupResult> {
 }
 
 async function fetchCnbcRapidApiVix(): Promise<VixLookupResult> {
+  const rapidEnabled = readBoolEnv("CNBC_RAPIDAPI_ENABLED", false);
+  if (!rapidEnabled) {
+    return { vix: null, reason: "cnbc rapidapi disabled", source: "cnbc_rapidapi" };
+  }
+
   const key = process.env.CNBC_RAPIDAPI_KEY?.trim() || process.env.RAPID_API_KEY?.trim() || "";
   if (!key) {
     return { vix: null, reason: "CNBC_RAPIDAPI_KEY/RAPID_API_KEY missing", source: "cnbc_rapidapi" };
