@@ -84,17 +84,17 @@ jobs:
       TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "npm"
 
       - name: Restore sidecar state
         id: restore_state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: state
           key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
@@ -197,7 +197,7 @@ jobs:
 
       - name: Upload sidecar state artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sidecar-state-${{ github.run_id }}
           path: |
@@ -210,7 +210,7 @@ jobs:
 
       - name: Save sidecar state
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: state
           key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
