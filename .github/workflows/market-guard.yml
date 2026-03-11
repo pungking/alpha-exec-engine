@@ -88,6 +88,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify guard build output
+        run: |
+          ls -la dist/src || true
+          test -f dist/src/market-guard.js
+
       - name: Run market guard
         run: npm run guard
 
