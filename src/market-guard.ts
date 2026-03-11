@@ -2,6 +2,14 @@ import { loadRuntimeConfig } from "../config/policy.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 type GuardLevel = 0 | 1 | 2 | 3;
+type GuardActionStatus =
+  | "planned"
+  | "executed"
+  | "failed"
+  | "skipped_not_applicable"
+  | "skipped_policy"
+  | "blocked_safety_mode"
+  | "execution_not_implemented";
 
 type VixSource = "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "market_snapshot" | "env_fallback" | "forced";
 
@@ -87,8 +95,9 @@ type GuardActionLedgerRecord = {
   level: GuardLevel;
   action: string;
   mode: "observe" | "active";
-  status: "planned" | "executed" | "execution_not_implemented";
+  status: GuardActionStatus;
   reason: string;
+  detail?: string;
   firstSeenAt: string;
   lastSeenAt: string;
   count: number;
@@ -110,6 +119,7 @@ type CnbcQuoteFetchResult = {
 const MARKET_GUARD_STATE_PATH = "state/market-guard-state.json";
 const GUARD_ACTION_LEDGER_PATH = "state/guard-action-ledger.json";
 const LAST_MARKET_GUARD_PATH = "state/last-market-guard.json";
+const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 
 function mask(value: string): string {
   if (!value) return "";
@@ -817,6 +827,360 @@ async function fetchAlpacaClock(): Promise<{ marketOpen: boolean | null; nextOpe
   }
 }
 
+type AlpacaOrder = {
+  id?: unknown;
+  symbol?: unknown;
+  side?: unknown;
+  type?: unknown;
+  status?: unknown;
+  stop_price?: unknown;
+};
+
+type AlpacaPosition = {
+  symbol?: unknown;
+  qty?: unknown;
+  current_price?: unknown;
+};
+
+function isLiveExecutionAllowed(decision: GuardDecision): { allowed: boolean; reason: string } {
+  const cfg = loadRuntimeConfig();
+  if (decision.mode !== "active") return { allowed: false, reason: "observe_mode" };
+  if (!cfg.execEnabled) return { allowed: false, reason: "exec_disabled" };
+  if (cfg.readOnly) return { allowed: false, reason: "read_only" };
+  return { allowed: true, reason: "allowed" };
+}
+
+function normalizeOrderTimeInForce(raw: string, fallback: "day" | "gtc"): "day" | "gtc" {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "day" || normalized === "gtc") return normalized;
+  return fallback;
+}
+
+function toQtyString(value: number): string | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const rounded = value.toFixed(6).replace(/\.?0+$/, "");
+  if (!rounded || rounded === "0") return null;
+  return rounded;
+}
+
+function orderSymbol(order: AlpacaOrder): string {
+  return String(order.symbol || "").trim().toUpperCase();
+}
+
+function orderSide(order: AlpacaOrder): "buy" | "sell" | "" {
+  const side = String(order.side || "").trim().toLowerCase();
+  return side === "buy" || side === "sell" ? side : "";
+}
+
+function orderType(order: AlpacaOrder): string {
+  return String(order.type || "").trim().toLowerCase();
+}
+
+function orderStopPrice(order: AlpacaOrder): number | null {
+  return toFinitePositiveNumber(order.stop_price);
+}
+
+function positionSymbol(position: AlpacaPosition): string {
+  return String(position.symbol || "").trim().toUpperCase();
+}
+
+function positionQty(position: AlpacaPosition): number | null {
+  return toFiniteNumber(position.qty);
+}
+
+function positionCurrentPrice(position: AlpacaPosition): number | null {
+  return toFinitePositiveNumber(position.current_price);
+}
+
+async function alpacaRequest(
+  path: string,
+  init: { method?: string; body?: Record<string, unknown>; expectedStatuses?: number[] } = {}
+): Promise<{ status: number; data: unknown }> {
+  const baseUrl = (process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
+  const keyId = (process.env.ALPACA_KEY_ID || "").trim();
+  const secret = (process.env.ALPACA_SECRET_KEY || "").trim();
+  if (!baseUrl) throw new Error("ALPACA_BASE_URL missing");
+  if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
+
+  const headers: Record<string, string> = {
+    "APCA-API-KEY-ID": keyId,
+    "APCA-API-SECRET-KEY": secret
+  };
+  if (init.body) headers["Content-Type"] = "application/json";
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: init.method || "GET",
+    headers,
+    body: init.body ? JSON.stringify(init.body) : undefined
+  });
+
+  const text = await response.text();
+  const expected = init.expectedStatuses || [200];
+  if (!expected.includes(response.status)) {
+    throw new Error(`alpaca ${path} failed (${response.status}): ${text.slice(0, 180)}`);
+  }
+
+  if (!text) return { status: response.status, data: null };
+  try {
+    return { status: response.status, data: JSON.parse(text) as unknown };
+  } catch {
+    return { status: response.status, data: text };
+  }
+}
+
+async function listOpenOrders(): Promise<AlpacaOrder[]> {
+  const response = await alpacaRequest("/v2/orders?status=open&nested=false&direction=desc&limit=500");
+  return Array.isArray(response.data) ? (response.data as AlpacaOrder[]) : [];
+}
+
+async function listPositions(): Promise<AlpacaPosition[]> {
+  const response = await alpacaRequest("/v2/positions");
+  return Array.isArray(response.data) ? (response.data as AlpacaPosition[]) : [];
+}
+
+async function cancelOrder(orderId: string): Promise<void> {
+  await alpacaRequest(`/v2/orders/${encodeURIComponent(orderId)}`, { method: "DELETE", expectedStatuses: [200, 204] });
+}
+
+async function patchOrder(orderId: string, patch: Record<string, unknown>): Promise<void> {
+  await alpacaRequest(`/v2/orders/${encodeURIComponent(orderId)}`, {
+    method: "PATCH",
+    body: patch,
+    expectedStatuses: [200]
+  });
+}
+
+async function submitOrder(order: Record<string, unknown>): Promise<void> {
+  await alpacaRequest("/v2/orders", { method: "POST", body: order, expectedStatuses: [200] });
+}
+
+async function writeGuardControlState(decision: GuardDecision): Promise<void> {
+  const payload = {
+    haltNewEntries: true,
+    source: "market_guard",
+    level: decision.appliedLevel,
+    profile: decision.profile,
+    reason: decision.actionReason,
+    updatedAt: new Date().toISOString()
+  };
+  await mkdir("state", { recursive: true });
+  await writeFile(GUARD_CONTROL_STATE_PATH, JSON.stringify(payload, null, 2), "utf8");
+  console.log(`[STATE] saved ${GUARD_CONTROL_STATE_PATH}`);
+}
+
+async function executeWarnRiskRising(): Promise<{ status: GuardActionStatus; detail: string }> {
+  return { status: "executed", detail: "notification_only" };
+}
+
+async function executeHaltNewEntries(decision: GuardDecision): Promise<{ status: GuardActionStatus; detail: string }> {
+  await writeGuardControlState(decision);
+  return { status: "executed", detail: "guard_control_updated" };
+}
+
+async function executeCancelOpenEntries(): Promise<{ status: GuardActionStatus; detail: string }> {
+  const openOrders = await listOpenOrders();
+  const buyOrders = openOrders.filter((order) => orderSide(order) === "buy");
+  if (buyOrders.length === 0) {
+    return { status: "skipped_not_applicable", detail: "no_open_buy_orders" };
+  }
+
+  let canceled = 0;
+  let failed = 0;
+  for (const order of buyOrders) {
+    const id = String(order.id || "").trim();
+    if (!id) {
+      failed += 1;
+      continue;
+    }
+    try {
+      await cancelOrder(id);
+      canceled += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  if (failed > 0) {
+    return { status: "failed", detail: `open_buy_orders canceled=${canceled} failed=${failed}` };
+  }
+  return { status: "executed", detail: `open_buy_orders canceled=${canceled}` };
+}
+
+async function executeTightenStops(level: GuardLevel): Promise<{ status: GuardActionStatus; detail: string }> {
+  if (!readBoolEnv("GUARD_EXECUTE_TIGHTEN_STOPS", false)) {
+    return { status: "skipped_policy", detail: "GUARD_EXECUTE_TIGHTEN_STOPS=false" };
+  }
+
+  const positions = await listPositions();
+  if (positions.length === 0) return { status: "skipped_not_applicable", detail: "no_positions" };
+  const openOrders = await listOpenOrders();
+
+  const tightenPctL2 = readPositiveNumberEnv("GUARD_TIGHTEN_STOP_PCT_L2", 4);
+  const tightenPctL3 = readPositiveNumberEnv("GUARD_TIGHTEN_STOP_PCT_L3", 2);
+  const tightenPct = level >= 3 ? tightenPctL3 : tightenPctL2;
+  const tif = normalizeOrderTimeInForce(process.env.GUARD_STOP_ORDER_TIF || "day", "day");
+
+  let patched = 0;
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const position of positions) {
+    const symbol = positionSymbol(position);
+    const qty = positionQty(position);
+    const price = positionCurrentPrice(position);
+    if (!symbol || qty == null || qty === 0 || price == null) {
+      skipped += 1;
+      continue;
+    }
+
+    const absQty = Math.abs(qty);
+    const qtyStr = toQtyString(absQty);
+    if (!qtyStr) {
+      skipped += 1;
+      continue;
+    }
+
+    const side: "buy" | "sell" = qty > 0 ? "sell" : "buy";
+    const candidate =
+      qty > 0 ? round2(Math.max(0.01, price * (1 - tightenPct / 100))) : round2(Math.max(0.01, price * (1 + tightenPct / 100)));
+
+    const existing = openOrders
+      .filter((order) => orderSymbol(order) === symbol && orderSide(order) === side)
+      .filter((order) => ["stop", "stop_limit"].includes(orderType(order)))
+      .filter((order) => orderStopPrice(order) != null)
+      .map((order) => ({ order, stop: orderStopPrice(order) as number }));
+
+    try {
+      if (existing.length > 0) {
+        const selected =
+          qty > 0
+            ? existing.reduce((acc, cur) => (cur.stop > acc.stop ? cur : acc))
+            : existing.reduce((acc, cur) => (cur.stop < acc.stop ? cur : acc));
+        const currentStop = selected.stop;
+        const shouldPatch = qty > 0 ? candidate > currentStop + 0.01 : candidate < currentStop - 0.01;
+        if (!shouldPatch) {
+          skipped += 1;
+          continue;
+        }
+        const orderId = String(selected.order.id || "").trim();
+        if (!orderId) {
+          failed += 1;
+          continue;
+        }
+        await patchOrder(orderId, { stop_price: candidate.toFixed(2) });
+        patched += 1;
+      } else {
+        await submitOrder({
+          symbol,
+          side,
+          type: "stop",
+          qty: qtyStr,
+          stop_price: candidate.toFixed(2),
+          time_in_force: tif
+        });
+        created += 1;
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+
+  if (patched + created === 0 && failed === 0) {
+    return { status: "skipped_not_applicable", detail: `tighten_pct=${tightenPct} no_updates` };
+  }
+  if (failed > 0) {
+    return {
+      status: "failed",
+      detail: `tighten_pct=${tightenPct} patched=${patched} created=${created} skipped=${skipped} failed=${failed}`
+    };
+  }
+  return {
+    status: "executed",
+    detail: `tighten_pct=${tightenPct} patched=${patched} created=${created} skipped=${skipped}`
+  };
+}
+
+async function executeReducePositions50(): Promise<{ status: GuardActionStatus; detail: string }> {
+  if (!readBoolEnv("GUARD_EXECUTE_REDUCE_POSITIONS", false)) {
+    return { status: "skipped_policy", detail: "GUARD_EXECUTE_REDUCE_POSITIONS=false" };
+  }
+
+  const positions = await listPositions();
+  if (positions.length === 0) return { status: "skipped_not_applicable", detail: "no_positions" };
+  const tif = normalizeOrderTimeInForce(process.env.GUARD_MARKET_ORDER_TIF || "day", "day");
+
+  let submitted = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const position of positions) {
+    const symbol = positionSymbol(position);
+    const qty = positionQty(position);
+    if (!symbol || qty == null || qty === 0) {
+      skipped += 1;
+      continue;
+    }
+
+    const reduceQty = Math.abs(qty) * 0.5;
+    const qtyStr = toQtyString(reduceQty);
+    if (!qtyStr) {
+      skipped += 1;
+      continue;
+    }
+    const side: "buy" | "sell" = qty > 0 ? "sell" : "buy";
+
+    try {
+      await submitOrder({
+        symbol,
+        side,
+        type: "market",
+        qty: qtyStr,
+        time_in_force: tif
+      });
+      submitted += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  if (submitted === 0 && failed === 0) {
+    return { status: "skipped_not_applicable", detail: "no_reducible_positions" };
+  }
+  if (failed > 0) {
+    return { status: "failed", detail: `reduce_50 submitted=${submitted} skipped=${skipped} failed=${failed}` };
+  }
+  return { status: "executed", detail: `reduce_50 submitted=${submitted} skipped=${skipped}` };
+}
+
+async function executeFlattenIfTriggered(): Promise<{ status: GuardActionStatus; detail: string }> {
+  if (!readBoolEnv("GUARD_EXECUTE_FLATTEN", false)) {
+    return { status: "skipped_policy", detail: "GUARD_EXECUTE_FLATTEN=false" };
+  }
+  const response = await alpacaRequest("/v2/positions?cancel_orders=true", {
+    method: "DELETE",
+    expectedStatuses: [200, 207]
+  });
+  const closedCount = Array.isArray(response.data) ? response.data.length : 0;
+  return { status: "executed", detail: `close_all_positions requested count=${closedCount}` };
+}
+
+async function executeAction(
+  action: string,
+  decision: GuardDecision,
+  safety: { allowed: boolean; reason: string }
+): Promise<{ status: GuardActionStatus; detail: string }> {
+  if (decision.mode === "observe") return { status: "planned", detail: "observe_mode" };
+  if (!safety.allowed) return { status: "blocked_safety_mode", detail: safety.reason };
+
+  if (action === "warn_risk_rising") return executeWarnRiskRising();
+  if (action === "halt_new_entries") return executeHaltNewEntries(decision);
+  if (action === "cancel_open_entries") return executeCancelOpenEntries();
+  if (action === "tighten_stops") return executeTightenStops(decision.appliedLevel);
+  if (action === "reduce_positions_50") return executeReducePositions50();
+  if (action === "flatten_if_triggered") return executeFlattenIfTriggered();
+  return { status: "execution_not_implemented", detail: "unknown_action" };
+}
+
 async function loadMarketGuardState(): Promise<MarketGuardState | null> {
   try {
     const raw = await readFile(MARKET_GUARD_STATE_PATH, "utf8");
@@ -1007,9 +1371,11 @@ async function applyActionLedger(decision: GuardDecision): Promise<{
   let upserted = 0;
   let updated = 0;
   const records: GuardActionLedgerRecord[] = [];
+  const safety = isLiveExecutionAllowed(decision);
 
   if (decision.shouldRunActions) {
     for (const action of decision.actions) {
+      const outcome = await executeAction(action, decision, safety);
       const key = `${decision.appliedLevel}:${action}`;
       const existing = state.actions[key];
       if (!existing) {
@@ -1018,8 +1384,9 @@ async function applyActionLedger(decision: GuardDecision): Promise<{
           level: decision.appliedLevel,
           action,
           mode: decision.mode,
-          status: decision.mode === "observe" ? "planned" : "execution_not_implemented",
+          status: outcome.status,
           reason: decision.actionReason,
+          detail: outcome.detail,
           firstSeenAt: now,
           lastSeenAt: now,
           count: 1
@@ -1031,8 +1398,9 @@ async function applyActionLedger(decision: GuardDecision): Promise<{
         existing.lastSeenAt = now;
         existing.count += 1;
         existing.mode = decision.mode;
-        existing.status = decision.mode === "observe" ? "planned" : "execution_not_implemented";
+        existing.status = outcome.status;
         existing.reason = decision.actionReason;
+        existing.detail = outcome.detail;
         updated += 1;
         records.push(existing);
       }
@@ -1044,8 +1412,11 @@ async function applyActionLedger(decision: GuardDecision): Promise<{
     await saveActionLedger(state);
   }
 
+  const executedCount = records.filter((row) => row.status === "executed").length;
+  const failedCount = records.filter((row) => row.status === "failed").length;
+  const blockedCount = records.filter((row) => row.status === "blocked_safety_mode").length;
   console.log(
-    `[GUARD_LEDGER] upserted=${upserted} updated=${updated} pruned=${pruned} ttlDays=${ttlDays} actions=${decision.actions.length} executed=${decision.shouldRunActions}`
+    `[GUARD_LEDGER] upserted=${upserted} updated=${updated} pruned=${pruned} ttlDays=${ttlDays} actions=${decision.actions.length} exec_allowed=${safety.allowed} executed=${executedCount} failed=${failedCount} blocked=${blockedCount}`
   );
   return { upserted, updated, pruned, records };
 }
@@ -1087,7 +1458,7 @@ function buildGuardMessage(decision: GuardDecision, actionResult: { records: Gua
     lines.push(`- none (${decision.actionReason})`);
   } else {
     for (const row of actionResult.records) {
-      lines.push(`- ${row.action} | status=${row.status} | count=${row.count}`);
+      lines.push(`- ${row.action} | status=${row.status} | count=${row.count}${row.detail ? ` | ${row.detail}` : ""}`);
     }
   }
   return lines.join("\n");
