@@ -21,6 +21,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
 - Data quality guard scores VIX source health/mismatch/staleness and can force defensive profile + block new entries.
 - Regime hysteresis + minimum hold time reduce profile flapping (`risk_off` recovery only after on-threshold and hold).
+- Adds market guard (P3-2) with L1/L2/L3 risk levels, de-escalation hold, cooldown, and observe/active mode.
+- Market guard auto-tunes effective thresholds by profile/quality while keeping env guardrails as base bounds.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
 - Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in dry-run it reports only, in exec mode it blocks on fail.
@@ -29,6 +31,16 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
+
+## Market Guard (P3-2)
+- Separate runtime (`npm run guard`) for intraday guard checks.
+- Evaluates VIX + index drop signals and derives risk level `L0..L3`.
+- Signal chain (VIX): `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot` with source-priority switch.
+- Applies de-escalation hold + action cooldown to prevent action flapping.
+- Persists:
+  - `state/last-market-guard.json`
+  - `state/market-guard-state.json`
+  - `state/guard-action-ledger.json`
 
 ## Safety Defaults
 - `EXEC_ENABLED=false`
@@ -87,6 +99,7 @@ Use `.env.example` as baseline.
 - `REGIME_HYSTERESIS_ENABLED`
 - `REGIME_MIN_HOLD_MIN`
 - `REGIME_VIX_MISMATCH_PCT`
+- `GUARD_QUALITY_MIN_SCORE`
 - `VIX_RISK_ON_THRESHOLD`
 - `VIX_RISK_OFF_THRESHOLD`
 - `CNBC_RAPIDAPI_HOST` (optional, default `cnbc.p.rapidapi.com`)
@@ -98,6 +111,22 @@ Use `.env.example` as baseline.
 - `GDRIVE_REPORT_FOLDER`
 - `TELEGRAM_PRIMARY_CHAT_ID`
 - `TELEGRAM_SIMULATION_CHAT_ID`
+- `MARKET_GUARD_ENABLED`
+- `MARKET_GUARD_MODE` (`observe|active`)
+- `MARKET_GUARD_INTERVAL_MIN`
+- `MARKET_GUARD_FORCE_SEND_ONCE`
+- `GUARD_ALLOW_OUTSIDE_RTH`
+- `GUARD_USE_INDEX_DROP`
+- `GUARD_QUALITY_ESCALATE_ENABLED`
+- `GUARD_FORCE_LEVEL` (`auto|l0|l1|l2|l3`)
+- `GUARD_DEESCALATE_HOLD_MIN`
+- `GUARD_ACTION_COOLDOWN_MIN`
+- `GUARD_ACTION_LEDGER_TTL_DAYS`
+- `GUARD_L1_VIX`
+- `GUARD_L2_VIX`
+- `GUARD_L3_VIX`
+- `GUARD_L2_INDEX_DROP_PCT`
+- `GUARD_L3_INDEX_DROP_PCT`
 
 ### Ops Presets (2 profiles)
 - `DRY_DEFAULT_*` : market normal profile
@@ -113,6 +142,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+- `sidecar-market-guard`: manual + weekday 5-minute guard run.
+  - Publishes level/signal/action summary to Step Summary.
+  - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`
