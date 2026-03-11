@@ -44,6 +44,13 @@ jobs:
       GUARD_L3_VIX: ${{ vars.GUARD_L3_VIX }}
       GUARD_L2_INDEX_DROP_PCT: ${{ vars.GUARD_L2_INDEX_DROP_PCT }}
       GUARD_L3_INDEX_DROP_PCT: ${{ vars.GUARD_L3_INDEX_DROP_PCT }}
+      GUARD_TIGHTEN_STOP_PCT_L2: ${{ vars.GUARD_TIGHTEN_STOP_PCT_L2 }}
+      GUARD_TIGHTEN_STOP_PCT_L3: ${{ vars.GUARD_TIGHTEN_STOP_PCT_L3 }}
+      GUARD_MARKET_ORDER_TIF: ${{ vars.GUARD_MARKET_ORDER_TIF }}
+      GUARD_STOP_ORDER_TIF: ${{ vars.GUARD_STOP_ORDER_TIF }}
+      GUARD_EXECUTE_TIGHTEN_STOPS: ${{ vars.GUARD_EXECUTE_TIGHTEN_STOPS }}
+      GUARD_EXECUTE_REDUCE_POSITIONS: ${{ vars.GUARD_EXECUTE_REDUCE_POSITIONS }}
+      GUARD_EXECUTE_FLATTEN: ${{ vars.GUARD_EXECUTE_FLATTEN }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
 
       ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
@@ -106,6 +113,7 @@ jobs:
           const guardPath = "state/last-market-guard.json";
           const statePath = "state/market-guard-state.json";
           const ledgerPath = "state/guard-action-ledger.json";
+          const controlPath = "state/guard-control.json";
 
           const lines = [];
           lines.push("## Sidecar Market Guard Summary");
@@ -146,6 +154,15 @@ jobs:
             lines.push("- state/guard-action-ledger.json: not found");
           }
 
+          if (fs.existsSync(controlPath)) {
+            const control = JSON.parse(fs.readFileSync(controlPath, "utf8"));
+            lines.push(
+              `- guard control: \`haltNewEntries=${control?.haltNewEntries ?? "N/A"} level=${control?.level ?? "N/A"} updatedAt=${control?.updatedAt || "N/A"}\``
+            );
+          } else {
+            lines.push("- state/guard-control.json: not found");
+          }
+
           lines.push("");
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
@@ -159,6 +176,7 @@ jobs:
             state/last-market-guard.json
             state/market-guard-state.json
             state/guard-action-ledger.json
+            state/guard-control.json
             state/last-run.json
             state/last-dry-exec-preview.json
             state/order-idempotency.json

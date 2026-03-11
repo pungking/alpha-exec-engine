@@ -37,10 +37,16 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Evaluates VIX + index drop signals and derives risk level `L0..L3`.
 - Signal chain (VIX): `Finnhub -> CNBC Direct -> CNBC RapidAPI -> Snapshot` with source-priority switch.
 - Applies de-escalation hold + action cooldown to prevent action flapping.
+- Active mode execution (P3-3) is safety-gated by runtime flags:
+  - Executes only when `MARKET_GUARD_MODE=active`, `EXEC_ENABLED=true`, and `READ_ONLY=false`.
+  - `halt_new_entries` writes `state/guard-control.json` for downstream entry blocking.
+  - `cancel_open_entries` cancels open buy-side orders on Alpaca.
+  - `tighten_stops` / `reduce_positions_50` / `flatten_if_triggered` are opt-in via dedicated env toggles.
 - Persists:
   - `state/last-market-guard.json`
   - `state/market-guard-state.json`
   - `state/guard-action-ledger.json`
+  - `state/guard-control.json`
 
 ## Safety Defaults
 - `EXEC_ENABLED=false`
@@ -128,6 +134,13 @@ Use `.env.example` as baseline.
 - `GUARD_L3_VIX`
 - `GUARD_L2_INDEX_DROP_PCT`
 - `GUARD_L3_INDEX_DROP_PCT`
+- `GUARD_TIGHTEN_STOP_PCT_L2`
+- `GUARD_TIGHTEN_STOP_PCT_L3`
+- `GUARD_MARKET_ORDER_TIF` (`day|gtc`)
+- `GUARD_STOP_ORDER_TIF` (`day|gtc`)
+- `GUARD_EXECUTE_TIGHTEN_STOPS` (`true|false`)
+- `GUARD_EXECUTE_REDUCE_POSITIONS` (`true|false`)
+- `GUARD_EXECUTE_FLATTEN` (`true|false`)
 
 ### Ops Presets (2 profiles)
 - `DRY_DEFAULT_*` : market normal profile
