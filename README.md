@@ -21,6 +21,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Regime diagnostics are logged as `[REGIME_DIAG]` (priority, snapshot freshness, finnhub/cnbc fallback reasons).
 - Data quality guard scores VIX source health/mismatch/staleness and can force defensive profile + block new entries.
 - Regime hysteresis + minimum hold time reduce profile flapping (`risk_off` recovery only after on-threshold and hold).
+- Optional guard-control enforcement reads `state/guard-control.json` and can block new entries in live mode.
 - Adds market guard (P3-2) with L1/L2/L3 risk levels, de-escalation hold, cooldown, and observe/active mode.
 - Market guard auto-tunes effective thresholds by profile/quality while keeping env guardrails as base bounds.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
@@ -108,6 +109,8 @@ Use `.env.example` as baseline.
 - `REGIME_HYSTERESIS_ENABLED`
 - `REGIME_MIN_HOLD_MIN`
 - `REGIME_VIX_MISMATCH_PCT`
+- `GUARD_CONTROL_ENFORCE`
+- `GUARD_CONTROL_MAX_AGE_MIN`
 - `GUARD_QUALITY_MIN_SCORE`
 - `VIX_RISK_ON_THRESHOLD`
 - `VIX_RISK_OFF_THRESHOLD`

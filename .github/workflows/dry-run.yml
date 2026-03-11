@@ -44,6 +44,8 @@ jobs:
       REGIME_HYSTERESIS_ENABLED: ${{ vars.REGIME_HYSTERESIS_ENABLED }}
       REGIME_MIN_HOLD_MIN: ${{ vars.REGIME_MIN_HOLD_MIN }}
       REGIME_VIX_MISMATCH_PCT: ${{ vars.REGIME_VIX_MISMATCH_PCT }}
+      GUARD_CONTROL_ENFORCE: ${{ vars.GUARD_CONTROL_ENFORCE }}
+      GUARD_CONTROL_MAX_AGE_MIN: ${{ vars.GUARD_CONTROL_MAX_AGE_MIN }}
       VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
       VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
 
@@ -155,6 +157,10 @@ jobs:
             const preflight = preview?.preflight || {};
             lines.push(
               `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
+            );
+            const guardControl = preview?.guardControl || {};
+            lines.push(
+              `- guard_control: \`enforce=${guardControl.enforce ?? "N/A"} blocked=${guardControl.blocked ?? "N/A"} reason=${guardControl.reason ?? "N/A"}\``
             );
             const lifecycle = preview?.orderLifecycle || {};
             lines.push(

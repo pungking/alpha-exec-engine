@@ -90,6 +90,25 @@ type RegimeEntryGuard = {
   reason: string;
 };
 
+type GuardControlState = {
+  haltNewEntries?: boolean;
+  source?: string;
+  level?: number;
+  profile?: string;
+  reason?: string;
+  updatedAt?: string;
+};
+
+type GuardControlGate = {
+  enforce: boolean;
+  maxAgeMin: number;
+  blocked: boolean;
+  reason: string;
+  updatedAt: string | null;
+  level: number | null;
+  stale: boolean;
+};
+
 type RegimeSelection = {
   profile: RegimeProfile;
   baseProfile: RegimeProfile;
@@ -239,6 +258,7 @@ const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
 const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
+const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
@@ -1036,11 +1056,120 @@ async function applyRegimeGuards(base: RegimeSelection): Promise<RegimeSelection
   };
 }
 
+async function loadGuardControlState(): Promise<GuardControlState | null> {
+  try {
+    const raw = await readFile(GUARD_CONTROL_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as GuardControlState;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGuardControlGate(): Promise<GuardControlGate> {
+  const enforce = readBoolEnv("GUARD_CONTROL_ENFORCE", false);
+  const maxAgeMin = Math.max(0, readNonNegativeNumberEnv("GUARD_CONTROL_MAX_AGE_MIN", 180));
+
+  if (!enforce) {
+    return {
+      enforce: false,
+      maxAgeMin,
+      blocked: false,
+      reason: "disabled",
+      updatedAt: null,
+      level: null,
+      stale: false
+    };
+  }
+
+  const state = await loadGuardControlState();
+  if (!state) {
+    return {
+      enforce: true,
+      maxAgeMin,
+      blocked: false,
+      reason: "state_missing",
+      updatedAt: null,
+      level: null,
+      stale: false
+    };
+  }
+
+  const cfg = loadRuntimeConfig();
+  const updatedAt = typeof state.updatedAt === "string" && state.updatedAt ? state.updatedAt : null;
+  const levelRaw = typeof state.level === "number" && Number.isFinite(state.level) ? state.level : null;
+  const level = levelRaw != null ? Math.max(0, Math.floor(levelRaw)) : null;
+  const ageMin = computeAgeMinutes(updatedAt);
+  const stale = maxAgeMin > 0 && ageMin != null && ageMin > maxAgeMin;
+
+  if (stale) {
+    return {
+      enforce: true,
+      maxAgeMin,
+      blocked: false,
+      reason: `stale(age=${ageMin.toFixed(1)}m>${maxAgeMin}m)`,
+      updatedAt,
+      level,
+      stale: true
+    };
+  }
+
+  if (!state.haltNewEntries) {
+    return {
+      enforce: true,
+      maxAgeMin,
+      blocked: false,
+      reason: "halt_new_entries_false",
+      updatedAt,
+      level,
+      stale: false
+    };
+  }
+
+  if (cfg.readOnly || !cfg.execEnabled) {
+    return {
+      enforce: true,
+      maxAgeMin,
+      blocked: false,
+      reason: `non_live_mode(readOnly=${cfg.readOnly},execEnabled=${cfg.execEnabled})`,
+      updatedAt,
+      level,
+      stale: false
+    };
+  }
+
+  const levelLabel = level != null ? `L${level}` : "unknown";
+  return {
+    enforce: true,
+    maxAgeMin,
+    blocked: true,
+    reason: `guard_control_halt_new_entries(level=${levelLabel})`,
+    updatedAt,
+    level,
+    stale: false
+  };
+}
+
 function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSelection): DryExecBuildResult {
   if (!regime.entryGuard.blocked || dryExec.payloads.length === 0) return dryExec;
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
     reason: `entry_blocked:${regime.entryGuard.reason}`
+  }));
+
+  return {
+    ...dryExec,
+    payloads: [],
+    skipped: [...dryExec.skipped, ...blockedSkips]
+  };
+}
+
+function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: GuardControlGate): DryExecBuildResult {
+  if (!gate.blocked || dryExec.payloads.length === 0) return dryExec;
+  const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
+    symbol: row.symbol,
+    reason: `entry_blocked:${gate.reason}`
   }));
 
   return {
@@ -1482,7 +1611,8 @@ function buildSimulationMessage(
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
-  ledger: OrderLedgerUpdateResult
+  ledger: OrderLedgerUpdateResult,
+  guardControl: GuardControlGate
 ): string {
   const cfg = loadRuntimeConfig();
   const lines: string[] = [];
@@ -1527,6 +1657,9 @@ function buildSimulationMessage(
   if (dryExec.regime.entryGuard.blocked) {
     lines.push(`Entry Guard Reason: ${dryExec.regime.entryGuard.reason}`);
   }
+  lines.push(
+    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+  );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
@@ -1577,11 +1710,12 @@ async function sendSimulationTelegram(
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
-  ledger: OrderLedgerUpdateResult
+  ledger: OrderLedgerUpdateResult,
+  guardControl: GuardControlGate
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result, actionable, dryExec, preflight, ledger);
+  const text = buildSimulationMessage(result, actionable, dryExec, preflight, ledger, guardControl);
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
@@ -1656,7 +1790,8 @@ async function saveDryExecPreview(
   result: Stage6LoadResult,
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
-  ledger: OrderLedgerUpdateResult
+  ledger: OrderLedgerUpdateResult,
+  guardControl: GuardControlGate
 ): Promise<void> {
   await mkdir("state", { recursive: true });
   const preview = {
@@ -1674,6 +1809,7 @@ async function saveDryExecPreview(
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     preflight,
+    guardControl,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
     payloads: dryExec.payloads,
@@ -1949,7 +2085,7 @@ async function updateOrderLedger(
   return { enabled, targetStatus, upserted, transitioned, unchanged, pruned };
 }
 
-function buildRunModeLabel(dryExec: DryExecBuildResult): string {
+function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardControlGate): string {
   const cfg = loadRuntimeConfig();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
@@ -1993,6 +2129,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult): string {
     `REGIME_HYSTERESIS_ENABLED=${regimeHysteresisEnabled}`,
     `REGIME_MIN_HOLD_MIN=${regimeMinHoldMin}`,
     `REGIME_VIX_MISMATCH_PCT=${regimeVixMismatchPct}`,
+    `GUARD_CONTROL_ENFORCE=${guardControl.enforce}`,
+    `GUARD_CONTROL_MAX_AGE_MIN=${guardControl.maxAgeMin}`,
+    `GUARD_CONTROL_BLOCKED=${guardControl.blocked}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
@@ -2039,13 +2178,24 @@ async function main() {
   if (regime.entryGuard.blocked) {
     console.warn(`[ENTRY_GUARD] blocked=true reason=${regime.entryGuard.reason}`);
   }
+  const guardControl = await resolveGuardControlGate();
+  if (guardControl.enforce) {
+    const levelLabel = guardControl.level != null ? `L${guardControl.level}` : "N/A";
+    console.log(
+      `[GUARD_CONTROL] enforce=true blocked=${guardControl.blocked} reason=${guardControl.reason} level=${levelLabel} maxAgeMin=${guardControl.maxAgeMin} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+    );
+  }
+  if (guardControl.blocked) {
+    console.warn(`[ENTRY_GUARD] blocked=true reason=${guardControl.reason}`);
+  }
   if (regime.diagnostics.length > 0) {
     regime.diagnostics.forEach((line) => console.log(`[REGIME_DIAG] ${line}`));
   }
   const actionable = getActionableCandidates(stage6.candidates);
   const dryExecBase = buildDryExecPayloads(actionable, stage6.sha256, regime);
-  const dryExec = applyEntryGuardToDryExec(dryExecBase, regime);
-  const mode = buildRunModeLabel(dryExec);
+  const dryExecAfterRegime = applyEntryGuardToDryExec(dryExecBase, regime);
+  const dryExec = applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl);
+  const mode = buildRunModeLabel(dryExec, guardControl);
   const priorState = await loadRunState();
   const forceSendOnce = readBoolEnv("FORCE_SEND_ONCE", false);
   const forceSendKey = `${stage6.sha256}:${mode}`;
@@ -2103,8 +2253,8 @@ async function main() {
   }
 
   const ledger = await updateOrderLedger(stage6, mode, finalDryExec, preflight);
-  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger);
-  await saveDryExecPreview(stage6, finalDryExec, preflight, ledger);
+  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger, guardControl);
+  await saveDryExecPreview(stage6, finalDryExec, preflight, ledger, guardControl);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
   printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight, ledger);
 }
