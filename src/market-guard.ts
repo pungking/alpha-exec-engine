@@ -346,7 +346,7 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
   const token = process.env.FINNHUB_API_KEY?.trim();
   if (!token) return { vix: null, source: "finnhub", reason: "FINNHUB_API_KEY missing" };
 
-  const symbols = ["VIX", "^VIX", "CBOE:VIX"];
+  const symbols = ["VIX", "^VIX", "CBOE:VIX", ".VIX"];
   const attempts: string[] = [];
   for (const symbol of symbols) {
     try {
@@ -356,10 +356,19 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
         attempts.push(`${symbol}:${response.status}`);
         continue;
       }
-      const data = (await response.json()) as { c?: unknown };
+      const data = (await response.json()) as { c?: unknown; t?: unknown; error?: unknown };
+      if (typeof data.error === "string" && data.error.trim()) {
+        attempts.push(`${symbol}:${data.error.slice(0, 60)}`);
+        continue;
+      }
       const vix = toFinitePositiveNumber(data.c);
       if (vix != null) return { vix, source: "finnhub", reason: `finnhub ok: ${symbol}` };
-      attempts.push(`${symbol}:invalid_quote`);
+      const ts = toFinitePositiveNumber(data.t);
+      if (ts == null || ts <= 0) {
+        attempts.push(`${symbol}:no_subscription_or_zero_quote`);
+      } else {
+        attempts.push(`${symbol}:invalid_quote`);
+      }
     } catch {
       attempts.push(`${symbol}:network_error`);
     }
@@ -368,10 +377,11 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
 }
 
 async function fetchCnbcDirectQuotes(symbols: string[]): Promise<CnbcQuoteFetchResult> {
-  const symbolCsv = symbols.join(",");
+  // CNBC quote endpoint expects "|" as the multi-symbol separator.
+  const symbolExpr = symbols.join("|");
   const url =
     `https://quote.cnbc.com/quote-html-webservice/quote.htm?partnerId=2&requestMethod=quick&` +
-    `exthrs=1&noform=1&fund=1&output=json&players=null&symbols=${encodeURIComponent(symbolCsv)}`;
+    `exthrs=1&noform=1&fund=1&output=json&players=null&symbols=${encodeURIComponent(symbolExpr)}`;
 
   try {
     const response = await fetch(url, {
@@ -390,11 +400,21 @@ async function fetchCnbcDirectQuotes(symbols: string[]): Promise<CnbcQuoteFetchR
     const raw = quickQuoteResult?.QuickQuote;
     const list = Array.isArray(raw) ? raw : [];
     const rows: Record<string, CnbcQuoteRow> = {};
+    const rejected: string[] = [];
     for (const row of list) {
       if (!row || typeof row !== "object") continue;
       const symbol = String((row as Record<string, unknown>).symbol || "").toUpperCase();
       if (!symbol) continue;
+      const code = String((row as Record<string, unknown>).code ?? "0");
+      if (code !== "0" && code.toLowerCase() !== "success") {
+        rejected.push(`${symbol}:code_${code}`);
+        continue;
+      }
       rows[symbol] = row as CnbcQuoteRow;
+    }
+
+    if (Object.keys(rows).length === 0 && rejected.length > 0) {
+      return { ok: false, rows: {}, reason: `cnbc direct parse rejected (${rejected.join(", ")})` };
     }
 
     return { ok: true, rows, reason: `cnbc direct ok (${Object.keys(rows).length} quotes)` };
