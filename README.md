@@ -48,6 +48,9 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
   - `state/guard-action-ledger.json`
   - `state/guard-control.json`
 
+### P3-3 Test Checklist
+- Step-by-step validation checklist: `docs/P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`
+
 ## Safety Defaults
 - `EXEC_ENABLED=false`
 - `READ_ONLY=true`
