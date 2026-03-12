@@ -9,6 +9,9 @@ concurrency:
   group: sidecar-market-guard-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   market-guard:
     runs-on: ubuntu-latest
@@ -190,6 +193,3 @@ jobs:
         with:
           path: state
           key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
