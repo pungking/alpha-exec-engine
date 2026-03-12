@@ -9,14 +9,14 @@ concurrency:
   group: sidecar-market-guard-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   market-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
       EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
       READ_ONLY: ${{ vars.READ_ONLY }}
       POLICY_VERSION: stage6-exec-v1.0-rc1
