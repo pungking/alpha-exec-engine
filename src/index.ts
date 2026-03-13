@@ -636,10 +636,10 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
       const node = item as Record<string, unknown>;
       const symbol = typeof node.symbol === "string" ? node.symbol.trim().toUpperCase() : "";
       if (!symbol) return null;
-      const verdictRaw = node.finalVerdict ?? node.aiVerdict ?? node.verdict;
+      const verdictRaw = node.verdictFinal ?? node.finalVerdict ?? node.aiVerdict ?? node.verdict;
       const convictionRaw = node.convictionScore ?? node.rawConvictionScore;
       const expectedReturnRaw = node.expectedReturn ?? node.gatedExpectedReturn ?? node.rawExpectedReturn;
-      const entryRaw = node.entryPrice ?? node.otePrice ?? node.supportLevel;
+      const entryRaw = node.entryExecPrice ?? node.entryExecPriceShadow ?? node.entryPrice ?? node.otePrice ?? node.supportLevel;
       const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
       const stopRaw = node.stopLoss ?? node.ictStopLoss;
 
