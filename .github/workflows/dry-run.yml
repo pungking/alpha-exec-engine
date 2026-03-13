@@ -26,6 +26,8 @@ jobs:
       DRY_MIN_CONVICTION: ${{ vars.DRY_MIN_CONVICTION }}
       DRY_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_MIN_STOP_DISTANCE_PCT }}
       DRY_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_MAX_STOP_DISTANCE_PCT }}
+      ENTRY_FEASIBILITY_ENFORCE: ${{ vars.ENTRY_FEASIBILITY_ENFORCE }}
+      ENTRY_MAX_DISTANCE_PCT: ${{ vars.ENTRY_MAX_DISTANCE_PCT }}
       ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
       ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN: ${{ vars.ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN }}
       ORDER_IDEMPOTENCY_TTL_DAYS: ${{ vars.ORDER_IDEMPOTENCY_TTL_DAYS }}
@@ -150,6 +152,10 @@ jobs:
             );
             lines.push(
               `- payloads/skipped: \`${preview.payloadCount ?? 0}/${preview.skippedCount ?? 0}\``
+            );
+            const entryFeasibility = preview?.entryFeasibility || {};
+            lines.push(
+              `- entry_feasibility: \`enforce=${entryFeasibility.enforce ?? "N/A"} maxDistancePct=${entryFeasibility.maxDistancePct ?? "N/A"} checked=${entryFeasibility.checked ?? "N/A"} blocked=${entryFeasibility.blocked ?? "N/A"}\``
             );
             const idemp = preview?.idempotency || {};
             lines.push(
