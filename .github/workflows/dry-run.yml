@@ -2,6 +2,15 @@ name: sidecar-dry-run
 
 on:
   workflow_dispatch:
+    inputs:
+      validation_pack:
+        description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   schedule:
     # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
     - cron: "7 * * * 1-5"
@@ -114,7 +123,29 @@ jobs:
         run: npm run build
 
       - name: Run dry-run bootstrap
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true') }}
         run: node dist/src/index.js
+
+      - name: Run validation pack (OFF/ON/STRICT)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p state/validation-pack/off state/validation-pack/on state/validation-pack/strict
+
+          echo "[PACK] OFF: ENTRY_FEASIBILITY_ENFORCE=false, ENTRY_MAX_DISTANCE_PCT=15"
+          ENTRY_FEASIBILITY_ENFORCE=false ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js
+          cp state/last-run.json state/validation-pack/off/last-run.json
+          cp state/last-dry-exec-preview.json state/validation-pack/off/last-dry-exec-preview.json
+
+          echo "[PACK] ON: ENTRY_FEASIBILITY_ENFORCE=true, ENTRY_MAX_DISTANCE_PCT=15"
+          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js
+          cp state/last-run.json state/validation-pack/on/last-run.json
+          cp state/last-dry-exec-preview.json state/validation-pack/on/last-dry-exec-preview.json
+
+          echo "[PACK] STRICT: ENTRY_FEASIBILITY_ENFORCE=true, ENTRY_MAX_DISTANCE_PCT=1"
+          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=1 FORCE_SEND_ONCE=true node dist/src/index.js
+          cp state/last-run.json state/validation-pack/strict/last-run.json
+          cp state/last-dry-exec-preview.json state/validation-pack/strict/last-dry-exec-preview.json
 
       - name: Publish run summary
         if: always()
@@ -206,6 +237,37 @@ jobs:
           }
 
           lines.push("");
+
+          if (fs.existsSync("state/validation-pack")) {
+            const cases = ["off", "on", "strict"];
+            const packLines = [];
+            packLines.push("## Entry Feasibility Validation Pack");
+            packLines.push("| case | stage6Hash | payloads/skipped | enforce/maxDist | blocked | preflight |");
+            packLines.push("|---|---|---|---|---|---|");
+
+            for (const c of cases) {
+              const runPath = `state/validation-pack/${c}/last-run.json`;
+              const previewPathCase = `state/validation-pack/${c}/last-dry-exec-preview.json`;
+              if (!fs.existsSync(runPath) || !fs.existsSync(previewPathCase)) {
+                packLines.push(`| ${c} | N/A | N/A | N/A | N/A | N/A |`);
+                continue;
+              }
+              const runState = JSON.parse(fs.readFileSync(runPath, "utf8"));
+              const previewCase = JSON.parse(fs.readFileSync(previewPathCase, "utf8"));
+              const stageHash = (runState.lastStage6Sha256 || "").slice(0, 12) || "N/A";
+              const payloads = `${previewCase.payloadCount ?? "N/A"}/${previewCase.skippedCount ?? "N/A"}`;
+              const entryFeas = previewCase.entryFeasibility || {};
+              const enforce = entryFeas.enforce ?? "N/A";
+              const maxDist = entryFeas.maxDistancePct ?? "N/A";
+              const blocked = entryFeas.blocked ?? "N/A";
+              const preflight = previewCase.preflight || {};
+              const preflightCell = `${preflight.status ?? "N/A"}:${preflight.code ?? "N/A"}`;
+              packLines.push(`| ${c} | ${stageHash} | ${payloads} | ${enforce}/${maxDist} | ${blocked} | ${preflightCell} |`);
+            }
+            packLines.push("");
+            lines.push(...packLines);
+          }
+
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
 
@@ -220,6 +282,7 @@ jobs:
             state/order-idempotency.json
             state/order-ledger.json
             state/regime-guard-state.json
+            state/validation-pack/**
           if-no-files-found: warn
 
       - name: Save sidecar state

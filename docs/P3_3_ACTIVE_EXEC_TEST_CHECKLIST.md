@@ -53,6 +53,24 @@ Evidence
 - key log line:
 - skipped reasons:
 
+### TC-0.5C (one-shot pack, credit-saving)
+
+Use one workflow run to execute OFF/ON/STRICT sequentially.
+
+- [ ] Open `sidecar-dry-run` -> **Run workflow**
+- [ ] Set input `validation_pack=true`
+- [ ] Confirm Step Summary includes `Entry Feasibility Validation Pack` table
+- [ ] Confirm rows:
+  - `off` => `enforce=false/maxDist=15`
+  - `on` => `enforce=true/maxDist=15`
+  - `strict` => `enforce=true/maxDist=1`
+- [ ] Confirm artifact includes `state/validation-pack/**` files
+
+Evidence
+- run id:
+- summary table snapshot:
+- artifact:
+
 ---
 
 ## 1) TC-1 blocked_safety_mode validation
