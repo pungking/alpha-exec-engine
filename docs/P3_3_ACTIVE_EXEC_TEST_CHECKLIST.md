@@ -24,6 +24,37 @@ Evidence
 
 ---
 
+## 0.5) Entry Feasibility Gate Dry-Run Validation (recommended)
+
+Goal: verify new entry-feasibility gate is safe when OFF and deterministic when ON.
+
+### TC-0.5A (OFF, baseline parity)
+
+- [ ] `ENTRY_FEASIBILITY_ENFORCE=false`
+- [ ] Run `sidecar-dry-run` once
+- [ ] Confirm payload/skipped count parity with previous baseline hash/mode
+- [ ] Confirm no new skip reason (`entry_*`) appears
+
+Evidence
+- run id:
+- key log line:
+- payload/skipped:
+
+### TC-0.5B (ON, gate visibility)
+
+- [ ] `ENTRY_FEASIBILITY_ENFORCE=true`
+- [ ] `ENTRY_MAX_DISTANCE_PCT=15`
+- [ ] Run `sidecar-dry-run` once
+- [ ] Confirm summary contains `entry_feas_enforce=true` and checked/blocked counters
+- [ ] If filtered, confirm skip reasons are deterministic (`entry_too_far_from_market`, etc.)
+
+Evidence
+- run id:
+- key log line:
+- skipped reasons:
+
+---
+
 ## 1) TC-1 blocked_safety_mode validation
 
 Goal: confirm active mode actions are blocked when safety gate is closed.

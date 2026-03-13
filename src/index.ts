@@ -41,6 +41,9 @@ type Stage6CandidateSummary = {
   target: string;
   stop: string;
   conviction: string;
+  entryDistancePct: number | null;
+  entryFeasible: boolean | null;
+  tradePlanStatus: string;
 };
 
 type DryExecOrderPayload = {
@@ -147,6 +150,12 @@ type DryExecBuildResult = {
   minConviction: number;
   minStopDistancePct: number;
   maxStopDistancePct: number;
+  entryFeasibility: {
+    enforce: boolean;
+    maxDistancePct: number;
+    checked: number;
+    blocked: number;
+  };
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -461,6 +470,25 @@ function parseNumericPrice(label: string): number | null {
   return n;
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function parseBooleanValue(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  }
+  return null;
+}
+
 function readPositiveNumberEnv(key: string, fallback: number): number {
   const raw = process.env[key];
   if (!raw) return fallback;
@@ -642,6 +670,9 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
       const entryRaw = node.entryExecPrice ?? node.entryExecPriceShadow ?? node.entryPrice ?? node.otePrice ?? node.supportLevel;
       const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
       const stopRaw = node.stopLoss ?? node.ictStopLoss;
+      const entryDistanceRaw = node.entryDistancePct ?? node.entryDistancePctShadow;
+      const entryFeasibleRaw = node.entryFeasible ?? node.entryFeasibleShadow;
+      const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
 
       return {
         symbol,
@@ -656,7 +687,13 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
             ? convictionRaw.toFixed(0)
             : typeof convictionRaw === "string" && convictionRaw.trim()
               ? convictionRaw.trim()
-              : "N/A"
+              : "N/A",
+        entryDistancePct: parseFiniteNumber(entryDistanceRaw),
+        entryFeasible: parseBooleanValue(entryFeasibleRaw),
+        tradePlanStatus:
+          typeof tradePlanStatusRaw === "string" && tradePlanStatusRaw.trim()
+            ? tradePlanStatusRaw.trim().toUpperCase()
+            : "N/A"
       };
     })
     .filter((row): row is Stage6CandidateSummary => row !== null)
@@ -1381,9 +1418,13 @@ function buildDryExecPayloads(
     "DRY_MAX_STOP_DISTANCE_PCT",
     25
   );
+  const entryFeasibilityEnforce = readBoolEnv("ENTRY_FEASIBILITY_ENFORCE", false);
+  const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
   let allocatedNotional = 0;
+  let entryFeasibilityChecked = 0;
+  let entryFeasibilityBlocked = 0;
 
   actionable.forEach((row) => {
     // Quality gate first: keep skip reasons deterministic and diagnosis-friendly.
@@ -1409,6 +1450,30 @@ function buildDryExecPayloads(
     if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
       skipped.push({ symbol: row.symbol, reason: "stop_distance_out_of_range" });
       return;
+    }
+    if (entryFeasibilityEnforce) {
+      entryFeasibilityChecked += 1;
+      if (row.tradePlanStatus === "INVALID_DATA") {
+        skipped.push({ symbol: row.symbol, reason: "entry_data_missing" });
+        entryFeasibilityBlocked += 1;
+        return;
+      }
+      if (row.tradePlanStatus === "INVALID_GEOMETRY") {
+        skipped.push({ symbol: row.symbol, reason: "entry_invalid_geometry" });
+        entryFeasibilityBlocked += 1;
+        return;
+      }
+      if (row.entryFeasible === false) {
+        const reason = row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP" ? "entry_too_far_from_market" : "entry_feasibility_false";
+        skipped.push({ symbol: row.symbol, reason });
+        entryFeasibilityBlocked += 1;
+        return;
+      }
+      if (row.entryDistancePct != null && row.entryDistancePct > entryMaxDistancePct) {
+        skipped.push({ symbol: row.symbol, reason: "entry_too_far_from_market" });
+        entryFeasibilityBlocked += 1;
+        return;
+      }
     }
 
     // Capacity / exposure gate after quality checks.
@@ -1452,6 +1517,12 @@ function buildDryExecPayloads(
     minConviction,
     minStopDistancePct,
     maxStopDistancePct,
+    entryFeasibility: {
+      enforce: entryFeasibilityEnforce,
+      maxDistancePct: entryMaxDistancePct,
+      checked: entryFeasibilityChecked,
+      blocked: entryFeasibilityBlocked
+    },
     regime,
     idempotency: {
       enabled: false,
@@ -1663,6 +1734,9 @@ function buildSimulationMessage(
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
+  lines.push(
+    `Entry Feasibility Gate: enforce=${dryExec.entryFeasibility.enforce} maxDistancePct=${dryExec.entryFeasibility.maxDistancePct} checked=${dryExec.entryFeasibility.checked} blocked=${dryExec.entryFeasibility.blocked}`
+  );
   lines.push("Payload Validation: price/notional finite check + geometry + client_order_id format");
   lines.push(
     `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
@@ -1806,6 +1880,7 @@ async function saveDryExecPreview(
     minConviction: dryExec.minConviction,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
+    entryFeasibility: dryExec.entryFeasibility,
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     preflight,
@@ -2114,6 +2189,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `MIN_CONV=${dryExec.minConviction}`,
     `STOP_MIN=${dryExec.minStopDistancePct}`,
     `STOP_MAX=${dryExec.maxStopDistancePct}`,
+    `ENTRY_FEAS_ENFORCE=${dryExec.entryFeasibility.enforce}`,
+    `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -2149,7 +2226,7 @@ function printRunSummary(
   ledger: OrderLedgerUpdateResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -2193,6 +2270,9 @@ async function main() {
   }
   const actionable = getActionableCandidates(stage6.candidates);
   const dryExecBase = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  console.log(
+    `[ENTRY_FEASIBILITY] enforce=${dryExecBase.entryFeasibility.enforce} maxDistancePct=${dryExecBase.entryFeasibility.maxDistancePct} checked=${dryExecBase.entryFeasibility.checked} blocked=${dryExecBase.entryFeasibility.blocked}`
+  );
   const dryExecAfterRegime = applyEntryGuardToDryExec(dryExecBase, regime);
   const dryExec = applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl);
   const mode = buildRunModeLabel(dryExec, guardControl);

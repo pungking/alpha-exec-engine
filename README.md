@@ -13,6 +13,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
 - Builds Alpaca order payload previews only (no live order send in dry-run).
 - Payload gate includes conviction floor + stop-distance sanity range.
+- Optional entry-feasibility gate (default OFF) can skip entries that are too far from market or marked infeasible in Stage6 shadow fields.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -90,6 +91,8 @@ Use `.env.example` as baseline.
 - `DRY_MIN_CONVICTION`
 - `DRY_MIN_STOP_DISTANCE_PCT`
 - `DRY_MAX_STOP_DISTANCE_PCT`
+- `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
+- `ENTRY_MAX_DISTANCE_PCT` (default `15`)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
@@ -153,6 +156,18 @@ Use `.env.example` as baseline.
 - `DRY_RISK_OFF_*` : high-volatility defensive profile
 
 If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
+
+### Entry Feasibility Gate (default OFF)
+- Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.
+- Env:
+  - `ENTRY_FEASIBILITY_ENFORCE=false` -> behavior unchanged (observe only)
+  - `ENTRY_FEASIBILITY_ENFORCE=true` -> skips can include:
+    - `entry_too_far_from_market`
+    - `entry_feasibility_false`
+    - `entry_invalid_geometry`
+    - `entry_data_missing`
+- Threshold:
+  - `ENTRY_MAX_DISTANCE_PCT=15` (applies when distance metric exists)
 
 ### Runtime Guard
 `src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.
