@@ -14,6 +14,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Builds Alpaca order payload previews only (no live order send in dry-run).
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Optional entry-feasibility gate (default OFF) can skip entries that are too far from market or marked infeasible in Stage6 shadow fields.
+- Stage6 contract gate (default ON) consumes `executionBucket/executionReason` and blocks `WATCHLIST` rows before payload build.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -93,6 +94,7 @@ Use `.env.example` as baseline.
 - `DRY_MAX_STOP_DISTANCE_PCT`
 - `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
 - `ENTRY_MAX_DISTANCE_PCT` (default `15`)
+- `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
@@ -168,6 +170,17 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `entry_data_missing`
 - Threshold:
   - `ENTRY_MAX_DISTANCE_PCT=15` (applies when distance metric exists)
+
+### Stage6 Contract Gate (default ON)
+- Purpose: align sidecar execution with Stage6 contract fields (`executionBucket`, `executionReason`).
+- Env:
+  - `STAGE6_EXECUTION_BUCKET_ENFORCE=true` -> `WATCHLIST` rows are skipped with explicit Stage6 reasons.
+  - `STAGE6_EXECUTION_BUCKET_ENFORCE=false` -> legacy behavior (verdict + payload gates only).
+- Contract skip reasons:
+  - `stage6_wait_pullback_too_deep`
+  - `stage6_invalid_geometry`
+  - `stage6_invalid_data`
+  - `stage6_watchlist`
 
 ### Runtime Guard
 `src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.

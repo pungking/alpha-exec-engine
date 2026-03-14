@@ -41,6 +41,15 @@ type Stage6CandidateSummary = {
   target: string;
   stop: string;
   conviction: string;
+  modelRank: number | null;
+  executionRank: number | null;
+  executionBucket: "EXECUTABLE" | "WATCHLIST" | "N/A";
+  executionReason:
+    | "VALID_EXEC"
+    | "WAIT_PULLBACK_TOO_DEEP"
+    | "INVALID_GEOMETRY"
+    | "INVALID_DATA"
+    | "N/A";
   entryDistancePct: number | null;
   entryFeasible: boolean | null;
   tradePlanStatus: string;
@@ -154,6 +163,13 @@ type DryExecBuildResult = {
     enforce: boolean;
     maxDistancePct: number;
     checked: number;
+    blocked: number;
+  };
+  stage6Contract: {
+    enforce: boolean;
+    checked: number;
+    executable: number;
+    watchlist: number;
     blocked: number;
   };
   regime: RegimeSelection;
@@ -543,6 +559,16 @@ function parseConviction(value: string): number | null {
   return n;
 }
 
+function mapStage6ExecutionReasonToSkip(
+  reason: Stage6CandidateSummary["executionReason"]
+): DryExecSkipReason["reason"] {
+  if (reason === "WAIT_PULLBACK_TOO_DEEP") return "stage6_wait_pullback_too_deep";
+  if (reason === "INVALID_GEOMETRY") return "stage6_invalid_geometry";
+  if (reason === "INVALID_DATA") return "stage6_invalid_data";
+  if (reason === "VALID_EXEC") return "stage6_valid_exec_but_blocked";
+  return "stage6_watchlist";
+}
+
 function sumNotional(payloads: DryExecOrderPayload[]): number {
   return payloads.reduce((acc, row) => acc + row.notional, 0);
 }
@@ -673,6 +699,22 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
       const entryDistanceRaw = node.entryDistancePct ?? node.entryDistancePctShadow;
       const entryFeasibleRaw = node.entryFeasible ?? node.entryFeasibleShadow;
       const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
+      const modelRankRaw = parseFiniteNumber(node.modelRank);
+      const executionRankRaw = parseFiniteNumber(node.executionRank);
+      const executionBucketRaw = typeof node.executionBucket === "string" ? node.executionBucket.trim().toUpperCase() : "";
+      const executionReasonRaw = typeof node.executionReason === "string" ? node.executionReason.trim().toUpperCase() : "";
+      const executionBucket: Stage6CandidateSummary["executionBucket"] =
+        executionBucketRaw === "EXECUTABLE" ? "EXECUTABLE" : executionBucketRaw === "WATCHLIST" ? "WATCHLIST" : "N/A";
+      const executionReason: Stage6CandidateSummary["executionReason"] =
+        executionReasonRaw === "VALID_EXEC"
+          ? "VALID_EXEC"
+          : executionReasonRaw === "WAIT_PULLBACK_TOO_DEEP"
+            ? "WAIT_PULLBACK_TOO_DEEP"
+            : executionReasonRaw === "INVALID_GEOMETRY"
+              ? "INVALID_GEOMETRY"
+              : executionReasonRaw === "INVALID_DATA"
+                ? "INVALID_DATA"
+                : "N/A";
 
       return {
         symbol,
@@ -688,6 +730,10 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
             : typeof convictionRaw === "string" && convictionRaw.trim()
               ? convictionRaw.trim()
               : "N/A",
+        modelRank: modelRankRaw != null ? Math.round(modelRankRaw) : null,
+        executionRank: executionRankRaw != null ? Math.round(executionRankRaw) : null,
+        executionBucket,
+        executionReason,
         entryDistancePct: parseFiniteNumber(entryDistanceRaw),
         entryFeasible: parseBooleanValue(entryFeasibleRaw),
         tradePlanStatus:
@@ -1420,13 +1466,47 @@ function buildDryExecPayloads(
   );
   const entryFeasibilityEnforce = readBoolEnv("ENTRY_FEASIBILITY_ENFORCE", false);
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
+  const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
   let allocatedNotional = 0;
   let entryFeasibilityChecked = 0;
   let entryFeasibilityBlocked = 0;
+  let stage6ContractChecked = 0;
+  let stage6ContractExecutable = 0;
+  let stage6ContractWatchlist = 0;
+  let stage6ContractBlocked = 0;
 
   actionable.forEach((row) => {
+    if (row.executionBucket !== "N/A" || row.executionReason !== "N/A") {
+      stage6ContractChecked += 1;
+      if (row.executionBucket === "EXECUTABLE") stage6ContractExecutable += 1;
+      if (row.executionBucket === "WATCHLIST") stage6ContractWatchlist += 1;
+    }
+
+    if (stage6ExecutionBucketEnforce && row.executionBucket === "WATCHLIST") {
+      skipped.push({
+        symbol: row.symbol,
+        reason: mapStage6ExecutionReasonToSkip(row.executionReason)
+      });
+      stage6ContractBlocked += 1;
+      return;
+    }
+
+    if (
+      stage6ExecutionBucketEnforce &&
+      row.executionBucket === "EXECUTABLE" &&
+      row.executionReason !== "N/A" &&
+      row.executionReason !== "VALID_EXEC"
+    ) {
+      skipped.push({
+        symbol: row.symbol,
+        reason: mapStage6ExecutionReasonToSkip(row.executionReason)
+      });
+      stage6ContractBlocked += 1;
+      return;
+    }
+
     // Quality gate first: keep skip reasons deterministic and diagnosis-friendly.
     const conviction = parseConviction(row.conviction);
     if (conviction == null || conviction < minConviction) {
@@ -1522,6 +1602,13 @@ function buildDryExecPayloads(
       maxDistancePct: entryMaxDistancePct,
       checked: entryFeasibilityChecked,
       blocked: entryFeasibilityBlocked
+    },
+    stage6Contract: {
+      enforce: stage6ExecutionBucketEnforce,
+      checked: stage6ContractChecked,
+      executable: stage6ContractExecutable,
+      watchlist: stage6ContractWatchlist,
+      blocked: stage6ContractBlocked
     },
     regime,
     idempotency: {
@@ -1702,7 +1789,7 @@ function buildSimulationMessage(
     lines.push("Top6 Summary");
     result.candidates.forEach((row, index) => {
       lines.push(
-        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | ${row.entry}→${row.target} / ${row.stop}`
+        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} | ${row.executionBucket}/${row.executionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
     });
   }
@@ -1713,7 +1800,9 @@ function buildSimulationMessage(
     lines.push("N/A (all filtered by policy gate)");
   } else {
     actionable.forEach((row, index) => {
-      lines.push(`${index + 1}) ${row.symbol} | ${row.verdict} | ${row.entry}→${row.target} / ${row.stop}`);
+      lines.push(
+        `${index + 1}) ${row.symbol} | ${row.verdict} | ${row.executionBucket}/${row.executionReason} | ${row.entry}→${row.target} / ${row.stop}`
+      );
     });
   }
 
@@ -1736,6 +1825,9 @@ function buildSimulationMessage(
   );
   lines.push(
     `Entry Feasibility Gate: enforce=${dryExec.entryFeasibility.enforce} maxDistancePct=${dryExec.entryFeasibility.maxDistancePct} checked=${dryExec.entryFeasibility.checked} blocked=${dryExec.entryFeasibility.blocked}`
+  );
+  lines.push(
+    `Stage6 Contract Gate: enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
   lines.push("Payload Validation: price/notional finite check + geometry + client_order_id format");
   lines.push(
@@ -1881,6 +1973,7 @@ async function saveDryExecPreview(
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     entryFeasibility: dryExec.entryFeasibility,
+    stage6Contract: dryExec.stage6Contract,
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     preflight,
@@ -1892,6 +1985,9 @@ async function saveDryExecPreview(
   };
   await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
   console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
+  console.log(
+    `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
+  );
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
@@ -2174,6 +2270,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
   const orderLifecycleEnabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
   const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
+  const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
   const regimeHysteresisEnabled = readBoolEnv("REGIME_HYSTERESIS_ENABLED", true);
@@ -2191,6 +2288,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `STOP_MAX=${dryExec.maxStopDistancePct}`,
     `ENTRY_FEAS_ENFORCE=${dryExec.entryFeasibility.enforce}`,
     `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
+    `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -2226,7 +2324,7 @@ function printRunSummary(
   ledger: OrderLedgerUpdateResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -2270,6 +2368,9 @@ async function main() {
   }
   const actionable = getActionableCandidates(stage6.candidates);
   const dryExecBase = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  console.log(
+    `[STAGE6_CONTRACT] enforce=${dryExecBase.stage6Contract.enforce} checked=${dryExecBase.stage6Contract.checked} executable=${dryExecBase.stage6Contract.executable} watchlist=${dryExecBase.stage6Contract.watchlist} blocked=${dryExecBase.stage6Contract.blocked}`
+  );
   console.log(
     `[ENTRY_FEASIBILITY] enforce=${dryExecBase.entryFeasibility.enforce} maxDistancePct=${dryExecBase.entryFeasibility.maxDistancePct} checked=${dryExecBase.entryFeasibility.checked} blocked=${dryExecBase.entryFeasibility.blocked}`
   );
