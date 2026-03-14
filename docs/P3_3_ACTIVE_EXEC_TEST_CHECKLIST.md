@@ -30,46 +30,49 @@ Goal: verify new entry-feasibility gate is safe when OFF and deterministic when 
 
 ### TC-0.5A (OFF, baseline parity)
 
-- [ ] `ENTRY_FEASIBILITY_ENFORCE=false`
-- [ ] Run `sidecar-dry-run` once
-- [ ] Confirm payload/skipped count parity with previous baseline hash/mode
-- [ ] Confirm no new skip reason (`entry_*`) appears
+- [x] `ENTRY_FEASIBILITY_ENFORCE=false`
+- [x] Run `sidecar-dry-run` once
+- [x] Confirm payload/skipped count parity with previous baseline hash/mode
+- [x] Confirm no new skip reason (`entry_*`) appears
 
 Evidence
-- run id:
-- key log line:
-- payload/skipped:
+- run id: `23088915967` (`https://github.com/pungking/alpha-exec-engine/actions/runs/23088915967`)
+- key log line: `[ENTRY_FEASIBILITY] enforce=false maxDistancePct=15 checked=0 blocked=0`
+- payload/skipped: `2 / 3` (`skip reasons: conviction_below_floor=3`)
 
 ### TC-0.5B (ON, gate visibility)
 
-- [ ] `ENTRY_FEASIBILITY_ENFORCE=true`
-- [ ] `ENTRY_MAX_DISTANCE_PCT=15`
-- [ ] Run `sidecar-dry-run` once
-- [ ] Confirm summary contains `entry_feas_enforce=true` and checked/blocked counters
-- [ ] If filtered, confirm skip reasons are deterministic (`entry_too_far_from_market`, etc.)
+- [x] `ENTRY_FEASIBILITY_ENFORCE=true`
+- [x] `ENTRY_MAX_DISTANCE_PCT=15`
+- [x] Run `sidecar-dry-run` once
+- [x] Confirm summary contains `entry_feas_enforce=true` and checked/blocked counters
+- [x] If filtered, confirm skip reasons are deterministic (`entry_too_far_from_market`, etc.)
 
 Evidence
-- run id:
-- key log line:
-- skipped reasons:
+- run id: `23088939432` (validation pack 포함, `https://github.com/pungking/alpha-exec-engine/actions/runs/23088939432`)
+- key log line: `[ENTRY_FEASIBILITY] enforce=true maxDistancePct=15 checked=2 blocked=0`
+- skipped reasons: `conviction_below_floor=3` (entry gate 추가 차단 없음)
 
 ### TC-0.5C (one-shot pack, credit-saving)
 
 Use one workflow run to execute OFF/ON/STRICT sequentially.
 
-- [ ] Open `sidecar-dry-run` -> **Run workflow**
-- [ ] Set input `validation_pack=true`
-- [ ] Confirm Step Summary includes `Entry Feasibility Validation Pack` table
-- [ ] Confirm rows:
+- [x] Open `sidecar-dry-run` -> **Run workflow**
+- [x] Set input `validation_pack=true`
+- [x] Confirm Step Summary includes `Entry Feasibility Validation Pack` table
+- [x] Confirm rows:
   - `off` => `enforce=false/maxDist=15`
   - `on` => `enforce=true/maxDist=15`
   - `strict` => `enforce=true/maxDist=1`
-- [ ] Confirm artifact includes `state/validation-pack/**` files
+- [x] Confirm artifact includes `state/validation-pack/**` files
 
 Evidence
-- run id:
+- run id: `23088939432` (`https://github.com/pungking/alpha-exec-engine/actions/runs/23088939432`)
 - summary table snapshot:
-- artifact:
+  - `off`: payload/skipped=`2/3`, `entryFeas checked/blocked=0/0`
+  - `on`: payload/skipped=`2/3`, `entryFeas checked/blocked=2/0`
+  - `strict`: payload/skipped=`0/5`, `entryFeas checked/blocked=2/2`
+- artifact: `sidecar-state-23088939432.zip` (contains `state/validation-pack/off|on|strict/*`)
 
 ---
 
