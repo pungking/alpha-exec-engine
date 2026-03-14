@@ -222,6 +222,24 @@ jobs:
             lines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} watchlist=${stage6Contract.watchlist ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
             );
+            const skipReasonCounts =
+              preview?.skipReasonCounts && typeof preview.skipReasonCounts === "object"
+                ? preview.skipReasonCounts
+                : Array.isArray(preview?.skipped)
+                    ? preview.skipped.reduce((acc, row) => {
+                        const key = String(row?.reason || "unknown");
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                      }, {})
+                    : {};
+            const skipReasonCell =
+              Object.keys(skipReasonCounts).length > 0
+                ? Object.entries(skipReasonCounts)
+                    .sort((a, b) => Number(b[1]) - Number(a[1]))
+                    .map(([k, v]) => `${k}:${v}`)
+                    .join(", ")
+                : "none";
+            lines.push(`- skip_reasons: \`${skipReasonCell}\``);
             const idemp = preview?.idempotency || {};
             lines.push(
               `- idempotency: \`enabled=${idemp.enabled ?? "N/A"} enforce=${idemp.enforced ?? "N/A"} new=${idemp.newCount ?? "N/A"} duplicate=${idemp.duplicateCount ?? "N/A"}\``
@@ -316,6 +334,24 @@ jobs:
             probeLines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
             );
+            const probeSkipCounts =
+              probePreview?.skipReasonCounts && typeof probePreview.skipReasonCounts === "object"
+                ? probePreview.skipReasonCounts
+                : Array.isArray(probePreview?.skipped)
+                    ? probePreview.skipped.reduce((acc, row) => {
+                        const key = String(row?.reason || "unknown");
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                      }, {})
+                    : {};
+            const probeSkipCell =
+              Object.keys(probeSkipCounts).length > 0
+                ? Object.entries(probeSkipCounts)
+                    .sort((a, b) => Number(b[1]) - Number(a[1]))
+                    .map(([k, v]) => `${k}:${v}`)
+                    .join(", ")
+                : "none";
+            probeLines.push(`- skip_reasons: \`${probeSkipCell}\``);
             probeLines.push("");
             lines.push(...probeLines);
           }

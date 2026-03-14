@@ -123,6 +123,7 @@ Goal: isolate whether `payload=0` is caused by policy floor (conviction) vs cont
 - [ ] Set input `payload_probe=true`
 - [ ] Set input `payload_probe_min_conviction=30` (or 20/40/50)
 - [ ] Confirm Step Summary includes `Payload Path Probe` section
+- [ ] Confirm `skip_reasons` distribution is shown in Step Summary
 - [ ] Confirm `payloads/skipped` changes as expected vs baseline
 - [ ] Revert to baseline policy (no permanent var change needed; probe is one-shot env override)
 

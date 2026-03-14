@@ -153,6 +153,7 @@ type RegimeGuardState = {
 type DryExecBuildResult = {
   payloads: DryExecOrderPayload[];
   skipped: DryExecSkipReason[];
+  skipReasonCounts: Record<string, number>;
   notionalPerOrder: number;
   maxOrders: number;
   maxTotalNotional: number;
@@ -567,6 +568,20 @@ function mapStage6ExecutionReasonToSkip(
   if (reason === "INVALID_DATA") return "stage6_invalid_data";
   if (reason === "VALID_EXEC") return "stage6_valid_exec_but_blocked";
   return "stage6_watchlist";
+}
+
+function buildSkipReasonCounts(skipped: DryExecSkipReason[]): Record<string, number> {
+  return skipped.reduce<Record<string, number>>((acc, row) => {
+    const key = String(row?.reason || "unknown");
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function formatSkipReasonCounts(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return "none";
+  return entries.map(([reason, count]) => `${reason}:${count}`).join(",");
 }
 
 function sumNotional(payloads: DryExecOrderPayload[]): number {
@@ -1240,11 +1255,13 @@ function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSel
     symbol: row.symbol,
     reason: `entry_blocked:${regime.entryGuard.reason}`
   }));
+  const skipped = [...dryExec.skipped, ...blockedSkips];
 
   return {
     ...dryExec,
     payloads: [],
-    skipped: [...dryExec.skipped, ...blockedSkips]
+    skipped,
+    skipReasonCounts: buildSkipReasonCounts(skipped)
   };
 }
 
@@ -1254,11 +1271,13 @@ function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: Guard
     symbol: row.symbol,
     reason: `entry_blocked:${gate.reason}`
   }));
+  const skipped = [...dryExec.skipped, ...blockedSkips];
 
   return {
     ...dryExec,
     payloads: [],
-    skipped: [...dryExec.skipped, ...blockedSkips]
+    skipped,
+    skipReasonCounts: buildSkipReasonCounts(skipped)
   };
 }
 
@@ -1591,6 +1610,7 @@ function buildDryExecPayloads(
   return {
     payloads,
     skipped,
+    skipReasonCounts: buildSkipReasonCounts(skipped),
     notionalPerOrder,
     maxOrders,
     maxTotalNotional,
@@ -1980,11 +2000,13 @@ async function saveDryExecPreview(
     guardControl,
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
+    skipReasonCounts: dryExec.skipReasonCounts,
     payloads: dryExec.payloads,
     skipped: dryExec.skipped
   };
   await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
   console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
+  console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
@@ -2097,6 +2119,7 @@ async function applyOrderIdempotency(
     ...dryExec,
     payloads,
     skipped,
+    skipReasonCounts: buildSkipReasonCounts(skipped),
     idempotency: {
       enabled,
       enforced,
@@ -2324,7 +2347,7 @@ function printRunSummary(
   ledger: OrderLedgerUpdateResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

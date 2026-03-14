@@ -192,6 +192,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Manual dispatch inputs:
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
+  - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
