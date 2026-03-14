@@ -11,6 +11,24 @@ on:
         options:
           - "false"
           - "true"
+      payload_probe:
+        description: "Run one-shot payload path probe (temporary risk-off conviction override)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      payload_probe_min_conviction:
+        description: "Temporary DRY_RISK_OFF_MIN_CONVICTION for payload probe"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "20"
+          - "30"
+          - "40"
+          - "50"
   schedule:
     # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
     - cron: "7 * * * 1-5"
@@ -124,7 +142,7 @@ jobs:
         run: npm run build
 
       - name: Run dry-run bootstrap
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.validation_pack == 'true' || inputs.payload_probe == 'true')) }}
         run: node dist/src/index.js
 
       - name: Run validation pack (OFF/ON/STRICT)
@@ -147,6 +165,17 @@ jobs:
           ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=1 FORCE_SEND_ONCE=true node dist/src/index.js
           cp state/last-run.json state/validation-pack/strict/last-run.json
           cp state/last-dry-exec-preview.json state/validation-pack/strict/last-dry-exec-preview.json
+
+      - name: Run payload path probe (one-shot)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack != 'true' && inputs.payload_probe == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p state/payload-probe
+          PROBE_MIN_CONV="${{ inputs.payload_probe_min_conviction }}"
+          echo "[PROBE] payload path with DRY_RISK_OFF_MIN_CONVICTION=${PROBE_MIN_CONV}"
+          DRY_RISK_OFF_MIN_CONVICTION="${PROBE_MIN_CONV}" FORCE_SEND_ONCE=true node dist/src/index.js
+          cp state/last-run.json state/payload-probe/last-run.json
+          cp state/last-dry-exec-preview.json state/payload-probe/last-dry-exec-preview.json
 
       - name: Publish run summary
         if: always()
@@ -273,6 +302,24 @@ jobs:
             lines.push(...packLines);
           }
 
+          if (fs.existsSync("state/payload-probe/last-run.json") && fs.existsSync("state/payload-probe/last-dry-exec-preview.json")) {
+            const probeRun = JSON.parse(fs.readFileSync("state/payload-probe/last-run.json", "utf8"));
+            const probePreview = JSON.parse(fs.readFileSync("state/payload-probe/last-dry-exec-preview.json", "utf8"));
+            const probeLines = [];
+            probeLines.push("## Payload Path Probe");
+            probeLines.push(`- stage6Hash: \`${(probeRun.lastStage6Sha256 || "").slice(0, 12) || "N/A"}\``);
+            probeLines.push(`- payloads/skipped: \`${probePreview.payloadCount ?? "N/A"}/${probePreview.skippedCount ?? "N/A"}\``);
+            probeLines.push(
+              `- preflight: \`${probePreview?.preflight?.status ?? "N/A"}:${probePreview?.preflight?.code ?? "N/A"}\``
+            );
+            const stage6Contract = probePreview?.stage6Contract || {};
+            probeLines.push(
+              `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
+            );
+            probeLines.push("");
+            lines.push(...probeLines);
+          }
+
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
 
@@ -288,6 +335,7 @@ jobs:
             state/order-ledger.json
             state/regime-guard-state.json
             state/validation-pack/**
+            state/payload-probe/**
           if-no-files-found: warn
 
       - name: Save sidecar state
