@@ -43,6 +43,7 @@ type Stage6CandidateSummary = {
   conviction: string;
   modelRank: number | null;
   executionRank: number | null;
+  executionScore: number | null;
   executionBucket: "EXECUTABLE" | "WATCHLIST" | "N/A";
   executionReason:
     | "VALID_EXEC"
@@ -50,6 +51,13 @@ type Stage6CandidateSummary = {
     | "INVALID_GEOMETRY"
     | "INVALID_DATA"
     | "N/A";
+  finalDecision:
+    | "EXECUTABLE_NOW"
+    | "WAIT_PRICE"
+    | "BLOCKED_RISK"
+    | "BLOCKED_EVENT"
+    | "N/A";
+  decisionReason: string;
   entryDistancePct: number | null;
   entryFeasible: boolean | null;
   tradePlanStatus: string;
@@ -570,6 +578,25 @@ function mapStage6ExecutionReasonToSkip(
   return "stage6_watchlist";
 }
 
+function mapStage6DecisionReasonToSkip(
+  reason: string
+): DryExecSkipReason["reason"] {
+  const key = String(reason || "").trim().toLowerCase();
+  if (!key || key === "n/a") return "stage6_watchlist";
+  if (key === "wait_pullback_not_reached") return "stage6_wait_pullback_too_deep";
+  if (key === "blocked_invalid_geometry") return "stage6_invalid_geometry";
+  if (key === "blocked_missing_trade_box") return "stage6_invalid_data";
+  if (key === "blocked_stop_too_tight") return "stage6_stop_too_tight";
+  if (key === "blocked_stop_too_wide") return "stage6_stop_too_wide";
+  if (key === "blocked_target_too_close") return "stage6_target_too_close";
+  if (key === "blocked_anchor_exec_gap") return "stage6_anchor_exec_gap";
+  if (key === "blocked_rr_below_min") return "stage6_rr_below_min";
+  if (key === "blocked_ev_non_positive") return "stage6_ev_non_positive";
+  if (key === "blocked_earnings_window") return "stage6_earnings_blackout";
+  if (key === "blocked_verdict_risk_off") return "stage6_risk_off_verdict";
+  return `stage6_${key}`;
+}
+
 function buildSkipReasonCounts(skipped: DryExecSkipReason[]): Record<string, number> {
   return skipped.reduce<Record<string, number>>((acc, row) => {
     const key = String(row?.reason || "unknown");
@@ -716,8 +743,11 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
       const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
       const modelRankRaw = parseFiniteNumber(node.modelRank);
       const executionRankRaw = parseFiniteNumber(node.executionRank);
+      const executionScoreRaw = parseFiniteNumber(node.executionScore);
       const executionBucketRaw = typeof node.executionBucket === "string" ? node.executionBucket.trim().toUpperCase() : "";
       const executionReasonRaw = typeof node.executionReason === "string" ? node.executionReason.trim().toUpperCase() : "";
+      const finalDecisionRaw = typeof node.finalDecision === "string" ? node.finalDecision.trim().toUpperCase() : "";
+      const decisionReasonRaw = typeof node.decisionReason === "string" ? node.decisionReason.trim().toLowerCase() : "";
       const executionBucket: Stage6CandidateSummary["executionBucket"] =
         executionBucketRaw === "EXECUTABLE" ? "EXECUTABLE" : executionBucketRaw === "WATCHLIST" ? "WATCHLIST" : "N/A";
       const executionReason: Stage6CandidateSummary["executionReason"] =
@@ -727,9 +757,34 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
             ? "WAIT_PULLBACK_TOO_DEEP"
             : executionReasonRaw === "INVALID_GEOMETRY"
               ? "INVALID_GEOMETRY"
-              : executionReasonRaw === "INVALID_DATA"
+            : executionReasonRaw === "INVALID_DATA"
                 ? "INVALID_DATA"
                 : "N/A";
+      const finalDecision: Stage6CandidateSummary["finalDecision"] =
+        finalDecisionRaw === "EXECUTABLE_NOW"
+          ? "EXECUTABLE_NOW"
+          : finalDecisionRaw === "WAIT_PRICE"
+            ? "WAIT_PRICE"
+            : finalDecisionRaw === "BLOCKED_RISK"
+              ? "BLOCKED_RISK"
+              : finalDecisionRaw === "BLOCKED_EVENT"
+                ? "BLOCKED_EVENT"
+                : executionBucket === "EXECUTABLE"
+                  ? "EXECUTABLE_NOW"
+                  : executionBucket === "WATCHLIST"
+                    ? "WAIT_PRICE"
+                    : "N/A";
+      const decisionReason =
+        decisionReasonRaw ||
+        (executionReason === "WAIT_PULLBACK_TOO_DEEP"
+          ? "wait_pullback_not_reached"
+          : executionReason === "INVALID_GEOMETRY"
+            ? "blocked_invalid_geometry"
+            : executionReason === "INVALID_DATA"
+              ? "blocked_missing_trade_box"
+              : executionReason === "VALID_EXEC"
+                ? "executable_pullback"
+                : "n/a");
 
       return {
         symbol,
@@ -747,8 +802,11 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
               : "N/A",
         modelRank: modelRankRaw != null ? Math.round(modelRankRaw) : null,
         executionRank: executionRankRaw != null ? Math.round(executionRankRaw) : null,
+        executionScore: executionScoreRaw != null ? Number(executionScoreRaw.toFixed(1)) : null,
         executionBucket,
         executionReason,
+        finalDecision,
+        decisionReason,
         entryDistancePct: parseFiniteNumber(entryDistanceRaw),
         entryFeasible: parseBooleanValue(entryFeasibleRaw),
         tradePlanStatus:
@@ -1497,16 +1555,29 @@ function buildDryExecPayloads(
   let stage6ContractBlocked = 0;
 
   actionable.forEach((row) => {
-    if (row.executionBucket !== "N/A" || row.executionReason !== "N/A") {
+    const hasBucketSignal = row.executionBucket !== "N/A" || row.executionReason !== "N/A";
+    const hasDecisionSignal = row.finalDecision !== "N/A" || row.decisionReason !== "n/a";
+    const effectiveExecutable =
+      row.executionBucket === "EXECUTABLE" || row.finalDecision === "EXECUTABLE_NOW";
+    const effectiveWatchlist =
+      row.executionBucket === "WATCHLIST" ||
+      row.finalDecision === "WAIT_PRICE" ||
+      row.finalDecision === "BLOCKED_RISK" ||
+      row.finalDecision === "BLOCKED_EVENT";
+
+    if (hasBucketSignal || hasDecisionSignal) {
       stage6ContractChecked += 1;
-      if (row.executionBucket === "EXECUTABLE") stage6ContractExecutable += 1;
-      if (row.executionBucket === "WATCHLIST") stage6ContractWatchlist += 1;
+      if (effectiveExecutable) stage6ContractExecutable += 1;
+      if (effectiveWatchlist) stage6ContractWatchlist += 1;
     }
 
-    if (stage6ExecutionBucketEnforce && row.executionBucket === "WATCHLIST") {
+    if (stage6ExecutionBucketEnforce && effectiveWatchlist) {
       skipped.push({
         symbol: row.symbol,
-        reason: mapStage6ExecutionReasonToSkip(row.executionReason)
+        reason:
+          row.decisionReason && row.decisionReason !== "n/a"
+            ? mapStage6DecisionReasonToSkip(row.decisionReason)
+            : mapStage6ExecutionReasonToSkip(row.executionReason)
       });
       stage6ContractBlocked += 1;
       return;
@@ -1514,7 +1585,7 @@ function buildDryExecPayloads(
 
     if (
       stage6ExecutionBucketEnforce &&
-      row.executionBucket === "EXECUTABLE" &&
+      effectiveExecutable &&
       row.executionReason !== "N/A" &&
       row.executionReason !== "VALID_EXEC"
     ) {
@@ -1809,7 +1880,7 @@ function buildSimulationMessage(
     lines.push("Top6 Summary");
     result.candidates.forEach((row, index) => {
       lines.push(
-        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} | ${row.executionBucket}/${row.executionReason} | ${row.entry}→${row.target} / ${row.stop}`
+        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} XS#${row.executionScore ?? "-"} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
     });
   }
@@ -1821,7 +1892,7 @@ function buildSimulationMessage(
   } else {
     actionable.forEach((row, index) => {
       lines.push(
-        `${index + 1}) ${row.symbol} | ${row.verdict} | ${row.executionBucket}/${row.executionReason} | ${row.entry}→${row.target} / ${row.stop}`
+        `${index + 1}) ${row.symbol} | ${row.verdict} | XS#${row.executionScore ?? "-"} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
     });
   }
