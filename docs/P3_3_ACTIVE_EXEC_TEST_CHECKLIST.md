@@ -136,6 +136,55 @@ Evidence
 
 ---
 
+## 0.8) Stage6 Quality Gate + Telegram Contract Sync (new, pending)
+
+Goal: prevent low-quality executable leakage (e.g., Conv=0/ER=N-A) and keep Telegram sections aligned with Stage6 model/executable/watchlist semantics.
+
+### TC-0.8A (quality gate enforcement)
+
+- [ ] Run Stage6 once with same Stage5 lock baseline
+- [ ] Confirm top log includes new quality reasons when applicable:
+  - `blocked_quality_missing_expected_return`
+  - `blocked_quality_conviction_floor`
+  - `blocked_quality_verdict_unusable`
+- [ ] Confirm low-quality candidate is **not** `EXECUTABLE_NOW`
+- [ ] Confirm `Decision reasons(primary)` includes `quality_*` counters
+
+Evidence
+- stage6 run id:
+- key log lines:
+- affected symbols:
+
+### TC-0.8B (telegram model/watchlist semantic alignment)
+
+- [ ] Generate Telegram brief from the same Stage6 run
+- [ ] Confirm `Top6 (Model Rank)` reflects model-top6 universe (not executable-only list)
+- [ ] Confirm `Watchlist (실행 대기)` contains model-top6 non-executable names when they exist
+- [ ] Confirm `Executable Picks` matches execution-only set
+- [ ] Confirm each candidate line includes both `AQ`(추천 품질) and `XS`(실행 가능성)
+- [ ] Confirm no `TELEGRAM_CONTRACT_MISMATCH` in logs
+
+Evidence
+- stage6 run id:
+- telegram file:
+- key section snippets:
+
+### TC-0.8C (sidecar skip reason mapping sync)
+
+- [ ] Run sidecar-dry-run against the new Stage6 dump
+- [ ] If quality-blocked names exist, confirm skip reason mapping appears as:
+  - `stage6_quality_missing_expected_return`
+  - `stage6_quality_conviction_floor`
+  - `stage6_quality_verdict_unusable`
+- [ ] Confirm `[STAGE6_CONTRACT]` counters match Stage6 final decision distribution
+
+Evidence
+- sidecar run id:
+- key log lines:
+- skip_reasons summary:
+
+---
+
 ## 1) TC-1 blocked_safety_mode validation
 
 Goal: confirm active mode actions are blocked when safety gate is closed.
