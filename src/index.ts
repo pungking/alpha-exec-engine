@@ -584,6 +584,8 @@ function mapStage6DecisionReasonToSkip(
   const key = String(reason || "").trim().toLowerCase();
   if (!key || key === "n/a") return "stage6_watchlist";
   if (key === "wait_pullback_not_reached") return "stage6_wait_pullback_too_deep";
+  if (key === "wait_earnings_data_missing") return "stage6_wait_earnings_data_missing";
+  if (key === "wait_state_verdict_conflict") return "stage6_wait_state_verdict_conflict";
   if (key === "blocked_invalid_geometry") return "stage6_invalid_geometry";
   if (key === "blocked_missing_trade_box") return "stage6_invalid_data";
   if (key === "blocked_quality_missing_expected_return") return "stage6_quality_missing_expected_return";
@@ -595,7 +597,9 @@ function mapStage6DecisionReasonToSkip(
   if (key === "blocked_anchor_exec_gap") return "stage6_anchor_exec_gap";
   if (key === "blocked_rr_below_min") return "stage6_rr_below_min";
   if (key === "blocked_ev_non_positive") return "stage6_ev_non_positive";
+  if (key === "blocked_earnings_data_missing") return "stage6_earnings_missing";
   if (key === "blocked_earnings_window") return "stage6_earnings_blackout";
+  if (key === "blocked_state_verdict_conflict") return "stage6_state_verdict_conflict";
   if (key === "blocked_verdict_risk_off") return "stage6_risk_off_verdict";
   return `stage6_${key}`;
 }
