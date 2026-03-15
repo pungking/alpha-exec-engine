@@ -586,6 +586,9 @@ function mapStage6DecisionReasonToSkip(
   if (key === "wait_pullback_not_reached") return "stage6_wait_pullback_too_deep";
   if (key === "blocked_invalid_geometry") return "stage6_invalid_geometry";
   if (key === "blocked_missing_trade_box") return "stage6_invalid_data";
+  if (key === "blocked_quality_missing_expected_return") return "stage6_quality_missing_expected_return";
+  if (key === "blocked_quality_conviction_floor") return "stage6_quality_conviction_floor";
+  if (key === "blocked_quality_verdict_unusable") return "stage6_quality_verdict_unusable";
   if (key === "blocked_stop_too_tight") return "stage6_stop_too_tight";
   if (key === "blocked_stop_too_wide") return "stage6_stop_too_wide";
   if (key === "blocked_target_too_close") return "stage6_target_too_close";
