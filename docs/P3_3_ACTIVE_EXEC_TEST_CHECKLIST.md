@@ -185,6 +185,29 @@ Evidence
 
 ---
 
+## 0.9) Stage6 20-Trade Performance Loop (new)
+
+Goal: tune for both recommendation quality and executable realism with one-variable-per-batch control.
+
+Reference
+- `sidecar-template/alpha-exec-engine/docs/STAGE6_20TRADE_PERFORMANCE_LOOP_2026-03-16.md`
+
+Checklist
+- [ ] Freeze policy for one batch (no threshold changes mid-batch)
+- [ ] Log every executed trade with AQ/XS, reason, entry/exit, R-multiple, slippage
+- [ ] Generate KPI snapshot every 10 trades
+- [ ] Change only one tuning variable per batch
+- [ ] Record GO/NO-GO at 20 trades
+
+Evidence
+- batch id:
+- trade count:
+- kpi snapshot:
+- tuning change:
+- go/no-go:
+
+---
+
 ## 1) TC-1 blocked_safety_mode validation
 
 Goal: confirm active mode actions are blocked when safety gate is closed.
