@@ -51,6 +51,7 @@ type Stage6CandidateSummary = {
   target: string;
   stop: string;
   conviction: string;
+  qualityScore: number | null;
   modelRank: number | null;
   executionRank: number | null;
   executionScore: number | null;
@@ -282,6 +283,51 @@ type SidecarRunState = {
   lastForceSendKey?: string;
 };
 
+type PerformanceLoopRow = {
+  rowId: string;
+  runDate: string;
+  stage6Hash: string;
+  stage6File: string;
+  symbol: string;
+  modelRank: number | null;
+  execRank: number | null;
+  AQ: number | null;
+  XS: number | null;
+  decisionReason: string;
+  entryPlanned: number | null;
+  entryFilled: number | null;
+  stopPlanned: number | null;
+  targetPlanned: number | null;
+  exitPrice: number | null;
+  exitReason: string | null;
+  holdDaysPlanned: number | null;
+  holdDaysActual: number | null;
+  RMultiple: number | null;
+  slipPct: number | null;
+  marketRegime: RegimeProfile;
+  notes: string;
+};
+
+type PerformanceLoopSnapshot = {
+  at: string;
+  tradeCount: number;
+  filledCount: number;
+  closedCount: number;
+  fillRatePct: number | null;
+  avgR: number | null;
+  medianHoldErrorDays: number | null;
+  noReasonDrift: number;
+};
+
+type PerformanceLoopState = {
+  batchId: string;
+  createdAt: string;
+  updatedAt: string;
+  policyFingerprint: string;
+  rows: Record<string, PerformanceLoopRow>;
+  snapshots: PerformanceLoopSnapshot[];
+};
+
 type OrderIdempotencyState = {
   orders: Record<
     string,
@@ -303,6 +349,8 @@ const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
 const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
+const PERFORMANCE_LOOP_JSON_PATH = "state/stage6-20trade-loop.json";
+const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 
 const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
@@ -761,6 +809,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const entryDistanceRaw = node.entryDistancePct ?? node.entryDistancePctShadow;
       const entryFeasibleRaw = node.entryFeasible ?? node.entryFeasibleShadow;
       const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
+      const qualityScoreRaw = parseFiniteNumber(node.qualityScore ?? node.convictionScore);
       const modelRankRaw = parseFiniteNumber(node.modelRank);
       const executionRankRaw = parseFiniteNumber(node.executionRank);
       const executionScoreRaw = parseFiniteNumber(node.executionScore);
@@ -820,6 +869,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
             : typeof convictionRaw === "string" && convictionRaw.trim()
               ? convictionRaw.trim()
               : "N/A",
+        qualityScore: qualityScoreRaw != null ? Number(qualityScoreRaw.toFixed(1)) : null,
         modelRank: modelRankRaw != null ? Math.round(modelRankRaw) : null,
         executionRank: executionRankRaw != null ? Math.round(executionRankRaw) : null,
         executionScore: executionScoreRaw != null ? Number(executionScoreRaw.toFixed(1)) : null,
@@ -2156,6 +2206,342 @@ async function saveDryExecPreview(
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
+function makeDefaultBatchId(): string {
+  const d = new Date();
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `stage6-${yyyy}${mm}${dd}`;
+}
+
+function sanitizeBatchId(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 48);
+}
+
+function buildPerformancePolicyFingerprint(dryExec: DryExecBuildResult): string {
+  return [
+    `profile=${dryExec.regime.profile}`,
+    `conv=${dryExec.minConviction}`,
+    `stopMin=${dryExec.minStopDistancePct}`,
+    `stopMax=${dryExec.maxStopDistancePct}`,
+    `entryEnf=${dryExec.entryFeasibility.enforce}`,
+    `entryMaxDist=${dryExec.entryFeasibility.maxDistancePct}`,
+    `bucketEnf=${dryExec.stage6Contract.enforce}`
+  ].join(";");
+}
+
+function csvCell(value: string | number | null): string {
+  const raw = value == null ? "" : String(value);
+  if (/[",\n]/.test(raw)) return `"${raw.replace(/"/g, "\"\"")}"`;
+  return raw;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return Number(((sorted[mid - 1] + sorted[mid]) / 2).toFixed(4));
+  }
+  return Number(sorted[mid].toFixed(4));
+}
+
+function deriveTradeMetrics(row: PerformanceLoopRow): Pick<PerformanceLoopRow, "RMultiple" | "slipPct"> {
+  const entryFilled = parseFiniteNumber(row.entryFilled);
+  const entryPlanned = parseFiniteNumber(row.entryPlanned);
+  const stopPlanned = parseFiniteNumber(row.stopPlanned);
+  const exitPrice = parseFiniteNumber(row.exitPrice);
+
+  let rMultiple: number | null = null;
+  if (entryFilled != null && stopPlanned != null && exitPrice != null) {
+    const risk = entryFilled - stopPlanned;
+    if (risk > 0) {
+      rMultiple = Number(((exitPrice - entryFilled) / risk).toFixed(4));
+    }
+  }
+
+  let slipPct: number | null = null;
+  if (entryFilled != null && entryPlanned != null && entryPlanned > 0) {
+    slipPct = Number((Math.abs(entryFilled - entryPlanned) / entryPlanned * 100).toFixed(4));
+  }
+
+  return { RMultiple: rMultiple, slipPct };
+}
+
+function normalizeLoopRow(row: PerformanceLoopRow): PerformanceLoopRow {
+  const derived = deriveTradeMetrics(row);
+  return {
+    ...row,
+    RMultiple: derived.RMultiple,
+    slipPct: derived.slipPct
+  };
+}
+
+function buildPerformanceSnapshot(rows: PerformanceLoopRow[]): PerformanceLoopSnapshot {
+  const tradeCount = rows.length;
+  const filledCount = rows.filter((row) => parseFiniteNumber(row.entryFilled) != null).length;
+  const closedRows = rows.filter((row) => parseFiniteNumber(row.exitPrice) != null);
+  const closedCount = closedRows.length;
+
+  const fillRatePct = tradeCount > 0 ? Number(((filledCount / tradeCount) * 100).toFixed(2)) : null;
+  const rValues = closedRows
+    .map((row) => parseFiniteNumber(row.RMultiple))
+    .filter((value): value is number => value != null);
+  const avgR =
+    rValues.length > 0
+      ? Number((rValues.reduce((acc, value) => acc + value, 0) / rValues.length).toFixed(4))
+      : null;
+
+  const holdErrors = closedRows
+    .map((row) => {
+      const planned = parseFiniteNumber(row.holdDaysPlanned);
+      const actual = parseFiniteNumber(row.holdDaysActual);
+      if (planned == null || actual == null) return null;
+      return Math.abs(actual - planned);
+    })
+    .filter((value): value is number => value != null);
+  const medianHoldErrorDays = median(holdErrors);
+
+  // Optional marker for manual post-trade QA. Keep at 0 unless explicitly flagged in notes.
+  const noReasonDrift = rows.filter((row) => row.notes.includes("[REASON_DRIFT]")).length;
+
+  return {
+    at: new Date().toISOString(),
+    tradeCount,
+    filledCount,
+    closedCount,
+    fillRatePct,
+    avgR,
+    medianHoldErrorDays,
+    noReasonDrift
+  };
+}
+
+function toPerformanceCsv(rows: PerformanceLoopRow[]): string {
+  const header = [
+    "runDate",
+    "symbol",
+    "modelRank",
+    "execRank",
+    "AQ",
+    "XS",
+    "decisionReason",
+    "entryPlanned",
+    "entryFilled",
+    "stopPlanned",
+    "targetPlanned",
+    "exitPrice",
+    "exitReason",
+    "holdDaysPlanned",
+    "holdDaysActual",
+    "RMultiple",
+    "slipPct",
+    "marketRegime",
+    "notes"
+  ];
+
+  const ordered = [...rows].sort((a, b) => {
+    const tsA = Date.parse(a.runDate);
+    const tsB = Date.parse(b.runDate);
+    if (Number.isFinite(tsA) && Number.isFinite(tsB) && tsA !== tsB) return tsA - tsB;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  const body = ordered.map((row) =>
+    [
+      row.runDate,
+      row.symbol,
+      row.modelRank,
+      row.execRank,
+      row.AQ,
+      row.XS,
+      row.decisionReason,
+      row.entryPlanned,
+      row.entryFilled,
+      row.stopPlanned,
+      row.targetPlanned,
+      row.exitPrice,
+      row.exitReason,
+      row.holdDaysPlanned,
+      row.holdDaysActual,
+      row.RMultiple,
+      row.slipPct,
+      row.marketRegime,
+      row.notes
+    ]
+      .map((value) => csvCell(value as string | number | null))
+      .join(",")
+  );
+
+  return [header.join(","), ...body].join("\n");
+}
+
+async function loadPerformanceLoopState(
+  policyFingerprint: string
+): Promise<PerformanceLoopState> {
+  const now = new Date().toISOString();
+  const batchOverride = sanitizeBatchId(process.env.STAGE6_PERF_BATCH_ID || "");
+
+  const buildEmpty = (batchId: string): PerformanceLoopState => ({
+    batchId,
+    createdAt: now,
+    updatedAt: now,
+    policyFingerprint,
+    rows: {},
+    snapshots: []
+  });
+
+  try {
+    const raw = await readFile(PERFORMANCE_LOOP_JSON_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<PerformanceLoopState>;
+    const currentBatchRaw = typeof parsed.batchId === "string" ? parsed.batchId : "";
+    const currentBatch = sanitizeBatchId(currentBatchRaw);
+    const resolvedBatch = batchOverride || currentBatch || makeDefaultBatchId();
+
+    if (batchOverride && currentBatch && currentBatch !== batchOverride) {
+      return buildEmpty(batchOverride);
+    }
+
+    const rows =
+      parsed && typeof parsed.rows === "object" && parsed.rows
+        ? (parsed.rows as Record<string, PerformanceLoopRow>)
+        : {};
+    const snapshots = Array.isArray(parsed?.snapshots)
+      ? (parsed.snapshots as PerformanceLoopSnapshot[])
+      : [];
+
+    return {
+      batchId: resolvedBatch,
+      createdAt:
+        typeof parsed?.createdAt === "string" && parsed.createdAt
+          ? parsed.createdAt
+          : now,
+      updatedAt:
+        typeof parsed?.updatedAt === "string" && parsed.updatedAt
+          ? parsed.updatedAt
+          : now,
+      policyFingerprint:
+        typeof parsed?.policyFingerprint === "string" && parsed.policyFingerprint
+          ? parsed.policyFingerprint
+          : policyFingerprint,
+      rows,
+      snapshots
+    };
+  } catch {
+    return buildEmpty(batchOverride || makeDefaultBatchId());
+  }
+}
+
+async function savePerformanceLoopState(state: PerformanceLoopState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(PERFORMANCE_LOOP_JSON_PATH, JSON.stringify(state, null, 2), "utf8");
+  await writeFile(PERFORMANCE_LOOP_CSV_PATH, toPerformanceCsv(Object.values(state.rows)), "utf8");
+  console.log(`[STATE] saved ${PERFORMANCE_LOOP_JSON_PATH}`);
+  console.log(`[STATE] saved ${PERFORMANCE_LOOP_CSV_PATH}`);
+}
+
+async function updatePerformanceLoop(
+  stage6: Stage6LoadResult,
+  actionable: Stage6CandidateSummary[],
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
+): Promise<void> {
+  const policyFingerprint = buildPerformancePolicyFingerprint(dryExec);
+  const state = await loadPerformanceLoopState(policyFingerprint);
+  const now = new Date().toISOString();
+  const candidateMap = new Map<string, Stage6CandidateSummary>();
+  [...stage6.modelTopCandidates, ...stage6.candidates, ...actionable].forEach((row) => {
+    if (row?.symbol) candidateMap.set(row.symbol, row);
+  });
+
+  let upserted = 0;
+  let touched = 0;
+
+  for (const payload of dryExec.payloads) {
+    const rowId =
+      payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
+    const stage6Row = candidateMap.get(payload.symbol);
+    const existing = state.rows[rowId];
+
+    const baseRow: PerformanceLoopRow = {
+      rowId,
+      runDate: now,
+      stage6Hash: stage6.sha256,
+      stage6File: stage6.fileName,
+      symbol: payload.symbol,
+      modelRank: stage6Row?.modelRank ?? null,
+      execRank: stage6Row?.executionRank ?? null,
+      AQ: stage6Row?.qualityScore ?? null,
+      XS: stage6Row?.executionScore ?? null,
+      decisionReason: stage6Row?.decisionReason ?? "n/a",
+      entryPlanned: payload.limit_price,
+      entryFilled: null,
+      stopPlanned: payload.stop_loss.stop_price,
+      targetPlanned: payload.take_profit.limit_price,
+      exitPrice: null,
+      exitReason: null,
+      holdDaysPlanned: null,
+      holdDaysActual: null,
+      RMultiple: null,
+      slipPct: null,
+      marketRegime: dryExec.regime.profile,
+      notes: `preflight=${preflight.code};stage6=${stage6.sha256.slice(0, 12)}`
+    };
+
+    if (!existing) {
+      state.rows[rowId] = normalizeLoopRow(baseRow);
+      upserted += 1;
+      touched += 1;
+      continue;
+    }
+
+    // Preserve post-trade manual/actual fields while refreshing latest signal metadata.
+    const merged: PerformanceLoopRow = {
+      ...existing,
+      ...baseRow,
+      entryFilled: existing.entryFilled,
+      exitPrice: existing.exitPrice,
+      exitReason: existing.exitReason,
+      holdDaysPlanned: existing.holdDaysPlanned,
+      holdDaysActual: existing.holdDaysActual,
+      notes: existing.notes || baseRow.notes
+    };
+    state.rows[rowId] = normalizeLoopRow(merged);
+    touched += 1;
+  }
+
+  if (touched === 0) {
+    console.log(
+      `[PERF_LOOP] batch=${state.batchId} no-op (payloads=0) totalTrades=${Object.keys(state.rows).length}`
+    );
+    return;
+  }
+
+  state.updatedAt = now;
+  state.policyFingerprint = policyFingerprint;
+
+  const currentTradeCount = Object.keys(state.rows).length;
+  const lastSnapshotTradeCount =
+    state.snapshots.length > 0
+      ? Number(state.snapshots[state.snapshots.length - 1]?.tradeCount ?? 0)
+      : 0;
+  if (currentTradeCount > 0 && currentTradeCount % 10 === 0 && currentTradeCount !== lastSnapshotTradeCount) {
+    const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
+    state.snapshots.push(snapshot);
+    console.log(
+      `[PERF_LOOP_KPI] trades=${snapshot.tradeCount} fillRatePct=${snapshot.fillRatePct ?? "N/A"} avgR=${snapshot.avgR ?? "N/A"} holdErrMedian=${snapshot.medianHoldErrorDays ?? "N/A"} noReasonDrift=${snapshot.noReasonDrift}`
+    );
+  }
+
+  await savePerformanceLoopState(state);
+  console.log(
+    `[PERF_LOOP] batch=${state.batchId} upserted=${upserted} touched=${touched} totalTrades=${currentTradeCount} snapshots=${state.snapshots.length}`
+  );
+}
+
 async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
   try {
     const raw = await readFile(ORDER_IDEMPOTENCY_PATH, "utf8");
@@ -2602,6 +2988,7 @@ async function main() {
   const ledger = await updateOrderLedger(stage6, mode, finalDryExec, preflight);
   await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger, guardControl);
   await saveDryExecPreview(stage6, finalDryExec, preflight, ledger, guardControl);
+  await updatePerformanceLoop(stage6, actionable, finalDryExec, preflight);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
   printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight, ledger);
 }

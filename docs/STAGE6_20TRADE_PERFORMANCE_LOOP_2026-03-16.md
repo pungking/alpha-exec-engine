@@ -2,6 +2,15 @@
 
 Goal: improve both signal quality and execution realism with a low-credit, deterministic tuning loop.
 
+Auto-logging outputs (sidecar):
+- `state/stage6-20trade-loop.json`
+- `state/stage6-20trade-loop.csv`
+
+Notes:
+- Sidecar appends one row per generated payload (`idempotencyKey`-based dedupe).
+- If you want to split batches manually, set `STAGE6_PERF_BATCH_ID` (e.g. `batch-2026w12`).
+- KPI snapshot is generated automatically at every 10-trade boundary.
+
 ---
 
 ## 1) Freeze Window (required)
@@ -71,4 +80,3 @@ Rule:
 - Daily: append trade rows + quick KPI note.
 - Every 10 trades: full KPI snapshot.
 - At 20 trades: tuning decision (hold/revert/adjust 1 variable).
-

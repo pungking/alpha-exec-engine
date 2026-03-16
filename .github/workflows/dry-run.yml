@@ -287,6 +287,20 @@ jobs:
           } else {
             lines.push("- regime guard state: not found");
           }
+          const perfLoopPath = "state/stage6-20trade-loop.json";
+          if (fs.existsSync(perfLoopPath)) {
+            const perfLoop = JSON.parse(fs.readFileSync(perfLoopPath, "utf8"));
+            const tradeCount =
+              perfLoop?.rows && typeof perfLoop.rows === "object"
+                ? Object.keys(perfLoop.rows).length
+                : 0;
+            const snapshotCount = Array.isArray(perfLoop?.snapshots) ? perfLoop.snapshots.length : 0;
+            lines.push(
+              `- perf_loop: \`batch=${perfLoop?.batchId || "N/A"} trades=${tradeCount} snapshots=${snapshotCount}\``
+            );
+          } else {
+            lines.push("- perf_loop: not found");
+          }
 
           lines.push("");
 
@@ -370,6 +384,8 @@ jobs:
             state/order-idempotency.json
             state/order-ledger.json
             state/regime-guard-state.json
+            state/stage6-20trade-loop.json
+            state/stage6-20trade-loop.csv
             state/validation-pack/**
             state/payload-probe/**
           if-no-files-found: warn
