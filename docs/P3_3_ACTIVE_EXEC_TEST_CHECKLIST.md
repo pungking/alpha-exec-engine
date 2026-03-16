@@ -228,19 +228,28 @@ Evidence
 - artifact:
 - summary snippet:
 
-### TC-0.9C (Stage6 -> Sidecar auto-trigger, pending)
+### TC-0.9C (Stage6 -> Sidecar auto-trigger, PASS)
 
-- [ ] `US_Alpha_Seeker` secrets에 `SIDECAR_DISPATCH_TOKEN` 설정 (target: `pungking/alpha-exec-engine`)
-- [ ] From Stage6 pipeline, send `repository_dispatch(type=stage6_result_created)` once after Stage6 final dump is archived
-- [ ] Confirm sidecar-dry-run starts without manual click
-- [ ] Confirm Step Summary includes:
+- [x] `US_Alpha_Seeker` secrets에 `SIDECAR_DISPATCH_TOKEN` 설정 (target: `pungking/alpha-exec-engine`)
+- [x] From Stage6 pipeline, send `repository_dispatch(type=stage6_result_created)` once after Stage6 final dump is archived
+- [x] Confirm sidecar-dry-run starts without manual click
+- [x] Confirm Step Summary includes:
   - `trigger: event=repository_dispatch action=stage6_result_created`
   - `trigger_stage6: hash=... file=... sourceRun=...` (if payload provided)
 
 Evidence
-- stage6 run id:
-- sidecar run id:
+- stage6 run id: `US_Alpha_Seeker` run (`logs_60742122772.zip`)
+- sidecar run id: `23139289345` (`logs_60744574413.zip`, `sidecar-state-23139289345.zip`)
 - summary snippet:
+  - `[DISPATCH_OK] repo=pungking/alpha-exec-engine event=stage6_result_created file=STAGE6_ALPHA_FINAL_2026-03-16_19-31-40.json hash=a902a230 sourceRun=2026-03-16_19-31-38`
+  - `WORKFLOW_EVENT_NAME: repository_dispatch`
+  - `WORKFLOW_EVENT_ACTION: stage6_result_created`
+  - `[TRIGGER] event=repository_dispatch action=stage6_result_created`
+  - `[TRIGGER] stage6Hash=a902a230 stage6File=STAGE6_ALPHA_FINAL_2026-03-16_19-31-40.json sourceRun=2026-03-16_19-31-38`
+
+Note
+- `logs_60748849412.zip` / `sidecar-state-23140712565.zip`는 `schedule` fallback 런으로 확인됨
+  (`WORKFLOW_EVENT_NAME: schedule`). dispatch 런 증빙과 구분해서 보관.
 
 Checklist
 - [ ] Freeze policy for one batch (no threshold changes mid-batch)
