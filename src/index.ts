@@ -31,6 +31,16 @@ type Stage6LoadResult = {
   sha256: string;
   candidateSymbols: string[];
   candidates: Stage6CandidateSummary[];
+  modelTopCandidates: Stage6CandidateSummary[];
+  contractContext: Stage6ContractContext | null;
+};
+
+type Stage6ContractContext = {
+  modelTop6: Stage6CandidateSummary[];
+  executablePicks: Stage6CandidateSummary[];
+  watchlistTop: Stage6CandidateSummary[];
+  decisionCountsPrimary: Record<string, number>;
+  decisionCountsTop6: Record<string, number>;
 };
 
 type Stage6CandidateSummary = {
@@ -730,7 +740,10 @@ function extractVixFromMarketSnapshot(payload: unknown): number | null {
 function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
   if (!payload || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
-  const raw = root.alpha_candidates;
+  return parseCandidateSummariesFromRaw(root.alpha_candidates);
+}
+
+function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
 
   return raw
@@ -744,7 +757,7 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
       const expectedReturnRaw = node.expectedReturn ?? node.gatedExpectedReturn ?? node.rawExpectedReturn;
       const entryRaw = node.entryExecPrice ?? node.entryExecPriceShadow ?? node.entryPrice ?? node.otePrice ?? node.supportLevel;
       const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
-      const stopRaw = node.stopLoss ?? node.ictStopLoss;
+      const stopRaw = node.stopPrice ?? node.stopLoss ?? node.ictStopLoss;
       const entryDistanceRaw = node.entryDistancePct ?? node.entryDistancePctShadow;
       const entryFeasibleRaw = node.entryFeasible ?? node.entryFeasibleShadow;
       const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
@@ -824,6 +837,42 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
     })
     .filter((row): row is Stage6CandidateSummary => row !== null)
     .slice(0, 6);
+}
+
+function parseStage6DecisionCounts(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object") return {};
+  return Object.entries(raw as Record<string, unknown>).reduce<Record<string, number>>((acc, [key, value]) => {
+    const parsed = parseFiniteNumber(value);
+    if (!Number.isFinite(parsed)) return acc;
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return acc;
+    acc[safeKey] = Number(parsed);
+    return acc;
+  }, {});
+}
+
+function parseStage6ContractContext(payload: unknown): Stage6ContractContext | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as Record<string, unknown>;
+  const raw = root.execution_contract;
+  if (!raw || typeof raw !== "object") return null;
+  const node = raw as Record<string, unknown>;
+
+  const modelTop6 = parseCandidateSummariesFromRaw(node.modelTop6);
+  const executablePicks = parseCandidateSummariesFromRaw(node.executablePicks);
+  const watchlistTop = parseCandidateSummariesFromRaw(node.watchlistTop);
+  const decisionCountsPrimary = parseStage6DecisionCounts(node.decisionCountsPrimary);
+  const decisionCountsTop6 = parseStage6DecisionCounts(node.decisionCountsTop6);
+
+  if (modelTop6.length === 0 && executablePicks.length === 0 && watchlistTop.length === 0) return null;
+
+  return {
+    modelTop6,
+    executablePicks,
+    watchlistTop,
+    decisionCountsPrimary,
+    decisionCountsTop6
+  };
 }
 
 async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<VixLookupResult> {
@@ -1474,8 +1523,17 @@ async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6Loa
   const meta = await fetchLatestStage6Metadata(accessToken);
   const jsonText = await downloadStage6Json(accessToken, meta.id);
   const parsed = JSON.parse(jsonText) as unknown;
-  const symbols = extractCandidateSymbols(parsed);
-  const candidates = parseCandidateSummaries(parsed);
+  const contractContext = parseStage6ContractContext(parsed);
+  const fallbackCandidates = parseCandidateSummaries(parsed);
+  const candidates =
+    contractContext && contractContext.executablePicks.length > 0
+      ? contractContext.executablePicks
+      : fallbackCandidates;
+  const modelTopCandidates =
+    contractContext && contractContext.modelTop6.length > 0
+      ? contractContext.modelTop6
+      : fallbackCandidates;
+  const symbols = Array.from(new Set(candidates.map((row) => row.symbol).filter(Boolean)));
   const sha256 = createHash("sha256").update(jsonText).digest("hex");
 
   return {
@@ -1485,7 +1543,9 @@ async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6Loa
     md5Checksum: meta.md5Checksum,
     sha256,
     candidateSymbols: symbols,
-    candidates
+    candidates,
+    modelTopCandidates,
+    contractContext
   };
 }
 
@@ -1879,13 +1939,18 @@ function buildSimulationMessage(
   lines.push(
     `Policy Gate: raw ${result.candidates.length} -> actionable ${actionable.length} (BUY/STRONG_BUY only)`
   );
+  if (result.contractContext) {
+    lines.push(
+      `Contract Source: modelTop6=${result.contractContext.modelTop6.length} executablePicks=${result.contractContext.executablePicks.length} watchlistTop=${result.contractContext.watchlistTop.length}`
+    );
+  }
   lines.push("");
 
-  if (result.candidates.length === 0) {
+  if (result.modelTopCandidates.length === 0) {
     lines.push("Top6 summary: N/A");
   } else {
     lines.push("Top6 Summary");
-    result.candidates.forEach((row, index) => {
+    result.modelTopCandidates.forEach((row, index) => {
       lines.push(
         `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} XS#${row.executionScore ?? "-"} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
