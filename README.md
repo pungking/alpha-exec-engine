@@ -191,6 +191,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Publishes concise run summary to GitHub Step Summary.
   - Also supports `repository_dispatch` (`type=stage6_result_created`) for one-shot run right after a new Stage6 dump is generated.
     - Optional `client_payload`: `stage6Hash`, `stage6File`, `sourceRunId` (included in Step Summary trigger trace).
+  - Default schedule is kept as low-frequency weekday fallback (once/day UTC) to reduce duplicate spend when dispatch auto-runs are enabled.
   - Manual dispatch inputs:
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).

@@ -30,8 +30,8 @@ on:
           - "40"
           - "50"
   schedule:
-    # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
-    - cron: "7 * * * 1-5"
+    # Weekday fallback run (UTC): keep low-frequency to avoid duplicate spend with dispatch-driven runs.
+    - cron: "15 10 * * 1-5"
   repository_dispatch:
     types:
       - stage6_result_created

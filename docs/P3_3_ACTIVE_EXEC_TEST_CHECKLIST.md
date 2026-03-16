@@ -230,6 +230,7 @@ Evidence
 
 ### TC-0.9C (Stage6 -> Sidecar auto-trigger, pending)
 
+- [ ] `US_Alpha_Seeker` secrets에 `SIDECAR_DISPATCH_TOKEN` 설정 (target: `pungking/alpha-exec-engine`)
 - [ ] From Stage6 pipeline, send `repository_dispatch(type=stage6_result_created)` once after Stage6 final dump is archived
 - [ ] Confirm sidecar-dry-run starts without manual click
 - [ ] Confirm Step Summary includes:
