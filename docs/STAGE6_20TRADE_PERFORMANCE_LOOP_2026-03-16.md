@@ -11,6 +11,7 @@ Notes:
 - If you want to split batches manually, set `STAGE6_PERF_BATCH_ID` (e.g. `batch-2026w12`).
 - KPI snapshot is generated automatically at every 10-trade boundary.
 - Milestone notification is sent to simulation Telegram channel at 10 and 20 trades (`TELEGRAM_PERF_LOOP`).
+- For faster accumulation with low manual effort, trigger sidecar once per new Stage6 dump using `repository_dispatch(type=stage6_result_created)`.
 
 ---
 

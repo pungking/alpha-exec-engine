@@ -32,6 +32,9 @@ on:
   schedule:
     # Weekdays hourly (UTC). Adjust later if you want tighter cadence.
     - cron: "7 * * * 1-5"
+  repository_dispatch:
+    types:
+      - stage6_result_created
 
 concurrency:
   group: sidecar-dry-run-${{ github.ref }}
@@ -116,6 +119,11 @@ jobs:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_PRIMARY_CHAT_ID: ${{ vars.TELEGRAM_PRIMARY_CHAT_ID }}
       TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
+      WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+      WORKFLOW_EVENT_ACTION: ${{ github.event.action || '' }}
+      TRIGGER_STAGE6_HASH: ${{ github.event.client_payload.stage6Hash || github.event.client_payload.stage6_hash || '' }}
+      TRIGGER_STAGE6_FILE: ${{ github.event.client_payload.stage6File || github.event.client_payload.stage6_file || '' }}
+      TRIGGER_STAGE6_SOURCE_RUN: ${{ github.event.client_payload.sourceRunId || github.event.client_payload.source_run_id || '' }}
 
     steps:
       - uses: actions/checkout@v5
@@ -140,6 +148,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Trigger context
+        run: |
+          echo "[TRIGGER] event=${WORKFLOW_EVENT_NAME} action=${WORKFLOW_EVENT_ACTION:-n/a}"
+          echo "[TRIGGER] stage6Hash=${TRIGGER_STAGE6_HASH:-n/a} stage6File=${TRIGGER_STAGE6_FILE:-n/a} sourceRun=${TRIGGER_STAGE6_SOURCE_RUN:-n/a}"
 
       - name: Run dry-run bootstrap
         if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.validation_pack == 'true' || inputs.payload_probe == 'true')) }}
@@ -189,6 +202,21 @@ jobs:
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
+          const triggerEvent =
+            process.env.WORKFLOW_EVENT_NAME || process.env.GITHUB_EVENT_NAME || "N/A";
+          const triggerAction =
+            process.env.WORKFLOW_EVENT_ACTION && process.env.WORKFLOW_EVENT_ACTION.trim()
+              ? process.env.WORKFLOW_EVENT_ACTION.trim()
+              : "N/A";
+          lines.push(`- trigger: \`event=${triggerEvent} action=${triggerAction}\``);
+          const triggerStage6Hash = (process.env.TRIGGER_STAGE6_HASH || "").trim();
+          const triggerStage6File = (process.env.TRIGGER_STAGE6_FILE || "").trim();
+          const triggerStage6SourceRun = (process.env.TRIGGER_STAGE6_SOURCE_RUN || "").trim();
+          if (triggerStage6Hash || triggerStage6File || triggerStage6SourceRun) {
+            lines.push(
+              `- trigger_stage6: \`hash=${(triggerStage6Hash || "N/A").slice(0, 12)} file=${triggerStage6File || "N/A"} sourceRun=${triggerStage6SourceRun || "N/A"}\``
+            );
+          }
 
           if (fs.existsSync(statePath)) {
             const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
