@@ -192,6 +192,37 @@ Goal: tune for both recommendation quality and executable realism with one-varia
 Reference
 - `sidecar-template/alpha-exec-engine/docs/STAGE6_20TRADE_PERFORMANCE_LOOP_2026-03-16.md`
 
+### TC-0.9A (automation baseline, code-level)
+
+- [x] Sidecar writes loop state JSON automatically
+  - `state/stage6-20trade-loop.json`
+- [x] Sidecar writes loop state CSV automatically
+  - `state/stage6-20trade-loop.csv`
+- [x] Row upsert uses `idempotencyKey` (duplicate insertion guard)
+- [x] KPI snapshot is auto-generated every 10 trades (`[PERF_LOOP_KPI]`)
+- [x] workflow summary shows `perf_loop` (batch/trades/snapshots)
+- [x] artifacts include loop files (`state/stage6-20trade-loop.json`, `state/stage6-20trade-loop.csv`)
+- [x] batch split env supported (`STAGE6_PERF_BATCH_ID`)
+
+Evidence
+- code refs:
+  - `sidecar-template/alpha-exec-engine/src/index.ts`
+  - `sidecar-template/alpha-exec-engine/.github/workflows/dry-run.yml`
+- note: runtime evidence capture is tracked in TC-0.9B below
+
+### TC-0.9B (runtime evidence, pending)
+
+- [ ] Run sidecar-dry-run once and confirm `[PERF_LOOP]` log appears
+- [ ] At 10-trade boundary, confirm `[PERF_LOOP_KPI]` log appears
+- [ ] Download artifact and verify both loop files exist
+- [ ] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
+
+Evidence
+- run id:
+- key log lines:
+- artifact:
+- summary snippet:
+
 Checklist
 - [ ] Freeze policy for one batch (no threshold changes mid-batch)
 - [ ] Log every executed trade with AQ/XS, reason, entry/exit, R-multiple, slippage
