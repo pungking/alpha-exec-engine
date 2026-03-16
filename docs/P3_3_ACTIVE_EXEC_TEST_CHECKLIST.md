@@ -216,6 +216,8 @@ Evidence
 - [ ] At 10-trade boundary, confirm `[PERF_LOOP_KPI]` log appears
 - [ ] Download artifact and verify both loop files exist
 - [ ] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
+- [ ] Confirm summary line `perf_loop_latest_kpi: trades=... fillRatePct=... avgR=... holdErrMedian=... noReasonDrift=...`
+- [ ] Confirm summary line `perf_loop_gate: GO|NO_GO|PENDING_SAMPLE`
 
 Evidence
 - run id:

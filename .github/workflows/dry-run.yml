@@ -298,6 +298,36 @@ jobs:
             lines.push(
               `- perf_loop: \`batch=${perfLoop?.batchId || "N/A"} trades=${tradeCount} snapshots=${snapshotCount}\``
             );
+            if (snapshotCount > 0) {
+              const latestSnapshot = perfLoop.snapshots[snapshotCount - 1] || {};
+              const fillRate = Number.isFinite(Number(latestSnapshot.fillRatePct))
+                ? Number(latestSnapshot.fillRatePct).toFixed(2)
+                : "N/A";
+              const avgR = Number.isFinite(Number(latestSnapshot.avgR))
+                ? Number(latestSnapshot.avgR).toFixed(4)
+                : "N/A";
+              const holdErr = Number.isFinite(Number(latestSnapshot.medianHoldErrorDays))
+                ? Number(latestSnapshot.medianHoldErrorDays).toFixed(2)
+                : "N/A";
+              const drift = Number.isFinite(Number(latestSnapshot.noReasonDrift))
+                ? Number(latestSnapshot.noReasonDrift)
+                : "N/A";
+              lines.push(
+                `- perf_loop_latest_kpi: \`trades=${latestSnapshot.tradeCount ?? tradeCount} fillRatePct=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}\``
+              );
+              const hasEnoughTrades = Number(latestSnapshot.tradeCount) >= 20;
+              const passFill = Number(latestSnapshot.fillRatePct) >= 60;
+              const passAvgR = Number(latestSnapshot.avgR) > 0;
+              const passDrift = Number(latestSnapshot.noReasonDrift) === 0;
+              const gateStatus = hasEnoughTrades
+                ? passFill && passAvgR && passDrift
+                  ? "GO"
+                  : "NO_GO"
+                : "PENDING_SAMPLE";
+              lines.push(`- perf_loop_gate: \`${gateStatus}\``);
+            } else {
+              lines.push("- perf_loop_latest_kpi: `N/A (no 10-trade snapshot yet)`");
+            }
           } else {
             lines.push("- perf_loop: not found");
           }
