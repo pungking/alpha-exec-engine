@@ -326,6 +326,25 @@ type PerformanceLoopState = {
   policyFingerprint: string;
   rows: Record<string, PerformanceLoopRow>;
   snapshots: PerformanceLoopSnapshot[];
+  notifiedMilestones: number[];
+};
+
+type PerformanceLoopGateStatus = "PENDING_SAMPLE" | "GO" | "NO_GO";
+
+type PerformanceLoopGate = {
+  status: PerformanceLoopGateStatus;
+  reason: string;
+  progress: string;
+};
+
+type PerformanceLoopUpdateResult = {
+  batchId: string;
+  tradeCount: number;
+  snapshotCount: number;
+  gate: PerformanceLoopGate;
+  latestSnapshot: PerformanceLoopSnapshot | null;
+  alertMessage: string | null;
+  updated: boolean;
 };
 
 type OrderIdempotencyState = {
@@ -2099,6 +2118,15 @@ async function sendSimulationTelegram(
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
 
+async function sendPerformanceLoopMilestoneAlert(
+  perfLoop: PerformanceLoopUpdateResult
+): Promise<void> {
+  if (!perfLoop.alertMessage) return;
+  const token = process.env.TELEGRAM_TOKEN || "";
+  const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
+  await sendTelegramMessage(token, chatId, perfLoop.alertMessage, "TELEGRAM_PERF_LOOP");
+}
+
 async function sendHeartbeatOnDedupe(stage6: Stage6LoadResult, mode: string): Promise<void> {
   const enabled = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   if (!enabled) return;
@@ -2379,6 +2407,78 @@ function toPerformanceCsv(rows: PerformanceLoopRow[]): string {
   return [header.join(","), ...body].join("\n");
 }
 
+function evaluatePerformanceLoopGate(
+  latestSnapshot: PerformanceLoopSnapshot | null,
+  tradeCount: number
+): PerformanceLoopGate {
+  const requiredTrades = 20;
+  const observedTrades =
+    latestSnapshot && Number.isFinite(Number(latestSnapshot.tradeCount))
+      ? Number(latestSnapshot.tradeCount)
+      : tradeCount;
+
+  if (observedTrades < requiredTrades) {
+    return {
+      status: "PENDING_SAMPLE",
+      reason: `sample_insufficient(trades=${observedTrades},required>=${requiredTrades})`,
+      progress: `${Math.min(observedTrades, requiredTrades)}/${requiredTrades}`
+    };
+  }
+
+  const passFill = Number(latestSnapshot?.fillRatePct) >= 60;
+  const passAvgR = Number(latestSnapshot?.avgR) > 0;
+  const passDrift = Number(latestSnapshot?.noReasonDrift) === 0;
+  const failReasons: string[] = [];
+  if (!passFill) failReasons.push("fill_rate_below_60");
+  if (!passAvgR) failReasons.push("avgR_not_positive");
+  if (!passDrift) failReasons.push("reason_drift_detected");
+
+  return {
+    status: failReasons.length === 0 ? "GO" : "NO_GO",
+    reason: failReasons.length === 0 ? "all_must_pass_checks_ok" : failReasons.join("|"),
+    progress: `${requiredTrades}/${requiredTrades}`
+  };
+}
+
+function buildPerformanceLoopAlertMessage(
+  result: PerformanceLoopUpdateResult,
+  milestone: number
+): string {
+  const snapshot = result.latestSnapshot;
+  const fillRate =
+    snapshot && Number.isFinite(Number(snapshot.fillRatePct))
+      ? `${Number(snapshot.fillRatePct).toFixed(2)}%`
+      : "N/A";
+  const avgR =
+    snapshot && Number.isFinite(Number(snapshot.avgR))
+      ? Number(snapshot.avgR).toFixed(4)
+      : "N/A";
+  const holdErr =
+    snapshot && Number.isFinite(Number(snapshot.medianHoldErrorDays))
+      ? Number(snapshot.medianHoldErrorDays).toFixed(2)
+      : "N/A";
+  const drift =
+    snapshot && Number.isFinite(Number(snapshot.noReasonDrift))
+      ? Number(snapshot.noReasonDrift)
+      : "N/A";
+
+  const statusIcon =
+    result.gate.status === "GO"
+      ? "✅"
+      : result.gate.status === "NO_GO"
+        ? "⚠️"
+        : "ℹ️";
+
+  return [
+    `${statusIcon} Stage6 Performance Loop Milestone`,
+    `Batch: ${result.batchId}`,
+    `Milestone: ${milestone} trades`,
+    `Gate: ${result.gate.status} (${result.gate.reason})`,
+    `Progress: ${result.gate.progress}`,
+    `KPI: fillRate=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}`
+  ].join("\n");
+}
+
 async function loadPerformanceLoopState(
   policyFingerprint: string
 ): Promise<PerformanceLoopState> {
@@ -2391,7 +2491,8 @@ async function loadPerformanceLoopState(
     updatedAt: now,
     policyFingerprint,
     rows: {},
-    snapshots: []
+    snapshots: [],
+    notifiedMilestones: []
   });
 
   try {
@@ -2412,6 +2513,16 @@ async function loadPerformanceLoopState(
     const snapshots = Array.isArray(parsed?.snapshots)
       ? (parsed.snapshots as PerformanceLoopSnapshot[])
       : [];
+    const notifiedMilestones = Array.isArray(parsed?.notifiedMilestones)
+      ? Array.from(
+          new Set(
+            parsed.notifiedMilestones
+              .map((value) => Number(value))
+              .filter((value) => Number.isFinite(value) && value > 0)
+              .map((value) => Math.round(value))
+          )
+        )
+      : [];
 
     return {
       batchId: resolvedBatch,
@@ -2428,7 +2539,8 @@ async function loadPerformanceLoopState(
           ? parsed.policyFingerprint
           : policyFingerprint,
       rows,
-      snapshots
+      snapshots,
+      notifiedMilestones
     };
   } catch {
     return buildEmpty(batchOverride || makeDefaultBatchId());
@@ -2448,7 +2560,7 @@ async function updatePerformanceLoop(
   actionable: Stage6CandidateSummary[],
   dryExec: DryExecBuildResult,
   preflight: PreflightResult
-): Promise<void> {
+): Promise<PerformanceLoopUpdateResult> {
   const policyFingerprint = buildPerformancePolicyFingerprint(dryExec);
   const state = await loadPerformanceLoopState(policyFingerprint);
   const now = new Date().toISOString();
@@ -2459,6 +2571,9 @@ async function updatePerformanceLoop(
 
   let upserted = 0;
   let touched = 0;
+  let latestSnapshot: PerformanceLoopSnapshot | null =
+    state.snapshots.length > 0 ? state.snapshots[state.snapshots.length - 1] : null;
+  let alertMessage: string | null = null;
 
   for (const payload of dryExec.payloads) {
     const rowId =
@@ -2514,10 +2629,19 @@ async function updatePerformanceLoop(
   }
 
   if (touched === 0) {
+    const gate = evaluatePerformanceLoopGate(latestSnapshot, Object.keys(state.rows).length);
     console.log(
       `[PERF_LOOP] batch=${state.batchId} no-op (payloads=0) totalTrades=${Object.keys(state.rows).length}`
     );
-    return;
+    return {
+      batchId: state.batchId,
+      tradeCount: Object.keys(state.rows).length,
+      snapshotCount: state.snapshots.length,
+      gate,
+      latestSnapshot,
+      alertMessage: null,
+      updated: false
+    };
   }
 
   state.updatedAt = now;
@@ -2531,15 +2655,46 @@ async function updatePerformanceLoop(
   if (currentTradeCount > 0 && currentTradeCount % 10 === 0 && currentTradeCount !== lastSnapshotTradeCount) {
     const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
     state.snapshots.push(snapshot);
+    latestSnapshot = snapshot;
     console.log(
       `[PERF_LOOP_KPI] trades=${snapshot.tradeCount} fillRatePct=${snapshot.fillRatePct ?? "N/A"} avgR=${snapshot.avgR ?? "N/A"} holdErrMedian=${snapshot.medianHoldErrorDays ?? "N/A"} noReasonDrift=${snapshot.noReasonDrift}`
     );
+
+    const milestone = snapshot.tradeCount;
+    const shouldNotifyMilestone = [10, 20].includes(milestone);
+    const alreadyNotified = state.notifiedMilestones.includes(milestone);
+    if (shouldNotifyMilestone && !alreadyNotified) {
+      const gate = evaluatePerformanceLoopGate(snapshot, currentTradeCount);
+      state.notifiedMilestones.push(milestone);
+      alertMessage = buildPerformanceLoopAlertMessage(
+        {
+          batchId: state.batchId,
+          tradeCount: currentTradeCount,
+          snapshotCount: state.snapshots.length,
+          gate,
+          latestSnapshot: snapshot,
+          alertMessage: null,
+          updated: true
+        },
+        milestone
+      );
+    }
   }
 
   await savePerformanceLoopState(state);
+  const gate = evaluatePerformanceLoopGate(latestSnapshot, currentTradeCount);
   console.log(
-    `[PERF_LOOP] batch=${state.batchId} upserted=${upserted} touched=${touched} totalTrades=${currentTradeCount} snapshots=${state.snapshots.length}`
+    `[PERF_LOOP] batch=${state.batchId} upserted=${upserted} touched=${touched} totalTrades=${currentTradeCount} snapshots=${state.snapshots.length} gate=${gate.status} reason=${gate.reason} progress=${gate.progress}`
   );
+  return {
+    batchId: state.batchId,
+    tradeCount: currentTradeCount,
+    snapshotCount: state.snapshots.length,
+    gate,
+    latestSnapshot,
+    alertMessage,
+    updated: true
+  };
 }
 
 async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
@@ -2988,7 +3143,8 @@ async function main() {
   const ledger = await updateOrderLedger(stage6, mode, finalDryExec, preflight);
   await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger, guardControl);
   await saveDryExecPreview(stage6, finalDryExec, preflight, ledger, guardControl);
-  await updatePerformanceLoop(stage6, actionable, finalDryExec, preflight);
+  const perfLoop = await updatePerformanceLoop(stage6, actionable, finalDryExec, preflight);
+  await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
   printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight, ledger);
 }

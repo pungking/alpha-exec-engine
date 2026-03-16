@@ -10,6 +10,7 @@ Notes:
 - Sidecar appends one row per generated payload (`idempotencyKey`-based dedupe).
 - If you want to split batches manually, set `STAGE6_PERF_BATCH_ID` (e.g. `batch-2026w12`).
 - KPI snapshot is generated automatically at every 10-trade boundary.
+- Milestone notification is sent to simulation Telegram channel at 10 and 20 trades (`TELEGRAM_PERF_LOOP`).
 
 ---
 

@@ -220,6 +220,7 @@ Evidence
 - [ ] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
 - [ ] Confirm summary line `perf_loop_gate_reason: ...`
 - [ ] Confirm summary line `perf_loop_gate_progress: current/20`
+- [ ] At 10/20 trades, confirm Telegram simulation channel receives milestone alert (`TELEGRAM_PERF_LOOP`)
 
 Evidence
 - run id:
