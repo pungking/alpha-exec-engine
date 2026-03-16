@@ -217,7 +217,9 @@ Evidence
 - [ ] Download artifact and verify both loop files exist
 - [ ] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
 - [ ] Confirm summary line `perf_loop_latest_kpi: trades=... fillRatePct=... avgR=... holdErrMedian=... noReasonDrift=...`
-- [ ] Confirm summary line `perf_loop_gate: GO|NO_GO|PENDING_SAMPLE`
+- [ ] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
+- [ ] Confirm summary line `perf_loop_gate_reason: ...`
+- [ ] Confirm summary line `perf_loop_gate_progress: current/20`
 
 Evidence
 - run id:

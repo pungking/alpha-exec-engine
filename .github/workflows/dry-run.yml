@@ -295,9 +295,13 @@ jobs:
                 ? Object.keys(perfLoop.rows).length
                 : 0;
             const snapshotCount = Array.isArray(perfLoop?.snapshots) ? perfLoop.snapshots.length : 0;
+            const requiredTrades = 20;
             lines.push(
               `- perf_loop: \`batch=${perfLoop?.batchId || "N/A"} trades=${tradeCount} snapshots=${snapshotCount}\``
             );
+            let gateStatus = "PENDING_SAMPLE";
+            let gateReason = `sample_insufficient(trades=${tradeCount},required>=${requiredTrades})`;
+            let gateProgress = `${tradeCount}/${requiredTrades}`;
             if (snapshotCount > 0) {
               const latestSnapshot = perfLoop.snapshots[snapshotCount - 1] || {};
               const fillRate = Number.isFinite(Number(latestSnapshot.fillRatePct))
@@ -315,19 +319,34 @@ jobs:
               lines.push(
                 `- perf_loop_latest_kpi: \`trades=${latestSnapshot.tradeCount ?? tradeCount} fillRatePct=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}\``
               );
-              const hasEnoughTrades = Number(latestSnapshot.tradeCount) >= 20;
+              const snapshotTradeCount = Number(latestSnapshot.tradeCount ?? tradeCount);
+              const hasEnoughTrades = snapshotTradeCount >= requiredTrades;
               const passFill = Number(latestSnapshot.fillRatePct) >= 60;
               const passAvgR = Number(latestSnapshot.avgR) > 0;
               const passDrift = Number(latestSnapshot.noReasonDrift) === 0;
-              const gateStatus = hasEnoughTrades
-                ? passFill && passAvgR && passDrift
-                  ? "GO"
-                  : "NO_GO"
-                : "PENDING_SAMPLE";
-              lines.push(`- perf_loop_gate: \`${gateStatus}\``);
+              gateProgress = `${Math.min(snapshotTradeCount, requiredTrades)}/${requiredTrades}`;
+              if (hasEnoughTrades) {
+                const failReasons = [];
+                if (!passFill) failReasons.push("fill_rate_below_60");
+                if (!passAvgR) failReasons.push("avgR_not_positive");
+                if (!passDrift) failReasons.push("reason_drift_detected");
+                if (failReasons.length === 0) {
+                  gateStatus = "GO";
+                  gateReason = "all_must_pass_checks_ok";
+                } else {
+                  gateStatus = "NO_GO";
+                  gateReason = failReasons.join("|");
+                }
+              } else {
+                gateStatus = "PENDING_SAMPLE";
+                gateReason = `sample_insufficient(trades=${snapshotTradeCount},required>=${requiredTrades})`;
+              }
             } else {
               lines.push("- perf_loop_latest_kpi: `N/A (no 10-trade snapshot yet)`");
             }
+            lines.push(`- perf_loop_gate_status: \`${gateStatus}\``);
+            lines.push(`- perf_loop_gate_reason: \`${gateReason}\``);
+            lines.push(`- perf_loop_gate_progress: \`${gateProgress}\``);
           } else {
             lines.push("- perf_loop: not found");
           }
