@@ -371,6 +371,7 @@ const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 const PERFORMANCE_LOOP_JSON_PATH = "state/stage6-20trade-loop.json";
 const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
 const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
+const NON_EXECUTABLE_DECISIONS = new Set(["WAIT_PRICE", "BLOCKED_RISK", "BLOCKED_EVENT"]);
 
 const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
   planned: new Set(["submitted", "accepted", "canceled", "rejected", "expired"]),
@@ -385,6 +386,19 @@ const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>>
 
 function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
+}
+
+function normalizeStage6Verdict(raw: unknown): string {
+  const key = String(raw ?? "").trim().toUpperCase().replace(/\s+/g, "_").replace(/-/g, "_");
+  if (!key || key === "N/A" || key === "NA" || key === "NONE" || key === "NULL" || key === "UNDEFINED" || key === "TBD") {
+    return "HOLD";
+  }
+  if (key === "STRONGBUY") return "STRONG_BUY";
+  if (key === "SPECULATIVEBUY") return "SPECULATIVE_BUY";
+  if (key === "WATCH" || key === "WAIT" || key === "OBSERVE" || key === "NEUTRAL") return "HOLD";
+  if (key === "SELL" || key === "EXIT" || key === "REDUCE" || key === "TRIM") return "PARTIAL_EXIT";
+  if (key === "ACCUMULATE" || key === "LONG") return "BUY";
+  return key;
 }
 
 function runEnvGuard(): EnvCheckResult {
@@ -836,7 +850,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const executionReasonRaw = typeof node.executionReason === "string" ? node.executionReason.trim().toUpperCase() : "";
       const finalDecisionRaw = typeof node.finalDecision === "string" ? node.finalDecision.trim().toUpperCase() : "";
       const decisionReasonRaw = typeof node.decisionReason === "string" ? node.decisionReason.trim().toLowerCase() : "";
-      const executionBucket: Stage6CandidateSummary["executionBucket"] =
+      let executionBucket: Stage6CandidateSummary["executionBucket"] =
         executionBucketRaw === "EXECUTABLE" ? "EXECUTABLE" : executionBucketRaw === "WATCHLIST" ? "WATCHLIST" : "N/A";
       const executionReason: Stage6CandidateSummary["executionReason"] =
         executionReasonRaw === "VALID_EXEC"
@@ -848,7 +862,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
             : executionReasonRaw === "INVALID_DATA"
                 ? "INVALID_DATA"
                 : "N/A";
-      const finalDecision: Stage6CandidateSummary["finalDecision"] =
+      let finalDecision: Stage6CandidateSummary["finalDecision"] =
         finalDecisionRaw === "EXECUTABLE_NOW"
           ? "EXECUTABLE_NOW"
           : finalDecisionRaw === "WAIT_PRICE"
@@ -862,7 +876,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
                   : executionBucket === "WATCHLIST"
                     ? "WAIT_PRICE"
                     : "N/A";
-      const decisionReason =
+      let decisionReason =
         decisionReasonRaw ||
         (executionReason === "WAIT_PULLBACK_TOO_DEEP"
           ? "wait_pullback_not_reached"
@@ -873,10 +887,26 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
               : executionReason === "VALID_EXEC"
                 ? "executable_pullback"
                 : "n/a");
+      const verdict = normalizeStage6Verdict(verdictRaw);
+
+      // Stage6 execution contract invariant:
+      // - EXECUTABLE_NOW must be paired with actionable verdict(BUY/STRONG_BUY)
+      // - non-executable decisions are always treated as watchlist on sidecar
+      if (finalDecision === "EXECUTABLE_NOW" && !ACTIONABLE_VERDICTS.has(verdict)) {
+        finalDecision = "WAIT_PRICE";
+        executionBucket = "WATCHLIST";
+        if (!decisionReason || decisionReason === "n/a" || decisionReason === "executable_pullback") {
+          decisionReason = "blocked_quality_verdict_unusable";
+        }
+      } else if (NON_EXECUTABLE_DECISIONS.has(finalDecision)) {
+        executionBucket = "WATCHLIST";
+      } else if (finalDecision === "EXECUTABLE_NOW") {
+        executionBucket = "EXECUTABLE";
+      }
 
       return {
         symbol,
-        verdict: typeof verdictRaw === "string" && verdictRaw.trim() ? verdictRaw.trim().toUpperCase() : "N/A",
+        verdict,
         expectedReturn:
           typeof expectedReturnRaw === "string" && expectedReturnRaw.trim() ? expectedReturnRaw.trim() : "N/A",
         entry: parsePrice(entryRaw),
@@ -1627,7 +1657,11 @@ function printStage6Lock(result: Stage6LoadResult) {
 }
 
 function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6CandidateSummary[] {
-  return candidates.filter((row) => ACTIONABLE_VERDICTS.has(row.verdict));
+  return candidates.filter(
+    (row) =>
+      ACTIONABLE_VERDICTS.has(row.verdict) &&
+      (row.finalDecision === "EXECUTABLE_NOW" || row.executionBucket === "EXECUTABLE")
+  );
 }
 
 function buildDryExecPayloads(
