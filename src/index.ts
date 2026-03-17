@@ -1413,13 +1413,18 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
   const level = levelRaw != null ? Math.max(0, Math.floor(levelRaw)) : null;
   const ageMin = computeAgeMinutes(updatedAt);
   const stale = maxAgeMin > 0 && ageMin != null && ageMin > maxAgeMin;
+  const liveMode = !cfg.readOnly && cfg.execEnabled;
+  const lastLevelDangerous = level != null ? level >= 2 : Boolean(state.haltNewEntries);
 
   if (stale) {
+    const keepHaltConservative = liveMode && lastLevelDangerous;
     return {
       enforce: true,
       maxAgeMin,
-      blocked: false,
-      reason: `stale(age=${ageMin.toFixed(1)}m>${maxAgeMin}m)`,
+      blocked: keepHaltConservative,
+      reason: `stale(age=${ageMin.toFixed(1)}m>${maxAgeMin}m)${
+        keepHaltConservative ? ",keeping_halt_conservative" : ""
+      }`,
       updatedAt,
       level,
       stale: true
