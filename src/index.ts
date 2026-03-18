@@ -69,6 +69,12 @@ type Stage6CandidateSummary = {
     | "BLOCKED_EVENT"
     | "N/A";
   decisionReason: string;
+  stage6Tier: "TIER1" | "TIER2" | "NONE" | "N/A";
+  stage6TierReason: string;
+  stage6TierMultiplier: number | null;
+  displacement: number | null;
+  ictPos: number | null;
+  trendAlignment: string | null;
   entryDistancePct: number | null;
   entryFeasible: boolean | null;
   tradePlanStatus: string;
@@ -834,7 +840,12 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const symbol = typeof node.symbol === "string" ? node.symbol.trim().toUpperCase() : "";
       if (!symbol) return null;
       const verdictRaw = node.verdictFinal ?? node.finalVerdict ?? node.aiVerdict ?? node.verdict;
-      const convictionRaw = node.convictionScore ?? node.rawConvictionScore;
+      const convictionRaw =
+        node.convictionScore ??
+        node.gatedConvictionScore ??
+        node.rawConvictionScore ??
+        node.convictionAiRaw ??
+        node.conviction;
       const expectedReturnRaw = node.expectedReturn ?? node.gatedExpectedReturn ?? node.rawExpectedReturn;
       const entryRaw = node.entryExecPrice ?? node.entryExecPriceShadow ?? node.entryPrice ?? node.otePrice ?? node.supportLevel;
       const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
@@ -850,6 +861,17 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const executionReasonRaw = typeof node.executionReason === "string" ? node.executionReason.trim().toUpperCase() : "";
       const finalDecisionRaw = typeof node.finalDecision === "string" ? node.finalDecision.trim().toUpperCase() : "";
       const decisionReasonRaw = typeof node.decisionReason === "string" ? node.decisionReason.trim().toLowerCase() : "";
+      const stage6TierRaw = typeof node.stage6Tier === "string" ? node.stage6Tier.trim().toUpperCase() : "";
+      const stage6TierReasonRaw = typeof node.stage6TierReason === "string" ? node.stage6TierReason.trim().toLowerCase() : "";
+      const stage6TierMultiplierRaw = parseFiniteNumber(node.stage6TierMultiplier);
+      const displacementRaw = parseFiniteNumber(node.displacement ?? getNestedValue(node, ["ictMetrics", "displacement"]));
+      const ictPosRaw = parseFiniteNumber(node.ictPos ?? node.stage6IctPos);
+      const trendAlignmentRaw =
+        typeof node.trendAlignment === "string"
+          ? node.trendAlignment.trim().toUpperCase()
+          : typeof getNestedValue(node, ["techMetrics", "trendAlignment"]) === "string"
+            ? String(getNestedValue(node, ["techMetrics", "trendAlignment"])).trim().toUpperCase()
+            : null;
       let executionBucket: Stage6CandidateSummary["executionBucket"] =
         executionBucketRaw === "EXECUTABLE" ? "EXECUTABLE" : executionBucketRaw === "WATCHLIST" ? "WATCHLIST" : "N/A";
       const executionReason: Stage6CandidateSummary["executionReason"] =
@@ -887,6 +909,14 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
               : executionReason === "VALID_EXEC"
                 ? "executable_pullback"
                 : "n/a");
+      const stage6Tier: Stage6CandidateSummary["stage6Tier"] =
+        stage6TierRaw === "TIER1"
+          ? "TIER1"
+          : stage6TierRaw === "TIER2"
+            ? "TIER2"
+            : stage6TierRaw === "NONE"
+              ? "NONE"
+              : "N/A";
       const verdict = normalizeStage6Verdict(verdictRaw);
 
       // Stage6 execution contract invariant:
@@ -926,6 +956,12 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
         executionReason,
         finalDecision,
         decisionReason,
+        stage6Tier,
+        stage6TierReason: stage6TierReasonRaw || "tier_none",
+        stage6TierMultiplier: stage6TierMultiplierRaw != null ? Number(stage6TierMultiplierRaw.toFixed(3)) : null,
+        displacement: displacementRaw != null ? Number(displacementRaw.toFixed(2)) : null,
+        ictPos: ictPosRaw != null ? Number(ictPosRaw.toFixed(4)) : null,
+        trendAlignment: trendAlignmentRaw,
         entryDistancePct: parseFiniteNumber(entryDistanceRaw),
         entryFeasible: parseBooleanValue(entryFeasibleRaw),
         tradePlanStatus:
@@ -2039,6 +2075,12 @@ function buildSimulationMessage(
   guardControl: GuardControlGate
 ): string {
   const cfg = loadRuntimeConfig();
+  const formatTierMeta = (row: Stage6CandidateSummary) => {
+    const tier = row.stage6Tier && row.stage6Tier !== "N/A" ? row.stage6Tier : "NONE";
+    const disp = row.displacement != null ? row.displacement.toFixed(1) : "-";
+    const pos = row.ictPos != null ? row.ictPos.toFixed(3) : "-";
+    return `Tier ${tier} | Disp ${disp} | ictPos ${pos}`;
+  };
   const lines: string[] = [];
   lines.push("🧪 Sidecar Dry-Run Report");
   lines.push(`Stage6: ${result.fileName}`);
@@ -2060,7 +2102,7 @@ function buildSimulationMessage(
     lines.push("Top6 Summary");
     result.modelTopCandidates.forEach((row, index) => {
       lines.push(
-        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} XS#${row.executionScore ?? "-"} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
+        `${index + 1}) ${row.symbol} | ${row.verdict} | ER ${row.expectedReturn} | Conv ${row.conviction} | M#${row.modelRank ?? "-"} E#${row.executionRank ?? "-"} XS#${row.executionScore ?? "-"} | ${formatTierMeta(row)} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
     });
   }
@@ -2072,7 +2114,7 @@ function buildSimulationMessage(
   } else {
     actionable.forEach((row, index) => {
       lines.push(
-        `${index + 1}) ${row.symbol} | ${row.verdict} | XS#${row.executionScore ?? "-"} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
+        `${index + 1}) ${row.symbol} | ${row.verdict} | XS#${row.executionScore ?? "-"} | ${formatTierMeta(row)} | ${row.executionBucket}/${row.executionReason} | D=${row.finalDecision}/${row.decisionReason} | ${row.entry}→${row.target} / ${row.stop}`
       );
     });
   }
