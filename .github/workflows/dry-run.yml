@@ -82,6 +82,9 @@ jobs:
       GUARD_CONTROL_MAX_AGE_MIN: ${{ vars.GUARD_CONTROL_MAX_AGE_MIN }}
       VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
       VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
+      DRY_STOP_DISTANCE_STAGE6_SYNC: ${{ vars.DRY_STOP_DISTANCE_STAGE6_SYNC }}
+      VITE_STAGE6_MIN_STOP_DISTANCE_PCT: ${{ vars.VITE_STAGE6_MIN_STOP_DISTANCE_PCT }}
+      VITE_STAGE6_MAX_STOP_DISTANCE_PCT: ${{ vars.VITE_STAGE6_MAX_STOP_DISTANCE_PCT }}
 
       DRY_DEFAULT_NOTIONAL_PER_TRADE: ${{ vars.DRY_DEFAULT_NOTIONAL_PER_TRADE }}
       DRY_DEFAULT_MAX_ORDERS: ${{ vars.DRY_DEFAULT_MAX_ORDERS }}
@@ -277,9 +280,21 @@ jobs:
               `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
             );
             const guardControl = preview?.guardControl || {};
+            const guardLevel =
+              Number.isFinite(Number(guardControl.level)) ? `L${Number(guardControl.level)}` : "N/A";
             lines.push(
-              `- guard_control: \`enforce=${guardControl.enforce ?? "N/A"} blocked=${guardControl.blocked ?? "N/A"} reason=${guardControl.reason ?? "N/A"}\``
+              `- guard_control: \`enforce=${guardControl.enforce ?? "N/A"} blocked=${guardControl.blocked ?? "N/A"} level=${guardLevel} stale=${guardControl.stale ?? "N/A"} updatedAt=${guardControl.updatedAt ?? "N/A"} reason=${guardControl.reason ?? "N/A"}\``
             );
+            const mode = preview?.mode || {};
+            lines.push(
+              `- mode: \`readOnly=${mode.readOnly ?? "N/A"} execEnabled=${mode.execEnabled ?? "N/A"} liveMode=${mode.liveMode ?? "N/A"}\``
+            );
+            const stopDistancePolicy = preview?.stopDistancePolicy || {};
+            if (Object.keys(stopDistancePolicy).length > 0) {
+              lines.push(
+                `- stop_distance_policy: \`sync=${stopDistancePolicy.syncWithStage6 ?? "N/A"} strategy=${stopDistancePolicy.strategy ?? "N/A"} configured=${stopDistancePolicy.configuredMinPct ?? "N/A"}~${stopDistancePolicy.configuredMaxPct ?? "N/A"} stage6=${stopDistancePolicy.stage6MinPct ?? "N/A"}~${stopDistancePolicy.stage6MaxPct ?? "N/A"} applied=${stopDistancePolicy.appliedMinPct ?? "N/A"}~${stopDistancePolicy.appliedMaxPct ?? "N/A"}\``
+              );
+            }
             const lifecycle = preview?.orderLifecycle || {};
             lines.push(
               `- lifecycle: \`enabled=${lifecycle.enabled ?? "N/A"} target=${lifecycle.targetStatus ?? "N/A"} upserted=${lifecycle.upserted ?? "N/A"} transitioned=${lifecycle.transitioned ?? "N/A"} unchanged=${lifecycle.unchanged ?? "N/A"}\``

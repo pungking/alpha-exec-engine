@@ -185,6 +185,16 @@ type DryExecBuildResult = {
   minConviction: number;
   minStopDistancePct: number;
   maxStopDistancePct: number;
+  stopDistancePolicy: {
+    syncWithStage6: boolean;
+    configuredMinPct: number;
+    configuredMaxPct: number;
+    stage6MinPct: number;
+    stage6MaxPct: number;
+    appliedMinPct: number;
+    appliedMaxPct: number;
+    strategy: "stage6_locked" | "stage6_fallback" | "configured";
+  };
   entryFeasibility: {
     enforce: boolean;
     maxDistancePct: number;
@@ -1738,20 +1748,39 @@ function buildDryExecPayloads(
     "DRY_MIN_CONVICTION",
     70
   );
-  const minStopDistancePct = readProfilePositiveNumber(
+  const configuredMinStopDistancePct = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MIN_STOP_DISTANCE_PCT",
     "DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT",
     "DRY_MIN_STOP_DISTANCE_PCT",
     2
   );
-  const maxStopDistancePct = readProfilePositiveNumber(
+  const configuredMaxStopDistancePctRaw = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MAX_STOP_DISTANCE_PCT",
     "DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT",
     "DRY_MAX_STOP_DISTANCE_PCT",
     25
   );
+  const configuredMaxStopDistancePct =
+    configuredMaxStopDistancePctRaw > configuredMinStopDistancePct
+      ? configuredMaxStopDistancePctRaw
+      : configuredMinStopDistancePct + 0.1;
+  const stage6MinStopDistancePct = readPositiveNumberEnv("VITE_STAGE6_MIN_STOP_DISTANCE_PCT", 1.5);
+  const stage6MaxStopDistancePctRaw = readPositiveNumberEnv("VITE_STAGE6_MAX_STOP_DISTANCE_PCT", 22);
+  const stage6MaxStopDistancePct =
+    stage6MaxStopDistancePctRaw > stage6MinStopDistancePct
+      ? stage6MaxStopDistancePctRaw
+      : stage6MinStopDistancePct + 0.1;
+  const syncStopDistanceWithStage6 = readBoolEnv("DRY_STOP_DISTANCE_STAGE6_SYNC", true);
+  let minStopDistancePct = configuredMinStopDistancePct;
+  let maxStopDistancePct = configuredMaxStopDistancePct;
+  let stopDistancePolicyStrategy: "stage6_locked" | "stage6_fallback" | "configured" = "configured";
+  if (syncStopDistanceWithStage6) {
+    minStopDistancePct = stage6MinStopDistancePct;
+    maxStopDistancePct = stage6MaxStopDistancePct;
+    stopDistancePolicyStrategy = "stage6_locked";
+  }
   const entryFeasibilityEnforce = readBoolEnv("ENTRY_FEASIBILITY_ENFORCE", false);
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
@@ -1899,6 +1928,16 @@ function buildDryExecPayloads(
     minConviction,
     minStopDistancePct,
     maxStopDistancePct,
+    stopDistancePolicy: {
+      syncWithStage6: syncStopDistanceWithStage6,
+      configuredMinPct: configuredMinStopDistancePct,
+      configuredMaxPct: configuredMaxStopDistancePct,
+      stage6MinPct: stage6MinStopDistancePct,
+      stage6MaxPct: stage6MaxStopDistancePct,
+      appliedMinPct: minStopDistancePct,
+      appliedMaxPct: maxStopDistancePct,
+      strategy: stopDistancePolicyStrategy
+    },
     entryFeasibility: {
       enforce: entryFeasibilityEnforce,
       maxDistancePct: entryMaxDistancePct,
@@ -2131,10 +2170,13 @@ function buildSimulationMessage(
     lines.push(`Entry Guard Reason: ${dryExec.regime.entryGuard.reason}`);
   }
   lines.push(
-    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
   );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
+  );
+  lines.push(
+    `StopDist Policy: syncStage6=${dryExec.stopDistancePolicy.syncWithStage6} strategy=${dryExec.stopDistancePolicy.strategy} configured=${dryExec.stopDistancePolicy.configuredMinPct}%~${dryExec.stopDistancePolicy.configuredMaxPct}% stage6=${dryExec.stopDistancePolicy.stage6MinPct}%~${dryExec.stopDistancePolicy.stage6MaxPct}% applied=${dryExec.stopDistancePolicy.appliedMinPct}%~${dryExec.stopDistancePolicy.appliedMaxPct}%`
   );
   lines.push(
     `Entry Feasibility Gate: enforce=${dryExec.entryFeasibility.enforce} maxDistancePct=${dryExec.entryFeasibility.maxDistancePct} checked=${dryExec.entryFeasibility.checked} blocked=${dryExec.entryFeasibility.blocked}`
@@ -2281,6 +2323,7 @@ async function saveDryExecPreview(
   ledger: OrderLedgerUpdateResult,
   guardControl: GuardControlGate
 ): Promise<void> {
+  const cfg = loadRuntimeConfig();
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -2294,12 +2337,18 @@ async function saveDryExecPreview(
     minConviction: dryExec.minConviction,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
+    stopDistancePolicy: dryExec.stopDistancePolicy,
     entryFeasibility: dryExec.entryFeasibility,
     stage6Contract: dryExec.stage6Contract,
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     preflight,
     guardControl,
+    mode: {
+      readOnly: cfg.readOnly,
+      execEnabled: cfg.execEnabled,
+      liveMode: !cfg.readOnly && cfg.execEnabled
+    },
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
     skipReasonCounts: dryExec.skipReasonCounts,
@@ -3074,6 +3123,10 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `MIN_CONV=${dryExec.minConviction}`,
     `STOP_MIN=${dryExec.minStopDistancePct}`,
     `STOP_MAX=${dryExec.maxStopDistancePct}`,
+    `STOP_POLICY_SYNC_STAGE6=${dryExec.stopDistancePolicy.syncWithStage6}`,
+    `STOP_POLICY=${dryExec.stopDistancePolicy.strategy}`,
+    `STOP_CONFIG=${dryExec.stopDistancePolicy.configuredMinPct}~${dryExec.stopDistancePolicy.configuredMaxPct}`,
+    `STOP_STAGE6=${dryExec.stopDistancePolicy.stage6MinPct}~${dryExec.stopDistancePolicy.stage6MaxPct}`,
     `ENTRY_FEAS_ENFORCE=${dryExec.entryFeasibility.enforce}`,
     `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
@@ -3095,6 +3148,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `GUARD_CONTROL_ENFORCE=${guardControl.enforce}`,
     `GUARD_CONTROL_MAX_AGE_MIN=${guardControl.maxAgeMin}`,
     `GUARD_CONTROL_BLOCKED=${guardControl.blocked}`,
+    `GUARD_CONTROL_LEVEL=${guardControl.level != null ? `L${guardControl.level}` : "N/A"}`,
+    `GUARD_CONTROL_STALE=${guardControl.stale}`,
     `HEARTBEAT=${heartbeatOnDedupe}`
   ].join(";");
 }
