@@ -47,9 +47,13 @@ type Stage6CandidateSummary = {
   symbol: string;
   verdict: string;
   expectedReturn: string;
+  expectedReturnPct: number | null;
   entry: string;
+  entryValue: number | null;
   target: string;
+  targetValue: number | null;
   stop: string;
+  stopValue: number | null;
   conviction: string;
   qualityScore: number | null;
   modelRank: number | null;
@@ -606,6 +610,35 @@ function parseNumericPrice(label: string): number | null {
   return n;
 }
 
+function parsePriceValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    return parseNumericPrice(value.trim());
+  }
+  return null;
+}
+
+function normalizePercentValue(value: number): number {
+  if (!Number.isFinite(value)) return value;
+  return Math.abs(value) <= 1 ? value * 100 : value;
+}
+
+function formatExpectedReturnLabel(raw: unknown, fallbackPct: number | null): string {
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+
+  const rawNumeric = parseFiniteNumber(raw);
+  if (rawNumeric != null) {
+    const pct = normalizePercentValue(rawNumeric);
+    return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+  }
+
+  if (fallbackPct != null) {
+    const pct = normalizePercentValue(fallbackPct);
+    return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+  }
+  return "N/A";
+}
+
 function parseFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -861,9 +894,15 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
         node.convictionAiRaw ??
         node.conviction;
       const expectedReturnRaw = node.expectedReturn ?? node.gatedExpectedReturn ?? node.rawExpectedReturn;
+      const expectedReturnPctRaw = parseFiniteNumber(
+        node.expectedReturnPct ?? node.gatedExpectedReturnPct ?? node.rawExpectedReturnPct
+      );
       const entryRaw = node.entryExecPrice ?? node.entryExecPriceShadow ?? node.entryPrice ?? node.otePrice ?? node.supportLevel;
       const targetRaw = node.targetPrice ?? node.targetMeanPrice ?? node.resistanceLevel;
       const stopRaw = node.stopPrice ?? node.stopLoss ?? node.ictStopLoss;
+      const entryValueRaw = parsePriceValue(entryRaw);
+      const targetValueRaw = parsePriceValue(targetRaw);
+      const stopValueRaw = parsePriceValue(stopRaw);
       const entryDistanceRaw = node.entryDistancePct ?? node.entryDistancePctShadow;
       const entryFeasibleRaw = node.entryFeasible ?? node.entryFeasibleShadow;
       const tradePlanStatusRaw = node.tradePlanStatus ?? node.tradePlanStatusShadow;
@@ -951,11 +990,15 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       return {
         symbol,
         verdict,
-        expectedReturn:
-          typeof expectedReturnRaw === "string" && expectedReturnRaw.trim() ? expectedReturnRaw.trim() : "N/A",
+        expectedReturn: formatExpectedReturnLabel(expectedReturnRaw, expectedReturnPctRaw),
+        expectedReturnPct:
+          expectedReturnPctRaw != null ? Number(normalizePercentValue(expectedReturnPctRaw).toFixed(2)) : null,
         entry: parsePrice(entryRaw),
+        entryValue: entryValueRaw != null ? Number(entryValueRaw.toFixed(6)) : null,
         target: parsePrice(targetRaw),
+        targetValue: targetValueRaw != null ? Number(targetValueRaw.toFixed(6)) : null,
         stop: parsePrice(stopRaw),
+        stopValue: stopValueRaw != null ? Number(stopValueRaw.toFixed(6)) : null,
         conviction:
           typeof convictionRaw === "number" && Number.isFinite(convictionRaw)
             ? convictionRaw.toFixed(0)
@@ -1876,9 +1919,9 @@ function buildDryExecPayloads(
       return;
     }
 
-    const entry = parseNumericPrice(row.entry);
-    const target = parseNumericPrice(row.target);
-    const stop = parseNumericPrice(row.stop);
+    const entry = row.entryValue ?? parseNumericPrice(row.entry);
+    const target = row.targetValue ?? parseNumericPrice(row.target);
+    const stop = row.stopValue ?? parseNumericPrice(row.stop);
 
     if (!entry || !target || !stop) {
       skipped.push({ symbol: row.symbol, reason: "missing_or_invalid_price" });

@@ -956,11 +956,13 @@ async function submitOrder(order: Record<string, unknown>): Promise<void> {
 
 async function writeGuardControlState(decision: GuardDecision): Promise<void> {
   const payload = {
-    haltNewEntries: true,
+    haltNewEntries: decision.appliedLevel >= 2,
     source: "market_guard",
     level: decision.appliedLevel,
     profile: decision.profile,
-    reason: decision.actionReason,
+    reason: `${decision.levelReason}|${decision.actionReason}`,
+    mode: decision.mode,
+    shouldRunActions: decision.shouldRunActions,
     updatedAt: new Date().toISOString()
   };
   await mkdir("state", { recursive: true });
@@ -972,9 +974,8 @@ async function executeWarnRiskRising(): Promise<{ status: GuardActionStatus; det
   return { status: "executed", detail: "notification_only" };
 }
 
-async function executeHaltNewEntries(decision: GuardDecision): Promise<{ status: GuardActionStatus; detail: string }> {
-  await writeGuardControlState(decision);
-  return { status: "executed", detail: "guard_control_updated" };
+async function executeHaltNewEntries(_decision: GuardDecision): Promise<{ status: GuardActionStatus; detail: string }> {
+  return { status: "executed", detail: "guard_control_synced" };
 }
 
 async function executeCancelOpenEntries(): Promise<{ status: GuardActionStatus; detail: string }> {
@@ -1563,6 +1564,7 @@ async function main() {
   console.log(`[GUARD_CLOCK] ${clock.reason}`);
 
   const decision = buildDecision(signals, previous, clock.marketOpen, clock.nextOpen);
+  await writeGuardControlState(decision);
   console.log(
     `[GUARD_LEVEL] applied=L${decision.appliedLevel} raw=L${decision.rawLevel} vix=L${decision.vixLevel} index=L${decision.indexLevel} reason=${decision.levelReason} action=${decision.actionReason}`
   );
