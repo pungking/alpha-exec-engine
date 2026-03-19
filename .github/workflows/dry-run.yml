@@ -48,6 +48,7 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
       READ_ONLY: ${{ vars.READ_ONLY }}
+      SIMULATION_LIVE_PARITY: ${{ vars.SIMULATION_LIVE_PARITY }}
       POLICY_VERSION: stage6-exec-v1.0-rc1
       TZ: ${{ vars.TZ }}
       DRY_NOTIONAL_PER_TRADE: ${{ vars.DRY_NOTIONAL_PER_TRADE }}
@@ -277,17 +278,17 @@ jobs:
             );
             const preflight = preview?.preflight || {};
             lines.push(
-              `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
+              `- preflight: \`status=${preflight.status ?? "N/A"} code=${preflight.code ?? "N/A"} blocking=${preflight.blocking ?? "N/A"} wouldBlockLive=${preflight.wouldBlockLive ?? "N/A"} liveParity=${preflight.simulatedLiveParity ?? "N/A"} required=${preflight.requiredNotional ?? "N/A"}\``
             );
             const guardControl = preview?.guardControl || {};
             const guardLevel =
               Number.isFinite(Number(guardControl.level)) ? `L${Number(guardControl.level)}` : "N/A";
             lines.push(
-              `- guard_control: \`enforce=${guardControl.enforce ?? "N/A"} blocked=${guardControl.blocked ?? "N/A"} level=${guardLevel} stale=${guardControl.stale ?? "N/A"} updatedAt=${guardControl.updatedAt ?? "N/A"} reason=${guardControl.reason ?? "N/A"}\``
+              `- guard_control: \`enforce=${guardControl.enforce ?? "N/A"} blocked=${guardControl.blocked ?? "N/A"} wouldBlockLive=${guardControl.wouldBlockLive ?? "N/A"} level=${guardLevel} stale=${guardControl.stale ?? "N/A"} updatedAt=${guardControl.updatedAt ?? "N/A"} reason=${guardControl.reason ?? "N/A"}\``
             );
             const mode = preview?.mode || {};
             lines.push(
-              `- mode: \`readOnly=${mode.readOnly ?? "N/A"} execEnabled=${mode.execEnabled ?? "N/A"} liveMode=${mode.liveMode ?? "N/A"}\``
+              `- mode: \`readOnly=${mode.readOnly ?? "N/A"} execEnabled=${mode.execEnabled ?? "N/A"} liveMode=${mode.liveMode ?? "N/A"} simulationLiveParity=${mode.simulationLiveParity ?? "N/A"}\``
             );
             const stopDistancePolicy = preview?.stopDistancePolicy || {};
             if (Object.keys(stopDistancePolicy).length > 0) {

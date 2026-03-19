@@ -140,6 +140,7 @@ type GuardControlGate = {
   enforce: boolean;
   maxAgeMin: number;
   blocked: boolean;
+  wouldBlockLive: boolean;
   reason: string;
   updatedAt: string | null;
   level: number | null;
@@ -224,6 +225,8 @@ type PreflightResult = {
   enabled: boolean;
   enforced: boolean;
   blocking: boolean;
+  wouldBlockLive: boolean;
+  simulatedLiveParity: boolean;
   status: PreflightStatus;
   code: string;
   message: string;
@@ -439,7 +442,7 @@ function runEnvGuard(): EnvCheckResult {
     if (!hasValue(process.env[key])) missing.push(key);
   }
 
-  const needsAlpacaCreds = cfg.execEnabled || !cfg.readOnly;
+  const needsAlpacaCreds = cfg.execEnabled || !cfg.readOnly || cfg.simulationLiveParity;
   if (needsAlpacaCreds) {
     for (const key of ["ALPACA_KEY_ID", "ALPACA_SECRET_KEY"]) {
       if (!hasValue(process.env[key])) missing.push(key);
@@ -464,6 +467,7 @@ function printStartupSummary() {
   console.log(`timezone         : ${cfg.timezone}`);
   console.log(`EXEC_ENABLED     : ${cfg.execEnabled}`);
   console.log(`READ_ONLY        : ${cfg.readOnly}`);
+  console.log(`LIVE_PARITY_SIM  : ${cfg.simulationLiveParity}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -1433,6 +1437,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
       enforce: false,
       maxAgeMin,
       blocked: false,
+      wouldBlockLive: false,
       reason: "disabled",
       updatedAt: null,
       level: null,
@@ -1446,6 +1451,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
       enforce: true,
       maxAgeMin,
       blocked: false,
+      wouldBlockLive: false,
       reason: "state_missing",
       updatedAt: null,
       level: null,
@@ -1460,17 +1466,21 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
   const ageMin = computeAgeMinutes(updatedAt);
   const stale = maxAgeMin > 0 && ageMin != null && ageMin > maxAgeMin;
   const liveMode = !cfg.readOnly && cfg.execEnabled;
+  const simulationLiveParity = cfg.simulationLiveParity;
+  const liveParityGuard = liveMode || simulationLiveParity;
   const lastLevelDangerous = level != null ? level >= 2 : Boolean(state.haltNewEntries);
 
   if (stale) {
-    const keepHaltConservative = liveMode && lastLevelDangerous;
+    const keepHaltConservative = liveParityGuard && lastLevelDangerous;
+    let reason = `stale(age=${ageMin.toFixed(1)}m>${maxAgeMin}m)`;
+    if (lastLevelDangerous) reason += ",halt_level_dangerous";
+    if (keepHaltConservative && !liveMode) reason += ",simulated_live_parity";
     return {
       enforce: true,
       maxAgeMin,
       blocked: keepHaltConservative,
-      reason: `stale(age=${ageMin.toFixed(1)}m>${maxAgeMin}m)${
-        keepHaltConservative ? ",keeping_halt_conservative" : ""
-      }`,
+      wouldBlockLive: lastLevelDangerous,
+      reason,
       updatedAt,
       level,
       stale: true
@@ -1482,6 +1492,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
       enforce: true,
       maxAgeMin,
       blocked: false,
+      wouldBlockLive: false,
       reason: "halt_new_entries_false",
       updatedAt,
       level,
@@ -1489,11 +1500,12 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     };
   }
 
-  if (cfg.readOnly || !cfg.execEnabled) {
+  if (!liveParityGuard) {
     return {
       enforce: true,
       maxAgeMin,
       blocked: false,
+      wouldBlockLive: true,
       reason: `non_live_mode(readOnly=${cfg.readOnly},execEnabled=${cfg.execEnabled})`,
       updatedAt,
       level,
@@ -1506,7 +1518,8 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     enforce: true,
     maxAgeMin,
     blocked: true,
-    reason: `guard_control_halt_new_entries(level=${levelLabel})`,
+    wouldBlockLive: true,
+    reason: `guard_control_halt_new_entries(level=${levelLabel})${!liveMode ? ",simulated_live_parity" : ""}`,
     updatedAt,
     level,
     stale: false
@@ -1534,6 +1547,25 @@ function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: Guard
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
     reason: `entry_blocked:${gate.reason}`
+  }));
+  const skipped = [...dryExec.skipped, ...blockedSkips];
+
+  return {
+    ...dryExec,
+    payloads: [],
+    skipped,
+    skipReasonCounts: buildSkipReasonCounts(skipped)
+  };
+}
+
+function applyPreflightGateToDryExec(
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
+): DryExecBuildResult {
+  if (!preflight.blocking || dryExec.payloads.length === 0) return dryExec;
+  const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
+    symbol: row.symbol,
+    reason: `preflight_blocked:${preflight.code}`
   }));
   const skipped = [...dryExec.skipped, ...blockedSkips];
 
@@ -1986,7 +2018,8 @@ async function fetchAlpacaJson(path: string): Promise<unknown> {
 async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightResult> {
   const cfg = loadRuntimeConfig();
   const enabled = readBoolEnv("PREFLIGHT_ENABLED", true);
-  const enforced = enabled && cfg.execEnabled;
+  const simulatedLiveParity = cfg.simulationLiveParity && !cfg.execEnabled;
+  const enforced = enabled && (cfg.execEnabled || simulatedLiveParity);
   const allowEntryOutsideRth = readBoolEnv("ALLOW_ENTRY_OUTSIDE_RTH", false);
   const dailyMaxNotional = readNonNegativeNumberEnv("DAILY_MAX_NOTIONAL", 5000);
   const requiredNotional = roundToCent(sumNotional(dryExec.payloads));
@@ -2000,6 +2033,8 @@ async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightR
     enabled,
     enforced,
     blocking: status === "fail" && enforced,
+    wouldBlockLive: status === "fail",
+    simulatedLiveParity,
     status,
     code,
     message,
@@ -2017,7 +2052,10 @@ async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightR
     code: string,
     message: string,
     patch?: Partial<PreflightResult>
-  ): PreflightResult => makeResult(enforced ? "fail" : "warn", code, message, patch);
+  ): PreflightResult => makeResult(enforced ? "fail" : "warn", code, message, {
+    ...patch,
+    wouldBlockLive: true
+  });
 
   if (!enabled) {
     return makeResult("skip", "PREFLIGHT_DISABLED", "preflight disabled by env");
@@ -2170,7 +2208,7 @@ function buildSimulationMessage(
     lines.push(`Entry Guard Reason: ${dryExec.regime.entryGuard.reason}`);
   }
   lines.push(
-    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
   );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
@@ -2210,7 +2248,7 @@ function buildSimulationMessage(
   lines.push("");
   lines.push("Preflight Gate");
   lines.push(
-    `Status: ${preflight.status.toUpperCase()} | code=${preflight.code} | enforced=${preflight.enforced} | blocking=${preflight.blocking}`
+    `Status: ${preflight.status.toUpperCase()} | code=${preflight.code} | enforced=${preflight.enforced} | blocking=${preflight.blocking} | wouldBlockLive=${preflight.wouldBlockLive} | liveParity=${preflight.simulatedLiveParity}`
   );
   lines.push(`Message: ${preflight.message}`);
   lines.push(
@@ -2222,7 +2260,9 @@ function buildSimulationMessage(
   lines.push(`Account: ${preflight.accountStatus ?? "N/A"}`);
 
   lines.push("");
-  lines.push(`Mode: READ_ONLY=${cfg.readOnly}, EXEC_ENABLED=${cfg.execEnabled}`);
+  lines.push(
+    `Mode: READ_ONLY=${cfg.readOnly}, EXEC_ENABLED=${cfg.execEnabled}, SIMULATION_LIVE_PARITY=${cfg.simulationLiveParity}`
+  );
   return lines.join("\n");
 }
 
@@ -2347,7 +2387,8 @@ async function saveDryExecPreview(
     mode: {
       readOnly: cfg.readOnly,
       execEnabled: cfg.execEnabled,
-      liveMode: !cfg.readOnly && cfg.execEnabled
+      liveMode: !cfg.readOnly && cfg.execEnabled,
+      simulationLiveParity: cfg.simulationLiveParity
     },
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
@@ -3116,6 +3157,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
+    `SIMULATION_LIVE_PARITY=${cfg.simulationLiveParity}`,
     `PROFILE=${dryExec.regime.profile}`,
     `NOTIONAL=${dryExec.notionalPerOrder}`,
     `MAX_ORDERS=${dryExec.maxOrders}`,
@@ -3167,7 +3209,7 @@ function printRunSummary(
   ledger: OrderLedgerUpdateResult
 ): void {
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -3178,6 +3220,7 @@ function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mod
 
 async function main() {
   printStartupSummary();
+  const cfg = loadRuntimeConfig();
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
@@ -3200,7 +3243,7 @@ async function main() {
   if (guardControl.enforce) {
     const levelLabel = guardControl.level != null ? `L${guardControl.level}` : "N/A";
     console.log(
-      `[GUARD_CONTROL] enforce=true blocked=${guardControl.blocked} reason=${guardControl.reason} level=${levelLabel} maxAgeMin=${guardControl.maxAgeMin} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+      `[GUARD_CONTROL] enforce=true blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} reason=${guardControl.reason} level=${levelLabel} maxAgeMin=${guardControl.maxAgeMin} updatedAt=${guardControl.updatedAt ?? "N/A"}`
     );
   }
   if (guardControl.blocked) {
@@ -3245,6 +3288,8 @@ async function main() {
       enabled: readBoolEnv("PREFLIGHT_ENABLED", true),
       enforced: false,
       blocking: false,
+      wouldBlockLive: false,
+      simulatedLiveParity: cfg.simulationLiveParity && !cfg.execEnabled,
       status: "skip",
       code: "PREFLIGHT_NOT_RUN_DEDUPE",
       message: "dedupe skip: preflight not executed",
@@ -3270,19 +3315,20 @@ async function main() {
   const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
   const preflight = await runPreflightGate(finalDryExec);
   console.log(
-    `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
+    `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} wouldBlockLive=${preflight.wouldBlockLive} liveParity=${preflight.simulatedLiveParity} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
   );
-  if (preflight.blocking) {
+  if (preflight.blocking && cfg.execEnabled) {
     throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
   }
+  const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
 
-  const ledger = await updateOrderLedger(stage6, mode, finalDryExec, preflight);
-  await sendSimulationTelegram(stage6, actionable, finalDryExec, preflight, ledger, guardControl);
-  await saveDryExecPreview(stage6, finalDryExec, preflight, ledger, guardControl);
-  const perfLoop = await updatePerformanceLoop(stage6, actionable, finalDryExec, preflight);
+  const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
+  await sendSimulationTelegram(stage6, actionable, postPreflightDryExec, preflight, ledger, guardControl);
+  await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl);
+  const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
-  printRunSummary("sent", stage6, actionable.length, finalDryExec, preflight, ledger);
+  printRunSummary("sent", stage6, actionable.length, postPreflightDryExec, preflight, ledger);
 }
 
 main().catch((error) => {
