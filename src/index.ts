@@ -1571,11 +1571,17 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
 
 function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSelection): DryExecBuildResult {
   if (!regime.entryGuard.blocked || dryExec.payloads.length === 0) return dryExec;
+  const capacityReasons = new Set(["max_orders_reached", "max_total_notional_reached"]);
+  const remappedSkips = dryExec.skipped.map((row) =>
+    capacityReasons.has(row.reason)
+      ? { symbol: row.symbol, reason: `entry_blocked:${regime.entryGuard.reason}` }
+      : row
+  );
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
     reason: `entry_blocked:${regime.entryGuard.reason}`
   }));
-  const skipped = [...dryExec.skipped, ...blockedSkips];
+  const skipped = [...remappedSkips, ...blockedSkips];
 
   return {
     ...dryExec,
@@ -1587,11 +1593,17 @@ function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSel
 
 function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: GuardControlGate): DryExecBuildResult {
   if (!gate.blocked || dryExec.payloads.length === 0) return dryExec;
+  const capacityReasons = new Set(["max_orders_reached", "max_total_notional_reached"]);
+  const remappedSkips = dryExec.skipped.map((row) =>
+    capacityReasons.has(row.reason)
+      ? { symbol: row.symbol, reason: `entry_blocked:${gate.reason}` }
+      : row
+  );
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
     reason: `entry_blocked:${gate.reason}`
   }));
-  const skipped = [...dryExec.skipped, ...blockedSkips];
+  const skipped = [...remappedSkips, ...blockedSkips];
 
   return {
     ...dryExec,
