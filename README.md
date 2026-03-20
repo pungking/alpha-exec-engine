@@ -90,6 +90,8 @@ Use `.env.example` as baseline.
 - `DRY_MAX_ORDERS`
 - `DRY_MAX_TOTAL_NOTIONAL`
 - `DRY_MIN_CONVICTION`
+- `DRY_MIN_CONVICTION_FLOOR` (optional lower clamp for adaptive conviction gate)
+- `DRY_MIN_CONVICTION_CEILING` (optional upper clamp for adaptive conviction gate)
 - `DRY_MIN_STOP_DISTANCE_PCT`
 - `DRY_MAX_STOP_DISTANCE_PCT`
 - `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
@@ -158,6 +160,17 @@ Use `.env.example` as baseline.
 - `DRY_RISK_OFF_*` : high-volatility defensive profile
 
 If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
+
+### Adaptive Conviction Gate
+- Sidecar applies an adaptive conviction floor from:
+  - base profile floor (`DRY_DEFAULT_MIN_CONVICTION` / `DRY_RISK_OFF_MIN_CONVICTION`)
+  - market tighten term (VIX-linked)
+  - quality relief term (regime quality score-linked)
+  - actionable sample cap (quantile cap)
+- Optional clamps:
+  - `DRY_DEFAULT_MIN_CONVICTION_FLOOR`, `DRY_DEFAULT_MIN_CONVICTION_CEILING`
+  - `DRY_RISK_OFF_MIN_CONVICTION_FLOOR`, `DRY_RISK_OFF_MIN_CONVICTION_CEILING`
+- Runtime logs expose `[CONV_POLICY] ...` for auditability.
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.

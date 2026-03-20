@@ -188,6 +188,18 @@ type DryExecBuildResult = {
   maxOrders: number;
   maxTotalNotional: number;
   minConviction: number;
+  minConvictionPolicy: {
+    base: number;
+    applied: number;
+    floor: number;
+    ceiling: number;
+    marketTighten: number;
+    qualityRelief: number;
+    sampleCount: number;
+    sampleQuantileQ: number;
+    sampleQuantileValue: number | null;
+    sampleCap: number | null;
+  };
   minStopDistancePct: number;
   maxStopDistancePct: number;
   stopDistancePolicy: {
@@ -710,6 +722,18 @@ function parseConviction(value: string): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+function percentile(values: number[], quantile: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const q = clamp(quantile, 0, 1);
+  const idx = (sorted.length - 1) * q;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  const weight = idx - lo;
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * weight;
 }
 
 function mapStage6ExecutionReasonToSkip(
@@ -1828,13 +1852,61 @@ function buildDryExecPayloads(
     "DRY_MAX_TOTAL_NOTIONAL",
     notionalPerOrder * maxOrders
   );
-  const minConviction = readProfilePositiveNumber(
+  const baseMinConviction = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MIN_CONVICTION",
     "DRY_RISK_OFF_MIN_CONVICTION",
     "DRY_MIN_CONVICTION",
     70
   );
+  const minConvictionFloorRaw = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MIN_CONVICTION_FLOOR",
+    "DRY_RISK_OFF_MIN_CONVICTION_FLOOR",
+    "DRY_MIN_CONVICTION_FLOOR",
+    regime.profile === "risk_off" ? 58 : 55
+  );
+  const minConvictionCeilingRaw = readProfilePositiveNumber(
+    regime.profile,
+    "DRY_DEFAULT_MIN_CONVICTION_CEILING",
+    "DRY_RISK_OFF_MIN_CONVICTION_CEILING",
+    "DRY_MIN_CONVICTION_CEILING",
+    90
+  );
+  const minConvictionFloor = Math.min(minConvictionFloorRaw, minConvictionCeilingRaw - 0.1);
+  const minConvictionCeiling =
+    minConvictionCeilingRaw > minConvictionFloor
+      ? minConvictionCeilingRaw
+      : minConvictionFloor + 0.1;
+  const convictionSamples = actionable
+    .map((row) => parseConviction(row.conviction))
+    .filter((value): value is number => value != null);
+  const sampleQuantileQ = regime.profile === "risk_off" ? 0.35 : 0.25;
+  const sampleQuantileValue = percentile(convictionSamples, sampleQuantileQ);
+  const sampleCap = sampleQuantileValue == null ? null : sampleQuantileValue + (regime.profile === "risk_off" ? 6 : 8);
+  const vixRef = regime.vix ?? regime.snapshotVix;
+  const marketTighten =
+    vixRef == null
+      ? 0
+      : regime.profile === "risk_off"
+        ? clamp((vixRef - 24) / 2, 0, 3)
+        : clamp((vixRef - 20) / 4, 0, 2);
+  const qualityRelief = clamp((regime.quality.score - 70) / 5, 0, 3);
+  let adaptiveMinConviction = baseMinConviction + marketTighten - qualityRelief;
+  if (sampleCap != null) adaptiveMinConviction = Math.min(adaptiveMinConviction, sampleCap);
+  const minConviction = Number(clamp(adaptiveMinConviction, minConvictionFloor, minConvictionCeiling).toFixed(1));
+  const minConvictionPolicy = {
+    base: Number(baseMinConviction.toFixed(1)),
+    applied: minConviction,
+    floor: Number(minConvictionFloor.toFixed(1)),
+    ceiling: Number(minConvictionCeiling.toFixed(1)),
+    marketTighten: Number(marketTighten.toFixed(2)),
+    qualityRelief: Number(qualityRelief.toFixed(2)),
+    sampleCount: convictionSamples.length,
+    sampleQuantileQ,
+    sampleQuantileValue: sampleQuantileValue != null ? Number(sampleQuantileValue.toFixed(2)) : null,
+    sampleCap: sampleCap != null ? Number(sampleCap.toFixed(2)) : null
+  };
   const configuredMinStopDistancePct = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MIN_STOP_DISTANCE_PCT",
@@ -2013,6 +2085,7 @@ function buildDryExecPayloads(
     maxOrders,
     maxTotalNotional,
     minConviction,
+    minConvictionPolicy,
     minStopDistancePct,
     maxStopDistancePct,
     stopDistancePolicy: {
@@ -2266,7 +2339,7 @@ function buildSimulationMessage(
     `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
   );
   lines.push(
-    `Gate: Conv>=${dryExec.minConviction} | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
+    `Gate: Conv>=${dryExec.minConviction} (base=${dryExec.minConvictionPolicy.base}, vix+${dryExec.minConvictionPolicy.marketTighten}, quality-${dryExec.minConvictionPolicy.qualityRelief}, sampleCap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}) | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
   lines.push(
     `StopDist Policy: syncStage6=${dryExec.stopDistancePolicy.syncWithStage6} strategy=${dryExec.stopDistancePolicy.strategy} configured=${dryExec.stopDistancePolicy.configuredMinPct}%~${dryExec.stopDistancePolicy.configuredMaxPct}% stage6=${dryExec.stopDistancePolicy.stage6MinPct}%~${dryExec.stopDistancePolicy.stage6MaxPct}% applied=${dryExec.stopDistancePolicy.appliedMinPct}%~${dryExec.stopDistancePolicy.appliedMaxPct}%`
@@ -2430,6 +2503,7 @@ async function saveDryExecPreview(
     maxOrders: dryExec.maxOrders,
     maxTotalNotional: dryExec.maxTotalNotional,
     minConviction: dryExec.minConviction,
+    minConvictionPolicy: dryExec.minConvictionPolicy,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -2457,6 +2531,9 @@ async function saveDryExecPreview(
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
+  console.log(
+    `[CONV_POLICY] base=${dryExec.minConvictionPolicy.base} applied=${dryExec.minConvictionPolicy.applied} floor=${dryExec.minConvictionPolicy.floor} ceiling=${dryExec.minConvictionPolicy.ceiling} vix+${dryExec.minConvictionPolicy.marketTighten} quality-${dryExec.minConvictionPolicy.qualityRelief} sampleN=${dryExec.minConvictionPolicy.sampleCount} q${Math.round(dryExec.minConvictionPolicy.sampleQuantileQ * 100)}=${dryExec.minConvictionPolicy.sampleQuantileValue ?? "N/A"} cap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}`
+  );
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
@@ -2479,6 +2556,8 @@ function buildPerformancePolicyFingerprint(dryExec: DryExecBuildResult): string 
   return [
     `profile=${dryExec.regime.profile}`,
     `conv=${dryExec.minConviction}`,
+    `convBase=${dryExec.minConvictionPolicy.base}`,
+    `convQCap=${dryExec.minConvictionPolicy.sampleCap ?? "n/a"}`,
     `stopMin=${dryExec.minStopDistancePct}`,
     `stopMax=${dryExec.maxStopDistancePct}`,
     `entryEnf=${dryExec.entryFeasibility.enforce}`,
