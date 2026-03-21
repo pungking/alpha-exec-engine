@@ -107,6 +107,7 @@ Use `.env.example` as baseline.
 - `ORDER_LEDGER_TTL_DAYS`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
+- `TELEGRAM_MAX_MESSAGE_LENGTH` (optional, default `3900`; auto-chunk guard for long messages)
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
 - `REGIME_VIX_SOURCE_PRIORITY` (`realtime_first|snapshot_first`)
