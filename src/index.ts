@@ -2434,24 +2434,68 @@ async function sendHeartbeatOnDedupe(stage6: Stage6LoadResult, mode: string): Pr
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_HEARTBEAT");
 }
 
-async function sendTelegramMessage(token: string, chatId: string, text: string, tag: string): Promise<void> {
-  const body = new URLSearchParams({
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: "true"
-  });
+function splitTelegramText(text: string, maxLen: number): string[] {
+  if (!text) return [""];
+  if (text.length <= maxLen) return [text];
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
+  const chunks: string[] = [];
+  const lines = text.split("\n");
+  let current = "";
 
-  if (!response.ok) {
-    const raw = await response.text();
-    throw new Error(`Telegram send failed (${response.status}): ${raw.slice(0, 240)}`);
+  const flushCurrent = () => {
+    if (!current) return;
+    chunks.push(current);
+    current = "";
+  };
+
+  for (const line of lines) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length <= maxLen) {
+      current = candidate;
+      continue;
+    }
+
+    flushCurrent();
+
+    if (line.length <= maxLen) {
+      current = line;
+      continue;
+    }
+
+    for (let idx = 0; idx < line.length; idx += maxLen) {
+      chunks.push(line.slice(idx, idx + maxLen));
+    }
   }
-  console.log(`[${tag}] sent to ${mask(chatId)}`);
+
+  flushCurrent();
+  return chunks.length > 0 ? chunks : [text.slice(0, maxLen)];
+}
+
+async function sendTelegramMessage(token: string, chatId: string, text: string, tag: string): Promise<void> {
+  const maxLen = Math.max(500, Math.floor(readPositiveNumberEnv("TELEGRAM_MAX_MESSAGE_LENGTH", 3900)));
+  const chunks = splitTelegramText(text, maxLen);
+
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const body = new URLSearchParams({
+      chat_id: chatId,
+      text: chunks[idx],
+      disable_web_page_preview: "true"
+    });
+
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+
+    if (!response.ok) {
+      const raw = await response.text();
+      throw new Error(
+        `Telegram send failed (${response.status}) chunk=${idx + 1}/${chunks.length}: ${raw.slice(0, 240)}`
+      );
+    }
+  }
+  console.log(`[${tag}] sent to ${mask(chatId)} chunks=${chunks.length}`);
 }
 
 async function loadRunState(): Promise<SidecarRunState | null> {
