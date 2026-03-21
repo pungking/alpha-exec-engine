@@ -45,6 +45,8 @@ type Stage6ContractContext = {
 
 type Stage6CandidateSummary = {
   symbol: string;
+  instrumentType: "common" | "warrant" | "unit" | "right" | "hybrid" | "unknown";
+  analysisEligible: boolean | null;
   verdict: string;
   expectedReturn: string;
   expectedReturnPct: number | null;
@@ -901,6 +903,16 @@ function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
   return parseCandidateSummariesFromRaw(root.alpha_candidates);
 }
 
+function normalizeStage6InstrumentType(value: unknown): Stage6CandidateSummary["instrumentType"] {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "common") return "common";
+  if (normalized === "warrant") return "warrant";
+  if (normalized === "unit") return "unit";
+  if (normalized === "right") return "right";
+  if (normalized === "hybrid") return "hybrid";
+  return "unknown";
+}
+
 function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
 
@@ -949,6 +961,10 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
           : typeof getNestedValue(node, ["techMetrics", "trendAlignment"]) === "string"
             ? String(getNestedValue(node, ["techMetrics", "trendAlignment"])).trim().toUpperCase()
             : null;
+      const instrumentType = normalizeStage6InstrumentType(node.instrumentType);
+      const analysisEligibleRaw = parseBooleanValue(node.analysisEligible);
+      const analysisEligible =
+        analysisEligibleRaw != null ? analysisEligibleRaw : instrumentType === "common" ? true : null;
       let executionBucket: Stage6CandidateSummary["executionBucket"] =
         executionBucketRaw === "EXECUTABLE" ? "EXECUTABLE" : executionBucketRaw === "WATCHLIST" ? "WATCHLIST" : "N/A";
       const executionReason: Stage6CandidateSummary["executionReason"] =
@@ -1013,6 +1029,8 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
 
       return {
         symbol,
+        instrumentType,
+        analysisEligible,
         verdict,
         expectedReturn: formatExpectedReturnLabel(expectedReturnRaw, expectedReturnPctRaw),
         expectedReturnPct:
@@ -1968,6 +1986,14 @@ function buildDryExecPayloads(
       stage6ContractChecked += 1;
       if (effectiveExecutable) stage6ContractExecutable += 1;
       if (effectiveWatchlist) stage6ContractWatchlist += 1;
+    }
+
+    const isExplicitlyNonCommon = row.instrumentType !== "unknown" && row.instrumentType !== "common";
+    const isInstrumentIneligible = row.analysisEligible === false || isExplicitlyNonCommon;
+    if (isInstrumentIneligible) {
+      skipped.push({ symbol: row.symbol, reason: "instrument_type_ineligible" });
+      stage6ContractBlocked += 1;
+      return;
     }
 
     if (stage6ExecutionBucketEnforce && effectiveWatchlist) {
