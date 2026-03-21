@@ -157,6 +157,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Refresh market guard state
+        run: npm run guard
+
       - name: Trigger context
         run: |
           echo "[TRIGGER] event=${WORKFLOW_EVENT_NAME} action=${WORKFLOW_EVENT_ACTION:-n/a}"
