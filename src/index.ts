@@ -47,6 +47,16 @@ type Stage6CandidateSummary = {
   symbol: string;
   instrumentType: "common" | "warrant" | "unit" | "right" | "hybrid" | "unknown";
   analysisEligible: boolean | null;
+  historyTier: "FULL" | "PROVISIONAL" | "ONBOARDING" | "UNKNOWN";
+  symbolLifecycleState:
+    | "ACTIVE"
+    | "PROVISIONAL"
+    | "ONBOARDING"
+    | "RECOVERED"
+    | "STALE"
+    | "RETIRED"
+    | "EXCLUDED"
+    | "UNKNOWN";
   verdict: string;
   expectedReturn: string;
   expectedReturnPct: number | null;
@@ -145,6 +155,7 @@ type GuardControlState = {
 type GuardControlGate = {
   enforce: boolean;
   maxAgeMin: number;
+  ageMin: number | null;
   blocked: boolean;
   wouldBlockLive: boolean;
   reason: string;
@@ -436,6 +447,21 @@ function normalizeStage6Verdict(raw: unknown): string {
   if (key === "SELL" || key === "EXIT" || key === "REDUCE" || key === "TRIM") return "PARTIAL_EXIT";
   if (key === "ACCUMULATE" || key === "LONG") return "BUY";
   return key;
+}
+
+function isMissingContractToken(value: unknown): boolean {
+  const normalized = String(value ?? "")
+    .trim()
+    .toUpperCase();
+  return (
+    !normalized ||
+    normalized === "N/A" ||
+    normalized === "NA" ||
+    normalized === "NONE" ||
+    normalized === "NULL" ||
+    normalized === "UNDEFINED" ||
+    normalized === "TBD"
+  );
 }
 
 function runEnvGuard(): EnvCheckResult {
@@ -755,7 +781,9 @@ function mapStage6DecisionReasonToSkip(
   if (!key || key === "n/a") return "stage6_watchlist";
   if (key === "wait_pullback_not_reached") return "stage6_wait_pullback_too_deep";
   if (key === "wait_earnings_data_missing") return "stage6_wait_earnings_data_missing";
+  if (key === "wait_insufficient_history") return "stage6_wait_insufficient_history";
   if (key === "wait_state_verdict_conflict") return "stage6_wait_state_verdict_conflict";
+  if (key === "blocked_symbol_stale") return "stage6_symbol_stale";
   if (key === "blocked_invalid_geometry") return "stage6_invalid_geometry";
   if (key === "blocked_missing_trade_box") return "stage6_invalid_data";
   if (key === "blocked_quality_missing_expected_return") return "stage6_quality_missing_expected_return";
@@ -913,6 +941,26 @@ function normalizeStage6InstrumentType(value: unknown): Stage6CandidateSummary["
   return "unknown";
 }
 
+function normalizeStage6HistoryTier(value: unknown): Stage6CandidateSummary["historyTier"] {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "FULL") return "FULL";
+  if (normalized === "PROVISIONAL") return "PROVISIONAL";
+  if (normalized === "ONBOARDING") return "ONBOARDING";
+  return "UNKNOWN";
+}
+
+function normalizeStage6LifecycleState(value: unknown): Stage6CandidateSummary["symbolLifecycleState"] {
+  const normalized = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (normalized === "ACTIVE") return "ACTIVE";
+  if (normalized === "PROVISIONAL") return "PROVISIONAL";
+  if (normalized === "ONBOARDING") return "ONBOARDING";
+  if (normalized === "RECOVERED") return "RECOVERED";
+  if (normalized === "STALE") return "STALE";
+  if (normalized === "RETIRED") return "RETIRED";
+  if (normalized === "EXCLUDED") return "EXCLUDED";
+  return "UNKNOWN";
+}
+
 function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
 
@@ -962,6 +1010,8 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
             ? String(getNestedValue(node, ["techMetrics", "trendAlignment"])).trim().toUpperCase()
             : null;
       const instrumentType = normalizeStage6InstrumentType(node.instrumentType);
+      const historyTier = normalizeStage6HistoryTier(node.historyTier);
+      const symbolLifecycleState = normalizeStage6LifecycleState(node.symbolLifecycleState);
       const analysisEligibleRaw = parseBooleanValue(node.analysisEligible);
       const analysisEligible =
         analysisEligibleRaw != null ? analysisEligibleRaw : instrumentType === "common" ? true : null;
@@ -1031,6 +1081,8 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
         symbol,
         instrumentType,
         analysisEligible,
+        historyTier,
+        symbolLifecycleState,
         verdict,
         expectedReturn: formatExpectedReturnLabel(expectedReturnRaw, expectedReturnPctRaw),
         expectedReturnPct:
@@ -1521,6 +1573,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     return {
       enforce: false,
       maxAgeMin,
+      ageMin: null,
       blocked: false,
       wouldBlockLive: false,
       reason: "disabled",
@@ -1535,6 +1588,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     return {
       enforce: true,
       maxAgeMin,
+      ageMin: null,
       blocked: false,
       wouldBlockLive: false,
       reason: "state_missing",
@@ -1563,6 +1617,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     return {
       enforce: true,
       maxAgeMin,
+      ageMin,
       blocked: keepHaltConservative,
       wouldBlockLive: lastLevelDangerous,
       reason,
@@ -1576,6 +1631,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     return {
       enforce: true,
       maxAgeMin,
+      ageMin,
       blocked: false,
       wouldBlockLive: false,
       reason: "halt_new_entries_false",
@@ -1589,6 +1645,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
     return {
       enforce: true,
       maxAgeMin,
+      ageMin,
       blocked: false,
       wouldBlockLive: true,
       reason: `non_live_mode(readOnly=${cfg.readOnly},execEnabled=${cfg.execEnabled})`,
@@ -1602,6 +1659,7 @@ async function resolveGuardControlGate(): Promise<GuardControlGate> {
   return {
     enforce: true,
     maxAgeMin,
+    ageMin,
     blocked: true,
     wouldBlockLive: true,
     reason: `guard_control_halt_new_entries(level=${levelLabel})${!liveMode ? ",simulated_live_parity" : ""}`,
@@ -1972,8 +2030,10 @@ function buildDryExecPayloads(
   let stage6ContractBlocked = 0;
 
   actionable.forEach((row) => {
-    const hasBucketSignal = row.executionBucket !== "N/A" || row.executionReason !== "N/A";
-    const hasDecisionSignal = row.finalDecision !== "N/A" || row.decisionReason !== "n/a";
+    const hasBucketSignal =
+      !isMissingContractToken(row.executionBucket) || !isMissingContractToken(row.executionReason);
+    const hasDecisionSignal =
+      !isMissingContractToken(row.finalDecision) || !isMissingContractToken(row.decisionReason);
     const effectiveExecutable =
       row.executionBucket === "EXECUTABLE" || row.finalDecision === "EXECUTABLE_NOW";
     const effectiveWatchlist =
@@ -1995,12 +2055,21 @@ function buildDryExecPayloads(
       stage6ContractBlocked += 1;
       return;
     }
+    const isLifecycleIneligible =
+      row.symbolLifecycleState === "STALE" ||
+      row.symbolLifecycleState === "RETIRED" ||
+      row.symbolLifecycleState === "EXCLUDED";
+    if (isLifecycleIneligible) {
+      skipped.push({ symbol: row.symbol, reason: "symbol_state_ineligible" });
+      stage6ContractBlocked += 1;
+      return;
+    }
 
     if (stage6ExecutionBucketEnforce && effectiveWatchlist) {
       skipped.push({
         symbol: row.symbol,
         reason:
-          row.decisionReason && row.decisionReason !== "n/a"
+          row.decisionReason && !isMissingContractToken(row.decisionReason)
             ? mapStage6DecisionReasonToSkip(row.decisionReason)
             : mapStage6ExecutionReasonToSkip(row.executionReason)
       });
@@ -2011,7 +2080,7 @@ function buildDryExecPayloads(
     if (
       stage6ExecutionBucketEnforce &&
       effectiveExecutable &&
-      row.executionReason !== "N/A" &&
+      !isMissingContractToken(row.executionReason) &&
       row.executionReason !== "VALID_EXEC"
     ) {
       skipped.push({
@@ -2362,7 +2431,7 @@ function buildSimulationMessage(
     lines.push(`Entry Guard Reason: ${dryExec.regime.entryGuard.reason}`);
   }
   lines.push(
-    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+    `Guard Control: enforce=${guardControl.enforce} blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"} stale=${guardControl.stale} age=${guardControl.ageMin != null ? `${guardControl.ageMin.toFixed(1)}m` : "N/A"} maxAge=${guardControl.maxAgeMin}m reason=${guardControl.reason} updatedAt=${guardControl.updatedAt ?? "N/A"}`
   );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} (base=${dryExec.minConvictionPolicy.base}, vix+${dryExec.minConvictionPolicy.marketTighten}, quality-${dryExec.minConvictionPolicy.qualityRelief}, sampleCap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}) | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
@@ -3393,6 +3462,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `REGIME_VIX_MISMATCH_PCT=${regimeVixMismatchPct}`,
     `GUARD_CONTROL_ENFORCE=${guardControl.enforce}`,
     `GUARD_CONTROL_MAX_AGE_MIN=${guardControl.maxAgeMin}`,
+    `GUARD_CONTROL_AGE_MIN=${guardControl.ageMin != null ? guardControl.ageMin.toFixed(1) : "N/A"}`,
     `GUARD_CONTROL_BLOCKED=${guardControl.blocked}`,
     `GUARD_CONTROL_LEVEL=${guardControl.level != null ? `L${guardControl.level}` : "N/A"}`,
     `GUARD_CONTROL_STALE=${guardControl.stale}`,
@@ -3447,7 +3517,7 @@ async function main() {
   if (guardControl.enforce) {
     const levelLabel = guardControl.level != null ? `L${guardControl.level}` : "N/A";
     console.log(
-      `[GUARD_CONTROL] enforce=true blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} reason=${guardControl.reason} level=${levelLabel} maxAgeMin=${guardControl.maxAgeMin} updatedAt=${guardControl.updatedAt ?? "N/A"}`
+      `[GUARD_CONTROL] enforce=true blocked=${guardControl.blocked} wouldBlockLive=${guardControl.wouldBlockLive} stale=${guardControl.stale} ageMin=${guardControl.ageMin != null ? guardControl.ageMin.toFixed(1) : "N/A"} maxAgeMin=${guardControl.maxAgeMin} reason=${guardControl.reason} level=${levelLabel} updatedAt=${guardControl.updatedAt ?? "N/A"}`
     );
   }
   if (guardControl.blocked) {
