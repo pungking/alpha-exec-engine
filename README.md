@@ -97,6 +97,7 @@ Use `.env.example` as baseline.
 - `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
 - `ENTRY_MAX_DISTANCE_PCT` (default `15`)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
+- `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
@@ -190,6 +191,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Env:
   - `STAGE6_EXECUTION_BUCKET_ENFORCE=true` -> `WATCHLIST` rows are skipped with explicit Stage6 reasons.
   - `STAGE6_EXECUTION_BUCKET_ENFORCE=false` -> legacy behavior (verdict + payload gates only).
+- Actionable verdict policy:
+  - default: `BUY/STRONG_BUY` only
+  - optional: set `ACTIONABLE_INCLUDE_SPECULATIVE_BUY=true` to include `SPECULATIVE_BUY`
 - Contract skip reasons:
   - `stage6_wait_pullback_too_deep`
   - `stage6_invalid_geometry`

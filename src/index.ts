@@ -418,8 +418,18 @@ const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 const PERFORMANCE_LOOP_JSON_PATH = "state/stage6-20trade-loop.json";
 const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
-const ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
+const BASE_ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 const NON_EXECUTABLE_DECISIONS = new Set(["WAIT_PRICE", "BLOCKED_RISK", "BLOCKED_EVENT"]);
+
+function resolveActionableVerdicts(): Set<string> {
+  const includeSpeculative = readBoolEnv("ACTIONABLE_INCLUDE_SPECULATIVE_BUY", false);
+  if (!includeSpeculative) return new Set(BASE_ACTIONABLE_VERDICTS);
+  return new Set([...BASE_ACTIONABLE_VERDICTS, "SPECULATIVE_BUY"]);
+}
+
+function formatActionableVerdicts(verdicts: Set<string>): string {
+  return Array.from(verdicts.values()).join("/");
+}
 
 const ORDER_TRANSITIONS: Record<OrderLifecycleStatus, Set<OrderLifecycleStatus>> = {
   planned: new Set(["submitted", "accepted", "canceled", "rejected", "expired"]),
@@ -963,6 +973,7 @@ function normalizeStage6LifecycleState(value: unknown): Stage6CandidateSummary["
 
 function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
+  const actionableVerdicts = resolveActionableVerdicts();
 
   return raw
     .map((item) => {
@@ -1063,9 +1074,9 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const verdict = normalizeStage6Verdict(verdictRaw);
 
       // Stage6 execution contract invariant:
-      // - EXECUTABLE_NOW must be paired with actionable verdict(BUY/STRONG_BUY)
+      // - EXECUTABLE_NOW must be paired with configured actionable verdicts
       // - non-executable decisions are always treated as watchlist on sidecar
-      if (finalDecision === "EXECUTABLE_NOW" && !ACTIONABLE_VERDICTS.has(verdict)) {
+      if (finalDecision === "EXECUTABLE_NOW" && !actionableVerdicts.has(verdict)) {
         finalDecision = "WAIT_PRICE";
         executionBucket = "WATCHLIST";
         if (!decisionReason || decisionReason === "n/a" || decisionReason === "executable_pullback") {
@@ -1894,10 +1905,13 @@ function printStage6Lock(result: Stage6LoadResult) {
   console.log(`[STAGE6_CANDIDATES] count=${result.candidateSymbols.length} | symbols=${symbolLog}`);
 }
 
-function getActionableCandidates(candidates: Stage6CandidateSummary[]): Stage6CandidateSummary[] {
+function getActionableCandidates(
+  candidates: Stage6CandidateSummary[],
+  actionableVerdicts: Set<string>
+): Stage6CandidateSummary[] {
   return candidates.filter(
     (row) =>
-      ACTIONABLE_VERDICTS.has(row.verdict) &&
+      actionableVerdicts.has(row.verdict) &&
       (row.finalDecision === "EXECUTABLE_NOW" || row.executionBucket === "EXECUTABLE")
   );
 }
@@ -2369,6 +2383,7 @@ async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightR
 function buildSimulationMessage(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
+  actionableVerdicts: Set<string>,
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
@@ -2387,7 +2402,7 @@ function buildSimulationMessage(
   lines.push(`Hash: ${result.sha256.slice(0, 12)} | MD5: ${result.md5Checksum}`);
   lines.push(`Candidates: ${result.candidateSymbols.length}`);
   lines.push(
-    `Policy Gate: raw ${result.candidates.length} -> actionable ${actionable.length} (BUY/STRONG_BUY only)`
+    `Policy Gate: raw ${result.candidates.length} -> actionable ${actionable.length} (${formatActionableVerdicts(actionableVerdicts)} only)`
   );
   if (result.contractContext) {
     lines.push(
@@ -2492,6 +2507,7 @@ function buildSimulationMessage(
 async function sendSimulationTelegram(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
+  actionableVerdicts: Set<string>,
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
@@ -2499,7 +2515,7 @@ async function sendSimulationTelegram(
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result, actionable, dryExec, preflight, ledger, guardControl);
+  const text = buildSimulationMessage(result, actionable, actionableVerdicts, dryExec, preflight, ledger, guardControl);
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
@@ -3422,6 +3438,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const orderLifecycleEnabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
   const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
+  const actionableVerdicts = resolveActionableVerdicts();
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
   const regimeHysteresisEnabled = readBoolEnv("REGIME_HYSTERESIS_ENABLED", true);
@@ -3445,6 +3462,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ENTRY_FEAS_ENFORCE=${dryExec.entryFeasibility.enforce}`,
     `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
+    `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -3526,7 +3544,11 @@ async function main() {
   if (regime.diagnostics.length > 0) {
     regime.diagnostics.forEach((line) => console.log(`[REGIME_DIAG] ${line}`));
   }
-  const actionable = getActionableCandidates(stage6.candidates);
+  const actionableVerdicts = resolveActionableVerdicts();
+  console.log(
+    `[ACTIONABLE_POLICY] includeSpeculative=${actionableVerdicts.has("SPECULATIVE_BUY")} verdicts=${formatActionableVerdicts(actionableVerdicts)}`
+  );
+  const actionable = getActionableCandidates(stage6.candidates, actionableVerdicts);
   const dryExecBase = buildDryExecPayloads(actionable, stage6.sha256, regime);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExecBase.stage6Contract.enforce} checked=${dryExecBase.stage6Contract.checked} executable=${dryExecBase.stage6Contract.executable} watchlist=${dryExecBase.stage6Contract.watchlist} blocked=${dryExecBase.stage6Contract.blocked}`
@@ -3597,7 +3619,7 @@ async function main() {
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
 
   const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
-  await sendSimulationTelegram(stage6, actionable, postPreflightDryExec, preflight, ledger, guardControl);
+  await sendSimulationTelegram(stage6, actionable, actionableVerdicts, postPreflightDryExec, preflight, ledger, guardControl);
   await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   await sendPerformanceLoopMilestoneAlert(perfLoop);
