@@ -3089,6 +3089,63 @@ async function updatePerformanceLoop(
   }
 
   if (touched === 0) {
+    const currentTradeCount = Object.keys(state.rows).length;
+    const lastSnapshotTradeCount =
+      state.snapshots.length > 0
+        ? Number(state.snapshots[state.snapshots.length - 1]?.tradeCount ?? 0)
+        : 0;
+    const previousMilestoneBucket = Math.floor(lastSnapshotTradeCount / 10);
+    const currentMilestoneBucket = Math.floor(currentTradeCount / 10);
+    const crossedMilestones: number[] = [];
+    if (currentTradeCount > 0 && currentMilestoneBucket > previousMilestoneBucket) {
+      for (let bucket = previousMilestoneBucket + 1; bucket <= currentMilestoneBucket; bucket += 1) {
+        crossedMilestones.push(bucket * 10);
+      }
+    }
+
+    if (crossedMilestones.length > 0) {
+      const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
+      state.snapshots.push(snapshot);
+      latestSnapshot = snapshot;
+      const alertMessages: string[] = [];
+      const milestoneCandidates = crossedMilestones.filter((milestone) => [10, 20].includes(milestone));
+      for (const milestone of milestoneCandidates) {
+        const alreadyNotified = state.notifiedMilestones.includes(milestone);
+        if (alreadyNotified) continue;
+        const gate = evaluatePerformanceLoopGate(snapshot, currentTradeCount);
+        state.notifiedMilestones.push(milestone);
+        alertMessages.push(
+          buildPerformanceLoopAlertMessage(
+            {
+              batchId: state.batchId,
+              tradeCount: currentTradeCount,
+              snapshotCount: state.snapshots.length,
+              gate,
+              latestSnapshot: snapshot,
+              alertMessage: null,
+              updated: true
+            },
+            milestone
+          )
+        );
+      }
+      state.updatedAt = now;
+      await savePerformanceLoopState(state);
+      const gate = evaluatePerformanceLoopGate(latestSnapshot, currentTradeCount);
+      console.log(
+        `[PERF_LOOP] batch=${state.batchId} backfill milestones=${crossedMilestones.join(",")} totalTrades=${currentTradeCount} snapshots=${state.snapshots.length} gate=${gate.status} reason=${gate.reason} progress=${gate.progress}`
+      );
+      return {
+        batchId: state.batchId,
+        tradeCount: currentTradeCount,
+        snapshotCount: state.snapshots.length,
+        gate,
+        latestSnapshot,
+        alertMessage: alertMessages.length > 0 ? alertMessages.join("\n\n") : null,
+        updated: true
+      };
+    }
+
     const gate = evaluatePerformanceLoopGate(latestSnapshot, Object.keys(state.rows).length);
     console.log(
       `[PERF_LOOP] batch=${state.batchId} no-op (payloads=0) totalTrades=${Object.keys(state.rows).length}`
@@ -3112,7 +3169,16 @@ async function updatePerformanceLoop(
     state.snapshots.length > 0
       ? Number(state.snapshots[state.snapshots.length - 1]?.tradeCount ?? 0)
       : 0;
-  if (currentTradeCount > 0 && currentTradeCount % 10 === 0 && currentTradeCount !== lastSnapshotTradeCount) {
+  const previousMilestoneBucket = Math.floor(lastSnapshotTradeCount / 10);
+  const currentMilestoneBucket = Math.floor(currentTradeCount / 10);
+  const crossedMilestones: number[] = [];
+  if (currentTradeCount > 0 && currentMilestoneBucket > previousMilestoneBucket) {
+    for (let bucket = previousMilestoneBucket + 1; bucket <= currentMilestoneBucket; bucket += 1) {
+      crossedMilestones.push(bucket * 10);
+    }
+  }
+
+  if (crossedMilestones.length > 0) {
     const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
     state.snapshots.push(snapshot);
     latestSnapshot = snapshot;
@@ -3120,24 +3186,30 @@ async function updatePerformanceLoop(
       `[PERF_LOOP_KPI] trades=${snapshot.tradeCount} fillRatePct=${snapshot.fillRatePct ?? "N/A"} avgR=${snapshot.avgR ?? "N/A"} holdErrMedian=${snapshot.medianHoldErrorDays ?? "N/A"} noReasonDrift=${snapshot.noReasonDrift}`
     );
 
-    const milestone = snapshot.tradeCount;
-    const shouldNotifyMilestone = [10, 20].includes(milestone);
-    const alreadyNotified = state.notifiedMilestones.includes(milestone);
-    if (shouldNotifyMilestone && !alreadyNotified) {
+    const alertMessages: string[] = [];
+    const milestoneCandidates = crossedMilestones.filter((milestone) => [10, 20].includes(milestone));
+    for (const milestone of milestoneCandidates) {
+      const alreadyNotified = state.notifiedMilestones.includes(milestone);
+      if (alreadyNotified) continue;
       const gate = evaluatePerformanceLoopGate(snapshot, currentTradeCount);
       state.notifiedMilestones.push(milestone);
-      alertMessage = buildPerformanceLoopAlertMessage(
-        {
-          batchId: state.batchId,
-          tradeCount: currentTradeCount,
-          snapshotCount: state.snapshots.length,
-          gate,
-          latestSnapshot: snapshot,
-          alertMessage: null,
-          updated: true
-        },
-        milestone
+      alertMessages.push(
+        buildPerformanceLoopAlertMessage(
+          {
+            batchId: state.batchId,
+            tradeCount: currentTradeCount,
+            snapshotCount: state.snapshots.length,
+            gate,
+            latestSnapshot: snapshot,
+            alertMessage: null,
+            updated: true
+          },
+          milestone
+        )
       );
+    }
+    if (alertMessages.length > 0) {
+      alertMessage = alertMessages.join("\n\n");
     }
   }
 
