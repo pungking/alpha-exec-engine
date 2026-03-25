@@ -204,6 +204,9 @@ jobs:
 
       - name: Publish run summary
         if: always()
+        env:
+          SUMMARY_INCLUDE_VALIDATION_PACK: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
+          SUMMARY_INCLUDE_PAYLOAD_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack != 'true' && inputs.payload_probe == 'true' }}
         run: |
           node - <<'NODE'
           const fs = require("node:fs");
@@ -211,6 +214,8 @@ jobs:
           const statePath = "state/last-run.json";
           const previewPath = "state/last-dry-exec-preview.json";
           const idempPath = "state/order-idempotency.json";
+          const includeValidationPack = String(process.env.SUMMARY_INCLUDE_VALIDATION_PACK || "").trim().toLowerCase() === "true";
+          const includePayloadProbe = String(process.env.SUMMARY_INCLUDE_PAYLOAD_PROBE || "").trim().toLowerCase() === "true";
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
@@ -405,7 +410,7 @@ jobs:
 
           lines.push("");
 
-          if (fs.existsSync("state/validation-pack")) {
+          if (includeValidationPack && fs.existsSync("state/validation-pack")) {
             const cases = ["off", "on", "strict"];
             const packLines = [];
             packLines.push("## Entry Feasibility Validation Pack");
@@ -435,7 +440,11 @@ jobs:
             lines.push(...packLines);
           }
 
-          if (fs.existsSync("state/payload-probe/last-run.json") && fs.existsSync("state/payload-probe/last-dry-exec-preview.json")) {
+          if (
+            includePayloadProbe &&
+            fs.existsSync("state/payload-probe/last-run.json") &&
+            fs.existsSync("state/payload-probe/last-dry-exec-preview.json")
+          ) {
             const probeRun = JSON.parse(fs.readFileSync("state/payload-probe/last-run.json", "utf8"));
             const probePreview = JSON.parse(fs.readFileSync("state/payload-probe/last-dry-exec-preview.json", "utf8"));
             const probeLines = [];
