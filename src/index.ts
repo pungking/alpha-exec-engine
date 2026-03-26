@@ -1979,6 +1979,49 @@ function printStage6Lock(result: Stage6LoadResult) {
   console.log(`[STAGE6_CANDIDATES] count=${result.candidateSymbols.length} | symbols=${symbolLog}`);
 }
 
+function isSha256Hex(value: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(value);
+}
+
+function validateTriggerContext(stage6: Stage6LoadResult): void {
+  const eventName = (process.env.WORKFLOW_EVENT_NAME || process.env.GITHUB_EVENT_NAME || "")
+    .trim()
+    .toLowerCase();
+  if (eventName !== "repository_dispatch") return;
+
+  const triggerHashRaw = (process.env.TRIGGER_STAGE6_HASH || "").trim();
+  const triggerFile = (process.env.TRIGGER_STAGE6_FILE || "").trim();
+  const triggerSourceRun = (process.env.TRIGGER_STAGE6_SOURCE_RUN || "").trim();
+
+  const fail = (reason: string): never => {
+    console.error(`[TRIGGER_VALIDATE] fail ${reason}`);
+    throw new Error(`[TRIGGER_VALIDATE] ${reason}`);
+  };
+
+  if (!triggerHashRaw) {
+    fail("missing TRIGGER_STAGE6_HASH for repository_dispatch event");
+  }
+  if (!isSha256Hex(triggerHashRaw)) {
+    fail(`invalid TRIGGER_STAGE6_HASH format (expected=64-hex gotLength=${triggerHashRaw.length})`);
+  }
+
+  const expectedHash = triggerHashRaw.toLowerCase();
+  const actualHash = stage6.sha256.toLowerCase();
+  if (expectedHash !== actualHash) {
+    fail(
+      `stage6 hash mismatch expected=${expectedHash.slice(0, 12)}(len=${expectedHash.length}) actual=${actualHash.slice(0, 12)}(len=${actualHash.length})`
+    );
+  }
+
+  if (triggerFile && triggerFile !== stage6.fileName) {
+    fail(`stage6 file mismatch expected=${triggerFile} actual=${stage6.fileName}`);
+  }
+
+  console.log(
+    `[TRIGGER_VALIDATE] ok hash=${actualHash.slice(0, 12)} file=${stage6.fileName} sourceRun=${triggerSourceRun || "N/A"}`
+  );
+}
+
 function getActionableCandidates(
   candidates: Stage6CandidateSummary[],
   actionableVerdicts: Set<string>
@@ -3711,6 +3754,7 @@ async function main() {
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
+  validateTriggerContext(stage6);
   const baseRegime = await resolveRegimeSelection(accessToken);
   const regime = await applyRegimeGuards(baseRegime);
   const regimeVix = regime.vix == null ? "N/A" : regime.vix.toFixed(2);
