@@ -3,6 +3,51 @@ name: sidecar-dry-run
 on:
   workflow_dispatch:
     inputs:
+      run_force_send_once:
+        description: "Force send once for current stage6Hash+mode (manual run only)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_allow_entry_outside_rth:
+        description: "Allow entry outside RTH for this manual run only"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_actionable_include_speculative_buy:
+        description: "Include SPECULATIVE_BUY in actionable verdicts for this manual run"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_position_lifecycle_enabled:
+        description: "Enable position lifecycle action-intent scaffold for this manual run"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_position_lifecycle_preview_only:
+        description: "Keep lifecycle scaffold preview-only (no behavior change)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_position_lifecycle_action_types:
+        description: "Lifecycle action types (comma-separated)"
+        required: false
+        default: "ENTRY_NEW,HOLD_WAIT"
+        type: string
       validation_pack:
         description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
         required: false
@@ -60,17 +105,22 @@ jobs:
       ENTRY_FEASIBILITY_ENFORCE: ${{ vars.ENTRY_FEASIBILITY_ENFORCE }}
       ENTRY_MAX_DISTANCE_PCT: ${{ vars.ENTRY_MAX_DISTANCE_PCT }}
       STAGE6_EXECUTION_BUCKET_ENFORCE: ${{ vars.STAGE6_EXECUTION_BUCKET_ENFORCE }}
-      ACTIONABLE_INCLUDE_SPECULATIVE_BUY: ${{ vars.ACTIONABLE_INCLUDE_SPECULATIVE_BUY }}
+      ACTIONABLE_INCLUDE_SPECULATIVE_BUY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_actionable_include_speculative_buy || vars.ACTIONABLE_INCLUDE_SPECULATIVE_BUY }}
       ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
       ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN: ${{ vars.ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN }}
       ORDER_IDEMPOTENCY_TTL_DAYS: ${{ vars.ORDER_IDEMPOTENCY_TTL_DAYS }}
       PREFLIGHT_ENABLED: ${{ vars.PREFLIGHT_ENABLED }}
       DAILY_MAX_NOTIONAL: ${{ vars.DAILY_MAX_NOTIONAL }}
-      ALLOW_ENTRY_OUTSIDE_RTH: ${{ vars.ALLOW_ENTRY_OUTSIDE_RTH }}
+      ALLOW_ENTRY_OUTSIDE_RTH: ${{ github.event_name == 'workflow_dispatch' && inputs.run_allow_entry_outside_rth || vars.ALLOW_ENTRY_OUTSIDE_RTH }}
       ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
-      FORCE_SEND_ONCE: ${{ vars.FORCE_SEND_ONCE }}
+      FORCE_SEND_ONCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_force_send_once || vars.FORCE_SEND_ONCE }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
+      TELEGRAM_MAX_MESSAGE_LENGTH: ${{ vars.TELEGRAM_MAX_MESSAGE_LENGTH }}
+      POSITION_LIFECYCLE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_enabled || vars.POSITION_LIFECYCLE_ENABLED }}
+      POSITION_LIFECYCLE_PREVIEW_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_preview_only || vars.POSITION_LIFECYCLE_PREVIEW_ONLY }}
+      POSITION_LIFECYCLE_ACTION_TYPES: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_action_types || vars.POSITION_LIFECYCLE_ACTION_TYPES }}
+      POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
       REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
@@ -82,6 +132,7 @@ jobs:
       REGIME_VIX_MISMATCH_PCT: ${{ vars.REGIME_VIX_MISMATCH_PCT }}
       GUARD_CONTROL_ENFORCE: ${{ vars.GUARD_CONTROL_ENFORCE }}
       GUARD_CONTROL_MAX_AGE_MIN: ${{ vars.GUARD_CONTROL_MAX_AGE_MIN }}
+      GUARD_QUALITY_MIN_SCORE: ${{ vars.GUARD_QUALITY_MIN_SCORE }}
       VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
       VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
       DRY_STOP_DISTANCE_STAGE6_SYNC: ${{ vars.DRY_STOP_DISTANCE_STAGE6_SYNC }}
@@ -234,6 +285,9 @@ jobs:
               `- trigger_stage6: \`hash=${(triggerStage6Hash || "N/A").slice(0, 12)} file=${triggerStage6File || "N/A"} sourceRun=${triggerStage6SourceRun || "N/A"}\``
             );
           }
+          lines.push(
+            `- manual_effective: \`event=${triggerEvent} lifecycle_enabled=${process.env.POSITION_LIFECYCLE_ENABLED ?? "N/A"} lifecycle_preview_only=${process.env.POSITION_LIFECYCLE_PREVIEW_ONLY ?? "N/A"} lifecycle_actions=${process.env.POSITION_LIFECYCLE_ACTION_TYPES ?? "N/A"} allow_entry_outside_rth=${process.env.ALLOW_ENTRY_OUTSIDE_RTH ?? "N/A"} include_speculative=${process.env.ACTIONABLE_INCLUDE_SPECULATIVE_BUY ?? "N/A"} force_send_once=${process.env.FORCE_SEND_ONCE ?? "N/A"}\``
+          );
 
           if (fs.existsSync(statePath)) {
             const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
