@@ -434,7 +434,7 @@ jobs:
             }
             const lifecycle = preview?.orderLifecycle || {};
             lines.push(
-              `- lifecycle: \`enabled=${lifecycle.enabled ?? "N/A"} target=${lifecycle.targetStatus ?? "N/A"} upserted=${lifecycle.upserted ?? "N/A"} transitioned=${lifecycle.transitioned ?? "N/A"} unchanged=${lifecycle.unchanged ?? "N/A"}\``
+              `- order_lifecycle: \`enabled=${lifecycle.enabled ?? "N/A"} target=${lifecycle.targetStatus ?? "N/A"} upserted=${lifecycle.upserted ?? "N/A"} transitioned=${lifecycle.transitioned ?? "N/A"} unchanged=${lifecycle.unchanged ?? "N/A"}\``
             );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
