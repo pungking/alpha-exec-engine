@@ -43,10 +43,20 @@ on:
         options:
           - "true"
           - "false"
-      run_position_lifecycle_action_types:
-        description: "Lifecycle action types (comma-separated)"
+      run_position_lifecycle_action_preset:
+        description: "Lifecycle action types preset"
         required: false
-        default: "ENTRY_NEW,HOLD_WAIT"
+        default: "ENTRY_AND_HOLD"
+        type: choice
+        options:
+          - "ENTRY_AND_HOLD"
+          - "ENTRY_ONLY"
+          - "ALL"
+          - "CUSTOM"
+      run_position_lifecycle_action_types_override:
+        description: "Lifecycle action types when preset=CUSTOM (comma-separated)"
+        required: false
+        default: ""
         type: string
       validation_pack:
         description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
@@ -119,7 +129,7 @@ jobs:
       TELEGRAM_MAX_MESSAGE_LENGTH: ${{ vars.TELEGRAM_MAX_MESSAGE_LENGTH }}
       POSITION_LIFECYCLE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_enabled || vars.POSITION_LIFECYCLE_ENABLED }}
       POSITION_LIFECYCLE_PREVIEW_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_preview_only || vars.POSITION_LIFECYCLE_PREVIEW_ONLY }}
-      POSITION_LIFECYCLE_ACTION_TYPES: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_action_types || vars.POSITION_LIFECYCLE_ACTION_TYPES }}
+      POSITION_LIFECYCLE_ACTION_TYPES: ${{ vars.POSITION_LIFECYCLE_ACTION_TYPES }}
       POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
@@ -217,6 +227,64 @@ jobs:
           echo "[TRIGGER] event=${WORKFLOW_EVENT_NAME} action=${WORKFLOW_EVENT_ACTION:-n/a}"
           echo "[TRIGGER] stage6Hash=${TRIGGER_STAGE6_HASH:-n/a} stage6File=${TRIGGER_STAGE6_FILE:-n/a} sourceRun=${TRIGGER_STAGE6_SOURCE_RUN:-n/a}"
 
+      - name: Resolve lifecycle action types (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RUN_LIFECYCLE_ACTION_PRESET: ${{ inputs.run_position_lifecycle_action_preset }}
+          RUN_LIFECYCLE_ACTION_OVERRIDE: ${{ inputs.run_position_lifecycle_action_types_override }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+
+          preset = (os.getenv("RUN_LIFECYCLE_ACTION_PRESET") or "").strip().upper()
+          override_raw = os.getenv("RUN_LIFECYCLE_ACTION_OVERRIDE") or ""
+          allowed = [
+              "ENTRY_NEW",
+              "HOLD_WAIT",
+              "SCALE_UP",
+              "SCALE_DOWN",
+              "EXIT_PARTIAL",
+              "EXIT_FULL",
+          ]
+
+          preset_map = {
+              "ENTRY_AND_HOLD": "ENTRY_NEW,HOLD_WAIT",
+              "ENTRY_ONLY": "ENTRY_NEW",
+              "ALL": ",".join(allowed),
+              "CUSTOM": override_raw,
+          }
+          if preset not in preset_map:
+              print(f"::error::Unknown run_position_lifecycle_action_preset: {preset or 'EMPTY'}")
+              sys.exit(1)
+
+          raw = preset_map[preset]
+          tokens = [t.strip().upper() for t in raw.split(",") if t.strip()]
+          if not tokens:
+              print("::error::Resolved lifecycle action types are empty.")
+              if preset == "CUSTOM":
+                  print("::error::Set run_position_lifecycle_action_types_override when preset=CUSTOM.")
+              sys.exit(1)
+
+          invalid = [t for t in tokens if t not in allowed]
+          if invalid:
+              print(f"::error::Invalid lifecycle action type(s): {', '.join(invalid)}")
+              print(f"::error::Allowed values: {', '.join(allowed)}")
+              sys.exit(1)
+
+          deduped = list(dict.fromkeys(tokens))
+          resolved = ",".join(deduped)
+          print(f"[LIFECYCLE_ACTION_PRESET] preset={preset} resolved={resolved}")
+
+          github_env = os.getenv("GITHUB_ENV")
+          if not github_env:
+              print("::error::GITHUB_ENV not found.")
+              sys.exit(1)
+          with open(github_env, "a", encoding="utf-8") as f:
+              f.write(f"POSITION_LIFECYCLE_ACTION_TYPES={resolved}\n")
+          PY
+
       - name: Run dry-run bootstrap
         if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.validation_pack == 'true' || inputs.payload_probe == 'true')) }}
         run: node dist/src/index.js
@@ -258,6 +326,7 @@ jobs:
         env:
           SUMMARY_INCLUDE_VALIDATION_PACK: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
           SUMMARY_INCLUDE_PAYLOAD_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack != 'true' && inputs.payload_probe == 'true' }}
+          SUMMARY_LIFECYCLE_PRESET: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_action_preset || 'N/A' }}
         run: |
           node - <<'NODE'
           const fs = require("node:fs");
@@ -286,7 +355,7 @@ jobs:
             );
           }
           lines.push(
-            `- manual_effective: \`event=${triggerEvent} lifecycle_enabled=${process.env.POSITION_LIFECYCLE_ENABLED ?? "N/A"} lifecycle_preview_only=${process.env.POSITION_LIFECYCLE_PREVIEW_ONLY ?? "N/A"} lifecycle_actions=${process.env.POSITION_LIFECYCLE_ACTION_TYPES ?? "N/A"} allow_entry_outside_rth=${process.env.ALLOW_ENTRY_OUTSIDE_RTH ?? "N/A"} include_speculative=${process.env.ACTIONABLE_INCLUDE_SPECULATIVE_BUY ?? "N/A"} force_send_once=${process.env.FORCE_SEND_ONCE ?? "N/A"}\``
+            `- manual_effective: \`event=${triggerEvent} lifecycle_preset=${process.env.SUMMARY_LIFECYCLE_PRESET ?? "N/A"} lifecycle_enabled=${process.env.POSITION_LIFECYCLE_ENABLED ?? "N/A"} lifecycle_preview_only=${process.env.POSITION_LIFECYCLE_PREVIEW_ONLY ?? "N/A"} lifecycle_actions=${process.env.POSITION_LIFECYCLE_ACTION_TYPES ?? "N/A"} allow_entry_outside_rth=${process.env.ALLOW_ENTRY_OUTSIDE_RTH ?? "N/A"} include_speculative=${process.env.ACTIONABLE_INCLUDE_SPECULATIVE_BUY ?? "N/A"} force_send_once=${process.env.FORCE_SEND_ONCE ?? "N/A"}\``
           );
 
           if (fs.existsSync(statePath)) {
