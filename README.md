@@ -15,6 +15,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Optional entry-feasibility gate (default OFF) can skip entries that are too far from market or marked infeasible in Stage6 shadow fields.
 - Stage6 contract gate (default ON) consumes `executionBucket/executionReason` and blocks `WATCHLIST` rows before payload build.
+- Position lifecycle scaffold (Phase A) adds `actionType/actionReason` intent tags (`ENTRY_NEW/HOLD_WAIT` baseline) without changing live order behavior.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -98,6 +99,10 @@ Use `.env.example` as baseline.
 - `ENTRY_MAX_DISTANCE_PCT` (default `15`)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
+- `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
+- `POSITION_LIFECYCLE_PREVIEW_ONLY` (default `true`; scaffold stays telemetry-only)
+- `POSITION_LIFECYCLE_ACTION_TYPES` (default `ENTRY_NEW,HOLD_WAIT`)
+- `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; reserved for future `SCALE_UP` policy)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`

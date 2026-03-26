@@ -1,4 +1,5 @@
 import { loadRuntimeConfig } from "../config/policy.js";
+import type { LifecycleActionType, PositionLifecycleConfig } from "../config/policy.js";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
@@ -108,11 +109,15 @@ type DryExecOrderPayload = {
   stop_loss: { stop_price: number };
   client_order_id: string;
   idempotencyKey: string;
+  actionType?: LifecycleActionType;
+  actionReason?: string;
 };
 
 type DryExecSkipReason = {
   symbol: string;
   reason: string;
+  actionType?: LifecycleActionType;
+  actionReason?: string;
 };
 
 type RegimeProfile = "default" | "risk_off";
@@ -197,6 +202,12 @@ type DryExecBuildResult = {
   payloads: DryExecOrderPayload[];
   skipped: DryExecSkipReason[];
   skipReasonCounts: Record<string, number>;
+  actionIntent: {
+    enabled: boolean;
+    previewOnly: boolean;
+    allowedActionTypes: LifecycleActionType[];
+    counts: Record<LifecycleActionType, number>;
+  };
   notionalPerOrder: number;
   maxOrders: number;
   maxTotalNotional: number;
@@ -522,6 +533,10 @@ function printStartupSummary() {
   console.log(`EXEC_ENABLED     : ${cfg.execEnabled}`);
   console.log(`READ_ONLY        : ${cfg.readOnly}`);
   console.log(`LIVE_PARITY_SIM  : ${cfg.simulationLiveParity}`);
+  console.log(`LIFECYCLE_ENABLE : ${cfg.positionLifecycle.enabled}`);
+  console.log(`LIFECYCLE_PREVIEW: ${cfg.positionLifecycle.previewOnly}`);
+  console.log(`LIFECYCLE_ACTIONS: ${cfg.positionLifecycle.allowedActionTypes.join("/")}`);
+  console.log(`LIFECYCLE_SCALEUP: ${cfg.positionLifecycle.scaleUpMinConviction}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -824,6 +839,44 @@ function formatSkipReasonCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) return "none";
   return entries.map(([reason, count]) => `${reason}:${count}`).join(",");
+}
+
+function createEmptyActionIntentCounts(): Record<LifecycleActionType, number> {
+  return {
+    ENTRY_NEW: 0,
+    HOLD_WAIT: 0,
+    SCALE_UP: 0,
+    SCALE_DOWN: 0,
+    EXIT_PARTIAL: 0,
+    EXIT_FULL: 0
+  };
+}
+
+function isActionTypeAllowed(
+  actionType: LifecycleActionType,
+  lifecycleConfig: PositionLifecycleConfig
+): boolean {
+  return lifecycleConfig.allowedActionTypes.includes(actionType);
+}
+
+function rebuildActionIntentSummary(dryExec: DryExecBuildResult): DryExecBuildResult["actionIntent"] {
+  if (!dryExec.actionIntent.enabled) {
+    return {
+      ...dryExec.actionIntent,
+      counts: createEmptyActionIntentCounts()
+    };
+  }
+  const counts = createEmptyActionIntentCounts();
+  dryExec.payloads.forEach((row) => {
+    if (row.actionType) counts[row.actionType] += 1;
+  });
+  dryExec.skipped.forEach((row) => {
+    if (row.actionType) counts[row.actionType] += 1;
+  });
+  return {
+    ...dryExec.actionIntent,
+    counts
+  };
 }
 
 function sumNotional(payloads: DryExecOrderPayload[]): number {
@@ -1685,20 +1738,27 @@ function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSel
   const capacityReasons = new Set(["max_orders_reached", "max_total_notional_reached"]);
   const remappedSkips = dryExec.skipped.map((row) =>
     capacityReasons.has(row.reason)
-      ? { symbol: row.symbol, reason: `entry_blocked:${regime.entryGuard.reason}` }
+      ? { ...row, reason: `entry_blocked:${regime.entryGuard.reason}` }
       : row
   );
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
-    reason: `entry_blocked:${regime.entryGuard.reason}`
+    reason: `entry_blocked:${regime.entryGuard.reason}`,
+    ...(dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")
+      ? { actionType: "HOLD_WAIT" as const, actionReason: "entry_guard_blocked" }
+      : {})
   }));
   const skipped = [...remappedSkips, ...blockedSkips];
-
-  return {
+  const nextDryExec: DryExecBuildResult = {
     ...dryExec,
     payloads: [],
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped)
+  };
+
+  return {
+    ...nextDryExec,
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
   };
 }
 
@@ -1707,20 +1767,27 @@ function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: Guard
   const capacityReasons = new Set(["max_orders_reached", "max_total_notional_reached"]);
   const remappedSkips = dryExec.skipped.map((row) =>
     capacityReasons.has(row.reason)
-      ? { symbol: row.symbol, reason: `entry_blocked:${gate.reason}` }
+      ? { ...row, reason: `entry_blocked:${gate.reason}` }
       : row
   );
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
-    reason: `entry_blocked:${gate.reason}`
+    reason: `entry_blocked:${gate.reason}`,
+    ...(dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")
+      ? { actionType: "HOLD_WAIT" as const, actionReason: "guard_control_blocked" }
+      : {})
   }));
   const skipped = [...remappedSkips, ...blockedSkips];
-
-  return {
+  const nextDryExec: DryExecBuildResult = {
     ...dryExec,
     payloads: [],
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped)
+  };
+
+  return {
+    ...nextDryExec,
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
   };
 }
 
@@ -1731,15 +1798,22 @@ function applyPreflightGateToDryExec(
   if (!preflight.blocking || dryExec.payloads.length === 0) return dryExec;
   const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((row) => ({
     symbol: row.symbol,
-    reason: `preflight_blocked:${preflight.code}`
+    reason: `preflight_blocked:${preflight.code}`,
+    ...(dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")
+      ? { actionType: "HOLD_WAIT" as const, actionReason: "preflight_blocked" }
+      : {})
   }));
   const skipped = [...dryExec.skipped, ...blockedSkips];
-
-  return {
+  const nextDryExec: DryExecBuildResult = {
     ...dryExec,
     payloads: [],
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped)
+  };
+
+  return {
+    ...nextDryExec,
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
   };
 }
 
@@ -1921,6 +1995,9 @@ function buildDryExecPayloads(
   stage6Hash: string,
   regime: RegimeSelection
 ): DryExecBuildResult {
+  const runtimeCfg = loadRuntimeConfig();
+  const lifecycle = runtimeCfg.positionLifecycle;
+  const actionIntentCounts = createEmptyActionIntentCounts();
   const notionalPerOrder = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_NOTIONAL_PER_TRADE",
@@ -2043,6 +2120,21 @@ function buildDryExecPayloads(
   let stage6ContractWatchlist = 0;
   let stage6ContractBlocked = 0;
 
+  const pushSkip = (
+    symbol: string,
+    reason: string,
+    actionType?: LifecycleActionType,
+    actionReason?: string
+  ) => {
+    const row: DryExecSkipReason = { symbol, reason };
+    if (lifecycle.enabled && actionType && isActionTypeAllowed(actionType, lifecycle)) {
+      actionIntentCounts[actionType] += 1;
+      row.actionType = actionType;
+      row.actionReason = actionReason || reason;
+    }
+    skipped.push(row);
+  };
+
   actionable.forEach((row) => {
     const hasBucketSignal =
       !isMissingContractToken(row.executionBucket) || !isMissingContractToken(row.executionReason);
@@ -2065,7 +2157,7 @@ function buildDryExecPayloads(
     const isExplicitlyNonCommon = row.instrumentType !== "unknown" && row.instrumentType !== "common";
     const isInstrumentIneligible = row.analysisEligible === false || isExplicitlyNonCommon;
     if (isInstrumentIneligible) {
-      skipped.push({ symbol: row.symbol, reason: "instrument_type_ineligible" });
+      pushSkip(row.symbol, "instrument_type_ineligible");
       stage6ContractBlocked += 1;
       return;
     }
@@ -2074,19 +2166,20 @@ function buildDryExecPayloads(
       row.symbolLifecycleState === "RETIRED" ||
       row.symbolLifecycleState === "EXCLUDED";
     if (isLifecycleIneligible) {
-      skipped.push({ symbol: row.symbol, reason: "symbol_state_ineligible" });
+      pushSkip(row.symbol, "symbol_state_ineligible");
       stage6ContractBlocked += 1;
       return;
     }
 
     if (stage6ExecutionBucketEnforce && effectiveWatchlist) {
-      skipped.push({
-        symbol: row.symbol,
-        reason:
-          row.decisionReason && !isMissingContractToken(row.decisionReason)
-            ? mapStage6DecisionReasonToSkip(row.decisionReason)
-            : mapStage6ExecutionReasonToSkip(row.executionReason)
-      });
+      pushSkip(
+        row.symbol,
+        row.decisionReason && !isMissingContractToken(row.decisionReason)
+          ? mapStage6DecisionReasonToSkip(row.decisionReason)
+          : mapStage6ExecutionReasonToSkip(row.executionReason),
+        "HOLD_WAIT",
+        "watchlist_or_blocked"
+      );
       stage6ContractBlocked += 1;
       return;
     }
@@ -2097,10 +2190,12 @@ function buildDryExecPayloads(
       !isMissingContractToken(row.executionReason) &&
       row.executionReason !== "VALID_EXEC"
     ) {
-      skipped.push({
-        symbol: row.symbol,
-        reason: mapStage6ExecutionReasonToSkip(row.executionReason)
-      });
+      pushSkip(
+        row.symbol,
+        mapStage6ExecutionReasonToSkip(row.executionReason),
+        "HOLD_WAIT",
+        "stage6_execution_reason_blocked"
+      );
       stage6ContractBlocked += 1;
       return;
     }
@@ -2108,7 +2203,7 @@ function buildDryExecPayloads(
     // Quality gate first: keep skip reasons deterministic and diagnosis-friendly.
     const conviction = parseConviction(row.conviction);
     if (conviction == null || conviction < minConviction) {
-      skipped.push({ symbol: row.symbol, reason: "conviction_below_floor" });
+      pushSkip(row.symbol, "conviction_below_floor", "HOLD_WAIT", "conviction_gate_not_passed");
       return;
     }
 
@@ -2117,38 +2212,38 @@ function buildDryExecPayloads(
     const stop = row.stopValue ?? parseNumericPrice(row.stop);
 
     if (!entry || !target || !stop) {
-      skipped.push({ symbol: row.symbol, reason: "missing_or_invalid_price" });
+      pushSkip(row.symbol, "missing_or_invalid_price");
       return;
     }
     if (!(target > entry && stop < entry)) {
-      skipped.push({ symbol: row.symbol, reason: "invalid_price_geometry" });
+      pushSkip(row.symbol, "invalid_price_geometry");
       return;
     }
     const stopDistancePct = ((entry - stop) / entry) * 100;
     if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
-      skipped.push({ symbol: row.symbol, reason: "stop_distance_out_of_range" });
+      pushSkip(row.symbol, "stop_distance_out_of_range");
       return;
     }
     if (entryFeasibilityEnforce) {
       entryFeasibilityChecked += 1;
       if (row.tradePlanStatus === "INVALID_DATA") {
-        skipped.push({ symbol: row.symbol, reason: "entry_data_missing" });
+        pushSkip(row.symbol, "entry_data_missing", "HOLD_WAIT", "entry_data_not_ready");
         entryFeasibilityBlocked += 1;
         return;
       }
       if (row.tradePlanStatus === "INVALID_GEOMETRY") {
-        skipped.push({ symbol: row.symbol, reason: "entry_invalid_geometry" });
+        pushSkip(row.symbol, "entry_invalid_geometry", "HOLD_WAIT", "entry_geometry_not_ready");
         entryFeasibilityBlocked += 1;
         return;
       }
       if (row.entryFeasible === false) {
         const reason = row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP" ? "entry_too_far_from_market" : "entry_feasibility_false";
-        skipped.push({ symbol: row.symbol, reason });
+        pushSkip(row.symbol, reason, "HOLD_WAIT", "entry_feasibility_not_ready");
         entryFeasibilityBlocked += 1;
         return;
       }
       if (row.entryDistancePct != null && row.entryDistancePct > entryMaxDistancePct) {
-        skipped.push({ symbol: row.symbol, reason: "entry_too_far_from_market" });
+        pushSkip(row.symbol, "entry_too_far_from_market", "HOLD_WAIT", "entry_distance_over_limit");
         entryFeasibilityBlocked += 1;
         return;
       }
@@ -2156,13 +2251,16 @@ function buildDryExecPayloads(
 
     // Capacity / exposure gate after quality checks.
     if (payloads.length >= maxOrders) {
-      skipped.push({ symbol: row.symbol, reason: "max_orders_reached" });
+      pushSkip(row.symbol, "max_orders_reached");
       return;
     }
     if (allocatedNotional + notionalPerOrder > maxTotalNotional) {
-      skipped.push({ symbol: row.symbol, reason: "max_total_notional_reached" });
+      pushSkip(row.symbol, "max_total_notional_reached");
       return;
     }
+
+    const actionType =
+      lifecycle.enabled && isActionTypeAllowed("ENTRY_NEW", lifecycle) ? "ENTRY_NEW" : undefined;
 
     const candidatePayload: DryExecOrderPayload = {
       symbol: row.symbol,
@@ -2175,14 +2273,19 @@ function buildDryExecPayloads(
       take_profit: { limit_price: target },
       stop_loss: { stop_price: stop },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
-      idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy")
+      idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy"),
+      actionType,
+      actionReason: actionType ? "stage6_executable_now" : undefined
     };
     const normalized = validateAndNormalizePayload(candidatePayload);
     if (!normalized.ok) {
-      skipped.push({ symbol: row.symbol, reason: normalized.reason });
+      pushSkip(row.symbol, normalized.reason);
       return;
     }
     payloads.push(normalized.payload);
+    if (actionType) {
+      actionIntentCounts[actionType] += 1;
+    }
     allocatedNotional += notionalPerOrder;
   });
 
@@ -2190,6 +2293,12 @@ function buildDryExecPayloads(
     payloads,
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped),
+    actionIntent: {
+      enabled: lifecycle.enabled,
+      previewOnly: lifecycle.previewOnly,
+      allowedActionTypes: [...lifecycle.allowedActionTypes],
+      counts: actionIntentCounts
+    },
     notionalPerOrder,
     maxOrders,
     maxTotalNotional,
@@ -2460,6 +2569,9 @@ function buildSimulationMessage(
   lines.push(
     `Stage6 Contract Gate: enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
+  lines.push(
+    `Action Intent: enabled=${dryExec.actionIntent.enabled} previewOnly=${dryExec.actionIntent.previewOnly} allowed=${dryExec.actionIntent.allowedActionTypes.join("/")} counts=ENTRY_NEW:${dryExec.actionIntent.counts.ENTRY_NEW},HOLD_WAIT:${dryExec.actionIntent.counts.HOLD_WAIT},SCALE_UP:${dryExec.actionIntent.counts.SCALE_UP},SCALE_DOWN:${dryExec.actionIntent.counts.SCALE_DOWN},EXIT_PARTIAL:${dryExec.actionIntent.counts.EXIT_PARTIAL},EXIT_FULL:${dryExec.actionIntent.counts.EXIT_FULL}`
+  );
   lines.push("Payload Validation: price/notional finite check + geometry + client_order_id format");
   lines.push(
     `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
@@ -2469,12 +2581,14 @@ function buildSimulationMessage(
   } else {
     dryExec.payloads.forEach((order, index) => {
       lines.push(
-        `${index + 1}) ${order.symbol} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}`
+        `${index + 1}) ${order.symbol} | A=${order.actionType ?? "N/A"} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}`
       );
     });
   }
   if (dryExec.skipped.length > 0) {
-    const skippedLog = dryExec.skipped.map((s) => `${s.symbol}:${s.reason}`).join(", ");
+    const skippedLog = dryExec.skipped
+      .map((s) => `${s.symbol}:${s.reason}${s.actionType ? `(${s.actionType})` : ""}`)
+      .join(", ");
     lines.push(`Skipped: ${skippedLog}`);
   }
   lines.push(
@@ -3331,7 +3445,7 @@ async function applyOrderIdempotency(
     `[ORDER_IDEMP] enabled=${enabled} enforce=${enforced} ttlDays=${ttlDays} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
   );
 
-  return {
+  const nextDryExec: DryExecBuildResult = {
     ...dryExec,
     payloads,
     skipped,
@@ -3343,6 +3457,10 @@ async function applyOrderIdempotency(
       newCount,
       duplicateCount
     }
+  };
+  return {
+    ...nextDryExec,
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
   };
 }
 
@@ -3535,6 +3653,10 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
+    `POSITION_LIFECYCLE_ENABLED=${cfg.positionLifecycle.enabled}`,
+    `POSITION_LIFECYCLE_PREVIEW_ONLY=${cfg.positionLifecycle.previewOnly}`,
+    `POSITION_LIFECYCLE_ACTION_TYPES=${cfg.positionLifecycle.allowedActionTypes.join("/")}`,
+    `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION=${cfg.positionLifecycle.scaleUpMinConviction}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -3572,8 +3694,9 @@ function printRunSummary(
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult
 ): void {
+  const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -3627,6 +3750,9 @@ async function main() {
   );
   console.log(
     `[ENTRY_FEASIBILITY] enforce=${dryExecBase.entryFeasibility.enforce} maxDistancePct=${dryExecBase.entryFeasibility.maxDistancePct} checked=${dryExecBase.entryFeasibility.checked} blocked=${dryExecBase.entryFeasibility.blocked}`
+  );
+  console.log(
+    `[ACTION_INTENT] enabled=${dryExecBase.actionIntent.enabled} previewOnly=${dryExecBase.actionIntent.previewOnly} allowed=${dryExecBase.actionIntent.allowedActionTypes.join("/")} counts=ENTRY_NEW:${dryExecBase.actionIntent.counts.ENTRY_NEW},HOLD_WAIT:${dryExecBase.actionIntent.counts.HOLD_WAIT},SCALE_UP:${dryExecBase.actionIntent.counts.SCALE_UP},SCALE_DOWN:${dryExecBase.actionIntent.counts.SCALE_DOWN},EXIT_PARTIAL:${dryExecBase.actionIntent.counts.EXIT_PARTIAL},EXIT_FULL:${dryExecBase.actionIntent.counts.EXIT_FULL}`
   );
   const dryExecAfterRegime = applyEntryGuardToDryExec(dryExecBase, regime);
   const dryExec = applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl);
