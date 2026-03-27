@@ -107,6 +107,10 @@ Use `.env.example` as baseline.
 - `HF_SENTIMENT_SCORE_FLOOR` (default `0.55`; minimum HF confidence to apply adjustment)
 - `HF_SENTIMENT_MIN_ARTICLE_COUNT` (default `2`; minimum headline count required)
 - `HF_SENTIMENT_MAX_NEWS_AGE_HOURS` (default `24`; newest headline must be within this age)
+- `HF_EARNINGS_WINDOW_ENABLED` (default `true`; shrink/block HF sentiment near earnings)
+- `HF_EARNINGS_WINDOW_BLOCK_DAYS` (default `1`; block when `|D| <= 1`)
+- `HF_EARNINGS_WINDOW_REDUCE_DAYS` (default `3`; reduce when `1 < |D| <= 3`)
+- `HF_EARNINGS_WINDOW_REDUCE_FACTOR` (default `0.3`; apply delta multiplier in reduce zone)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
 - `ORDER_IDEMPOTENCY_ENABLED`
@@ -195,6 +199,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `HF_SENTIMENT_SCORE_FLOOR=0.55` -> only applies when HF score is above this threshold.
   - `HF_SENTIMENT_MIN_ARTICLE_COUNT=2` -> only applies when article count meets minimum.
   - `HF_SENTIMENT_MAX_NEWS_AGE_HOURS=24` -> only applies when newest article is recent enough.
+  - Earnings window:
+    - `HF_EARNINGS_WINDOW_ENABLED=true`
+    - `HF_EARNINGS_WINDOW_BLOCK_DAYS=1` -> HF adjustment blocked in `|D| <= 1`
+    - `HF_EARNINGS_WINDOW_REDUCE_DAYS=3` + `HF_EARNINGS_WINDOW_REDUCE_FACTOR=0.3` -> reduced impact in `1 < |D| <= 3`
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
   - Core sidecar risk chain (market guard, preflight, regime guard, exposure caps) remains unchanged.
