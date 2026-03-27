@@ -105,6 +105,8 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; reserved for future `SCALE_UP` policy)
 - `HF_SENTIMENT_SOFT_GATE_ENABLED` (default `false`; sentiment-based conviction floor adjustment)
 - `HF_SENTIMENT_SCORE_FLOOR` (default `0.55`; minimum HF confidence to apply adjustment)
+- `HF_SENTIMENT_MIN_ARTICLE_COUNT` (default `2`; minimum headline count required)
+- `HF_SENTIMENT_MAX_NEWS_AGE_HOURS` (default `24`; newest headline must be within this age)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
 - `ORDER_IDEMPOTENCY_ENABLED`
@@ -191,6 +193,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `positive`: floor relief up to `HF_SENTIMENT_POSITIVE_RELIEF_MAX`
     - `negative`: floor tighten up to `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX`
   - `HF_SENTIMENT_SCORE_FLOOR=0.55` -> only applies when HF score is above this threshold.
+  - `HF_SENTIMENT_MIN_ARTICLE_COUNT=2` -> only applies when article count meets minimum.
+  - `HF_SENTIMENT_MAX_NEWS_AGE_HOURS=24` -> only applies when newest article is recent enough.
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
   - Core sidecar risk chain (market guard, preflight, regime guard, exposure caps) remains unchanged.
