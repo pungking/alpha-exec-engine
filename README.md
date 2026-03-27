@@ -113,6 +113,14 @@ Use `.env.example` as baseline.
 - `HF_EARNINGS_WINDOW_REDUCE_FACTOR` (default `0.3`; apply delta multiplier in reduce zone)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
+- `HF_DRIFT_ALERT_ENABLED` (default `true`; enable recent-run HF drift warning logs)
+- `HF_DRIFT_ALERT_WINDOW_RUNS` (default `8`; rolling window size)
+- `HF_DRIFT_ALERT_MIN_HISTORY` (default `4`; minimum baseline samples before alerting)
+- `HF_DRIFT_ALERT_MIN_CANDIDATES` (default `3`; minimum checked candidates required)
+- `HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE` (default `0.75`; absolute negative-ratio spike threshold)
+- `HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA` (default `0.35`; baseline delta threshold for negative ratio)
+- `HF_DRIFT_ALERT_APPLIED_RATIO_DROP` (default `0.25`; baseline drop threshold for applied ratio)
+- `HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR` (default `0.15`; absolute low floor for applied ratio drop alerts)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
@@ -206,6 +214,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
   - Core sidecar risk chain (market guard, preflight, regime guard, exposure caps) remains unchanged.
+  - Drift monitor (log-only):
+    - `[HF_DRIFT] ...` warns when recent `N` runs show sudden negative-ratio spikes or applied-ratio drops.
+    - State is persisted at `state/hf-drift-state.json`.
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.
@@ -247,7 +258,14 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+  - HF marker audit (warning-only):
+    - Workflow stores marker status at `state/hf-marker-audit.json`.
+    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_drift=...`.
+    - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
+  - Step Summary includes:
+    - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced`)
+    - `hf_marker_audit` (`soft/drift/runSummary` as `ok|missing`)
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.

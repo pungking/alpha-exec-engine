@@ -432,6 +432,45 @@ type PerformanceLoopUpdateResult = {
   updated: boolean;
 };
 
+type HfDriftSnapshot = {
+  at: string;
+  stage6Hash: string;
+  stage6File: string;
+  profile: RegimeProfile;
+  hfSoftEnabled: boolean;
+  checkedCandidates: number;
+  appliedCount: number;
+  tightenCount: number;
+  appliedRatio: number;
+  negativeRatio: number;
+};
+
+type HfDriftState = {
+  updatedAt: string;
+  snapshots: HfDriftSnapshot[];
+};
+
+type HfDriftAlert = {
+  enabled: boolean;
+  triggered: boolean;
+  reason: string;
+  windowRuns: number;
+  minHistory: number;
+  minCandidates: number;
+  checkedCandidates: number;
+  baselineSamples: number;
+  currentAppliedRatio: number;
+  currentNegativeRatio: number;
+  baselineAppliedRatio: number;
+  baselineNegativeRatio: number;
+  thresholds: {
+    negativeRatioSpike: number;
+    negativeRatioDelta: number;
+    appliedRatioDrop: number;
+    appliedRatioFloor: number;
+  };
+};
+
 type OrderIdempotencyState = {
   orders: Record<
     string,
@@ -455,6 +494,7 @@ const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 const PERFORMANCE_LOOP_JSON_PATH = "state/stage6-20trade-loop.json";
 const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
+const HF_DRIFT_STATE_PATH = "state/hf-drift-state.json";
 const BASE_ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 const NON_EXECUTABLE_DECISIONS = new Set(["WAIT_PRICE", "BLOCKED_RISK", "BLOCKED_EVENT"]);
 
@@ -573,6 +613,14 @@ function printStartupSummary() {
   console.log(`HF_EARN_WIN_FAC : ${clamp(readNonNegativeNumberEnv("HF_EARNINGS_WINDOW_REDUCE_FACTOR", 0.3), 0, 1)}`);
   console.log(`HF_SOFT_RELIEF  : ${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_POSITIVE_RELIEF_MAX", 1.0), 0, 3)}`);
   console.log(`HF_SOFT_TIGHTEN : ${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX", 2.0), 0, 4)}`);
+  console.log(`HF_DRIFT_EN     : ${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`);
+  console.log(`HF_DRIFT_WIN_N  : ${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`);
+  console.log(`HF_DRIFT_MIN_H  : ${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`);
+  console.log(`HF_DRIFT_MIN_C  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_CANDIDATES", 3)))}`);
+  console.log(`HF_DRIFT_NEG_ABS: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE", 0.75), 0, 1)}`);
+  console.log(`HF_DRIFT_NEG_DEL: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`);
+  console.log(`HF_DRIFT_APP_DRP: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`);
+  console.log(`HF_DRIFT_APP_FLR: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -2966,6 +3014,146 @@ async function sendTelegramMessage(token: string, chatId: string, text: string, 
   console.log(`[${tag}] sent to ${mask(chatId)} chunks=${chunks.length}`);
 }
 
+async function loadHfDriftState(): Promise<HfDriftState> {
+  try {
+    const raw = await readFile(HF_DRIFT_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<HfDriftState>;
+    const snapshots = Array.isArray(parsed?.snapshots)
+      ? (parsed.snapshots as HfDriftSnapshot[])
+      : [];
+    return {
+      updatedAt: typeof parsed?.updatedAt === "string" ? parsed.updatedAt : "",
+      snapshots
+    };
+  } catch {
+    return {
+      updatedAt: "",
+      snapshots: []
+    };
+  }
+}
+
+async function saveHfDriftState(state: HfDriftState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(HF_DRIFT_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${HF_DRIFT_STATE_PATH}`);
+}
+
+async function updateHfDriftAlert(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  actionableCount: number
+): Promise<HfDriftAlert> {
+  const enabled = readBoolEnv("HF_DRIFT_ALERT_ENABLED", true);
+  const windowRuns = Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))));
+  const minHistory = Math.max(2, Math.min(windowRuns - 1, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4))));
+  const minCandidates = Math.max(1, Math.min(20, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_CANDIDATES", 3))));
+  const negativeRatioSpike = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE", 0.75), 0, 1);
+  const negativeRatioDelta = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1);
+  const appliedRatioDrop = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1);
+  const appliedRatioFloor = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1);
+  const checkedCandidatesRaw =
+    dryExec.stage6Contract.checked > 0 ? dryExec.stage6Contract.checked : actionableCount;
+  const checkedCandidates = Math.max(0, checkedCandidatesRaw);
+  const appliedCount = Math.max(0, dryExec.hfSentimentGate.applied);
+  const tightenCount = Math.max(0, dryExec.hfSentimentGate.tightenCount);
+  const appliedRatio =
+    checkedCandidates > 0 ? Number((appliedCount / checkedCandidates).toFixed(4)) : 0;
+  const negativeRatio =
+    appliedCount > 0 ? Number((tightenCount / appliedCount).toFixed(4)) : 0;
+
+  const snapshot: HfDriftSnapshot = {
+    at: new Date().toISOString(),
+    stage6Hash: stage6.sha256,
+    stage6File: stage6.fileName,
+    profile: dryExec.regime.profile,
+    hfSoftEnabled: dryExec.hfSentimentGate.enabled,
+    checkedCandidates,
+    appliedCount,
+    tightenCount,
+    appliedRatio,
+    negativeRatio
+  };
+
+  const state = await loadHfDriftState();
+  const deduped = state.snapshots.filter((row) => row.stage6Hash !== snapshot.stage6Hash);
+  deduped.push(snapshot);
+  const maxKeep = Math.max(windowRuns * 6, 60);
+  const snapshots = deduped.slice(-maxKeep);
+  const recent = snapshots.slice(-windowRuns);
+  const baselinePool = recent
+    .slice(0, -1)
+    .filter((row) => row.hfSoftEnabled && row.checkedCandidates >= minCandidates);
+  const baselineAppliedRatio = average(baselinePool.map((row) => row.appliedRatio)) ?? 0;
+  const baselineNegativeRatio = average(baselinePool.map((row) => row.negativeRatio)) ?? 0;
+  const baselineSamples = baselinePool.length;
+  const hasSample = baselineSamples >= minHistory && snapshot.checkedCandidates >= minCandidates;
+  const negativeSpikeTriggered =
+    hasSample &&
+    snapshot.negativeRatio >= Math.max(negativeRatioSpike, baselineNegativeRatio + negativeRatioDelta);
+  const appliedDropTriggered =
+    hasSample &&
+    snapshot.appliedRatio <= appliedRatioFloor &&
+    snapshot.appliedRatio <= Math.max(0, baselineAppliedRatio - appliedRatioDrop);
+  const triggered =
+    enabled &&
+    snapshot.hfSoftEnabled &&
+    (negativeSpikeTriggered || appliedDropTriggered);
+
+  const reason = !enabled
+    ? "disabled"
+    : !snapshot.hfSoftEnabled
+      ? "hf_soft_disabled"
+      : !hasSample
+        ? baselineSamples < minHistory
+          ? `insufficient_history(${baselineSamples}/${minHistory})`
+          : `insufficient_candidates(${snapshot.checkedCandidates}/${minCandidates})`
+        : [negativeSpikeTriggered ? "negative_ratio_spike" : null, appliedDropTriggered ? "applied_ratio_drop" : null]
+            .filter((row): row is string => Boolean(row))
+            .join("|") || "stable";
+
+  state.updatedAt = snapshot.at;
+  state.snapshots = snapshots;
+  await saveHfDriftState(state);
+
+  const alert: HfDriftAlert = {
+    enabled,
+    triggered,
+    reason,
+    windowRuns,
+    minHistory,
+    minCandidates,
+    checkedCandidates: snapshot.checkedCandidates,
+    baselineSamples,
+    currentAppliedRatio: snapshot.appliedRatio,
+    currentNegativeRatio: snapshot.negativeRatio,
+    baselineAppliedRatio,
+    baselineNegativeRatio,
+    thresholds: {
+      negativeRatioSpike,
+      negativeRatioDelta,
+      appliedRatioDrop,
+      appliedRatioFloor
+    }
+  };
+
+  const driftLine =
+    `[HF_DRIFT] enabled=${alert.enabled} triggered=${alert.triggered} reason=${alert.reason} ` +
+    `window=${alert.windowRuns} baseline=${alert.baselineSamples} minHistory=${alert.minHistory} ` +
+    `checked=${alert.checkedCandidates} minCandidates=${alert.minCandidates} ` +
+    `currentApplied=${alert.currentAppliedRatio.toFixed(4)} baselineApplied=${alert.baselineAppliedRatio.toFixed(4)} ` +
+    `currentNegative=${alert.currentNegativeRatio.toFixed(4)} baselineNegative=${alert.baselineNegativeRatio.toFixed(4)} ` +
+    `negSpike=${alert.thresholds.negativeRatioSpike.toFixed(2)} negDelta=${alert.thresholds.negativeRatioDelta.toFixed(2)} ` +
+    `drop=${alert.thresholds.appliedRatioDrop.toFixed(2)} floor=${alert.thresholds.appliedRatioFloor.toFixed(2)}`;
+  if (alert.triggered) {
+    console.warn(driftLine);
+  } else {
+    console.log(driftLine);
+  }
+
+  return alert;
+}
+
 async function loadRunState(): Promise<SidecarRunState | null> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
@@ -3001,7 +3189,8 @@ async function saveDryExecPreview(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
-  guardControl: GuardControlGate
+  guardControl: GuardControlGate,
+  hfDrift?: HfDriftAlert
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   await mkdir("state", { recursive: true });
@@ -3017,6 +3206,7 @@ async function saveDryExecPreview(
     minConviction: dryExec.minConviction,
     minConvictionPolicy: dryExec.minConvictionPolicy,
     hfSentimentGate: dryExec.hfSentimentGate,
+    hfDriftAlert: hfDrift ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -3050,6 +3240,11 @@ async function saveDryExecPreview(
   console.log(
     `[HF_SOFT_GATE] enabled=${dryExec.hfSentimentGate.enabled} floor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta}`
   );
+  if (hfDrift) {
+    console.log(
+      `[HF_DRIFT_SUMMARY] triggered=${hfDrift.triggered} reason=${hfDrift.reason} currentApplied=${hfDrift.currentAppliedRatio.toFixed(4)} baselineApplied=${hfDrift.baselineAppliedRatio.toFixed(4)} currentNegative=${hfDrift.currentNegativeRatio.toFixed(4)} baselineNegative=${hfDrift.baselineNegativeRatio.toFixed(4)}`
+    );
+  }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
 }
 
@@ -3101,6 +3296,11 @@ function median(values: number[]): number | null {
     return Number(((sorted[mid - 1] + sorted[mid]) / 2).toFixed(4));
   }
   return Number(sorted[mid].toFixed(4));
+}
+
+function average(values: number[]): number | null {
+  if (values.length === 0) return null;
+  return Number((values.reduce((acc, value) => acc + value, 0) / values.length).toFixed(4));
 }
 
 function deriveTradeMetrics(row: PerformanceLoopRow): Pick<PerformanceLoopRow, "RMultiple" | "slipPct"> {
@@ -3919,6 +4119,14 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_EARNINGS_WINDOW_REDUCE_FACTOR=${clamp(readNonNegativeNumberEnv("HF_EARNINGS_WINDOW_REDUCE_FACTOR", 0.3), 0, 1)}`,
     `HF_SENTIMENT_POSITIVE_RELIEF_MAX=${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_POSITIVE_RELIEF_MAX", 1.0), 0, 3)}`,
     `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX=${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX", 2.0), 0, 4)}`,
+    `HF_DRIFT_ALERT_ENABLED=${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`,
+    `HF_DRIFT_ALERT_WINDOW_RUNS=${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`,
+    `HF_DRIFT_ALERT_MIN_HISTORY=${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`,
+    `HF_DRIFT_ALERT_MIN_CANDIDATES=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_CANDIDATES", 3)))}`,
+    `HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE", 0.75), 0, 1)}`,
+    `HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`,
+    `HF_DRIFT_ALERT_APPLIED_RATIO_DROP=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`,
+    `HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -3954,11 +4162,15 @@ function printRunSummary(
   actionableCount: number,
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
-  ledger: OrderLedgerUpdateResult
+  ledger: OrderLedgerUpdateResult,
+  hfDrift?: HfDriftAlert
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
+  const hfDriftSummary = hfDrift
+    ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
+    : "n/a";
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_drift=${hfDriftSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -4078,14 +4290,15 @@ async function main() {
     throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
+  const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
 
   const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
   await sendSimulationTelegram(stage6, actionable, actionableVerdicts, postPreflightDryExec, preflight, ledger, guardControl);
-  await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl);
+  await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl, hfDrift);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
-  printRunSummary("sent", stage6, actionable.length, postPreflightDryExec, preflight, ledger);
+  printRunSummary("sent", stage6, actionable.length, postPreflightDryExec, preflight, ledger, hfDrift);
 }
 
 main().catch((error) => {

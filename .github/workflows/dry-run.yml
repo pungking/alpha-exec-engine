@@ -141,6 +141,14 @@ jobs:
       HF_EARNINGS_WINDOW_REDUCE_FACTOR: ${{ vars.HF_EARNINGS_WINDOW_REDUCE_FACTOR }}
       HF_SENTIMENT_POSITIVE_RELIEF_MAX: ${{ vars.HF_SENTIMENT_POSITIVE_RELIEF_MAX }}
       HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX: ${{ vars.HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX }}
+      HF_DRIFT_ALERT_ENABLED: ${{ vars.HF_DRIFT_ALERT_ENABLED }}
+      HF_DRIFT_ALERT_WINDOW_RUNS: ${{ vars.HF_DRIFT_ALERT_WINDOW_RUNS }}
+      HF_DRIFT_ALERT_MIN_HISTORY: ${{ vars.HF_DRIFT_ALERT_MIN_HISTORY }}
+      HF_DRIFT_ALERT_MIN_CANDIDATES: ${{ vars.HF_DRIFT_ALERT_MIN_CANDIDATES }}
+      HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE: ${{ vars.HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE }}
+      HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA: ${{ vars.HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA }}
+      HF_DRIFT_ALERT_APPLIED_RATIO_DROP: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_DROP }}
+      HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
       REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
@@ -297,26 +305,31 @@ jobs:
 
       - name: Run dry-run bootstrap
         if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.validation_pack == 'true' || inputs.payload_probe == 'true')) }}
-        run: node dist/src/index.js
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          : > state/last-run-output.log
+          node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
 
       - name: Run validation pack (OFF/ON/STRICT)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
         run: |
           set -euo pipefail
           mkdir -p state/validation-pack/off state/validation-pack/on state/validation-pack/strict
+          : > state/last-run-output.log
 
           echo "[PACK] OFF: ENTRY_FEASIBILITY_ENFORCE=false, ENTRY_MAX_DISTANCE_PCT=15"
-          ENTRY_FEASIBILITY_ENFORCE=false ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js
+          ENTRY_FEASIBILITY_ENFORCE=false ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
           cp state/last-run.json state/validation-pack/off/last-run.json
           cp state/last-dry-exec-preview.json state/validation-pack/off/last-dry-exec-preview.json
 
           echo "[PACK] ON: ENTRY_FEASIBILITY_ENFORCE=true, ENTRY_MAX_DISTANCE_PCT=15"
-          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js
+          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=15 FORCE_SEND_ONCE=true node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
           cp state/last-run.json state/validation-pack/on/last-run.json
           cp state/last-dry-exec-preview.json state/validation-pack/on/last-dry-exec-preview.json
 
           echo "[PACK] STRICT: ENTRY_FEASIBILITY_ENFORCE=true, ENTRY_MAX_DISTANCE_PCT=1"
-          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=1 FORCE_SEND_ONCE=true node dist/src/index.js
+          ENTRY_FEASIBILITY_ENFORCE=true ENTRY_MAX_DISTANCE_PCT=1 FORCE_SEND_ONCE=true node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
           cp state/last-run.json state/validation-pack/strict/last-run.json
           cp state/last-dry-exec-preview.json state/validation-pack/strict/last-dry-exec-preview.json
 
@@ -325,11 +338,50 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p state/payload-probe
+          : > state/last-run-output.log
           PROBE_MIN_CONV="${{ inputs.payload_probe_min_conviction }}"
           echo "[PROBE] payload path with DRY_RISK_OFF_MIN_CONVICTION=${PROBE_MIN_CONV}"
-          DRY_RISK_OFF_MIN_CONVICTION="${PROBE_MIN_CONV}" FORCE_SEND_ONCE=true node dist/src/index.js
+          DRY_RISK_OFF_MIN_CONVICTION="${PROBE_MIN_CONV}" FORCE_SEND_ONCE=true node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
           cp state/last-run.json state/payload-probe/last-run.json
           cp state/last-dry-exec-preview.json state/payload-probe/last-dry-exec-preview.json
+
+      - name: HF marker audit (warning-only)
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          LOG_PATH="state/last-run-output.log"
+          SOFT_GATE="missing"
+          DRIFT_MARKER="missing"
+          RUN_SUMMARY_HF_DRIFT="missing"
+
+          if [[ -f "${LOG_PATH}" ]]; then
+            grep -q '\[HF_SOFT_GATE\]' "${LOG_PATH}" && SOFT_GATE="ok" || true
+            grep -Eq '\[HF_DRIFT\]|\[HF_DRIFT_SUMMARY\]' "${LOG_PATH}" && DRIFT_MARKER="ok" || true
+            grep -Eq '\[RUN_SUMMARY\].*hf_drift=' "${LOG_PATH}" && RUN_SUMMARY_HF_DRIFT="ok" || true
+          fi
+
+          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${LOG_PATH}" <<'NODE'
+          const fs = require("node:fs");
+          const [softGate, driftMarker, runSummaryHfDrift, logPath] = process.argv.slice(2);
+          const audit = {
+            softGate,
+            driftMarker,
+            runSummaryHfDrift,
+            logPath,
+            auditedAt: new Date().toISOString(),
+          };
+          fs.writeFileSync("state/hf-marker-audit.json", `${JSON.stringify(audit, null, 2)}\n`, "utf8");
+          const allOk = [softGate, driftMarker, runSummaryHfDrift].every((v) => v === "ok");
+          const line =
+            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} ` +
+            `mode=warning-only state=state/hf-marker-audit.json`;
+          if (allOk) {
+            console.log(line);
+          } else {
+            console.log(`::warning::${line}`);
+          }
+          NODE
 
       - name: Publish run summary
         if: always()
@@ -343,6 +395,7 @@ jobs:
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
           const statePath = "state/last-run.json";
           const previewPath = "state/last-dry-exec-preview.json";
+          const hfMarkerAuditPath = "state/hf-marker-audit.json";
           const idempPath = "state/order-idempotency.json";
           const includeValidationPack = String(process.env.SUMMARY_INCLUDE_VALIDATION_PACK || "").trim().toLowerCase() === "true";
           const includePayloadProbe = String(process.env.SUMMARY_INCLUDE_PAYLOAD_PROBE || "").trim().toLowerCase() === "true";
@@ -400,6 +453,10 @@ jobs:
             lines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} watchlist=${stage6Contract.watchlist ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
             );
+            const hfGate = preview?.hfSentimentGate || {};
+            lines.push(
+              `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"}\``
+            );
             const skipReasonCounts =
               preview?.skipReasonCounts && typeof preview.skipReasonCounts === "object"
                 ? preview.skipReasonCounts
@@ -448,6 +505,16 @@ jobs:
             );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
+            lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A`");
+          }
+
+          if (fs.existsSync(hfMarkerAuditPath)) {
+            const hfAudit = JSON.parse(fs.readFileSync(hfMarkerAuditPath, "utf8"));
+            lines.push(
+              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"}\``
+            );
+          } else {
+            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing`");
           }
 
           if (fs.existsSync(idempPath)) {
@@ -624,6 +691,8 @@ jobs:
           path: |
             state/last-run.json
             state/last-dry-exec-preview.json
+            state/hf-marker-audit.json
+            state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json
             state/regime-guard-state.json
