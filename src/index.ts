@@ -253,6 +253,7 @@ type DryExecBuildResult = {
     sizeReductionPct: number;
     sizeReducedCount: number;
     sizeReductionNotionalTotal: number;
+    explainLine: string;
   };
   minStopDistancePct: number;
   maxStopDistancePct: number;
@@ -494,6 +495,22 @@ type HfShadowSummary = {
   generatedAt: string;
 };
 
+type HfAnomalyAlert = {
+  enabled: boolean;
+  triggered: boolean;
+  reason: string;
+  shadowCompared: boolean;
+  shadowPayloadDelta: number;
+  shadowNotionalDelta: number;
+  shadowSkippedDelta: number;
+  driftTriggered: boolean;
+  thresholds: {
+    shadowPayloadDeltaAbs: number;
+    shadowNotionalDeltaAbs: number;
+    shadowSkippedDeltaAbs: number;
+  };
+};
+
 type OrderIdempotencyState = {
   orders: Record<
     string,
@@ -640,6 +657,10 @@ function printStartupSummary() {
   console.log(`HF_SIZE_NEG_EN  : ${readBoolEnv("HF_NEGATIVE_SIZE_REDUCTION_ENABLED", false)}`);
   console.log(`HF_SIZE_NEG_PCT : ${clamp(readNonNegativeNumberEnv("HF_NEGATIVE_SIZE_REDUCTION_PCT", 0.15), 0, 0.5)}`);
   console.log(`HF_SHADOW_EN    : ${readBoolEnv("HF_SHADOW_ENABLED", false)}`);
+  console.log(`HF_ALERT_EN     : ${readBoolEnv("HF_ALERT_ENABLED", true)}`);
+  console.log(`HF_ALERT_PAY_D  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS", 2)))}`);
+  console.log(`HF_ALERT_NOT_D  : ${clamp(readNonNegativeNumberEnv("HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS", 1000), 0, 1000000)}`);
+  console.log(`HF_ALERT_SKP_D  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_SKIPPED_DELTA_ABS", 2)))}`);
   console.log(`HF_DRIFT_EN     : ${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`);
   console.log(`HF_DRIFT_WIN_N  : ${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`);
   console.log(`HF_DRIFT_MIN_H  : ${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`);
@@ -2371,6 +2392,13 @@ function buildDryExecPayloads(
   let hfSoftNetConvictionDelta = 0;
   let hfSoftSizeReducedCount = 0;
   let hfSoftSizeReductionNotionalTotal = 0;
+  let hfExplainCheckedCandidates = 0;
+  let hfExplainStatusNotOk = 0;
+  let hfExplainUnsupportedLabel = 0;
+  let hfExplainLowScore = 0;
+  let hfExplainLowArticleCount = 0;
+  let hfExplainStaleNews = 0;
+  let hfExplainEarningsWindowBlocked = 0;
   const configuredMinStopDistancePct = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MIN_STOP_DISTANCE_PCT",
@@ -2433,6 +2461,7 @@ function buildDryExecPayloads(
   };
 
   actionable.forEach((row) => {
+    hfExplainCheckedCandidates += 1;
     const hasBucketSignal =
       !isMissingContractToken(row.executionBucket) || !isMissingContractToken(row.executionReason);
     const hasDecisionSignal =
@@ -2499,6 +2528,41 @@ function buildDryExecPayloads(
 
     // Quality gate first: keep skip reasons deterministic and diagnosis-friendly.
     const conviction = parseConviction(row.conviction);
+    if (hfSoftGatePolicy.enabled) {
+      if (row.hfSentimentStatus !== "OK") {
+        hfExplainStatusNotOk += 1;
+      } else if (row.hfSentimentLabel !== "positive" && row.hfSentimentLabel !== "negative") {
+        hfExplainUnsupportedLabel += 1;
+      } else if (
+        row.hfSentimentScore == null ||
+        !Number.isFinite(row.hfSentimentScore) ||
+        row.hfSentimentScore < hfSoftGatePolicy.scoreFloor
+      ) {
+        hfExplainLowScore += 1;
+      } else if (
+        row.hfSentimentArticleCount == null ||
+        row.hfSentimentArticleCount < hfSoftGatePolicy.minArticleCount
+      ) {
+        hfExplainLowArticleCount += 1;
+      } else if (
+        row.hfSentimentNewestAgeHours == null ||
+        row.hfSentimentNewestAgeHours > hfSoftGatePolicy.maxNewsAgeHours
+      ) {
+        hfExplainStaleNews += 1;
+      } else {
+        const earningsAbsDays =
+          row.earningsDaysToEvent != null && Number.isFinite(Number(row.earningsDaysToEvent))
+            ? Math.abs(Number(row.earningsDaysToEvent))
+            : null;
+        if (
+          hfSoftGatePolicy.earningsWindowEnabled &&
+          earningsAbsDays != null &&
+          earningsAbsDays <= hfSoftGatePolicy.earningsBlockDays
+        ) {
+          hfExplainEarningsWindowBlocked += 1;
+        }
+      }
+    }
     const hfAdjustment = computeHfSoftGateAdjustment(row, hfSoftGatePolicy);
     if (hfAdjustment.earningsWindow === "blocked") hfSoftEarningsBlocked += 1;
     if (hfAdjustment.earningsWindow === "reduced") hfSoftEarningsReduced += 1;
@@ -2649,7 +2713,26 @@ function buildDryExecPayloads(
       sizeReductionEnabled: hfNegativeSizeReductionPolicy.enabled,
       sizeReductionPct: Number(hfNegativeSizeReductionPolicy.reductionPct.toFixed(2)),
       sizeReducedCount: hfSoftSizeReducedCount,
-      sizeReductionNotionalTotal: roundToCent(hfSoftSizeReductionNotionalTotal)
+      sizeReductionNotionalTotal: roundToCent(hfSoftSizeReductionNotionalTotal),
+      explainLine: buildHfSoftGateExplainLine(
+        hfSoftGatePolicy,
+        hfExplainCheckedCandidates,
+        {
+          statusNotOk: hfExplainStatusNotOk,
+          unsupportedLabel: hfExplainUnsupportedLabel,
+          lowScore: hfExplainLowScore,
+          lowArticleCount: hfExplainLowArticleCount,
+          staleNews: hfExplainStaleNews,
+          earningsWindowBlocked: hfExplainEarningsWindowBlocked
+        },
+        {
+          applied: hfSoftApplied,
+          reliefCount: hfSoftReliefCount,
+          tightenCount: hfSoftTightenCount,
+          netMinConvictionDelta: Number(hfSoftNetConvictionDelta.toFixed(2)),
+          blockedNegative: hfSoftBlockedNegative
+        }
+      )
     },
     minStopDistancePct,
     maxStopDistancePct,
@@ -2910,6 +2993,7 @@ function buildSimulationMessage(
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
+  lines.push(`HF Explain: ${dryExec.hfSentimentGate.explainLine}`);
   lines.push(
     `StopDist Policy: syncStage6=${dryExec.stopDistancePolicy.syncWithStage6} strategy=${dryExec.stopDistancePolicy.strategy} configured=${dryExec.stopDistancePolicy.configuredMinPct}%~${dryExec.stopDistancePolicy.configuredMaxPct}% stage6=${dryExec.stopDistancePolicy.stage6MinPct}%~${dryExec.stopDistancePolicy.stage6MaxPct}% applied=${dryExec.stopDistancePolicy.appliedMinPct}%~${dryExec.stopDistancePolicy.appliedMaxPct}%`
   );
@@ -3250,6 +3334,118 @@ function buildHfShadowSummaryForRun(shadow: HfShadowSummary | null): string {
   ].join("|");
 }
 
+function buildHfAlertSummaryForRun(alert: HfAnomalyAlert | null): string {
+  if (!alert) return "n/a";
+  return [
+    `enabled:${alert.enabled}`,
+    `triggered:${alert.triggered}`,
+    `reason:${alert.reason}`,
+    `shadowCompared:${alert.shadowCompared}`,
+    `shadowPayloadDelta:${alert.shadowPayloadDelta}`,
+    `shadowNotionalDelta:${alert.shadowNotionalDelta.toFixed(2)}`,
+    `shadowSkippedDelta:${alert.shadowSkippedDelta}`,
+    `driftTriggered:${alert.driftTriggered}`
+  ].join("|");
+}
+
+function buildHfSoftGateExplainLine(
+  policy: HfSoftGatePolicy,
+  checkedCandidates: number,
+  stats: {
+    statusNotOk: number;
+    unsupportedLabel: number;
+    lowScore: number;
+    lowArticleCount: number;
+    staleNews: number;
+    earningsWindowBlocked: number;
+  },
+  gate: {
+    applied: number;
+    reliefCount: number;
+    tightenCount: number;
+    netMinConvictionDelta: number;
+    blockedNegative: number;
+  }
+): string {
+  if (!policy.enabled) return "hf_off";
+  const blockers: Array<{ key: string; count: number }> = [
+    { key: "status", count: stats.statusNotOk },
+    { key: "neutral", count: stats.unsupportedLabel },
+    { key: "score", count: stats.lowScore },
+    { key: "articles", count: stats.lowArticleCount },
+    { key: "stale", count: stats.staleNews },
+    { key: "earnings_block", count: stats.earningsWindowBlocked }
+  ].filter((item) => item.count > 0);
+  const blockerSummary =
+    blockers.length > 0
+      ? blockers
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 3)
+          .map((item) => `${item.key}:${item.count}`)
+          .join(",")
+      : "none";
+
+  if (gate.applied <= 0) {
+    return `checked=${checkedCandidates} no_adjustment blockers=${blockerSummary}`;
+  }
+  return `checked=${checkedCandidates} applied=${gate.applied}(tighten=${gate.tightenCount},relief=${gate.reliefCount}) netDelta=${gate.netMinConvictionDelta} blockedNeg=${gate.blockedNegative} blockers=${blockerSummary}`;
+}
+
+function evaluateHfAnomalyAlert(hfShadow: HfShadowSummary, hfDrift: HfDriftAlert): HfAnomalyAlert {
+  const enabled = readBoolEnv("HF_ALERT_ENABLED", true);
+  const shadowPayloadDeltaAbs = Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS", 2)));
+  const shadowNotionalDeltaAbs = clamp(readNonNegativeNumberEnv("HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS", 1000), 0, 1000000);
+  const shadowSkippedDeltaAbs = Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_SKIPPED_DELTA_ABS", 2)));
+  if (!enabled) {
+    const disabled: HfAnomalyAlert = {
+      enabled,
+      triggered: false,
+      reason: "disabled",
+      shadowCompared: hfShadow.compared,
+      shadowPayloadDelta: hfShadow.payloadDelta,
+      shadowNotionalDelta: hfShadow.notionalDelta,
+      shadowSkippedDelta: hfShadow.skippedDelta,
+      driftTriggered: hfDrift.triggered,
+      thresholds: { shadowPayloadDeltaAbs, shadowNotionalDeltaAbs, shadowSkippedDeltaAbs }
+    };
+    console.log(
+      `[HF_ALERT] enabled=false triggered=false reason=disabled shadowCompared=${disabled.shadowCompared} shadowPayloadDelta=${disabled.shadowPayloadDelta} shadowNotionalDelta=${disabled.shadowNotionalDelta.toFixed(2)} shadowSkippedDelta=${disabled.shadowSkippedDelta} driftTriggered=${disabled.driftTriggered}`
+    );
+    return disabled;
+  }
+
+  const reasons: string[] = [];
+  if (hfDrift.triggered) reasons.push(`drift:${hfDrift.reason}`);
+  if (hfShadow.enabled && hfShadow.compared) {
+    if (Math.abs(hfShadow.payloadDelta) >= shadowPayloadDeltaAbs) {
+      reasons.push(`shadow_payload_delta_abs>=${shadowPayloadDeltaAbs}`);
+    }
+    if (Math.abs(hfShadow.notionalDelta) >= shadowNotionalDeltaAbs) {
+      reasons.push(`shadow_notional_delta_abs>=${shadowNotionalDeltaAbs}`);
+    }
+    if (Math.abs(hfShadow.skippedDelta) >= shadowSkippedDeltaAbs) {
+      reasons.push(`shadow_skipped_delta_abs>=${shadowSkippedDeltaAbs}`);
+    }
+  }
+
+  const alert: HfAnomalyAlert = {
+    enabled,
+    triggered: reasons.length > 0,
+    reason: reasons.length > 0 ? reasons.join("|") : "none",
+    shadowCompared: hfShadow.compared,
+    shadowPayloadDelta: hfShadow.payloadDelta,
+    shadowNotionalDelta: hfShadow.notionalDelta,
+    shadowSkippedDelta: hfShadow.skippedDelta,
+    driftTriggered: hfDrift.triggered,
+    thresholds: { shadowPayloadDeltaAbs, shadowNotionalDeltaAbs, shadowSkippedDeltaAbs }
+  };
+  const logPrefix = alert.triggered ? "WARN" : "INFO";
+  console.log(
+    `[HF_ALERT] level=${logPrefix} enabled=true triggered=${alert.triggered} reason=${alert.reason} shadowCompared=${alert.shadowCompared} shadowPayloadDelta=${alert.shadowPayloadDelta} shadowNotionalDelta=${alert.shadowNotionalDelta.toFixed(2)} shadowSkippedDelta=${alert.shadowSkippedDelta} driftTriggered=${alert.driftTriggered} thresholds=payload:${shadowPayloadDeltaAbs},notional:${shadowNotionalDeltaAbs},skipped:${shadowSkippedDeltaAbs}`
+  );
+  return alert;
+}
+
 async function saveHfShadowSummary(summary: HfShadowSummary): Promise<void> {
   await mkdir("state", { recursive: true });
   await writeFile(HF_SHADOW_STATE_PATH, JSON.stringify(summary, null, 2), "utf8");
@@ -3363,7 +3559,8 @@ async function saveDryExecPreview(
   ledger: OrderLedgerUpdateResult,
   guardControl: GuardControlGate,
   hfDrift?: HfDriftAlert,
-  hfShadow?: HfShadowSummary
+  hfShadow?: HfShadowSummary,
+  hfAlert?: HfAnomalyAlert
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   await mkdir("state", { recursive: true });
@@ -3381,6 +3578,7 @@ async function saveDryExecPreview(
     hfSentimentGate: dryExec.hfSentimentGate,
     hfDriftAlert: hfDrift ?? null,
     hfShadow: hfShadow ?? null,
+    hfAlert: hfAlert ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -3412,11 +3610,16 @@ async function saveDryExecPreview(
     `[CONV_POLICY] base=${dryExec.minConvictionPolicy.base} applied=${dryExec.minConvictionPolicy.applied} floor=${dryExec.minConvictionPolicy.floor} ceiling=${dryExec.minConvictionPolicy.ceiling} vix+${dryExec.minConvictionPolicy.marketTighten} quality-${dryExec.minConvictionPolicy.qualityRelief} sampleN=${dryExec.minConvictionPolicy.sampleCount} q${Math.round(dryExec.minConvictionPolicy.sampleQuantileQ * 100)}=${dryExec.minConvictionPolicy.sampleQuantileValue ?? "N/A"} cap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}`
   );
   console.log(
-    `[HF_SOFT_GATE] enabled=${dryExec.hfSentimentGate.enabled} floor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
+    `[HF_SOFT_GATE] enabled=${dryExec.hfSentimentGate.enabled} floor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} explain=${dryExec.hfSentimentGate.explainLine}`
   );
   if (hfDrift) {
     console.log(
       `[HF_DRIFT_SUMMARY] triggered=${hfDrift.triggered} reason=${hfDrift.reason} currentApplied=${hfDrift.currentAppliedRatio.toFixed(4)} baselineApplied=${hfDrift.baselineAppliedRatio.toFixed(4)} currentNegative=${hfDrift.currentNegativeRatio.toFixed(4)} baselineNegative=${hfDrift.baselineNegativeRatio.toFixed(4)}`
+    );
+  }
+  if (hfAlert) {
+    console.log(
+      `[HF_ALERT_SUMMARY] triggered=${hfAlert.triggered} reason=${hfAlert.reason} shadowCompared=${hfAlert.shadowCompared} shadowPayloadDelta=${hfAlert.shadowPayloadDelta} shadowNotionalDelta=${hfAlert.shadowNotionalDelta.toFixed(2)} shadowSkippedDelta=${hfAlert.shadowSkippedDelta} driftTriggered=${hfAlert.driftTriggered}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -4296,6 +4499,10 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_NEGATIVE_SIZE_REDUCTION_ENABLED=${readBoolEnv("HF_NEGATIVE_SIZE_REDUCTION_ENABLED", false)}`,
     `HF_NEGATIVE_SIZE_REDUCTION_PCT=${clamp(readNonNegativeNumberEnv("HF_NEGATIVE_SIZE_REDUCTION_PCT", 0.15), 0, 0.5)}`,
     `HF_SHADOW_ENABLED=${readBoolEnv("HF_SHADOW_ENABLED", false)}`,
+    `HF_ALERT_ENABLED=${readBoolEnv("HF_ALERT_ENABLED", true)}`,
+    `HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS", 2)))}`,
+    `HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS=${clamp(readNonNegativeNumberEnv("HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS", 1000), 0, 1000000)}`,
+    `HF_ALERT_SHADOW_SKIPPED_DELTA_ABS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_ALERT_SHADOW_SKIPPED_DELTA_ABS", 2)))}`,
     `HF_DRIFT_ALERT_ENABLED=${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`,
     `HF_DRIFT_ALERT_WINDOW_RUNS=${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`,
     `HF_DRIFT_ALERT_MIN_HISTORY=${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`,
@@ -4341,15 +4548,18 @@ function printRunSummary(
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
   hfDrift?: HfDriftAlert,
-  hfShadow?: HfShadowSummary
+  hfShadow?: HfShadowSummary,
+  hfAlert?: HfAnomalyAlert
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
     ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
     : "n/a";
   const hfShadowSummary = buildHfShadowSummaryForRun(hfShadow ?? null);
+  const hfAlertSummary = buildHfAlertSummaryForRun(hfAlert ?? null);
+  const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -4472,14 +4682,15 @@ async function main() {
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
+  const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);
 
   const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
   await sendSimulationTelegram(stage6, actionable, actionableVerdicts, postPreflightDryExec, preflight, ledger, guardControl);
-  await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl, hfDrift, hfShadow);
+  await saveDryExecPreview(stage6, postPreflightDryExec, preflight, ledger, guardControl, hfDrift, hfShadow, hfAlert);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
-  printRunSummary("sent", stage6, actionable.length, postPreflightDryExec, preflight, ledger, hfDrift, hfShadow);
+  printRunSummary("sent", stage6, actionable.length, postPreflightDryExec, preflight, ledger, hfDrift, hfShadow, hfAlert);
 }
 
 main().catch((error) => {
