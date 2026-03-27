@@ -143,6 +143,7 @@ jobs:
       HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX: ${{ vars.HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX }}
       HF_NEGATIVE_SIZE_REDUCTION_ENABLED: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_ENABLED }}
       HF_NEGATIVE_SIZE_REDUCTION_PCT: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_PCT }}
+      HF_SHADOW_ENABLED: ${{ vars.HF_SHADOW_ENABLED }}
       HF_DRIFT_ALERT_ENABLED: ${{ vars.HF_DRIFT_ALERT_ENABLED }}
       HF_DRIFT_ALERT_WINDOW_RUNS: ${{ vars.HF_DRIFT_ALERT_WINDOW_RUNS }}
       HF_DRIFT_ALERT_MIN_HISTORY: ${{ vars.HF_DRIFT_ALERT_MIN_HISTORY }}
@@ -356,27 +357,33 @@ jobs:
           SOFT_GATE="missing"
           DRIFT_MARKER="missing"
           RUN_SUMMARY_HF_DRIFT="missing"
+          SHADOW_MARKER="missing"
+          RUN_SUMMARY_HF_SHADOW="missing"
 
           if [[ -f "${LOG_PATH}" ]]; then
             grep -q '\[HF_SOFT_GATE\]' "${LOG_PATH}" && SOFT_GATE="ok" || true
             grep -Eq '\[HF_DRIFT\]|\[HF_DRIFT_SUMMARY\]' "${LOG_PATH}" && DRIFT_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_drift=' "${LOG_PATH}" && RUN_SUMMARY_HF_DRIFT="ok" || true
+            grep -q '\[HF_SHADOW\]' "${LOG_PATH}" && SHADOW_MARKER="ok" || true
+            grep -Eq '\[RUN_SUMMARY\].*hf_shadow=' "${LOG_PATH}" && RUN_SUMMARY_HF_SHADOW="ok" || true
           fi
 
-          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${LOG_PATH}" <<'NODE'
+          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${LOG_PATH}" <<'NODE'
           const fs = require("node:fs");
-          const [softGate, driftMarker, runSummaryHfDrift, logPath] = process.argv.slice(2);
+          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, logPath] = process.argv.slice(2);
           const audit = {
             softGate,
             driftMarker,
             runSummaryHfDrift,
+            shadowMarker,
+            runSummaryHfShadow,
             logPath,
             auditedAt: new Date().toISOString(),
           };
           fs.writeFileSync("state/hf-marker-audit.json", `${JSON.stringify(audit, null, 2)}\n`, "utf8");
-          const allOk = [softGate, driftMarker, runSummaryHfDrift].every((v) => v === "ok");
+          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow].every((v) => v === "ok");
           const line =
-            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} ` +
+            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} ` +
             `mode=warning-only state=state/hf-marker-audit.json`;
           if (allOk) {
             console.log(line);
@@ -459,6 +466,10 @@ jobs:
             lines.push(
               `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"} sizeReduceEnabled=${hfGate.sizeReductionEnabled ?? "N/A"} sizeReducePct=${hfGate.sizeReductionPct ?? "N/A"} sizeReduced=${hfGate.sizeReducedCount ?? "N/A"} sizeSavedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"}\``
             );
+            const hfShadow = preview?.hfShadow || {};
+            lines.push(
+              `- hf_shadow: \`enabled=${hfShadow.enabled ?? "N/A"} compared=${hfShadow.compared ?? "N/A"} reason=${hfShadow.reason ?? "N/A"} payloadDelta=${hfShadow.payloadDelta ?? "N/A"} notionalDelta=${hfShadow.notionalDelta ?? "N/A"} onOnly=${Array.isArray(hfShadow.onOnlySymbols) ? hfShadow.onOnlySymbols.length : "N/A"} offOnly=${Array.isArray(hfShadow.offOnlySymbols) ? hfShadow.offOnlySymbols.length : "N/A"} skipReasonDelta=${hfShadow.skipReasonDelta ?? "N/A"}\``
+            );
             const skipReasonCounts =
               preview?.skipReasonCounts && typeof preview.skipReasonCounts === "object"
                 ? preview.skipReasonCounts
@@ -508,15 +519,16 @@ jobs:
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
             lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A sizeReduceEnabled=N/A sizeReducePct=N/A sizeReduced=N/A sizeSavedNotional=N/A`");
+            lines.push("- hf_shadow: `enabled=N/A compared=N/A reason=N/A payloadDelta=N/A notionalDelta=N/A onOnly=N/A offOnly=N/A skipReasonDelta=N/A`");
           }
 
           if (fs.existsSync(hfMarkerAuditPath)) {
             const hfAudit = JSON.parse(fs.readFileSync(hfMarkerAuditPath, "utf8"));
             lines.push(
-              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"}\``
+              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"}\``
             );
           } else {
-            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing`");
+            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing`");
           }
 
           if (fs.existsSync(idempPath)) {
@@ -694,6 +706,7 @@ jobs:
             state/last-run.json
             state/last-dry-exec-preview.json
             state/hf-marker-audit.json
+            state/hf-shadow-last.json
             state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json

@@ -115,6 +115,7 @@ Use `.env.example` as baseline.
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
 - `HF_NEGATIVE_SIZE_REDUCTION_ENABLED` (default `false`; reduce order notional when HF negative tighten is applied)
 - `HF_NEGATIVE_SIZE_REDUCTION_PCT` (default `0.15`; fixed notional reduction ratio, clamped `0~0.5`)
+- `HF_SHADOW_ENABLED` (default `false`; writes HF on/off shadow comparison telemetry only)
 - `HF_DRIFT_ALERT_ENABLED` (default `true`; enable recent-run HF drift warning logs)
 - `HF_DRIFT_ALERT_WINDOW_RUNS` (default `8`; rolling window size)
 - `HF_DRIFT_ALERT_MIN_HISTORY` (default `4`; minimum baseline samples before alerting)
@@ -216,6 +217,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Optional size soft-reduce (default OFF):
     - `HF_NEGATIVE_SIZE_REDUCTION_ENABLED=true`
     - `HF_NEGATIVE_SIZE_REDUCTION_PCT=0.15` -> when negative tighten is applied, payload notional is reduced by fixed ratio.
+  - Optional A/B shadow compare (default OFF):
+    - `HF_SHADOW_ENABLED=true` -> computes on/off diff in-process and persists `state/hf-shadow-last.json` (no external API call).
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
   - Capacity checks (`max_orders`, `max_total_notional`) remain based on base `notionalPerOrder` for stable rollout behavior.
@@ -223,6 +226,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Drift monitor (log-only):
     - `[HF_DRIFT] ...` warns when recent `N` runs show sudden negative-ratio spikes or applied-ratio drops.
     - State is persisted at `state/hf-drift-state.json`.
+  - Shadow monitor (log-only):
+    - `[HF_SHADOW] ...` emits HF on/off payload/notional deltas for current run.
+    - State is persisted at `state/hf-shadow-last.json`.
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.
@@ -266,12 +272,13 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - HF marker audit (warning-only):
     - Workflow stores marker status at `state/hf-marker-audit.json`.
-    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_drift=...`.
+    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, and `[RUN_SUMMARY] ... hf_drift=... hf_shadow=...`.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
     - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced`)
-    - `hf_marker_audit` (`soft/drift/runSummary` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+    - `hf_shadow` (`enabled/compared/reason/payloadDelta/notionalDelta`)
+    - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow` as `ok|missing`)
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.
