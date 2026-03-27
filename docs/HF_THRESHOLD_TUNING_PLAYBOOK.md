@@ -53,6 +53,7 @@ hf_shadow_trend:
 hf_tuning_phase:
 hf_tuning_advice:
 hf_freeze:
+hf_live_promotion:
 hf_tuning_comment:
 hf_alert:
 hf_marker_audit:
@@ -70,6 +71,7 @@ Minimum lines to capture:
 - `hf_tuning_phase`
 - `hf_tuning_advice`
 - `hf_freeze`
+- `hf_live_promotion`
 - `hf_tuning_comment`
 - `hf_alert`
 - `hf_marker_audit`
@@ -151,6 +153,16 @@ Minimum lines to capture:
   - `REVIEW_TUNE`: apply one small threshold tweak and recheck.
   - `FREEZE_READY`: baseline freeze candidate.
   - `BLOCKED_OBSERVABILITY`: fix marker/audit gaps first.
+
+### hf_live_promotion
+- Suggestion-only live promotion checklist summary (`BLOCK/HOLD/PASS`).
+- Quick meaning:
+  - `PASS`: checklist passed (candidate for live promotion review).
+  - `HOLD`: not blocked, but evidence/checklist incomplete.
+  - `BLOCK`: explicit blocker active (alert/no-go/unfreeze review).
+- Check fields to watch:
+  - `pass=x/y`
+  - `perfGateGo`, `freezeFrozen`, `alertClear`, `shadowStable`, `payloadPathVerified`
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.

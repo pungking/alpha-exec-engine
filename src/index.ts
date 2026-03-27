@@ -607,6 +607,26 @@ type HfFreezeState = {
   updatedAt: string;
 };
 
+type HfLivePromotionStatus = "BLOCK" | "HOLD" | "PASS";
+
+type HfLivePromotionSummary = {
+  status: HfLivePromotionStatus;
+  reason: string;
+  recommendation: string;
+  checks: {
+    perfGateGo: boolean;
+    freezeFrozen: boolean;
+    alertClear: boolean;
+    shadowStable: boolean;
+    payloadPathVerified: boolean;
+    probeActive: boolean;
+    probeMode: HfPayloadProbeMode;
+  };
+  checklistPass: number;
+  checklistTotal: number;
+  generatedAt: string;
+};
+
 type HfAnomalyAlert = {
   enabled: boolean;
   triggered: boolean;
@@ -3815,6 +3835,23 @@ function buildHfFreezeSummaryForRun(freeze: HfFreezeSummary | null): string {
   ].join("|");
 }
 
+function buildHfLivePromotionSummaryForRun(promotion: HfLivePromotionSummary | null): string {
+  if (!promotion) return "n/a";
+  return [
+    `status:${promotion.status}`,
+    `reason:${promotion.reason}`,
+    `rec:${promotion.recommendation}`,
+    `pass:${promotion.checklistPass}/${promotion.checklistTotal}`,
+    `perfGateGo:${promotion.checks.perfGateGo}`,
+    `freezeFrozen:${promotion.checks.freezeFrozen}`,
+    `alertClear:${promotion.checks.alertClear}`,
+    `shadowStable:${promotion.checks.shadowStable}`,
+    `payloadPathVerified:${promotion.checks.payloadPathVerified}`,
+    `probeActive:${promotion.checks.probeActive}`,
+    `probeMode:${promotion.checks.probeMode}`
+  ].join("|");
+}
+
 function buildHfAlertSummaryForRun(alert: HfAnomalyAlert | null): string {
   if (!alert) return "n/a";
   return [
@@ -3827,6 +3864,106 @@ function buildHfAlertSummaryForRun(alert: HfAnomalyAlert | null): string {
     `shadowSkippedDelta:${alert.shadowSkippedDelta}`,
     `driftTriggered:${alert.driftTriggered}`
   ].join("|");
+}
+
+function deriveHfLivePromotionSummary(
+  perfLoop: PerformanceLoopUpdateResult,
+  hfFreeze: HfFreezeSummary,
+  hfAlert: HfAnomalyAlert | null,
+  hfShadowTrend: HfShadowTrendSummary | null,
+  dryExec: DryExecBuildResult,
+  hfPayloadProbe: HfPayloadProbeSummary
+): HfLivePromotionSummary {
+  const alertClear = !Boolean(hfAlert?.triggered);
+  const perfGateGo = perfLoop.gate.status === "GO";
+  const freezeFrozen = hfFreeze.enabled && hfFreeze.status === "FROZEN";
+  const shadowComparedRuns = Number(hfShadowTrend?.comparedRuns ?? 0);
+  const shadowAlertRate = Number(hfShadowTrend?.alertTriggeredRate ?? 1);
+  const shadowStable = shadowComparedRuns >= 3 && shadowAlertRate <= hfFreeze.maxShadowAlertRate;
+  const sizeReduceTightenSatisfied =
+    !dryExec.hfSentimentGate.sizeReductionEnabled ||
+    dryExec.hfSentimentGate.tightenCount <= 0 ||
+    dryExec.hfSentimentGate.sizeReducedCount > 0;
+  const livePayloadPathVerified =
+    dryExec.payloads.length > 0 &&
+    dryExec.hfSentimentGate.applied > 0 &&
+    sizeReduceTightenSatisfied;
+  const probeSizeReduceTightenSatisfied =
+    !dryExec.hfSentimentGate.sizeReductionEnabled ||
+    hfPayloadProbe.baseTighten <= 0 ||
+    hfPayloadProbe.baseSizeReduced > 0;
+  const probePayloadPathVerified =
+    hfPayloadProbe.active &&
+    hfPayloadProbe.basePayloadCount > 0 &&
+    hfPayloadProbe.baseApplied > 0 &&
+    probeSizeReduceTightenSatisfied;
+  const payloadPathVerified = livePayloadPathVerified || probePayloadPathVerified;
+
+  const checks = {
+    perfGateGo,
+    freezeFrozen,
+    alertClear,
+    shadowStable,
+    payloadPathVerified,
+    probeActive: hfPayloadProbe.active,
+    probeMode: hfPayloadProbe.requestedMode
+  };
+  const checklistItems = [
+    checks.perfGateGo,
+    checks.freezeFrozen,
+    checks.alertClear,
+    checks.shadowStable,
+    checks.payloadPathVerified
+  ];
+  const checklistPass = checklistItems.filter(Boolean).length;
+  const checklistTotal = checklistItems.length;
+
+  let status: HfLivePromotionStatus = "HOLD";
+  let reason = "checklist_pending";
+  let recommendation = "collect_more_evidence";
+
+  if (!checks.alertClear) {
+    status = "BLOCK";
+    reason = `hf_alert_triggered(${hfAlert?.reason ?? "unknown"})`;
+    recommendation = "resolve_hf_alert_before_live";
+  } else if (perfLoop.gate.status === "NO_GO") {
+    status = "BLOCK";
+    reason = `perf_gate_no_go(${perfLoop.gate.reason})`;
+    recommendation = "improve_perf_loop_metrics";
+  } else if (hfFreeze.status === "UNFREEZE_REVIEW") {
+    status = "BLOCK";
+    reason = `freeze_unstable(${hfFreeze.reason})`;
+    recommendation = "review_unfreeze_thresholds";
+  } else if (checklistPass === checklistTotal) {
+    status = "PASS";
+    reason = "all_live_promotion_checks_passed";
+    recommendation = "ready_for_live_promotion_review";
+  } else if (!checks.perfGateGo) {
+    reason = `perf_gate_${String(perfLoop.gate.status || "unknown").toLowerCase()}`;
+    recommendation = "wait_for_perf_gate_go";
+  } else if (!checks.freezeFrozen) {
+    reason = `freeze_status_${String(hfFreeze.status || "unknown").toLowerCase()}`;
+    recommendation = "wait_for_frozen_baseline";
+  } else if (!checks.shadowStable) {
+    reason =
+      shadowComparedRuns < 3
+        ? `shadow_history_insufficient(compared=${shadowComparedRuns})`
+        : `shadow_alert_rate_high(${shadowAlertRate.toFixed(4)}>${hfFreeze.maxShadowAlertRate.toFixed(4)})`;
+    recommendation = "stabilize_shadow_trend";
+  } else if (!checks.payloadPathVerified) {
+    reason = "payload_path_unverified";
+    recommendation = "run_payload_probe_or_wait_payload";
+  }
+
+  return {
+    status,
+    reason,
+    recommendation,
+    checks,
+    checklistPass,
+    checklistTotal,
+    generatedAt: new Date().toISOString()
+  };
 }
 
 function deriveHfTuningPhase(
@@ -4313,7 +4450,8 @@ async function saveDryExecPreview(
   hfShadowTrend?: HfShadowTrendSummary,
   hfTuningPhase?: HfTuningPhaseSummary,
   hfTuningAdvice?: HfTuningAdvice,
-  hfFreeze?: HfFreezeSummary
+  hfFreeze?: HfFreezeSummary,
+  hfLivePromotion?: HfLivePromotionSummary
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   await mkdir("state", { recursive: true });
@@ -4337,6 +4475,7 @@ async function saveDryExecPreview(
     hfTuningPhase: hfTuningPhase ?? null,
     hfTuningAdvice: hfTuningAdvice ?? null,
     hfFreeze: hfFreeze ?? null,
+    hfLivePromotion: hfLivePromotion ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -4391,6 +4530,11 @@ async function saveDryExecPreview(
   if (hfFreeze) {
     console.log(
       `[HF_FREEZE] enabled=${hfFreeze.enabled} status=${hfFreeze.status} reason=${hfFreeze.reason} recommendation=${hfFreeze.recommendation} progress=${hfFreeze.observedTrades}/${hfFreeze.requiredProgress} stable=${hfFreeze.stableRunStreak}/${hfFreeze.stableRunsTarget} alert=${hfFreeze.alertStreak}/${hfFreeze.alertStreakThreshold} shadowRate=${hfFreeze.shadowAlertRate.toFixed(4)} shadowMax=${hfFreeze.maxShadowAlertRate.toFixed(4)} hfAlert=${hfFreeze.hfAlertTriggered} frozenAt=${hfFreeze.frozenAt ?? "n/a"}`
+    );
+  }
+  if (hfLivePromotion) {
+    console.log(
+      `[HF_LIVE_PROMOTION] status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} recommendation=${hfLivePromotion.recommendation} pass=${hfLivePromotion.checklistPass}/${hfLivePromotion.checklistTotal} perfGateGo=${hfLivePromotion.checks.perfGateGo} freezeFrozen=${hfLivePromotion.checks.freezeFrozen} alertClear=${hfLivePromotion.checks.alertClear} shadowStable=${hfLivePromotion.checks.shadowStable} payloadPathVerified=${hfLivePromotion.checks.payloadPathVerified} probeActive=${hfLivePromotion.checks.probeActive} probeMode=${hfLivePromotion.checks.probeMode}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -5331,7 +5475,8 @@ function printRunSummary(
   hfShadowTrend?: HfShadowTrendSummary,
   hfTuningPhase?: HfTuningPhaseSummary,
   hfTuningAdvice?: HfTuningAdvice,
-  hfFreeze?: HfFreezeSummary
+  hfFreeze?: HfFreezeSummary,
+  hfLivePromotion?: HfLivePromotionSummary
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
@@ -5344,6 +5489,7 @@ function printRunSummary(
   const hfTuningAdviceSummary = buildHfTuningAdviceSummaryForRun(hfTuningAdvice ?? null);
   const hfPayloadProbeSummary = buildHfPayloadProbeSummaryForRun(hfPayloadProbe ?? null);
   const hfFreezeSummary = buildHfFreezeSummaryForRun(hfFreeze ?? null);
+  const hfLivePromotionSummary = buildHfLivePromotionSummaryForRun(hfLivePromotion ?? null);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -5411,8 +5557,28 @@ function printRunSummary(
   console.log(
     `[HF_FREEZE] enabled=${freezeForLog.enabled} status=${freezeForLog.status} reason=${freezeForLog.reason} recommendation=${freezeForLog.recommendation} progress=${freezeForLog.observedTrades}/${freezeForLog.requiredProgress} stable=${freezeForLog.stableRunStreak}/${freezeForLog.stableRunsTarget} alert=${freezeForLog.alertStreak}/${freezeForLog.alertStreakThreshold} shadowRate=${freezeForLog.shadowAlertRate.toFixed(4)} shadowMax=${freezeForLog.maxShadowAlertRate.toFixed(4)} hfAlert=${freezeForLog.hfAlertTriggered} frozenAt=${freezeForLog.frozenAt ?? "n/a"}`
   );
+  const livePromotionForLog = hfLivePromotion ?? {
+    status: "HOLD" as HfLivePromotionStatus,
+    reason: "not_available",
+    recommendation: "collect_more_evidence",
+    checks: {
+      perfGateGo: false,
+      freezeFrozen: false,
+      alertClear: true,
+      shadowStable: false,
+      payloadPathVerified: false,
+      probeActive: false,
+      probeMode: "off" as HfPayloadProbeMode
+    },
+    checklistPass: 0,
+    checklistTotal: 5,
+    generatedAt: new Date().toISOString()
+  };
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
+  );
+  console.log(
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -5545,6 +5711,7 @@ async function main() {
       undefined,
       undefined,
       undefined,
+      undefined,
       undefined
     );
     return;
@@ -5575,6 +5742,14 @@ async function main() {
   const hfTuningPhase = deriveHfTuningPhase(perfLoop, hfAlert, hfShadowTrend);
   const hfTuningAdvice = deriveHfTuningAdvice(hfTuningPhase, postPreflightDryExec);
   const hfFreeze = await updateHfFreezeSummary(hfTuningPhase, hfShadowTrend, hfAlert);
+  const hfLivePromotion = deriveHfLivePromotionSummary(
+    perfLoop,
+    hfFreeze,
+    hfAlert,
+    hfShadowTrend,
+    postPreflightDryExec,
+    hfPayloadProbe
+  );
   await saveDryExecPreview(
     stage6,
     postPreflightDryExec,
@@ -5588,7 +5763,8 @@ async function main() {
     hfShadowTrend,
     hfTuningPhase,
     hfTuningAdvice,
-    hfFreeze
+    hfFreeze,
+    hfLivePromotion
   );
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
@@ -5606,7 +5782,8 @@ async function main() {
     hfShadowTrend,
     hfTuningPhase,
     hfTuningAdvice,
-    hfFreeze
+    hfFreeze,
+    hfLivePromotion
   );
 }
 
