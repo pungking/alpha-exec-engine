@@ -49,6 +49,7 @@ hf_soft_gate:
 hf_payload_probe:
 hf_shadow:
 hf_shadow_trend:
+hf_tuning_phase:
 hf_alert:
 hf_marker_audit:
 
@@ -61,6 +62,7 @@ Minimum lines to capture:
 - `hf_payload_probe`
 - `hf_shadow`
 - `hf_shadow_trend`
+- `hf_tuning_phase`
 - `hf_alert`
 - `hf_marker_audit`
 - `payloads/skipped` + `skip_reasons`
@@ -97,6 +99,13 @@ Minimum lines to capture:
   - `avgAbsNotionalDelta`
   - `zeroPayloadRate`
 - During risk-off blocks, high `zeroPayloadRate` is expected.
+
+### hf_tuning_phase
+- Single-line operator cue for "should we tune now?"
+- Phase meanings:
+  - `OBSERVE_ONLY`: sample too small (`progress < 20/20`) -> collect runs first.
+  - `REVIEW_ONLY`: enough sample but alert/noise condition present -> tune/review before freeze.
+  - `FREEZE_READY`: gate stable + HF stable -> freeze baseline and monitor.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
