@@ -627,7 +627,7 @@ jobs:
             tuningSignals.phaseReason = String(hfTuningPhase.reason ?? "N/A");
             tuningSignals.phaseRecommendation = String(hfTuningPhase.recommendation ?? "N/A");
             lines.push(
-              `- hf_tuning_phase: \`phase=${hfTuningPhase.phase ?? "N/A"} reason=${hfTuningPhase.reason ?? "N/A"} recommendation=${hfTuningPhase.recommendation ?? "N/A"} gate=${hfTuningPhase.gateStatus ?? "N/A"} progress=${hfTuningPhase.gateProgress ?? "N/A"} trades=${hfTuningPhase.observedTrades ?? "N/A"}/${hfTuningPhase.requiredTrades ?? "N/A"} alertTriggered=${hfTuningPhase.alertTriggered ?? "N/A"} shadowAlertRate=${hfTuningPhase.shadowAlertRate ?? "N/A"}\``
+              `- hf_tuning_phase: \`phase=${hfTuningPhase.phase ?? "N/A"} reason=${hfTuningPhase.reason ?? "N/A"} recommendation=${hfTuningPhase.recommendation ?? "N/A"} gate=${hfTuningPhase.gateStatus ?? "N/A"} progress=${hfTuningPhase.gateProgress ?? "N/A"} remainingTrades=${hfTuningPhase.gateRemainingTrades ?? "N/A"} progressPct=${hfTuningPhase.gateProgressPct ?? "N/A"} trades=${hfTuningPhase.observedTrades ?? "N/A"}/${hfTuningPhase.requiredTrades ?? "N/A"} alertTriggered=${hfTuningPhase.alertTriggered ?? "N/A"} shadowAlertRate=${hfTuningPhase.shadowAlertRate ?? "N/A"}\``
             );
             const hfTuningAdvice = preview?.hfTuningAdvice || {};
             tuningSignals.adviceStatus = String(hfTuningAdvice.status ?? "N/A");
@@ -668,7 +668,7 @@ jobs:
             );
             const hfNextAction = preview?.hfNextAction || {};
             lines.push(
-              `- hf_next_action: \`status=${hfNextAction.status ?? "N/A"} action=${hfNextAction.action ?? "N/A"} reason=${hfNextAction.reason ?? "N/A"} hint=${hfNextAction.hint ?? "N/A"} requiredMissing=${Array.isArray(hfNextAction.requiredMissing) && hfNextAction.requiredMissing.length > 0 ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus ?? "N/A"} gate=${hfNextAction.gateStatus ?? "N/A"} progress=${hfNextAction.gateProgress ?? "N/A"}\``
+              `- hf_next_action: \`status=${hfNextAction.status ?? "N/A"} action=${hfNextAction.action ?? "N/A"} reason=${hfNextAction.reason ?? "N/A"} hint=${hfNextAction.hint ?? "N/A"} requiredMissing=${Array.isArray(hfNextAction.requiredMissing) && hfNextAction.requiredMissing.length > 0 ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus ?? "N/A"} gate=${hfNextAction.gateStatus ?? "N/A"} progress=${hfNextAction.gateProgress ?? "N/A"} remainingTrades=${hfNextAction.gateRemainingTrades ?? "N/A"}\``
             );
             const hfAlert = preview?.hfAlert || {};
             lines.push(
@@ -727,11 +727,11 @@ jobs:
             lines.push("- hf_payload_probe_forced: `mode=N/A active=N/A modified=N/A reason=N/A symbol=N/A basePayloads=N/A baseApplied=N/A baseTighten=N/A baseRelief=N/A baseSizeReduced=N/A baseSizeSaved=N/A`");
             lines.push("- hf_shadow: `enabled=N/A compared=N/A reason=N/A payloadDelta=N/A notionalDelta=N/A onOnly=N/A offOnly=N/A skipReasonDelta=N/A`");
             lines.push("- hf_shadow_trend: `history=N/A window=N/A compared=N/A alertRate=N/A avgAbsPayloadDelta=N/A avgAbsNotionalDelta=N/A avgAbsSkippedDelta=N/A zeroPayloadRate=N/A latestAt=N/A`");
-            lines.push("- hf_tuning_phase: `phase=N/A reason=N/A recommendation=N/A gate=N/A progress=N/A trades=N/A/N/A alertTriggered=N/A shadowAlertRate=N/A`");
+            lines.push("- hf_tuning_phase: `phase=N/A reason=N/A recommendation=N/A gate=N/A progress=N/A remainingTrades=N/A progressPct=N/A trades=N/A/N/A alertTriggered=N/A shadowAlertRate=N/A`");
             lines.push("- hf_tuning_advice: `status=N/A action=N/A variable=N/A current=N/A suggested=N/A reason=N/A confidence=N/A`");
             lines.push("- hf_freeze: `enabled=N/A status=N/A reason=N/A recommendation=N/A progress=N/A/N/A stable=N/A/N/A alert=N/A/N/A shadowRate=N/A shadowMax=N/A hfAlert=N/A frozenAt=N/A`");
             lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A required=N/A/N/A requiredMissing=N/A requiredHint=N/A pass=N/A/N/A reqPerfGateGo=N/A reqFreezeFrozen=N/A reqShadowStable=N/A reqPayloadPathVerified=N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A payloadPathSource=N/A payloadPathVerifiedAt=N/A probeActive=N/A probeMode=N/A`");
-            lines.push("- hf_next_action: `status=N/A action=N/A reason=N/A hint=N/A requiredMissing=N/A livePromotion=N/A gate=N/A progress=N/A`");
+            lines.push("- hf_next_action: `status=N/A action=N/A reason=N/A hint=N/A requiredMissing=N/A livePromotion=N/A gate=N/A progress=N/A remainingTrades=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
           }
 

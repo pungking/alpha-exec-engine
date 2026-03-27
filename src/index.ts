@@ -425,6 +425,10 @@ type PerformanceLoopGate = {
   status: PerformanceLoopGateStatus;
   reason: string;
   progress: string;
+  observedTrades: number;
+  requiredTrades: number;
+  remainingTrades: number;
+  progressPct: number;
 };
 
 type PerformanceLoopUpdateResult = {
@@ -541,6 +545,8 @@ type HfTuningPhaseSummary = {
   recommendation: string;
   gateStatus: PerformanceLoopGateStatus;
   gateProgress: string;
+  gateRemainingTrades: number;
+  gateProgressPct: number;
   observedTrades: number;
   requiredTrades: number;
   alertTriggered: boolean;
@@ -690,6 +696,7 @@ type HfNextActionSummary = {
   livePromotionStatus: HfLivePromotionStatus;
   gateStatus: PerformanceLoopGateStatus;
   gateProgress: string;
+  gateRemainingTrades: number;
   generatedAt: string;
 };
 
@@ -3366,7 +3373,7 @@ function buildSimulationMessage(
   }
   if (hfNextAction) {
     lines.push(
-      `HF Next Action: status=${hfNextAction.status} action=${hfNextAction.action} reason=${hfNextAction.reason} hint=${hfNextAction.hint} requiredMissing=${hfNextAction.requiredMissing.length ? hfNextAction.requiredMissing.join(",") : "none"} gate=${hfNextAction.gateStatus} progress=${hfNextAction.gateProgress}`
+      `HF Next Action: status=${hfNextAction.status} action=${hfNextAction.action} reason=${hfNextAction.reason} hint=${hfNextAction.hint} requiredMissing=${hfNextAction.requiredMissing.length ? hfNextAction.requiredMissing.join(",") : "none"} gate=${hfNextAction.gateStatus} progress=${hfNextAction.gateProgress} remainingTrades=${hfNextAction.gateRemainingTrades}`
     );
   } else {
     lines.push("HF Next Action: N/A");
@@ -4026,6 +4033,8 @@ function buildHfTuningPhaseSummaryForRun(tuning: HfTuningPhaseSummary | null): s
     `rec:${tuning.recommendation}`,
     `gate:${tuning.gateStatus}`,
     `progress:${tuning.gateProgress}`,
+    `remaining:${tuning.gateRemainingTrades}`,
+    `progressPct:${tuning.gateProgressPct.toFixed(1)}`,
     `trades:${tuning.observedTrades}/${tuning.requiredTrades}`,
     `alertTriggered:${tuning.alertTriggered}`,
     `shadowAlertRate:${tuning.shadowAlertRate.toFixed(4)}`
@@ -4248,7 +4257,8 @@ function buildHfNextActionSummaryForRun(nextAction: HfNextActionSummary | null):
     `requiredMissing:${nextAction.requiredMissing.length ? nextAction.requiredMissing.join(",") : "none"}`,
     `livePromotion:${nextAction.livePromotionStatus}`,
     `gate:${nextAction.gateStatus}`,
-    `progress:${nextAction.gateProgress}`
+    `progress:${nextAction.gateProgress}`,
+    `remaining:${nextAction.gateRemainingTrades}`
   ].join("|");
 }
 
@@ -4479,6 +4489,7 @@ function deriveHfNextActionSummary(
     livePromotionStatus: hfLivePromotion.status,
     gateStatus: hfTuningPhase.gateStatus,
     gateProgress: hfTuningPhase.gateProgress,
+    gateRemainingTrades: hfTuningPhase.gateRemainingTrades,
     generatedAt: new Date().toISOString()
   };
 }
@@ -4525,6 +4536,8 @@ function deriveHfTuningPhase(
     recommendation,
     gateStatus: perfLoop.gate.status,
     gateProgress: perfLoop.gate.progress,
+    gateRemainingTrades: perfLoop.gate.remainingTrades,
+    gateProgressPct: perfLoop.gate.progressPct,
     observedTrades,
     requiredTrades,
     alertTriggered,
@@ -5063,7 +5076,7 @@ async function saveDryExecPreview(
   }
   if (hfNextAction) {
     console.log(
-      `[HF_NEXT_ACTION] status=${hfNextAction.status} action=${hfNextAction.action} reason=${hfNextAction.reason} hint=${hfNextAction.hint} requiredMissing=${hfNextAction.requiredMissing.length ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus} gate=${hfNextAction.gateStatus} progress=${hfNextAction.gateProgress}`
+      `[HF_NEXT_ACTION] status=${hfNextAction.status} action=${hfNextAction.action} reason=${hfNextAction.reason} hint=${hfNextAction.hint} requiredMissing=${hfNextAction.requiredMissing.length ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus} gate=${hfNextAction.gateStatus} progress=${hfNextAction.gateProgress} remainingTrades=${hfNextAction.gateRemainingTrades}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -5263,12 +5276,18 @@ function evaluatePerformanceLoopGate(
     latestSnapshot && Number.isFinite(Number(latestSnapshot.tradeCount))
       ? Number(latestSnapshot.tradeCount)
       : tradeCount;
+  const remainingTrades = Math.max(0, requiredTrades - observedTrades);
+  const progressPct = clamp((Math.min(observedTrades, requiredTrades) / requiredTrades) * 100, 0, 100);
 
   if (observedTrades < requiredTrades) {
     return {
       status: "PENDING_SAMPLE",
       reason: `sample_insufficient(trades=${observedTrades},required>=${requiredTrades})`,
-      progress: `${Math.min(observedTrades, requiredTrades)}/${requiredTrades}`
+      progress: `${Math.min(observedTrades, requiredTrades)}/${requiredTrades}`,
+      observedTrades,
+      requiredTrades,
+      remainingTrades,
+      progressPct
     };
   }
 
@@ -5283,7 +5302,11 @@ function evaluatePerformanceLoopGate(
   return {
     status: failReasons.length === 0 ? "GO" : "NO_GO",
     reason: failReasons.length === 0 ? "all_must_pass_checks_ok" : failReasons.join("|"),
-    progress: `${requiredTrades}/${requiredTrades}`
+    progress: `${requiredTrades}/${requiredTrades}`,
+    observedTrades,
+    requiredTrades,
+    remainingTrades: 0,
+    progressPct: 100
   };
 }
 
@@ -5322,6 +5345,7 @@ function buildPerformanceLoopAlertMessage(
     `Milestone: ${milestone} trades`,
     `Gate: ${result.gate.status} (${result.gate.reason})`,
     `Progress: ${result.gate.progress}`,
+    `ETA: remainingTrades=${result.gate.remainingTrades} progressPct=${result.gate.progressPct.toFixed(1)}%`,
     `KPI: fillRate=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}`
   ].join("\n");
 }
@@ -6035,6 +6059,8 @@ function printRunSummary(
     recommendation: "collect_more_runs",
     gateStatus: "PENDING_SAMPLE" as PerformanceLoopGateStatus,
     gateProgress: "N/A",
+    gateRemainingTrades: PERFORMANCE_LOOP_REQUIRED_TRADES,
+    gateProgressPct: 0,
     observedTrades: 0,
     requiredTrades: PERFORMANCE_LOOP_REQUIRED_TRADES,
     alertTriggered: false,
@@ -6042,7 +6068,7 @@ function printRunSummary(
     generatedAt: new Date().toISOString()
   };
   console.log(
-    `[HF_TUNING_PHASE] phase=${tuningForLog.phase} reason=${tuningForLog.reason} recommendation=${tuningForLog.recommendation} gate=${tuningForLog.gateStatus} progress=${tuningForLog.gateProgress} trades=${tuningForLog.observedTrades}/${tuningForLog.requiredTrades} alertTriggered=${tuningForLog.alertTriggered} shadowAlertRate=${tuningForLog.shadowAlertRate.toFixed(4)}`
+    `[HF_TUNING_PHASE] phase=${tuningForLog.phase} reason=${tuningForLog.reason} recommendation=${tuningForLog.recommendation} gate=${tuningForLog.gateStatus} progress=${tuningForLog.gateProgress} remainingTrades=${tuningForLog.gateRemainingTrades} progressPct=${tuningForLog.gateProgressPct.toFixed(1)} trades=${tuningForLog.observedTrades}/${tuningForLog.requiredTrades} alertTriggered=${tuningForLog.alertTriggered} shadowAlertRate=${tuningForLog.shadowAlertRate.toFixed(4)}`
   );
   const adviceForLog = hfTuningAdvice ?? {
     status: "HOLD" as HfTuningAdviceStatus,
@@ -6139,10 +6165,11 @@ function printRunSummary(
     livePromotionStatus: livePromotionForLog.status,
     gateStatus: tuningForLog.gateStatus,
     gateProgress: tuningForLog.gateProgress,
+    gateRemainingTrades: tuningForLog.gateRemainingTrades,
     generatedAt: new Date().toISOString()
   };
   console.log(
-    `[HF_NEXT_ACTION] status=${nextActionForLog.status} action=${nextActionForLog.action} reason=${nextActionForLog.reason} hint=${nextActionForLog.hint} requiredMissing=${nextActionForLog.requiredMissing.length ? nextActionForLog.requiredMissing.join(",") : "none"} livePromotion=${nextActionForLog.livePromotionStatus} gate=${nextActionForLog.gateStatus} progress=${nextActionForLog.gateProgress}`
+    `[HF_NEXT_ACTION] status=${nextActionForLog.status} action=${nextActionForLog.action} reason=${nextActionForLog.reason} hint=${nextActionForLog.hint} requiredMissing=${nextActionForLog.requiredMissing.length ? nextActionForLog.requiredMissing.join(",") : "none"} livePromotion=${nextActionForLog.livePromotionStatus} gate=${nextActionForLog.gateStatus} progress=${nextActionForLog.gateProgress} remainingTrades=${nextActionForLog.gateRemainingTrades}`
   );
   console.log(
     `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`

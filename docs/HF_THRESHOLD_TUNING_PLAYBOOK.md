@@ -128,6 +128,10 @@ Minimum lines to capture:
   - `OBSERVE_ONLY`: sample too small (`progress < 20/20`) -> collect runs first.
   - `REVIEW_ONLY`: enough sample but alert/noise condition present -> tune/review before freeze.
   - `FREEZE_READY`: gate stable + HF stable -> freeze baseline and monitor.
+- Key ETA fields:
+  - `gateProgress` (`x/20`)
+  - `gateRemainingTrades`
+  - `gateProgressPct`
 
 ### hf_tuning_advice
 - Suggestion-only parameter recommendation (no auto-apply).
@@ -183,6 +187,8 @@ Minimum lines to capture:
   - `HOLD_CHECKLIST` -> clear listed `requiredMissing`.
   - `REVIEW_TUNE` -> adjust one variable only, then rerun.
   - `LIVE_READY` -> promotion review candidate.
+- Fast check:
+  - `gateProgress` + `gateRemainingTrades` together show how far we are from the 20-trade gate.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
@@ -196,6 +202,7 @@ Minimum lines to capture:
 - `x/20` means sample maturity toward go/no-go gate.
 - While `x < 20`, prioritize observability/noise tuning over aggressive threshold changes.
 - At `20/20`, decide freeze or targeted adjustment.
+- Pair with `hf_tuning_phase.gateRemainingTrades` and `hf_tuning_phase.gateProgressPct` for ETA-style daily tracking.
 
 ---
 
