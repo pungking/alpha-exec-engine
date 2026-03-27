@@ -293,6 +293,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_shadow` (`enabled/compared/reason/payloadDelta/notionalDelta`)
     - `hf_shadow_trend` (`history/window/compared/alertRate/avgAbsDelta/zeroPayloadRate`)
     - `hf_tuning_phase` (`phase/reason/recommendation/gate/progress/trades`)
+    - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/alert/runSummaryAlert` as `ok|missing`)
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.

@@ -50,6 +50,7 @@ hf_payload_probe:
 hf_shadow:
 hf_shadow_trend:
 hf_tuning_phase:
+hf_tuning_comment:
 hf_alert:
 hf_marker_audit:
 
@@ -63,6 +64,7 @@ Minimum lines to capture:
 - `hf_shadow`
 - `hf_shadow_trend`
 - `hf_tuning_phase`
+- `hf_tuning_comment`
 - `hf_alert`
 - `hf_marker_audit`
 - `payloads/skipped` + `skip_reasons`
@@ -106,6 +108,14 @@ Minimum lines to capture:
   - `OBSERVE_ONLY`: sample too small (`progress < 20/20`) -> collect runs first.
   - `REVIEW_ONLY`: enough sample but alert/noise condition present -> tune/review before freeze.
   - `FREEZE_READY`: gate stable + HF stable -> freeze baseline and monitor.
+
+### hf_tuning_comment
+- Final operator recommendation synthesized for the current run.
+- Common statuses:
+  - `HOLD_OBSERVE`: continue observation, do not tune yet.
+  - `REVIEW_TUNE`: apply one small threshold tweak and recheck.
+  - `FREEZE_READY`: baseline freeze candidate.
+  - `BLOCKED_OBSERVABILITY`: fix marker/audit gaps first.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.

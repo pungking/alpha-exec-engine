@@ -427,6 +427,18 @@ jobs:
           const idempPath = "state/order-idempotency.json";
           const includeValidationPack = String(process.env.SUMMARY_INCLUDE_VALIDATION_PACK || "").trim().toLowerCase() === "true";
           const includePayloadProbe = String(process.env.SUMMARY_INCLUDE_PAYLOAD_PROBE || "").trim().toLowerCase() === "true";
+          const tuningSignals = {
+            phase: "N/A",
+            phaseReason: "N/A",
+            phaseRecommendation: "N/A",
+            payloadProbeStatus: "N/A",
+            payloadProbeReason: "N/A",
+            markerAuditKnown: false,
+            markerAuditOk: false,
+            perfGateStatus: "N/A",
+            perfGateReason: "N/A",
+            perfGateProgress: "N/A"
+          };
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
@@ -513,6 +525,8 @@ jobs:
             lines.push(
               `- hf_payload_probe: \`status=${hfPayloadProbeStatus} payloads=${payloadCount} hfApplied=${hfApplied} tighten=${hfTighten} sizeReduceEnabled=${sizeReduceEnabled} sizeReduced=${sizeReduced} savedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"} reason=${hfPayloadProbeReason}\``
             );
+            tuningSignals.payloadProbeStatus = hfPayloadProbeStatus;
+            tuningSignals.payloadProbeReason = hfPayloadProbeReason;
             const hfShadow = preview?.hfShadow || {};
             lines.push(
               `- hf_shadow: \`enabled=${hfShadow.enabled ?? "N/A"} compared=${hfShadow.compared ?? "N/A"} reason=${hfShadow.reason ?? "N/A"} payloadDelta=${hfShadow.payloadDelta ?? "N/A"} notionalDelta=${hfShadow.notionalDelta ?? "N/A"} onOnly=${Array.isArray(hfShadow.onOnlySymbols) ? hfShadow.onOnlySymbols.length : "N/A"} offOnly=${Array.isArray(hfShadow.offOnlySymbols) ? hfShadow.offOnlySymbols.length : "N/A"} skipReasonDelta=${hfShadow.skipReasonDelta ?? "N/A"}\``
@@ -522,6 +536,9 @@ jobs:
               `- hf_shadow_trend: \`history=${hfShadowTrend.historySize ?? "N/A"} window=${hfShadowTrend.windowSize ?? "N/A"} compared=${hfShadowTrend.comparedRuns ?? "N/A"} alertRate=${hfShadowTrend.alertTriggeredRate ?? "N/A"} avgAbsPayloadDelta=${hfShadowTrend.avgAbsPayloadDelta ?? "N/A"} avgAbsNotionalDelta=${hfShadowTrend.avgAbsNotionalDelta ?? "N/A"} avgAbsSkippedDelta=${hfShadowTrend.avgAbsSkippedDelta ?? "N/A"} zeroPayloadRate=${hfShadowTrend.zeroPayloadRate ?? "N/A"} latestAt=${hfShadowTrend.latestAt ?? "N/A"}\``
             );
             const hfTuningPhase = preview?.hfTuningPhase || {};
+            tuningSignals.phase = String(hfTuningPhase.phase ?? "N/A");
+            tuningSignals.phaseReason = String(hfTuningPhase.reason ?? "N/A");
+            tuningSignals.phaseRecommendation = String(hfTuningPhase.recommendation ?? "N/A");
             lines.push(
               `- hf_tuning_phase: \`phase=${hfTuningPhase.phase ?? "N/A"} reason=${hfTuningPhase.reason ?? "N/A"} recommendation=${hfTuningPhase.recommendation ?? "N/A"} gate=${hfTuningPhase.gateStatus ?? "N/A"} progress=${hfTuningPhase.gateProgress ?? "N/A"} trades=${hfTuningPhase.observedTrades ?? "N/A"}/${hfTuningPhase.requiredTrades ?? "N/A"} alertTriggered=${hfTuningPhase.alertTriggered ?? "N/A"} shadowAlertRate=${hfTuningPhase.shadowAlertRate ?? "N/A"}\``
             );
@@ -587,6 +604,20 @@ jobs:
 
           if (fs.existsSync(hfMarkerAuditPath)) {
             const hfAudit = JSON.parse(fs.readFileSync(hfMarkerAuditPath, "utf8"));
+            const markerAuditFields = [
+              hfAudit.softGate,
+              hfAudit.driftMarker,
+              hfAudit.runSummaryHfDrift,
+              hfAudit.shadowMarker,
+              hfAudit.runSummaryHfShadow,
+              hfAudit.runSummaryHfShadowTrend,
+              hfAudit.tuningPhaseMarker,
+              hfAudit.runSummaryHfTuningPhase,
+              hfAudit.alertMarker,
+              hfAudit.runSummaryHfAlert
+            ];
+            tuningSignals.markerAuditKnown = true;
+            tuningSignals.markerAuditOk = markerAuditFields.every((value) => value === "ok");
             lines.push(
               `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} tuningPhase=${hfAudit.tuningPhaseMarker ?? "missing"} runSummaryTuningPhase=${hfAudit.runSummaryHfTuningPhase ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"}\``
             );
@@ -681,9 +712,40 @@ jobs:
             lines.push(`- perf_loop_gate_status: \`${gateStatus}\``);
             lines.push(`- perf_loop_gate_reason: \`${gateReason}\``);
             lines.push(`- perf_loop_gate_progress: \`${gateProgress}\``);
+            tuningSignals.perfGateStatus = gateStatus;
+            tuningSignals.perfGateReason = gateReason;
+            tuningSignals.perfGateProgress = gateProgress;
           } else {
             lines.push("- perf_loop: not found");
           }
+
+          let tuningCommentStatus = "INFO";
+          let tuningCommentAction = "monitor";
+          let tuningCommentReason = "insufficient_context";
+          if (tuningSignals.markerAuditKnown && !tuningSignals.markerAuditOk) {
+            tuningCommentStatus = "BLOCKED_OBSERVABILITY";
+            tuningCommentAction = "fix_marker_gap_first";
+            tuningCommentReason = "hf_marker_audit_has_missing";
+          } else if (String(tuningSignals.payloadProbeStatus).startsWith("WARN_")) {
+            tuningCommentStatus = "REVIEW_PROBE_WARN";
+            tuningCommentAction = "inspect_payload_path_logic";
+            tuningCommentReason = tuningSignals.payloadProbeReason;
+          } else if (tuningSignals.phase === "OBSERVE_ONLY") {
+            tuningCommentStatus = "HOLD_OBSERVE";
+            tuningCommentAction = "accumulate_more_runs_before_tuning";
+            tuningCommentReason = tuningSignals.perfGateReason || tuningSignals.phaseReason;
+          } else if (tuningSignals.phase === "REVIEW_ONLY") {
+            tuningCommentStatus = "REVIEW_TUNE";
+            tuningCommentAction = "apply_small_threshold_adjustment";
+            tuningCommentReason = tuningSignals.phaseReason;
+          } else if (tuningSignals.phase === "FREEZE_READY") {
+            tuningCommentStatus = "FREEZE_READY";
+            tuningCommentAction = "freeze_baseline_and_monitor";
+            tuningCommentReason = tuningSignals.phaseReason;
+          }
+          lines.push(
+            `- hf_tuning_comment: \`status=${tuningCommentStatus} action=${tuningCommentAction} reason=${tuningCommentReason} phase=${tuningSignals.phase} gate=${tuningSignals.perfGateStatus} progress=${tuningSignals.perfGateProgress} payloadProbe=${tuningSignals.payloadProbeStatus} markerAuditOk=${tuningSignals.markerAuditKnown ? tuningSignals.markerAuditOk : "N/A"}\``
+          );
 
           lines.push("");
 
