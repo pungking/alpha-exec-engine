@@ -286,6 +286,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
     - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced/explain`)
+    - `hf_payload_probe` (`status/payloads/hfApplied/tighten/sizeReduced/reason`)
     - `hf_shadow` (`enabled/compared/reason/payloadDelta/notionalDelta`)
     - `hf_shadow_trend` (`history/window/compared/alertRate/avgAbsDelta/zeroPayloadRate`)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)

@@ -479,6 +479,34 @@ jobs:
             lines.push(
               `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"} sizeReduceEnabled=${hfGate.sizeReductionEnabled ?? "N/A"} sizeReducePct=${hfGate.sizeReductionPct ?? "N/A"} sizeReduced=${hfGate.sizeReducedCount ?? "N/A"} sizeSavedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"} explain=${hfGate.explainLine ?? "N/A"}\``
             );
+            const payloadCount = Number(preview?.payloadCount ?? 0);
+            const hfApplied = Number(hfGate.applied ?? 0);
+            const hfTighten = Number(hfGate.tightenCount ?? 0);
+            const sizeReduced = Number(hfGate.sizeReducedCount ?? 0);
+            const sizeReduceEnabled = Boolean(hfGate.sizeReductionEnabled);
+            let hfPayloadProbeStatus = "PENDING_NO_PAYLOAD";
+            let hfPayloadProbeReason = "no_payload";
+            if (payloadCount > 0) {
+              if (hfGate.enabled !== true) {
+                hfPayloadProbeStatus = "PENDING_HF_DISABLED";
+                hfPayloadProbeReason = "hf_disabled";
+              } else if (hfApplied <= 0) {
+                hfPayloadProbeStatus = "PENDING_NO_HF_ADJUST";
+                hfPayloadProbeReason = `explain:${hfGate.explainLine ?? "no_adjust"}`;
+              } else if (hfTighten > 0 && sizeReduceEnabled && sizeReduced <= 0) {
+                hfPayloadProbeStatus = "WARN_SIZE_REDUCE_EXPECTED";
+                hfPayloadProbeReason = "tighten_without_size_reduce";
+              } else if (sizeReduceEnabled && sizeReduced > 0) {
+                hfPayloadProbeStatus = "PASS_SIZE_REDUCED";
+                hfPayloadProbeReason = "tighten_and_size_reduce_observed";
+              } else {
+                hfPayloadProbeStatus = "PASS_HF_APPLIED";
+                hfPayloadProbeReason = sizeReduceEnabled ? "applied_without_tighten" : "size_reduce_disabled";
+              }
+            }
+            lines.push(
+              `- hf_payload_probe: \`status=${hfPayloadProbeStatus} payloads=${payloadCount} hfApplied=${hfApplied} tighten=${hfTighten} sizeReduceEnabled=${sizeReduceEnabled} sizeReduced=${sizeReduced} savedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"} reason=${hfPayloadProbeReason}\``
+            );
             const hfShadow = preview?.hfShadow || {};
             lines.push(
               `- hf_shadow: \`enabled=${hfShadow.enabled ?? "N/A"} compared=${hfShadow.compared ?? "N/A"} reason=${hfShadow.reason ?? "N/A"} payloadDelta=${hfShadow.payloadDelta ?? "N/A"} notionalDelta=${hfShadow.notionalDelta ?? "N/A"} onOnly=${Array.isArray(hfShadow.onOnlySymbols) ? hfShadow.onOnlySymbols.length : "N/A"} offOnly=${Array.isArray(hfShadow.offOnlySymbols) ? hfShadow.offOnlySymbols.length : "N/A"} skipReasonDelta=${hfShadow.skipReasonDelta ?? "N/A"}\``
@@ -540,6 +568,7 @@ jobs:
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
             lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A sizeReduceEnabled=N/A sizeReducePct=N/A sizeReduced=N/A sizeSavedNotional=N/A explain=N/A`");
+            lines.push("- hf_payload_probe: `status=N/A payloads=N/A hfApplied=N/A tighten=N/A sizeReduceEnabled=N/A sizeReduced=N/A savedNotional=N/A reason=N/A`");
             lines.push("- hf_shadow: `enabled=N/A compared=N/A reason=N/A payloadDelta=N/A notionalDelta=N/A onOnly=N/A offOnly=N/A skipReasonDelta=N/A`");
             lines.push("- hf_shadow_trend: `history=N/A window=N/A compared=N/A alertRate=N/A avgAbsPayloadDelta=N/A avgAbsNotionalDelta=N/A avgAbsSkippedDelta=N/A zeroPayloadRate=N/A latestAt=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");

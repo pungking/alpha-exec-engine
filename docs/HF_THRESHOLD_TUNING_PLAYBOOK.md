@@ -46,6 +46,7 @@ perf_loop_gate_progress:
 perf_loop_latest_kpi:
 
 hf_soft_gate:
+hf_payload_probe:
 hf_shadow:
 hf_shadow_trend:
 hf_alert:
@@ -57,6 +58,7 @@ notes:
 
 Minimum lines to capture:
 - `hf_soft_gate`
+- `hf_payload_probe`
 - `hf_shadow`
 - `hf_shadow_trend`
 - `hf_alert`
@@ -77,6 +79,15 @@ Minimum lines to capture:
 - `compared=true` means ON/OFF compare ran.
 - `payloadDelta`, `notionalDelta`, `skipReasonDelta` show behavior difference.
   - All zero can be normal when market/guard gates block everything.
+
+### hf_payload_probe
+- Fast readiness check for payload-path HF validation.
+- Key status meanings:
+  - `PENDING_NO_PAYLOAD`: payload path not exercised yet.
+  - `PENDING_NO_HF_ADJUST`: payload exists but HF adjustment did not apply.
+  - `PASS_HF_APPLIED`: HF adjustment applied (size reduce may be disabled or tighten not triggered).
+  - `PASS_SIZE_REDUCED`: tighten + size reduction observed as expected.
+  - `WARN_SIZE_REDUCE_EXPECTED`: tighten happened but size reduction did not.
 
 ### hf_shadow_trend
 - Rolling trend across recent runs.
