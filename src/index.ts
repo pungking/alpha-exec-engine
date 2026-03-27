@@ -678,6 +678,26 @@ type HfLivePromotionState = {
   updatedAt: string;
 };
 
+type HfPayloadPathStickyAudit = {
+  priorStage6Hash: string | null;
+  stage6HashChanged: boolean;
+  stickyEligible: boolean;
+  stickyCarried: boolean;
+  stickyReset: boolean;
+  stickyResetReason: string;
+  currentVerified: boolean;
+  currentSource: "none" | "current_live" | "current_probe";
+  resolvedVerified: boolean;
+  resolvedSource: "none" | "current_live" | "current_probe" | "sticky";
+};
+
+type HfPayloadPathVerificationStatus = {
+  payloadPathVerified: boolean;
+  payloadPathSource: "none" | "current_live" | "current_probe" | "sticky";
+  payloadPathVerifiedAt: string | null;
+  stickyAudit: HfPayloadPathStickyAudit;
+};
+
 type HfNextActionStatus =
   | "BLOCK_ALERT"
   | "BLOCK_PROMOTION"
@@ -3789,15 +3809,23 @@ async function resolvePayloadPathVerificationStatus(
     verified: boolean;
     source: "none" | "current_live" | "current_probe";
   }
-): Promise<{
-  payloadPathVerified: boolean;
-  payloadPathSource: "none" | "current_live" | "current_probe" | "sticky";
-  payloadPathVerifiedAt: string | null;
-}> {
+): Promise<HfPayloadPathVerificationStatus> {
   const now = new Date().toISOString();
   const prior = await loadHfLivePromotionState();
+  const priorStage6Hash = prior?.stage6Hash ?? null;
   const sameStage = prior?.stage6Hash === stage6Hash;
   const stickyEligible = Boolean(sameStage && prior?.payloadPathVerified);
+  const stickyReset = Boolean(!sameStage && prior?.payloadPathVerified);
+  const stickyResetReason = stickyReset ? "stage6_hash_changed" : "none";
+  const stickyAuditBase = {
+    priorStage6Hash,
+    stage6HashChanged: Boolean(priorStage6Hash && priorStage6Hash !== stage6Hash),
+    stickyEligible,
+    stickyReset,
+    stickyResetReason,
+    currentVerified: current.verified,
+    currentSource: current.source
+  };
 
   if (current.verified) {
     await saveHfLivePromotionState({
@@ -3810,7 +3838,13 @@ async function resolvePayloadPathVerificationStatus(
     return {
       payloadPathVerified: true,
       payloadPathSource: current.source,
-      payloadPathVerifiedAt: now
+      payloadPathVerifiedAt: now,
+      stickyAudit: {
+        ...stickyAuditBase,
+        stickyCarried: false,
+        resolvedVerified: true,
+        resolvedSource: current.source
+      }
     };
   }
 
@@ -3825,7 +3859,13 @@ async function resolvePayloadPathVerificationStatus(
     return {
       payloadPathVerified: true,
       payloadPathSource: "sticky",
-      payloadPathVerifiedAt: prior?.payloadPathVerifiedAt ?? null
+      payloadPathVerifiedAt: prior?.payloadPathVerifiedAt ?? null,
+      stickyAudit: {
+        ...stickyAuditBase,
+        stickyCarried: true,
+        resolvedVerified: true,
+        resolvedSource: "sticky"
+      }
     };
   }
 
@@ -3839,7 +3879,13 @@ async function resolvePayloadPathVerificationStatus(
   return {
     payloadPathVerified: false,
     payloadPathSource: "none",
-    payloadPathVerifiedAt: null
+    payloadPathVerifiedAt: null,
+    stickyAudit: {
+      ...stickyAuditBase,
+      stickyCarried: false,
+      resolvedVerified: false,
+      resolvedSource: "none"
+    }
   };
 }
 
@@ -4259,6 +4305,22 @@ function buildHfNextActionSummaryForRun(nextAction: HfNextActionSummary | null):
     `gate:${nextAction.gateStatus}`,
     `progress:${nextAction.gateProgress}`,
     `remaining:${nextAction.gateRemainingTrades}`
+  ].join("|");
+}
+
+function buildHfPayloadPathStickySummaryForRun(audit: HfPayloadPathStickyAudit | null): string {
+  if (!audit) return "n/a";
+  return [
+    `priorStage6Hash:${audit.priorStage6Hash ? audit.priorStage6Hash.slice(0, 12) : "none"}`,
+    `stage6HashChanged:${audit.stage6HashChanged}`,
+    `stickyEligible:${audit.stickyEligible}`,
+    `stickyCarried:${audit.stickyCarried}`,
+    `stickyReset:${audit.stickyReset}`,
+    `stickyResetReason:${audit.stickyResetReason}`,
+    `currentVerified:${audit.currentVerified}`,
+    `currentSource:${audit.currentSource}`,
+    `resolvedVerified:${audit.resolvedVerified}`,
+    `resolvedSource:${audit.resolvedSource}`
   ].join("|");
 }
 
@@ -4982,7 +5044,8 @@ async function saveDryExecPreview(
   hfTuningAdvice?: HfTuningAdvice,
   hfFreeze?: HfFreezeSummary,
   hfLivePromotion?: HfLivePromotionSummary,
-  hfNextAction?: HfNextActionSummary
+  hfNextAction?: HfNextActionSummary,
+  hfPayloadPathSticky?: HfPayloadPathStickyAudit
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
@@ -5010,6 +5073,7 @@ async function saveDryExecPreview(
     hfFreeze: hfFreeze ?? null,
     hfLivePromotion: hfLivePromotion ?? null,
     hfNextAction: hfNextAction ?? null,
+    hfPayloadPathSticky: hfPayloadPathSticky ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -5077,6 +5141,11 @@ async function saveDryExecPreview(
   if (hfNextAction) {
     console.log(
       `[HF_NEXT_ACTION] status=${hfNextAction.status} action=${hfNextAction.action} reason=${hfNextAction.reason} hint=${hfNextAction.hint} requiredMissing=${hfNextAction.requiredMissing.length ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus} gate=${hfNextAction.gateStatus} progress=${hfNextAction.gateProgress} remainingTrades=${hfNextAction.gateRemainingTrades}`
+    );
+  }
+  if (hfPayloadPathSticky) {
+    console.log(
+      `[HF_PAYLOAD_PATH_STICKY] priorStage6Hash=${hfPayloadPathSticky.priorStage6Hash ? hfPayloadPathSticky.priorStage6Hash.slice(0, 12) : "none"} stage6HashChanged=${hfPayloadPathSticky.stage6HashChanged} stickyEligible=${hfPayloadPathSticky.stickyEligible} stickyCarried=${hfPayloadPathSticky.stickyCarried} stickyReset=${hfPayloadPathSticky.stickyReset} reason=${hfPayloadPathSticky.stickyResetReason} currentVerified=${hfPayloadPathSticky.currentVerified} currentSource=${hfPayloadPathSticky.currentSource} resolvedVerified=${hfPayloadPathSticky.resolvedVerified} resolvedSource=${hfPayloadPathSticky.resolvedSource}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -6036,7 +6105,8 @@ function printRunSummary(
   hfTuningAdvice?: HfTuningAdvice,
   hfFreeze?: HfFreezeSummary,
   hfLivePromotion?: HfLivePromotionSummary,
-  hfNextAction?: HfNextActionSummary
+  hfNextAction?: HfNextActionSummary,
+  hfPayloadPathSticky?: HfPayloadPathStickyAudit
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
@@ -6054,6 +6124,7 @@ function printRunSummary(
   const hfFreezeSummary = buildHfFreezeSummaryForRun(hfFreeze ?? null);
   const hfLivePromotionSummary = buildHfLivePromotionSummaryForRun(hfLivePromotion ?? null);
   const hfNextActionSummary = buildHfNextActionSummaryForRun(hfNextAction ?? null);
+  const hfPayloadPathStickySummary = buildHfPayloadPathStickySummaryForRun(hfPayloadPathSticky ?? null);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -6173,8 +6244,13 @@ function printRunSummary(
   console.log(
     `[HF_NEXT_ACTION] status=${nextActionForLog.status} action=${nextActionForLog.action} reason=${nextActionForLog.reason} hint=${nextActionForLog.hint} requiredMissing=${nextActionForLog.requiredMissing.length ? nextActionForLog.requiredMissing.join(",") : "none"} livePromotion=${nextActionForLog.livePromotionStatus} gate=${nextActionForLog.gateStatus} progress=${nextActionForLog.gateProgress} remainingTrades=${nextActionForLog.gateRemainingTrades}`
   );
+  if (hfPayloadPathSticky) {
+    console.log(
+      `[HF_PAYLOAD_PATH_STICKY] priorStage6Hash=${hfPayloadPathSticky.priorStage6Hash ? hfPayloadPathSticky.priorStage6Hash.slice(0, 12) : "none"} stage6HashChanged=${hfPayloadPathSticky.stage6HashChanged} stickyEligible=${hfPayloadPathSticky.stickyEligible} stickyCarried=${hfPayloadPathSticky.stickyCarried} stickyReset=${hfPayloadPathSticky.stickyReset} reason=${hfPayloadPathSticky.stickyResetReason} currentVerified=${hfPayloadPathSticky.currentVerified} currentSource=${hfPayloadPathSticky.currentSource} resolvedVerified=${hfPayloadPathSticky.resolvedVerified} resolvedSource=${hfPayloadPathSticky.resolvedSource}`
+    );
+  }
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -6342,6 +6418,9 @@ async function main() {
     stage6.sha256,
     currentPayloadPathVerification
   );
+  console.log(
+    `[HF_PAYLOAD_PATH_STICKY] priorStage6Hash=${payloadPathVerification.stickyAudit.priorStage6Hash ? payloadPathVerification.stickyAudit.priorStage6Hash.slice(0, 12) : "none"} stage6HashChanged=${payloadPathVerification.stickyAudit.stage6HashChanged} stickyEligible=${payloadPathVerification.stickyAudit.stickyEligible} stickyCarried=${payloadPathVerification.stickyAudit.stickyCarried} stickyReset=${payloadPathVerification.stickyAudit.stickyReset} reason=${payloadPathVerification.stickyAudit.stickyResetReason} currentVerified=${payloadPathVerification.stickyAudit.currentVerified} currentSource=${payloadPathVerification.stickyAudit.currentSource} resolvedVerified=${payloadPathVerification.stickyAudit.resolvedVerified} resolvedSource=${payloadPathVerification.stickyAudit.resolvedSource}`
+  );
   const hfLivePromotion = deriveHfLivePromotionSummary(
     perfLoop,
     hfFreeze,
@@ -6372,7 +6451,8 @@ async function main() {
     hfTuningAdvice,
     hfFreeze,
     hfLivePromotion,
-    hfNextAction
+    hfNextAction,
+    payloadPathVerification.stickyAudit
   );
   await sendSimulationTelegram(
     stage6,
@@ -6404,7 +6484,8 @@ async function main() {
     hfTuningAdvice,
     hfFreeze,
     hfLivePromotion,
-    hfNextAction
+    hfNextAction,
+    payloadPathVerification.stickyAudit
   );
 }
 

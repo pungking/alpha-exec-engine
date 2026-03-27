@@ -190,6 +190,17 @@ Minimum lines to capture:
 - Fast check:
   - `gateProgress` + `gateRemainingTrades` together show how far we are from the 20-trade gate.
 
+### hf_payload_path_sticky
+- Payload-path sticky carry/reset observability line.
+- Use it to quickly explain live-promotion score movement after Stage6 file changes.
+- Key interpretations:
+  - `stage6HashChanged=true` + `stickyReset=true reason=stage6_hash_changed`
+    - previous sticky proof is intentionally reset for the new Stage6 hash.
+  - `stickyCarried=true`
+    - same hash, sticky proof reused as designed.
+  - `resolvedSource=current_probe|current_live`
+    - current run re-validated payload path directly.
+
 ### hf_alert
 - `triggered=false reason=none` is healthy.
 - `triggered=true` means drift or shadow deltas crossed thresholds.
