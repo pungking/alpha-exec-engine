@@ -5277,7 +5277,9 @@ function evaluatePerformanceLoopGate(
       ? Number(latestSnapshot.tradeCount)
       : tradeCount;
   const remainingTrades = Math.max(0, requiredTrades - observedTrades);
-  const progressPct = clamp((Math.min(observedTrades, requiredTrades) / requiredTrades) * 100, 0, 100);
+  const progressPct = Number(
+    clamp((Math.min(observedTrades, requiredTrades) / requiredTrades) * 100, 0, 100).toFixed(1)
+  );
 
   if (observedTrades < requiredTrades) {
     return {
