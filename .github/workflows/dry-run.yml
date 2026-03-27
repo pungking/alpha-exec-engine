@@ -141,6 +141,8 @@ jobs:
       HF_EARNINGS_WINDOW_REDUCE_FACTOR: ${{ vars.HF_EARNINGS_WINDOW_REDUCE_FACTOR }}
       HF_SENTIMENT_POSITIVE_RELIEF_MAX: ${{ vars.HF_SENTIMENT_POSITIVE_RELIEF_MAX }}
       HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX: ${{ vars.HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX }}
+      HF_NEGATIVE_SIZE_REDUCTION_ENABLED: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_ENABLED }}
+      HF_NEGATIVE_SIZE_REDUCTION_PCT: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_PCT }}
       HF_DRIFT_ALERT_ENABLED: ${{ vars.HF_DRIFT_ALERT_ENABLED }}
       HF_DRIFT_ALERT_WINDOW_RUNS: ${{ vars.HF_DRIFT_ALERT_WINDOW_RUNS }}
       HF_DRIFT_ALERT_MIN_HISTORY: ${{ vars.HF_DRIFT_ALERT_MIN_HISTORY }}
@@ -455,7 +457,7 @@ jobs:
             );
             const hfGate = preview?.hfSentimentGate || {};
             lines.push(
-              `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"}\``
+              `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"} sizeReduceEnabled=${hfGate.sizeReductionEnabled ?? "N/A"} sizeReducePct=${hfGate.sizeReductionPct ?? "N/A"} sizeReduced=${hfGate.sizeReducedCount ?? "N/A"} sizeSavedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"}\``
             );
             const skipReasonCounts =
               preview?.skipReasonCounts && typeof preview.skipReasonCounts === "object"
@@ -505,7 +507,7 @@ jobs:
             );
           } else {
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
-            lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A`");
+            lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A sizeReduceEnabled=N/A sizeReducePct=N/A sizeReduced=N/A sizeSavedNotional=N/A`");
           }
 
           if (fs.existsSync(hfMarkerAuditPath)) {

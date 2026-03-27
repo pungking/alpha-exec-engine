@@ -249,6 +249,10 @@ type DryExecBuildResult = {
     earningsBlocked: number;
     earningsReduced: number;
     netMinConvictionDelta: number;
+    sizeReductionEnabled: boolean;
+    sizeReductionPct: number;
+    sizeReducedCount: number;
+    sizeReductionNotionalTotal: number;
   };
   minStopDistancePct: number;
   maxStopDistancePct: number;
@@ -613,6 +617,8 @@ function printStartupSummary() {
   console.log(`HF_EARN_WIN_FAC : ${clamp(readNonNegativeNumberEnv("HF_EARNINGS_WINDOW_REDUCE_FACTOR", 0.3), 0, 1)}`);
   console.log(`HF_SOFT_RELIEF  : ${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_POSITIVE_RELIEF_MAX", 1.0), 0, 3)}`);
   console.log(`HF_SOFT_TIGHTEN : ${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX", 2.0), 0, 4)}`);
+  console.log(`HF_SIZE_NEG_EN  : ${readBoolEnv("HF_NEGATIVE_SIZE_REDUCTION_ENABLED", false)}`);
+  console.log(`HF_SIZE_NEG_PCT : ${clamp(readNonNegativeNumberEnv("HF_NEGATIVE_SIZE_REDUCTION_PCT", 0.15), 0, 0.5)}`);
   console.log(`HF_DRIFT_EN     : ${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`);
   console.log(`HF_DRIFT_WIN_N  : ${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`);
   console.log(`HF_DRIFT_MIN_H  : ${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`);
@@ -2166,6 +2172,11 @@ type HfSoftGatePolicy = {
   negativeTightenMax: number;
 };
 
+type HfNegativeSizeReductionPolicy = {
+  enabled: boolean;
+  reductionPct: number;
+};
+
 type HfSoftGateAdjustment = {
   applied: boolean;
   delta: number;
@@ -2318,6 +2329,10 @@ function buildDryExecPayloads(
     positiveReliefMax: clamp(readNonNegativeNumberEnv("HF_SENTIMENT_POSITIVE_RELIEF_MAX", 1.0), 0, 3),
     negativeTightenMax: clamp(readNonNegativeNumberEnv("HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX", 2.0), 0, 4)
   };
+  const hfNegativeSizeReductionPolicy: HfNegativeSizeReductionPolicy = {
+    enabled: readBoolEnv("HF_NEGATIVE_SIZE_REDUCTION_ENABLED", false),
+    reductionPct: clamp(readNonNegativeNumberEnv("HF_NEGATIVE_SIZE_REDUCTION_PCT", 0.15), 0, 0.5)
+  };
   if (hfSoftGatePolicy.earningsReduceDays < hfSoftGatePolicy.earningsBlockDays) {
     hfSoftGatePolicy.earningsReduceDays = hfSoftGatePolicy.earningsBlockDays;
   }
@@ -2328,6 +2343,8 @@ function buildDryExecPayloads(
   let hfSoftEarningsBlocked = 0;
   let hfSoftEarningsReduced = 0;
   let hfSoftNetConvictionDelta = 0;
+  let hfSoftSizeReducedCount = 0;
+  let hfSoftSizeReductionNotionalTotal = 0;
   const configuredMinStopDistancePct = readProfilePositiveNumber(
     regime.profile,
     "DRY_DEFAULT_MIN_STOP_DISTANCE_PCT",
@@ -2528,6 +2545,18 @@ function buildDryExecPayloads(
       return;
     }
 
+    let effectiveNotional = notionalPerOrder;
+    if (hfNegativeSizeReductionPolicy.enabled && hfAdjustment.applied && hfAdjustment.mode === "tighten") {
+      const reducedNotional = Math.max(1, roundToCent(notionalPerOrder * (1 - hfNegativeSizeReductionPolicy.reductionPct)));
+      if (reducedNotional < notionalPerOrder) {
+        hfSoftSizeReducedCount += 1;
+        hfSoftSizeReductionNotionalTotal = roundToCent(
+          hfSoftSizeReductionNotionalTotal + (notionalPerOrder - reducedNotional)
+        );
+      }
+      effectiveNotional = reducedNotional;
+    }
+
     const actionType =
       lifecycle.enabled && isActionTypeAllowed("ENTRY_NEW", lifecycle) ? "ENTRY_NEW" : undefined;
 
@@ -2538,7 +2567,7 @@ function buildDryExecPayloads(
       time_in_force: "day",
       order_class: "bracket",
       limit_price: entry,
-      notional: notionalPerOrder,
+      notional: effectiveNotional,
       take_profit: { limit_price: target },
       stop_loss: { stop_price: stop },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
@@ -2590,7 +2619,11 @@ function buildDryExecPayloads(
       blockedNegative: hfSoftBlockedNegative,
       earningsBlocked: hfSoftEarningsBlocked,
       earningsReduced: hfSoftEarningsReduced,
-      netMinConvictionDelta: Number(hfSoftNetConvictionDelta.toFixed(2))
+      netMinConvictionDelta: Number(hfSoftNetConvictionDelta.toFixed(2)),
+      sizeReductionEnabled: hfNegativeSizeReductionPolicy.enabled,
+      sizeReductionPct: Number(hfNegativeSizeReductionPolicy.reductionPct.toFixed(2)),
+      sizeReducedCount: hfSoftSizeReducedCount,
+      sizeReductionNotionalTotal: roundToCent(hfSoftSizeReductionNotionalTotal)
     },
     minStopDistancePct,
     maxStopDistancePct,
@@ -2849,7 +2882,7 @@ function buildSimulationMessage(
     `Gate: Conv>=${dryExec.minConviction} (base=${dryExec.minConvictionPolicy.base}, vix+${dryExec.minConvictionPolicy.marketTighten}, quality-${dryExec.minConvictionPolicy.qualityRelief}, sampleCap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}) | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
   );
   lines.push(
-    `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta}`
+    `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
   lines.push(
     `StopDist Policy: syncStage6=${dryExec.stopDistancePolicy.syncWithStage6} strategy=${dryExec.stopDistancePolicy.strategy} configured=${dryExec.stopDistancePolicy.configuredMinPct}%~${dryExec.stopDistancePolicy.configuredMaxPct}% stage6=${dryExec.stopDistancePolicy.stage6MinPct}%~${dryExec.stopDistancePolicy.stage6MaxPct}% applied=${dryExec.stopDistancePolicy.appliedMinPct}%~${dryExec.stopDistancePolicy.appliedMaxPct}%`
@@ -3238,7 +3271,7 @@ async function saveDryExecPreview(
     `[CONV_POLICY] base=${dryExec.minConvictionPolicy.base} applied=${dryExec.minConvictionPolicy.applied} floor=${dryExec.minConvictionPolicy.floor} ceiling=${dryExec.minConvictionPolicy.ceiling} vix+${dryExec.minConvictionPolicy.marketTighten} quality-${dryExec.minConvictionPolicy.qualityRelief} sampleN=${dryExec.minConvictionPolicy.sampleCount} q${Math.round(dryExec.minConvictionPolicy.sampleQuantileQ * 100)}=${dryExec.minConvictionPolicy.sampleQuantileValue ?? "N/A"} cap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}`
   );
   console.log(
-    `[HF_SOFT_GATE] enabled=${dryExec.hfSentimentGate.enabled} floor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta}`
+    `[HF_SOFT_GATE] enabled=${dryExec.hfSentimentGate.enabled} floor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
   if (hfDrift) {
     console.log(
@@ -4119,6 +4152,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_EARNINGS_WINDOW_REDUCE_FACTOR=${clamp(readNonNegativeNumberEnv("HF_EARNINGS_WINDOW_REDUCE_FACTOR", 0.3), 0, 1)}`,
     `HF_SENTIMENT_POSITIVE_RELIEF_MAX=${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_POSITIVE_RELIEF_MAX", 1.0), 0, 3)}`,
     `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX=${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX", 2.0), 0, 4)}`,
+    `HF_NEGATIVE_SIZE_REDUCTION_ENABLED=${readBoolEnv("HF_NEGATIVE_SIZE_REDUCTION_ENABLED", false)}`,
+    `HF_NEGATIVE_SIZE_REDUCTION_PCT=${clamp(readNonNegativeNumberEnv("HF_NEGATIVE_SIZE_REDUCTION_PCT", 0.15), 0, 0.5)}`,
     `HF_DRIFT_ALERT_ENABLED=${readBoolEnv("HF_DRIFT_ALERT_ENABLED", true)}`,
     `HF_DRIFT_ALERT_WINDOW_RUNS=${Math.max(3, Math.min(30, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_WINDOW_RUNS", 8))))}`,
     `HF_DRIFT_ALERT_MIN_HISTORY=${Math.max(2, Math.round(readNonNegativeNumberEnv("HF_DRIFT_ALERT_MIN_HISTORY", 4)))}`,
@@ -4170,7 +4205,7 @@ function printRunSummary(
     ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
     : "n/a";
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_drift=${hfDriftSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_drift=${hfDriftSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

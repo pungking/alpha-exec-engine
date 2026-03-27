@@ -113,6 +113,8 @@ Use `.env.example` as baseline.
 - `HF_EARNINGS_WINDOW_REDUCE_FACTOR` (default `0.3`; apply delta multiplier in reduce zone)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
+- `HF_NEGATIVE_SIZE_REDUCTION_ENABLED` (default `false`; reduce order notional when HF negative tighten is applied)
+- `HF_NEGATIVE_SIZE_REDUCTION_PCT` (default `0.15`; fixed notional reduction ratio, clamped `0~0.5`)
 - `HF_DRIFT_ALERT_ENABLED` (default `true`; enable recent-run HF drift warning logs)
 - `HF_DRIFT_ALERT_WINDOW_RUNS` (default `8`; rolling window size)
 - `HF_DRIFT_ALERT_MIN_HISTORY` (default `4`; minimum baseline samples before alerting)
@@ -211,8 +213,12 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `HF_EARNINGS_WINDOW_ENABLED=true`
     - `HF_EARNINGS_WINDOW_BLOCK_DAYS=1` -> HF adjustment blocked in `|D| <= 1`
     - `HF_EARNINGS_WINDOW_REDUCE_DAYS=3` + `HF_EARNINGS_WINDOW_REDUCE_FACTOR=0.3` -> reduced impact in `1 < |D| <= 3`
+  - Optional size soft-reduce (default OFF):
+    - `HF_NEGATIVE_SIZE_REDUCTION_ENABLED=true`
+    - `HF_NEGATIVE_SIZE_REDUCTION_PCT=0.15` -> when negative tighten is applied, payload notional is reduced by fixed ratio.
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
+  - Capacity checks (`max_orders`, `max_total_notional`) remain based on base `notionalPerOrder` for stable rollout behavior.
   - Core sidecar risk chain (market guard, preflight, regime guard, exposure caps) remains unchanged.
   - Drift monitor (log-only):
     - `[HF_DRIFT] ...` warns when recent `N` runs show sudden negative-ratio spikes or applied-ratio drops.
@@ -263,7 +269,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_drift=...`.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
-    - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced`)
+    - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced`)
     - `hf_marker_audit` (`soft/drift/runSummary` as `ok|missing`)
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
