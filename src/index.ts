@@ -579,6 +579,28 @@ type HfPayloadProbeSummary = {
   generatedAt: string;
 };
 
+type HfPayloadProbeStatus =
+  | "PENDING_NO_PAYLOAD"
+  | "PENDING_HF_DISABLED"
+  | "PENDING_NO_HF_ADJUST"
+  | "WARN_SIZE_REDUCE_EXPECTED"
+  | "PASS_HF_APPLIED"
+  | "PASS_SIZE_REDUCED"
+  | "PASS_FORCED_PATH"
+  | "PASS_FORCED_SIZE_REDUCED";
+
+type HfPayloadProbeGateSummary = {
+  status: HfPayloadProbeStatus;
+  reason: string;
+  payloadCount: number;
+  hfApplied: number;
+  tightenCount: number;
+  sizeReduceEnabled: boolean;
+  sizeReducedCount: number;
+  savedNotional: number;
+  forced: boolean;
+};
+
 type HfFreezeStatus = "DISABLED" | "OBSERVE" | "CANDIDATE" | "FROZEN" | "UNFREEZE_REVIEW";
 
 type HfFreezeSummary = {
@@ -3214,7 +3236,8 @@ function buildSimulationMessage(
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
   guardControl: GuardControlGate,
-  hfLivePromotion?: HfLivePromotionSummary | null
+  hfLivePromotion?: HfLivePromotionSummary | null,
+  hfPayloadProbe?: HfPayloadProbeSummary
 ): string {
   const cfg = loadRuntimeConfig();
   const formatTierMeta = (row: Stage6CandidateSummary) => {
@@ -3282,6 +3305,27 @@ function buildSimulationMessage(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
   lines.push(`HF Explain: ${dryExec.hfSentimentGate.explainLine}`);
+  const probeForSummary: HfPayloadProbeSummary =
+    hfPayloadProbe ??
+    ({
+      requestedMode: "off",
+      active: false,
+      modified: false,
+      reason: "not_available",
+      symbol: null,
+      basePayloadCount: 0,
+      baseSkippedCount: 0,
+      baseApplied: 0,
+      baseTighten: 0,
+      baseRelief: 0,
+      baseSizeReduced: 0,
+      baseSizeReductionNotional: 0,
+      generatedAt: new Date().toISOString()
+    } as HfPayloadProbeSummary);
+  const probeStatus = deriveHfPayloadProbeGateSummary(dryExec, probeForSummary);
+  lines.push(
+    `HF Payload Probe: status=${probeStatus.status} reason=${probeStatus.reason} payloads=${probeStatus.payloadCount} hfApplied=${probeStatus.hfApplied} tighten=${probeStatus.tightenCount} sizeReduceEnabled=${probeStatus.sizeReduceEnabled} sizeReduced=${probeStatus.sizeReducedCount} savedNotional=${probeStatus.savedNotional.toFixed(2)} forced=${probeStatus.forced}`
+  );
   lines.push(
     `StopDist Policy: syncStage6=${dryExec.stopDistancePolicy.syncWithStage6} strategy=${dryExec.stopDistancePolicy.strategy} configured=${dryExec.stopDistancePolicy.configuredMinPct}%~${dryExec.stopDistancePolicy.configuredMaxPct}% stage6=${dryExec.stopDistancePolicy.stage6MinPct}%~${dryExec.stopDistancePolicy.stage6MaxPct}% applied=${dryExec.stopDistancePolicy.appliedMinPct}%~${dryExec.stopDistancePolicy.appliedMaxPct}%`
   );
@@ -3355,7 +3399,8 @@ async function sendSimulationTelegram(
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
   guardControl: GuardControlGate,
-  hfLivePromotion?: HfLivePromotionSummary | null
+  hfLivePromotion?: HfLivePromotionSummary | null,
+  hfPayloadProbe?: HfPayloadProbeSummary
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
@@ -3367,7 +3412,8 @@ async function sendSimulationTelegram(
     preflight,
     ledger,
     guardControl,
-    hfLivePromotion
+    hfLivePromotion,
+    hfPayloadProbe
   );
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
@@ -3982,6 +4028,139 @@ function buildHfPayloadProbeSummaryForRun(probe: HfPayloadProbeSummary | null): 
     `baseRelief:${probe.baseRelief}`,
     `baseSizeReduced:${probe.baseSizeReduced}`,
     `baseSizeSaved:${probe.baseSizeReductionNotional.toFixed(2)}`
+  ].join("|");
+}
+
+function deriveHfPayloadProbeGateSummary(
+  dryExec: DryExecBuildResult,
+  hfPayloadProbe: HfPayloadProbeSummary
+): HfPayloadProbeGateSummary {
+  const payloadCount = dryExec.payloads.length;
+  const hfApplied = dryExec.hfSentimentGate.applied;
+  const tightenCount = dryExec.hfSentimentGate.tightenCount;
+  const sizeReduceEnabled = dryExec.hfSentimentGate.sizeReductionEnabled;
+  const sizeReducedCount = dryExec.hfSentimentGate.sizeReducedCount;
+  const savedNotional = dryExec.hfSentimentGate.sizeReductionNotionalTotal;
+  const forced = hfPayloadProbe.active && hfPayloadProbe.modified;
+
+  if (payloadCount > 0) {
+    if (!dryExec.hfSentimentGate.enabled) {
+      return {
+        status: "PENDING_HF_DISABLED",
+        reason: "hf_disabled",
+        payloadCount,
+        hfApplied,
+        tightenCount,
+        sizeReduceEnabled,
+        sizeReducedCount,
+        savedNotional,
+        forced
+      };
+    }
+    if (hfApplied <= 0) {
+      return {
+        status: "PENDING_NO_HF_ADJUST",
+        reason: `explain:${dryExec.hfSentimentGate.explainLine || "no_adjust"}`,
+        payloadCount,
+        hfApplied,
+        tightenCount,
+        sizeReduceEnabled,
+        sizeReducedCount,
+        savedNotional,
+        forced
+      };
+    }
+    if (tightenCount > 0 && sizeReduceEnabled && sizeReducedCount <= 0) {
+      return {
+        status: "WARN_SIZE_REDUCE_EXPECTED",
+        reason: "tighten_without_size_reduce",
+        payloadCount,
+        hfApplied,
+        tightenCount,
+        sizeReduceEnabled,
+        sizeReducedCount,
+        savedNotional,
+        forced
+      };
+    }
+    if (sizeReduceEnabled && sizeReducedCount > 0) {
+      return {
+        status: "PASS_SIZE_REDUCED",
+        reason: "tighten_and_size_reduce_observed",
+        payloadCount,
+        hfApplied,
+        tightenCount,
+        sizeReduceEnabled,
+        sizeReducedCount,
+        savedNotional,
+        forced
+      };
+    }
+    return {
+      status: "PASS_HF_APPLIED",
+      reason: sizeReduceEnabled ? "applied_without_tighten" : "size_reduce_disabled",
+      payloadCount,
+      hfApplied,
+      tightenCount,
+      sizeReduceEnabled,
+      sizeReducedCount,
+      savedNotional,
+      forced
+    };
+  }
+
+  if (forced && hfPayloadProbe.baseApplied > 0) {
+    if (sizeReduceEnabled && hfPayloadProbe.baseSizeReduced > 0) {
+      return {
+        status: "PASS_FORCED_SIZE_REDUCED",
+        reason: "forced_tighten_and_size_reduce_observed",
+        payloadCount,
+        hfApplied,
+        tightenCount,
+        sizeReduceEnabled,
+        sizeReducedCount,
+        savedNotional,
+        forced
+      };
+    }
+    return {
+      status: "PASS_FORCED_PATH",
+      reason: "forced_hf_path_observed",
+      payloadCount,
+      hfApplied,
+      tightenCount,
+      sizeReduceEnabled,
+      sizeReducedCount,
+      savedNotional,
+      forced
+    };
+  }
+
+  return {
+    status: "PENDING_NO_PAYLOAD",
+    reason: "no_payload",
+    payloadCount,
+    hfApplied,
+    tightenCount,
+    sizeReduceEnabled,
+    sizeReducedCount,
+    savedNotional,
+    forced
+  };
+}
+
+function buildHfPayloadProbeGateSummaryForRun(summary: HfPayloadProbeGateSummary | null): string {
+  if (!summary) return "n/a";
+  return [
+    `status:${summary.status}`,
+    `reason:${summary.reason}`,
+    `payloads:${summary.payloadCount}`,
+    `hfApplied:${summary.hfApplied}`,
+    `tighten:${summary.tightenCount}`,
+    `sizeReduceEnabled:${summary.sizeReduceEnabled}`,
+    `sizeReduced:${summary.sizeReducedCount}`,
+    `savedNotional:${summary.savedNotional.toFixed(2)}`,
+    `forced:${summary.forced}`
   ].join("|");
 }
 
@@ -4681,6 +4860,7 @@ async function saveDryExecPreview(
   hfLivePromotion?: HfLivePromotionSummary
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
+  const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -4695,6 +4875,7 @@ async function saveDryExecPreview(
     minConvictionPolicy: dryExec.minConvictionPolicy,
     hfSentimentGate: dryExec.hfSentimentGate,
     hfPayloadProbe,
+    hfPayloadProbeStatus,
     hfDriftAlert: hfDrift ?? null,
     hfShadow: hfShadow ?? null,
     hfAlert: hfAlert ?? null,
@@ -4738,6 +4919,9 @@ async function saveDryExecPreview(
   );
   console.log(
     `[HF_PAYLOAD_PROBE] mode=${hfPayloadProbe.requestedMode} active=${hfPayloadProbe.active} modified=${hfPayloadProbe.modified} reason=${hfPayloadProbe.reason} symbol=${hfPayloadProbe.symbol ?? "none"} basePayloads=${hfPayloadProbe.basePayloadCount} baseSkipped=${hfPayloadProbe.baseSkippedCount} baseApplied=${hfPayloadProbe.baseApplied} baseTighten=${hfPayloadProbe.baseTighten} baseRelief=${hfPayloadProbe.baseRelief} baseSizeReduced=${hfPayloadProbe.baseSizeReduced} baseSizeSaved=${hfPayloadProbe.baseSizeReductionNotional.toFixed(2)}`
+  );
+  console.log(
+    `[HF_PAYLOAD_PROBE_STATUS] status=${hfPayloadProbeStatus.status} reason=${hfPayloadProbeStatus.reason} payloads=${hfPayloadProbeStatus.payloadCount} hfApplied=${hfPayloadProbeStatus.hfApplied} tighten=${hfPayloadProbeStatus.tightenCount} sizeReduceEnabled=${hfPayloadProbeStatus.sizeReduceEnabled} sizeReduced=${hfPayloadProbeStatus.sizeReducedCount} savedNotional=${hfPayloadProbeStatus.savedNotional.toFixed(2)} forced=${hfPayloadProbeStatus.forced}`
   );
   if (hfDrift) {
     console.log(
@@ -5719,6 +5903,9 @@ function printRunSummary(
   const hfTuningPhaseSummary = buildHfTuningPhaseSummaryForRun(hfTuningPhase ?? null);
   const hfTuningAdviceSummary = buildHfTuningAdviceSummaryForRun(hfTuningAdvice ?? null);
   const hfPayloadProbeSummary = buildHfPayloadProbeSummaryForRun(hfPayloadProbe ?? null);
+  const hfPayloadProbeGateSummary = buildHfPayloadProbeGateSummaryForRun(
+    deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe)
+  );
   const hfFreezeSummary = buildHfFreezeSummaryForRun(hfFreeze ?? null);
   const hfLivePromotionSummary = buildHfLivePromotionSummaryForRun(hfLivePromotion ?? null);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
@@ -5768,6 +5955,7 @@ function printRunSummary(
   console.log(
     `[HF_PAYLOAD_PROBE] mode=${probeForLog.requestedMode} active=${probeForLog.active} modified=${probeForLog.modified} reason=${probeForLog.reason} symbol=${probeForLog.symbol ?? "none"} basePayloads=${probeForLog.basePayloadCount} baseSkipped=${probeForLog.baseSkippedCount} baseApplied=${probeForLog.baseApplied} baseTighten=${probeForLog.baseTighten} baseRelief=${probeForLog.baseRelief} baseSizeReduced=${probeForLog.baseSizeReduced} baseSizeSaved=${probeForLog.baseSizeReductionNotional.toFixed(2)}`
   );
+  console.log(`[HF_PAYLOAD_PROBE_STATUS] ${hfPayloadProbeGateSummary}`);
   const freezeForLog = hfFreeze ?? {
     enabled: false,
     status: "DISABLED" as HfFreezeStatus,
@@ -5823,7 +6011,7 @@ function printRunSummary(
     `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} required=${livePromotionForLog.requiredPass}/${livePromotionForLog.requiredTotal} requiredMissing=${livePromotionForLog.requiredMissing.length ? livePromotionForLog.requiredMissing.join(",") : "none"} requiredHint=${livePromotionForLog.requiredHintToken} requiredHintText=${livePromotionForLog.requiredHintText} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} reqPerfGateGo=${livePromotionForLog.policy.requirePerfGateGo} reqFreezeFrozen=${livePromotionForLog.policy.requireFreezeFrozen} reqShadowStable=${livePromotionForLog.policy.requireShadowStable} reqPayloadPathVerified=${livePromotionForLog.policy.requirePayloadPathVerified} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} payloadPathSource=${livePromotionForLog.payloadPathSource} payloadPathVerifiedAt=${livePromotionForLog.payloadPathVerifiedAt ?? "n/a"} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -6023,7 +6211,8 @@ async function main() {
     preflight,
     ledger,
     guardControl,
-    hfLivePromotion
+    hfLivePromotion,
+    hfPayloadProbe
   );
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);

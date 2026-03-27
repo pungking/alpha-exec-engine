@@ -548,37 +548,63 @@ jobs:
             lines.push(
               `- hf_soft_gate: \`enabled=${hfGate.enabled ?? "N/A"} applied=${hfGate.applied ?? "N/A"} netDelta=${hfGate.netMinConvictionDelta ?? "N/A"} earningsBlocked=${hfGate.earningsBlocked ?? "N/A"} earningsReduced=${hfGate.earningsReduced ?? "N/A"} sizeReduceEnabled=${hfGate.sizeReductionEnabled ?? "N/A"} sizeReducePct=${hfGate.sizeReductionPct ?? "N/A"} sizeReduced=${hfGate.sizeReducedCount ?? "N/A"} sizeSavedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"} explain=${hfGate.explainLine ?? "N/A"}\``
             );
-            const payloadCount = Number(preview?.payloadCount ?? 0);
-            const hfApplied = Number(hfGate.applied ?? 0);
-            const hfTighten = Number(hfGate.tightenCount ?? 0);
-            const sizeReduced = Number(hfGate.sizeReducedCount ?? 0);
-            const sizeReduceEnabled = Boolean(hfGate.sizeReductionEnabled);
-            let hfPayloadProbeStatus = "PENDING_NO_PAYLOAD";
-            let hfPayloadProbeReason = "no_payload";
-            if (payloadCount > 0) {
-              if (hfGate.enabled !== true) {
-                hfPayloadProbeStatus = "PENDING_HF_DISABLED";
-                hfPayloadProbeReason = "hf_disabled";
-              } else if (hfApplied <= 0) {
-                hfPayloadProbeStatus = "PENDING_NO_HF_ADJUST";
-                hfPayloadProbeReason = `explain:${hfGate.explainLine ?? "no_adjust"}`;
-              } else if (hfTighten > 0 && sizeReduceEnabled && sizeReduced <= 0) {
-                hfPayloadProbeStatus = "WARN_SIZE_REDUCE_EXPECTED";
-                hfPayloadProbeReason = "tighten_without_size_reduce";
-              } else if (sizeReduceEnabled && sizeReduced > 0) {
-                hfPayloadProbeStatus = "PASS_SIZE_REDUCED";
-                hfPayloadProbeReason = "tighten_and_size_reduce_observed";
+            const hfPayloadProbeForced = preview?.hfPayloadProbe || {};
+            const hfPayloadProbeGate = preview?.hfPayloadProbeStatus || {};
+            const payloadCount = Number(hfPayloadProbeGate.payloadCount ?? preview?.payloadCount ?? 0);
+            const hfApplied = Number(hfPayloadProbeGate.hfApplied ?? hfGate.applied ?? 0);
+            const hfTighten = Number(hfPayloadProbeGate.tightenCount ?? hfGate.tightenCount ?? 0);
+            const sizeReduced = Number(hfPayloadProbeGate.sizeReducedCount ?? hfGate.sizeReducedCount ?? 0);
+            const sizeReduceEnabled = Boolean(hfPayloadProbeGate.sizeReduceEnabled ?? hfGate.sizeReductionEnabled);
+            const savedNotional = Number(hfPayloadProbeGate.savedNotional ?? hfGate.sizeReductionNotionalTotal ?? 0);
+            let hfPayloadProbeStatus =
+              typeof hfPayloadProbeGate.status === "string" && hfPayloadProbeGate.status
+                ? String(hfPayloadProbeGate.status)
+                : "";
+            let hfPayloadProbeReason =
+              typeof hfPayloadProbeGate.reason === "string" && hfPayloadProbeGate.reason
+                ? String(hfPayloadProbeGate.reason)
+                : "";
+            if (!hfPayloadProbeStatus) {
+              if (
+                payloadCount <= 0 &&
+                hfPayloadProbeForced.active === true &&
+                hfPayloadProbeForced.modified === true &&
+                Number(hfPayloadProbeForced.baseApplied ?? 0) > 0
+              ) {
+                if (sizeReduceEnabled && Number(hfPayloadProbeForced.baseSizeReduced ?? 0) > 0) {
+                  hfPayloadProbeStatus = "PASS_FORCED_SIZE_REDUCED";
+                  hfPayloadProbeReason = "forced_tighten_and_size_reduce_observed";
+                } else {
+                  hfPayloadProbeStatus = "PASS_FORCED_PATH";
+                  hfPayloadProbeReason = "forced_hf_path_observed";
+                }
+              } else if (payloadCount > 0) {
+                if (hfGate.enabled !== true) {
+                  hfPayloadProbeStatus = "PENDING_HF_DISABLED";
+                  hfPayloadProbeReason = "hf_disabled";
+                } else if (hfApplied <= 0) {
+                  hfPayloadProbeStatus = "PENDING_NO_HF_ADJUST";
+                  hfPayloadProbeReason = `explain:${hfGate.explainLine ?? "no_adjust"}`;
+                } else if (hfTighten > 0 && sizeReduceEnabled && sizeReduced <= 0) {
+                  hfPayloadProbeStatus = "WARN_SIZE_REDUCE_EXPECTED";
+                  hfPayloadProbeReason = "tighten_without_size_reduce";
+                } else if (sizeReduceEnabled && sizeReduced > 0) {
+                  hfPayloadProbeStatus = "PASS_SIZE_REDUCED";
+                  hfPayloadProbeReason = "tighten_and_size_reduce_observed";
+                } else {
+                  hfPayloadProbeStatus = "PASS_HF_APPLIED";
+                  hfPayloadProbeReason = sizeReduceEnabled ? "applied_without_tighten" : "size_reduce_disabled";
+                }
               } else {
-                hfPayloadProbeStatus = "PASS_HF_APPLIED";
-                hfPayloadProbeReason = sizeReduceEnabled ? "applied_without_tighten" : "size_reduce_disabled";
+                hfPayloadProbeStatus = "PENDING_NO_PAYLOAD";
+                hfPayloadProbeReason = "no_payload";
               }
             }
             lines.push(
-              `- hf_payload_probe: \`status=${hfPayloadProbeStatus} payloads=${payloadCount} hfApplied=${hfApplied} tighten=${hfTighten} sizeReduceEnabled=${sizeReduceEnabled} sizeReduced=${sizeReduced} savedNotional=${hfGate.sizeReductionNotionalTotal ?? "N/A"} reason=${hfPayloadProbeReason}\``
+              `- hf_payload_probe: \`status=${hfPayloadProbeStatus} payloads=${payloadCount} hfApplied=${hfApplied} tighten=${hfTighten} sizeReduceEnabled=${sizeReduceEnabled} sizeReduced=${sizeReduced} savedNotional=${Number.isFinite(savedNotional) ? savedNotional : "N/A"} reason=${hfPayloadProbeReason}\``
             );
             tuningSignals.payloadProbeStatus = hfPayloadProbeStatus;
             tuningSignals.payloadProbeReason = hfPayloadProbeReason;
-            const hfPayloadProbeForced = preview?.hfPayloadProbe || {};
             lines.push(
               `- hf_payload_probe_forced: \`mode=${hfPayloadProbeForced.requestedMode ?? "N/A"} active=${hfPayloadProbeForced.active ?? "N/A"} modified=${hfPayloadProbeForced.modified ?? "N/A"} reason=${hfPayloadProbeForced.reason ?? "N/A"} symbol=${hfPayloadProbeForced.symbol ?? "N/A"} basePayloads=${hfPayloadProbeForced.basePayloadCount ?? "N/A"} baseApplied=${hfPayloadProbeForced.baseApplied ?? "N/A"} baseTighten=${hfPayloadProbeForced.baseTighten ?? "N/A"} baseRelief=${hfPayloadProbeForced.baseRelief ?? "N/A"} baseSizeReduced=${hfPayloadProbeForced.baseSizeReduced ?? "N/A"} baseSizeSaved=${hfPayloadProbeForced.baseSizeReductionNotional ?? "N/A"}\``
             );

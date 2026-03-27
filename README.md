@@ -315,6 +315,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Step Summary includes:
     - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced/explain`)
     - `hf_payload_probe` (`status/payloads/hfApplied/tighten/sizeReduced/reason`)
+      - forced probe success statuses:
+        - `PASS_FORCED_PATH`
+        - `PASS_FORCED_SIZE_REDUCED`
     - `hf_payload_probe_forced` (`mode/active/modified/reason/symbol/basePayloads/baseApplied/baseTighten/baseRelief/baseSizeReduced/baseSizeSaved`)
     - `hf_shadow` (`enabled/compared/reason/payloadDelta/notionalDelta`)
     - `hf_shadow_trend` (`history/window/compared/alertRate/avgAbsDelta/zeroPayloadRate`)

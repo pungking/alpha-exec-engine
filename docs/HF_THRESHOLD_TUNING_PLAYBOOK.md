@@ -99,6 +99,8 @@ Minimum lines to capture:
   - `PENDING_NO_HF_ADJUST`: payload exists but HF adjustment did not apply.
   - `PASS_HF_APPLIED`: HF adjustment applied (size reduce may be disabled or tighten not triggered).
   - `PASS_SIZE_REDUCED`: tighten + size reduction observed as expected.
+  - `PASS_FORCED_PATH`: no payload run, but forced probe confirmed HF path logic.
+  - `PASS_FORCED_SIZE_REDUCED`: no payload run, forced probe confirmed tighten + size reduction.
   - `WARN_SIZE_REDUCE_EXPECTED`: tighten happened but size reduction did not.
 
 ### hf_payload_probe_forced
