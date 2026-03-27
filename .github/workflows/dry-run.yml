@@ -165,6 +165,11 @@ jobs:
       HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA: ${{ vars.HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA }}
       HF_DRIFT_ALERT_APPLIED_RATIO_DROP: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_DROP }}
       HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR }}
+      HF_TUNING_FREEZE_ENABLED: ${{ vars.HF_TUNING_FREEZE_ENABLED }}
+      HF_TUNING_FREEZE_STABLE_RUNS: ${{ vars.HF_TUNING_FREEZE_STABLE_RUNS }}
+      HF_TUNING_UNFREEZE_ALERT_STREAK: ${{ vars.HF_TUNING_UNFREEZE_ALERT_STREAK }}
+      HF_TUNING_FREEZE_REQUIRE_PROGRESS: ${{ vars.HF_TUNING_FREEZE_REQUIRE_PROGRESS }}
+      HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE: ${{ vars.HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
       REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
@@ -378,6 +383,8 @@ jobs:
           RUN_SUMMARY_HF_TUNING_PHASE="missing"
           TUNING_ADVICE_MARKER="missing"
           RUN_SUMMARY_HF_TUNING_ADVICE="missing"
+          FREEZE_MARKER="missing"
+          RUN_SUMMARY_HF_FREEZE="missing"
           PAYLOAD_PROBE_MARKER="missing"
           RUN_SUMMARY_HF_PAYLOAD_PROBE="missing"
           ALERT_MARKER="missing"
@@ -394,15 +401,17 @@ jobs:
             grep -Eq '\[RUN_SUMMARY\].*hf_tuning_phase=' "${LOG_PATH}" && RUN_SUMMARY_HF_TUNING_PHASE="ok" || true
             grep -q '\[HF_TUNING_ADVICE\]' "${LOG_PATH}" && TUNING_ADVICE_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_tuning_advice=' "${LOG_PATH}" && RUN_SUMMARY_HF_TUNING_ADVICE="ok" || true
+            grep -q '\[HF_FREEZE\]' "${LOG_PATH}" && FREEZE_MARKER="ok" || true
+            grep -Eq '\[RUN_SUMMARY\].*hf_freeze=' "${LOG_PATH}" && RUN_SUMMARY_HF_FREEZE="ok" || true
             grep -q '\[HF_PAYLOAD_PROBE\]' "${LOG_PATH}" && PAYLOAD_PROBE_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_payload_probe_forced=' "${LOG_PATH}" && RUN_SUMMARY_HF_PAYLOAD_PROBE="ok" || true
             grep -Eq '\[HF_ALERT\]|\[HF_ALERT_SUMMARY\]' "${LOG_PATH}" && ALERT_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_alert=' "${LOG_PATH}" && RUN_SUMMARY_HF_ALERT="ok" || true
           fi
 
-          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${RUN_SUMMARY_HF_SHADOW_TREND}" "${TUNING_PHASE_MARKER}" "${RUN_SUMMARY_HF_TUNING_PHASE}" "${TUNING_ADVICE_MARKER}" "${RUN_SUMMARY_HF_TUNING_ADVICE}" "${PAYLOAD_PROBE_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PROBE}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LOG_PATH}" <<'NODE'
+          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${RUN_SUMMARY_HF_SHADOW_TREND}" "${TUNING_PHASE_MARKER}" "${RUN_SUMMARY_HF_TUNING_PHASE}" "${TUNING_ADVICE_MARKER}" "${RUN_SUMMARY_HF_TUNING_ADVICE}" "${FREEZE_MARKER}" "${RUN_SUMMARY_HF_FREEZE}" "${PAYLOAD_PROBE_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PROBE}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LOG_PATH}" <<'NODE'
           const fs = require("node:fs");
-          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, logPath] = process.argv.slice(2);
+          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, logPath] = process.argv.slice(2);
           const audit = {
             softGate,
             driftMarker,
@@ -414,6 +423,8 @@ jobs:
             runSummaryHfTuningPhase,
             tuningAdviceMarker,
             runSummaryHfTuningAdvice,
+            freezeMarker,
+            runSummaryHfFreeze,
             payloadProbeMarker,
             runSummaryHfPayloadProbe,
             alertMarker,
@@ -422,9 +433,9 @@ jobs:
             auditedAt: new Date().toISOString(),
           };
           fs.writeFileSync("state/hf-marker-audit.json", `${JSON.stringify(audit, null, 2)}\n`, "utf8");
-          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert].every((v) => v === "ok");
+          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert].every((v) => v === "ok");
           const line =
-            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} runSummaryShadowTrend=${runSummaryHfShadowTrend} tuningPhase=${tuningPhaseMarker} runSummaryTuningPhase=${runSummaryHfTuningPhase} tuningAdvice=${tuningAdviceMarker} runSummaryTuningAdvice=${runSummaryHfTuningAdvice} payloadProbe=${payloadProbeMarker} runSummaryPayloadProbe=${runSummaryHfPayloadProbe} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} ` +
+            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} runSummaryShadowTrend=${runSummaryHfShadowTrend} tuningPhase=${tuningPhaseMarker} runSummaryTuningPhase=${runSummaryHfTuningPhase} tuningAdvice=${tuningAdviceMarker} runSummaryTuningAdvice=${runSummaryHfTuningAdvice} freeze=${freezeMarker} runSummaryFreeze=${runSummaryHfFreeze} payloadProbe=${payloadProbeMarker} runSummaryPayloadProbe=${runSummaryHfPayloadProbe} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} ` +
             `mode=warning-only state=state/hf-marker-audit.json`;
           if (allOk) {
             console.log(line);
@@ -456,6 +467,8 @@ jobs:
             adviceStatus: "N/A",
             adviceAction: "N/A",
             adviceReason: "N/A",
+            freezeStatus: "N/A",
+            freezeReason: "N/A",
             payloadProbeStatus: "N/A",
             payloadProbeReason: "N/A",
             markerAuditKnown: false,
@@ -578,6 +591,12 @@ jobs:
             lines.push(
               `- hf_tuning_advice: \`status=${hfTuningAdvice.status ?? "N/A"} action=${hfTuningAdvice.action ?? "N/A"} variable=${hfTuningAdvice.variable ?? "N/A"} current=${hfTuningAdvice.currentValue ?? "N/A"} suggested=${hfTuningAdvice.suggestedValue ?? "N/A"} reason=${hfTuningAdvice.reason ?? "N/A"} confidence=${hfTuningAdvice.confidence ?? "N/A"}\``
             );
+            const hfFreeze = preview?.hfFreeze || {};
+            tuningSignals.freezeStatus = String(hfFreeze.status ?? "N/A");
+            tuningSignals.freezeReason = String(hfFreeze.reason ?? "N/A");
+            lines.push(
+              `- hf_freeze: \`enabled=${hfFreeze.enabled ?? "N/A"} status=${hfFreeze.status ?? "N/A"} reason=${hfFreeze.reason ?? "N/A"} recommendation=${hfFreeze.recommendation ?? "N/A"} progress=${hfFreeze.observedTrades ?? "N/A"}/${hfFreeze.requiredProgress ?? "N/A"} stable=${hfFreeze.stableRunStreak ?? "N/A"}/${hfFreeze.stableRunsTarget ?? "N/A"} alert=${hfFreeze.alertStreak ?? "N/A"}/${hfFreeze.alertStreakThreshold ?? "N/A"} shadowRate=${hfFreeze.shadowAlertRate ?? "N/A"} shadowMax=${hfFreeze.maxShadowAlertRate ?? "N/A"} hfAlert=${hfFreeze.hfAlertTriggered ?? "N/A"} frozenAt=${hfFreeze.frozenAt ?? "N/A"}\``
+            );
             const hfAlert = preview?.hfAlert || {};
             lines.push(
               `- hf_alert: \`enabled=${hfAlert.enabled ?? "N/A"} triggered=${hfAlert.triggered ?? "N/A"} reason=${hfAlert.reason ?? "N/A"} shadowCompared=${hfAlert.shadowCompared ?? "N/A"} payloadDelta=${hfAlert.shadowPayloadDelta ?? "N/A"} notionalDelta=${hfAlert.shadowNotionalDelta ?? "N/A"} skippedDelta=${hfAlert.shadowSkippedDelta ?? "N/A"} driftTriggered=${hfAlert.driftTriggered ?? "N/A"}\``
@@ -637,6 +656,7 @@ jobs:
             lines.push("- hf_shadow_trend: `history=N/A window=N/A compared=N/A alertRate=N/A avgAbsPayloadDelta=N/A avgAbsNotionalDelta=N/A avgAbsSkippedDelta=N/A zeroPayloadRate=N/A latestAt=N/A`");
             lines.push("- hf_tuning_phase: `phase=N/A reason=N/A recommendation=N/A gate=N/A progress=N/A trades=N/A/N/A alertTriggered=N/A shadowAlertRate=N/A`");
             lines.push("- hf_tuning_advice: `status=N/A action=N/A variable=N/A current=N/A suggested=N/A reason=N/A confidence=N/A`");
+            lines.push("- hf_freeze: `enabled=N/A status=N/A reason=N/A recommendation=N/A progress=N/A/N/A stable=N/A/N/A alert=N/A/N/A shadowRate=N/A shadowMax=N/A hfAlert=N/A frozenAt=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
           }
 
@@ -653,6 +673,8 @@ jobs:
               hfAudit.runSummaryHfTuningPhase,
               hfAudit.tuningAdviceMarker,
               hfAudit.runSummaryHfTuningAdvice,
+              hfAudit.freezeMarker,
+              hfAudit.runSummaryHfFreeze,
               hfAudit.payloadProbeMarker,
               hfAudit.runSummaryHfPayloadProbe,
               hfAudit.alertMarker,
@@ -661,10 +683,10 @@ jobs:
             tuningSignals.markerAuditKnown = true;
             tuningSignals.markerAuditOk = markerAuditFields.every((value) => value === "ok");
             lines.push(
-              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} tuningPhase=${hfAudit.tuningPhaseMarker ?? "missing"} runSummaryTuningPhase=${hfAudit.runSummaryHfTuningPhase ?? "missing"} tuningAdvice=${hfAudit.tuningAdviceMarker ?? "missing"} runSummaryTuningAdvice=${hfAudit.runSummaryHfTuningAdvice ?? "missing"} payloadProbe=${hfAudit.payloadProbeMarker ?? "missing"} runSummaryPayloadProbe=${hfAudit.runSummaryHfPayloadProbe ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"}\``
+              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} tuningPhase=${hfAudit.tuningPhaseMarker ?? "missing"} runSummaryTuningPhase=${hfAudit.runSummaryHfTuningPhase ?? "missing"} tuningAdvice=${hfAudit.tuningAdviceMarker ?? "missing"} runSummaryTuningAdvice=${hfAudit.runSummaryHfTuningAdvice ?? "missing"} freeze=${hfAudit.freezeMarker ?? "missing"} runSummaryFreeze=${hfAudit.runSummaryHfFreeze ?? "missing"} payloadProbe=${hfAudit.payloadProbeMarker ?? "missing"} runSummaryPayloadProbe=${hfAudit.runSummaryHfPayloadProbe ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"}\``
             );
           } else {
-            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing runSummaryShadowTrend=missing tuningPhase=missing runSummaryTuningPhase=missing tuningAdvice=missing runSummaryTuningAdvice=missing payloadProbe=missing runSummaryPayloadProbe=missing alert=missing runSummaryAlert=missing`");
+            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing runSummaryShadowTrend=missing tuningPhase=missing runSummaryTuningPhase=missing tuningAdvice=missing runSummaryTuningAdvice=missing freeze=missing runSummaryFreeze=missing payloadProbe=missing runSummaryPayloadProbe=missing alert=missing runSummaryAlert=missing`");
           }
 
           if (fs.existsSync(idempPath)) {
@@ -768,6 +790,14 @@ jobs:
             tuningCommentStatus = "BLOCKED_OBSERVABILITY";
             tuningCommentAction = "fix_marker_gap_first";
             tuningCommentReason = "hf_marker_audit_has_missing";
+          } else if (tuningSignals.freezeStatus === "UNFREEZE_REVIEW") {
+            tuningCommentStatus = "REVIEW_TUNE";
+            tuningCommentAction = "review_unfreeze_thresholds";
+            tuningCommentReason = tuningSignals.freezeReason;
+          } else if (tuningSignals.freezeStatus === "FROZEN") {
+            tuningCommentStatus = "FREEZE_READY";
+            tuningCommentAction = "keep_frozen_baseline";
+            tuningCommentReason = tuningSignals.freezeReason;
           } else if (tuningSignals.adviceStatus === "ADJUST") {
             tuningCommentStatus = "REVIEW_TUNE";
             tuningCommentAction = tuningSignals.adviceAction;
@@ -794,7 +824,7 @@ jobs:
             tuningCommentReason = tuningSignals.phaseReason;
           }
           lines.push(
-            `- hf_tuning_comment: \`status=${tuningCommentStatus} action=${tuningCommentAction} reason=${tuningCommentReason} phase=${tuningSignals.phase} advice=${tuningSignals.adviceStatus} gate=${tuningSignals.perfGateStatus} progress=${tuningSignals.perfGateProgress} payloadProbe=${tuningSignals.payloadProbeStatus} markerAuditOk=${tuningSignals.markerAuditKnown ? tuningSignals.markerAuditOk : "N/A"}\``
+            `- hf_tuning_comment: \`status=${tuningCommentStatus} action=${tuningCommentAction} reason=${tuningCommentReason} phase=${tuningSignals.phase} advice=${tuningSignals.adviceStatus} freeze=${tuningSignals.freezeStatus} gate=${tuningSignals.perfGateStatus} progress=${tuningSignals.perfGateProgress} payloadProbe=${tuningSignals.payloadProbeStatus} markerAuditOk=${tuningSignals.markerAuditKnown ? tuningSignals.markerAuditOk : "N/A"}\``
           );
 
           lines.push("");
@@ -887,6 +917,7 @@ jobs:
             state/hf-marker-audit.json
             state/hf-shadow-last.json
             state/hf-shadow-history.jsonl
+            state/hf-tuning-freeze.json
             state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json

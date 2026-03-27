@@ -52,6 +52,7 @@ hf_shadow:
 hf_shadow_trend:
 hf_tuning_phase:
 hf_tuning_advice:
+hf_freeze:
 hf_tuning_comment:
 hf_alert:
 hf_marker_audit:
@@ -68,6 +69,7 @@ Minimum lines to capture:
 - `hf_shadow_trend`
 - `hf_tuning_phase`
 - `hf_tuning_advice`
+- `hf_freeze`
 - `hf_tuning_comment`
 - `hf_alert`
 - `hf_marker_audit`
@@ -128,6 +130,19 @@ Minimum lines to capture:
   - `status=ADJUST`: tune exactly one variable.
   - `status=FREEZE`: freeze baseline.
 - Follow the suggested `variable/current/suggested` first, then re-run 2~3 observations.
+
+### hf_freeze
+- Stateful freeze assistant (suggestion-only, no auto-threshold write).
+- Status meanings:
+  - `OBSERVE`: sample/quality not ready.
+  - `CANDIDATE`: stable signal accumulating.
+  - `FROZEN`: baseline freeze candidate confirmed.
+  - `UNFREEZE_REVIEW`: frozen baseline now shows repeated alert/noise.
+- Key fields:
+  - `progress` (`observed/required`)
+  - `stable` (`stableStreak/target`)
+  - `alert` (`alertStreak/threshold`)
+  - `shadowRate` vs `shadowMax`
 
 ### hf_tuning_comment
 - Final operator recommendation synthesized for the current run.
@@ -193,6 +208,15 @@ This reduces notional only when HF tighten actually applies.
 Raise alert thresholds if frequent false alarms.
 Lower only after enough sample history.
 
+## E. Freeze assistant tuning
+- `HF_TUNING_FREEZE_ENABLED` (default `false`)
+- `HF_TUNING_FREEZE_STABLE_RUNS` (default `3`)
+- `HF_TUNING_UNFREEZE_ALERT_STREAK` (default `2`)
+- `HF_TUNING_FREEZE_REQUIRE_PROGRESS` (default `20`)
+- `HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE` (default `0.10`)
+
+Use these only after observability is stable.
+
 ---
 
 ## 4) Adjustment rules (safe sequence)
@@ -209,6 +233,8 @@ Change policy in this order:
    - negative size reduction.
 5. **Alert thresholds**
    - shadow + drift anomaly sensitivity.
+6. **Freeze policy**
+   - stable runs / unfreeze streak / shadow alert-rate cap.
 
 Do not change everything at once.
 

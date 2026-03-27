@@ -579,6 +579,34 @@ type HfPayloadProbeSummary = {
   generatedAt: string;
 };
 
+type HfFreezeStatus = "DISABLED" | "OBSERVE" | "CANDIDATE" | "FROZEN" | "UNFREEZE_REVIEW";
+
+type HfFreezeSummary = {
+  enabled: boolean;
+  status: HfFreezeStatus;
+  reason: string;
+  recommendation: string;
+  observedTrades: number;
+  requiredProgress: number;
+  stableRunStreak: number;
+  stableRunsTarget: number;
+  alertStreak: number;
+  alertStreakThreshold: number;
+  shadowAlertRate: number;
+  maxShadowAlertRate: number;
+  hfAlertTriggered: boolean;
+  frozenAt: string | null;
+  updatedAt: string;
+};
+
+type HfFreezeState = {
+  status: HfFreezeStatus;
+  stableRunStreak: number;
+  alertStreak: number;
+  frozenAt: string | null;
+  updatedAt: string;
+};
+
 type HfAnomalyAlert = {
   enabled: boolean;
   triggered: boolean;
@@ -621,6 +649,7 @@ const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
 const HF_DRIFT_STATE_PATH = "state/hf-drift-state.json";
 const HF_SHADOW_STATE_PATH = "state/hf-shadow-last.json";
 const HF_SHADOW_HISTORY_PATH = "state/hf-shadow-history.jsonl";
+const HF_TUNING_FREEZE_STATE_PATH = "state/hf-tuning-freeze.json";
 const HF_SHADOW_HISTORY_WINDOW = 20;
 const HF_SHADOW_HISTORY_MAX_ROWS = 200;
 const PERFORMANCE_LOOP_REQUIRED_TRADES = 20;
@@ -758,6 +787,11 @@ function printStartupSummary() {
   console.log(`HF_DRIFT_NEG_DEL: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`);
   console.log(`HF_DRIFT_APP_DRP: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`);
   console.log(`HF_DRIFT_APP_FLR: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`);
+  console.log(`HF_FREEZE_EN    : ${readBoolEnv("HF_TUNING_FREEZE_ENABLED", false)}`);
+  console.log(`HF_FREEZE_STBL  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3)))}`);
+  console.log(`HF_FREEZE_UNFRZ : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`);
+  console.log(`HF_FREEZE_REQP  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_REQUIRE_PROGRESS", 20)))}`);
+  console.log(`HF_FREEZE_SHDW  : ${clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1)}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -3502,6 +3536,173 @@ async function updateHfDriftAlert(
   return alert;
 }
 
+async function loadHfFreezeState(): Promise<HfFreezeState> {
+  try {
+    const raw = await readFile(HF_TUNING_FREEZE_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Partial<HfFreezeState>;
+    const statusRaw = String(parsed?.status ?? "").trim().toUpperCase();
+    const status: HfFreezeStatus =
+      statusRaw === "OBSERVE" ||
+      statusRaw === "CANDIDATE" ||
+      statusRaw === "FROZEN" ||
+      statusRaw === "UNFREEZE_REVIEW"
+        ? (statusRaw as HfFreezeStatus)
+        : "OBSERVE";
+    return {
+      status,
+      stableRunStreak: Math.max(0, Math.round(Number(parsed?.stableRunStreak ?? 0))),
+      alertStreak: Math.max(0, Math.round(Number(parsed?.alertStreak ?? 0))),
+      frozenAt: typeof parsed?.frozenAt === "string" && parsed.frozenAt.trim() ? parsed.frozenAt : null,
+      updatedAt: typeof parsed?.updatedAt === "string" ? parsed.updatedAt : ""
+    };
+  } catch {
+    return {
+      status: "OBSERVE",
+      stableRunStreak: 0,
+      alertStreak: 0,
+      frozenAt: null,
+      updatedAt: ""
+    };
+  }
+}
+
+async function saveHfFreezeState(state: HfFreezeState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(HF_TUNING_FREEZE_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${HF_TUNING_FREEZE_STATE_PATH}`);
+}
+
+async function updateHfFreezeSummary(
+  tuningPhase: HfTuningPhaseSummary,
+  hfShadowTrend: HfShadowTrendSummary | null,
+  hfAlert: HfAnomalyAlert | null
+): Promise<HfFreezeSummary> {
+  const enabled = readBoolEnv("HF_TUNING_FREEZE_ENABLED", false);
+  const stableRunsTarget = Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3)));
+  const alertStreakThreshold = Math.max(
+    1,
+    Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2))
+  );
+  const requiredProgress = Math.max(
+    1,
+    Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_REQUIRE_PROGRESS", PERFORMANCE_LOOP_REQUIRED_TRADES))
+  );
+  const maxShadowAlertRate = clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1);
+  const observedTrades = Math.max(0, Math.round(Number(tuningPhase.observedTrades || 0)));
+  const shadowAlertRate = hfShadowTrend?.alertTriggeredRate ?? 0;
+  const hfAlertTriggered = Boolean(hfAlert?.triggered);
+  const hasProgress = observedTrades >= requiredProgress;
+  const stableSignal = hasProgress && !hfAlertTriggered && shadowAlertRate <= maxShadowAlertRate;
+  const now = new Date().toISOString();
+
+  if (!enabled) {
+    const disabled: HfFreezeSummary = {
+      enabled: false,
+      status: "DISABLED",
+      reason: "disabled",
+      recommendation: "enable_freeze_when_ready",
+      observedTrades,
+      requiredProgress,
+      stableRunStreak: 0,
+      stableRunsTarget,
+      alertStreak: 0,
+      alertStreakThreshold,
+      shadowAlertRate,
+      maxShadowAlertRate,
+      hfAlertTriggered,
+      frozenAt: null,
+      updatedAt: now
+    };
+    console.log(
+      `[HF_FREEZE] enabled=false status=DISABLED reason=disabled recommendation=enable_freeze_when_ready progress=${disabled.observedTrades}/${disabled.requiredProgress} stable=0/${stableRunsTarget} alert=0/${alertStreakThreshold} shadowRate=${shadowAlertRate.toFixed(4)} shadowMax=${maxShadowAlertRate.toFixed(4)} hfAlert=${hfAlertTriggered} frozenAt=n/a`
+    );
+    return disabled;
+  }
+
+  const state = await loadHfFreezeState();
+  let status = state.status;
+  let stableRunStreak = state.stableRunStreak;
+  let alertStreak = state.alertStreak;
+  let frozenAt = state.frozenAt;
+  let reason = "observe_collect_more";
+  let recommendation = "collect_more_runs";
+
+  if (!hasProgress) {
+    status = "OBSERVE";
+    stableRunStreak = 0;
+    alertStreak = 0;
+    reason = `progress_insufficient(${observedTrades}/${requiredProgress})`;
+    recommendation = "collect_more_runs";
+  } else if (status === "FROZEN") {
+    if (hfAlertTriggered || shadowAlertRate > maxShadowAlertRate) {
+      alertStreak += 1;
+      if (alertStreak >= alertStreakThreshold) {
+        status = "UNFREEZE_REVIEW";
+        reason = hfAlertTriggered ? "unfreeze_hf_alert_streak" : "unfreeze_shadow_alert_rate_streak";
+        recommendation = "review_thresholds_before_unfreeze";
+      } else {
+        reason = hfAlertTriggered ? "frozen_alert_detected" : "frozen_shadow_rate_high";
+        recommendation = "monitor_alert_streak";
+      }
+    } else {
+      alertStreak = 0;
+      reason = "frozen_stable";
+      recommendation = "keep_thresholds_frozen";
+    }
+  } else {
+    alertStreak = 0;
+    if (stableSignal) {
+      stableRunStreak += 1;
+      if (stableRunStreak >= stableRunsTarget) {
+        status = "FROZEN";
+        frozenAt = frozenAt || now;
+        reason = "stable_runs_threshold_reached";
+        recommendation = "freeze_baseline";
+      } else {
+        status = "CANDIDATE";
+        reason = "stable_signal_accumulating";
+        recommendation = "continue_stable_monitoring";
+      }
+    } else {
+      status = "OBSERVE";
+      stableRunStreak = 0;
+      reason = hfAlertTriggered ? "hf_alert_triggered" : "shadow_alert_rate_high";
+      recommendation = "stabilize_before_freeze";
+    }
+  }
+
+  const nextState: HfFreezeState = {
+    status,
+    stableRunStreak,
+    alertStreak,
+    frozenAt,
+    updatedAt: now
+  };
+  await saveHfFreezeState(nextState);
+
+  const summary: HfFreezeSummary = {
+    enabled: true,
+    status,
+    reason,
+    recommendation,
+    observedTrades,
+    requiredProgress,
+    stableRunStreak,
+    stableRunsTarget,
+    alertStreak,
+    alertStreakThreshold,
+    shadowAlertRate: Number(shadowAlertRate.toFixed(4)),
+    maxShadowAlertRate: Number(maxShadowAlertRate.toFixed(4)),
+    hfAlertTriggered,
+    frozenAt,
+    updatedAt: now
+  };
+  console.log(
+    `[HF_FREEZE] enabled=true status=${summary.status} reason=${summary.reason} recommendation=${summary.recommendation} progress=${summary.observedTrades}/${summary.requiredProgress} stable=${summary.stableRunStreak}/${summary.stableRunsTarget} alert=${summary.alertStreak}/${summary.alertStreakThreshold} shadowRate=${summary.shadowAlertRate.toFixed(4)} shadowMax=${summary.maxShadowAlertRate.toFixed(4)} hfAlert=${summary.hfAlertTriggered} frozenAt=${summary.frozenAt ?? "n/a"}`
+  );
+  return summary;
+}
+
 function buildSkipReasonDelta(
   onCounts: Record<string, number>,
   offCounts: Record<string, number>
@@ -3594,6 +3795,23 @@ function buildHfPayloadProbeSummaryForRun(probe: HfPayloadProbeSummary | null): 
     `baseRelief:${probe.baseRelief}`,
     `baseSizeReduced:${probe.baseSizeReduced}`,
     `baseSizeSaved:${probe.baseSizeReductionNotional.toFixed(2)}`
+  ].join("|");
+}
+
+function buildHfFreezeSummaryForRun(freeze: HfFreezeSummary | null): string {
+  if (!freeze) return "n/a";
+  return [
+    `enabled:${freeze.enabled}`,
+    `status:${freeze.status}`,
+    `reason:${freeze.reason}`,
+    `rec:${freeze.recommendation}`,
+    `progress:${freeze.observedTrades}/${freeze.requiredProgress}`,
+    `stable:${freeze.stableRunStreak}/${freeze.stableRunsTarget}`,
+    `alert:${freeze.alertStreak}/${freeze.alertStreakThreshold}`,
+    `shadowRate:${freeze.shadowAlertRate.toFixed(4)}`,
+    `shadowMax:${freeze.maxShadowAlertRate.toFixed(4)}`,
+    `hfAlert:${freeze.hfAlertTriggered}`,
+    `frozenAt:${freeze.frozenAt ?? "n/a"}`
   ].join("|");
 }
 
@@ -4094,7 +4312,8 @@ async function saveDryExecPreview(
   hfAlert?: HfAnomalyAlert,
   hfShadowTrend?: HfShadowTrendSummary,
   hfTuningPhase?: HfTuningPhaseSummary,
-  hfTuningAdvice?: HfTuningAdvice
+  hfTuningAdvice?: HfTuningAdvice,
+  hfFreeze?: HfFreezeSummary
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   await mkdir("state", { recursive: true });
@@ -4117,6 +4336,7 @@ async function saveDryExecPreview(
     hfShadowTrend: hfShadowTrend ?? null,
     hfTuningPhase: hfTuningPhase ?? null,
     hfTuningAdvice: hfTuningAdvice ?? null,
+    hfFreeze: hfFreeze ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -4166,6 +4386,11 @@ async function saveDryExecPreview(
   if (hfTuningAdvice) {
     console.log(
       `[HF_TUNING_ADVICE] status=${hfTuningAdvice.status} action=${hfTuningAdvice.action} variable=${hfTuningAdvice.variable ?? "none"} current=${hfTuningAdvice.currentValue != null ? hfTuningAdvice.currentValue.toFixed(4) : "n/a"} suggested=${hfTuningAdvice.suggestedValue != null ? hfTuningAdvice.suggestedValue.toFixed(4) : "n/a"} reason=${hfTuningAdvice.reason} confidence=${hfTuningAdvice.confidence}`
+    );
+  }
+  if (hfFreeze) {
+    console.log(
+      `[HF_FREEZE] enabled=${hfFreeze.enabled} status=${hfFreeze.status} reason=${hfFreeze.reason} recommendation=${hfFreeze.recommendation} progress=${hfFreeze.observedTrades}/${hfFreeze.requiredProgress} stable=${hfFreeze.stableRunStreak}/${hfFreeze.stableRunsTarget} alert=${hfFreeze.alertStreak}/${hfFreeze.alertStreakThreshold} shadowRate=${hfFreeze.shadowAlertRate.toFixed(4)} shadowMax=${hfFreeze.maxShadowAlertRate.toFixed(4)} hfAlert=${hfFreeze.hfAlertTriggered} frozenAt=${hfFreeze.frozenAt ?? "n/a"}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -5058,6 +5283,11 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`,
     `HF_DRIFT_ALERT_APPLIED_RATIO_DROP=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`,
     `HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`,
+    `HF_TUNING_FREEZE_ENABLED=${readBoolEnv("HF_TUNING_FREEZE_ENABLED", false)}`,
+    `HF_TUNING_FREEZE_STABLE_RUNS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3)))}`,
+    `HF_TUNING_UNFREEZE_ALERT_STREAK=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`,
+    `HF_TUNING_FREEZE_REQUIRE_PROGRESS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_REQUIRE_PROGRESS", 20)))}`,
+    `HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE=${clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1)}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -5100,7 +5330,8 @@ function printRunSummary(
   hfAlert?: HfAnomalyAlert,
   hfShadowTrend?: HfShadowTrendSummary,
   hfTuningPhase?: HfTuningPhaseSummary,
-  hfTuningAdvice?: HfTuningAdvice
+  hfTuningAdvice?: HfTuningAdvice,
+  hfFreeze?: HfFreezeSummary
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
@@ -5112,6 +5343,7 @@ function printRunSummary(
   const hfTuningPhaseSummary = buildHfTuningPhaseSummaryForRun(hfTuningPhase ?? null);
   const hfTuningAdviceSummary = buildHfTuningAdviceSummaryForRun(hfTuningAdvice ?? null);
   const hfPayloadProbeSummary = buildHfPayloadProbeSummaryForRun(hfPayloadProbe ?? null);
+  const hfFreezeSummary = buildHfFreezeSummaryForRun(hfFreeze ?? null);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -5159,8 +5391,28 @@ function printRunSummary(
   console.log(
     `[HF_PAYLOAD_PROBE] mode=${probeForLog.requestedMode} active=${probeForLog.active} modified=${probeForLog.modified} reason=${probeForLog.reason} symbol=${probeForLog.symbol ?? "none"} basePayloads=${probeForLog.basePayloadCount} baseSkipped=${probeForLog.baseSkippedCount} baseApplied=${probeForLog.baseApplied} baseTighten=${probeForLog.baseTighten} baseRelief=${probeForLog.baseRelief} baseSizeReduced=${probeForLog.baseSizeReduced} baseSizeSaved=${probeForLog.baseSizeReductionNotional.toFixed(2)}`
   );
+  const freezeForLog = hfFreeze ?? {
+    enabled: false,
+    status: "DISABLED" as HfFreezeStatus,
+    reason: "not_available",
+    recommendation: "n/a",
+    observedTrades: 0,
+    requiredProgress: PERFORMANCE_LOOP_REQUIRED_TRADES,
+    stableRunStreak: 0,
+    stableRunsTarget: Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3))),
+    alertStreak: 0,
+    alertStreakThreshold: Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2))),
+    shadowAlertRate: 0,
+    maxShadowAlertRate: clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1),
+    hfAlertTriggered: false,
+    frozenAt: null,
+    updatedAt: new Date().toISOString()
+  };
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[HF_FREEZE] enabled=${freezeForLog.enabled} status=${freezeForLog.status} reason=${freezeForLog.reason} recommendation=${freezeForLog.recommendation} progress=${freezeForLog.observedTrades}/${freezeForLog.requiredProgress} stable=${freezeForLog.stableRunStreak}/${freezeForLog.stableRunsTarget} alert=${freezeForLog.alertStreak}/${freezeForLog.alertStreakThreshold} shadowRate=${freezeForLog.shadowAlertRate.toFixed(4)} shadowMax=${freezeForLog.maxShadowAlertRate.toFixed(4)} hfAlert=${freezeForLog.hfAlertTriggered} frozenAt=${freezeForLog.frozenAt ?? "n/a"}`
+  );
+  console.log(
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -5292,6 +5544,7 @@ async function main() {
       undefined,
       undefined,
       undefined,
+      undefined,
       undefined
     );
     return;
@@ -5321,6 +5574,7 @@ async function main() {
   const hfShadowTrend = await appendHfShadowHistory(hfShadowHistoryRecord);
   const hfTuningPhase = deriveHfTuningPhase(perfLoop, hfAlert, hfShadowTrend);
   const hfTuningAdvice = deriveHfTuningAdvice(hfTuningPhase, postPreflightDryExec);
+  const hfFreeze = await updateHfFreezeSummary(hfTuningPhase, hfShadowTrend, hfAlert);
   await saveDryExecPreview(
     stage6,
     postPreflightDryExec,
@@ -5333,7 +5587,8 @@ async function main() {
     hfAlert,
     hfShadowTrend,
     hfTuningPhase,
-    hfTuningAdvice
+    hfTuningAdvice,
+    hfFreeze
   );
   await sendPerformanceLoopMilestoneAlert(perfLoop);
   await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
@@ -5350,7 +5605,8 @@ async function main() {
     hfAlert,
     hfShadowTrend,
     hfTuningPhase,
-    hfTuningAdvice
+    hfTuningAdvice,
+    hfFreeze
   );
 }
 
