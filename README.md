@@ -258,6 +258,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Live promotion checklist (suggestion-only):
     - `[HF_LIVE_PROMOTION] ...` emits `BLOCK/HOLD/PASS` with checklist pass ratio.
     - Summary marker: `[RUN_SUMMARY] ... hf_live_promotion=...`.
+    - Payload-path verification is sticky per Stage6 hash via `state/hf-live-promotion-state.json`.
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.
@@ -313,11 +314,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_tuning_phase` (`phase/reason/recommendation/gate/progress/trades`)
     - `hf_tuning_advice` (`status/action/variable/current/suggested/reason/confidence`)
     - `hf_freeze` (`enabled/status/reason/recommendation/progress/stable/alert/shadowRate/frozenAt`)
-    - `hf_live_promotion` (`status/reason/recommendation/pass/checks` for live promotion readiness)
+    - `hf_live_promotion` (`status/reason/recommendation/pass/checks` + `payloadPathSource/payloadPathVerifiedAt`)
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-tuning-freeze.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.

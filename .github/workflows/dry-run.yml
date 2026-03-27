@@ -611,7 +611,7 @@ jobs:
             tuningSignals.livePromotionReason = String(hfLivePromotion.reason ?? "N/A");
             tuningSignals.livePromotionRecommendation = String(hfLivePromotion.recommendation ?? "N/A");
             lines.push(
-              `- hf_live_promotion: \`status=${hfLivePromotion.status ?? "N/A"} reason=${hfLivePromotion.reason ?? "N/A"} recommendation=${hfLivePromotion.recommendation ?? "N/A"} pass=${hfLivePromotion.checklistPass ?? "N/A"}/${hfLivePromotion.checklistTotal ?? "N/A"} perfGateGo=${hfLivePromotion.checks?.perfGateGo ?? "N/A"} freezeFrozen=${hfLivePromotion.checks?.freezeFrozen ?? "N/A"} alertClear=${hfLivePromotion.checks?.alertClear ?? "N/A"} shadowStable=${hfLivePromotion.checks?.shadowStable ?? "N/A"} payloadPathVerified=${hfLivePromotion.checks?.payloadPathVerified ?? "N/A"} probeActive=${hfLivePromotion.checks?.probeActive ?? "N/A"} probeMode=${hfLivePromotion.checks?.probeMode ?? "N/A"}\``
+              `- hf_live_promotion: \`status=${hfLivePromotion.status ?? "N/A"} reason=${hfLivePromotion.reason ?? "N/A"} recommendation=${hfLivePromotion.recommendation ?? "N/A"} pass=${hfLivePromotion.checklistPass ?? "N/A"}/${hfLivePromotion.checklistTotal ?? "N/A"} perfGateGo=${hfLivePromotion.checks?.perfGateGo ?? "N/A"} freezeFrozen=${hfLivePromotion.checks?.freezeFrozen ?? "N/A"} alertClear=${hfLivePromotion.checks?.alertClear ?? "N/A"} shadowStable=${hfLivePromotion.checks?.shadowStable ?? "N/A"} payloadPathVerified=${hfLivePromotion.checks?.payloadPathVerified ?? "N/A"} payloadPathSource=${hfLivePromotion.payloadPathSource ?? "N/A"} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "N/A"} probeActive=${hfLivePromotion.checks?.probeActive ?? "N/A"} probeMode=${hfLivePromotion.checks?.probeMode ?? "N/A"}\``
             );
             const hfAlert = preview?.hfAlert || {};
             lines.push(
@@ -673,7 +673,7 @@ jobs:
             lines.push("- hf_tuning_phase: `phase=N/A reason=N/A recommendation=N/A gate=N/A progress=N/A trades=N/A/N/A alertTriggered=N/A shadowAlertRate=N/A`");
             lines.push("- hf_tuning_advice: `status=N/A action=N/A variable=N/A current=N/A suggested=N/A reason=N/A confidence=N/A`");
             lines.push("- hf_freeze: `enabled=N/A status=N/A reason=N/A recommendation=N/A progress=N/A/N/A stable=N/A/N/A alert=N/A/N/A shadowRate=N/A shadowMax=N/A hfAlert=N/A frozenAt=N/A`");
-            lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A pass=N/A/N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A probeActive=N/A probeMode=N/A`");
+            lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A pass=N/A/N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A payloadPathSource=N/A payloadPathVerifiedAt=N/A probeActive=N/A probeMode=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
           }
 
@@ -945,6 +945,7 @@ jobs:
             state/hf-shadow-last.json
             state/hf-shadow-history.jsonl
             state/hf-tuning-freeze.json
+            state/hf-live-promotion-state.json
             state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json

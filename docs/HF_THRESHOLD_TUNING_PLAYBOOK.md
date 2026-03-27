@@ -163,6 +163,10 @@ Minimum lines to capture:
 - Check fields to watch:
   - `pass=x/y`
   - `perfGateGo`, `freezeFrozen`, `alertClear`, `shadowStable`, `payloadPathVerified`
+  - `payloadPathSource`, `payloadPathVerifiedAt` (sticky verification trace)
+- Note:
+  - `payloadPathVerified` can stay true via sticky state for the same Stage6 hash
+    after a successful probe/payload-path verification.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
