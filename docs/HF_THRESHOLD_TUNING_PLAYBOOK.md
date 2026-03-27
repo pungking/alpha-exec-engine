@@ -298,3 +298,72 @@ A tuning cycle is complete when:
 - At least one payload-producing run validates:
   - `sizeReduced` and `sizeSavedNotional` behavior (when negative tighten occurs)
   - shadow deltas are explainable
+
+---
+
+## 8) Daily review protocol (recommended)
+
+Use this when checking sidecar results every day.
+
+### A. Minimum lines to send for daily review
+
+```text
+hf_live_promotion:
+hf_freeze:
+hf_tuning_comment:
+hf_payload_probe:
+hf_payload_probe_forced:
+hf_alert:
+hf_marker_audit:
+perf_loop_gate_status:
+perf_loop_gate_progress:
+skip_reasons:
+```
+
+### B. Daily pass/fail quick gate
+
+- **Pass (daily health good)** when all are true:
+  - `hf_marker_audit`: all `ok`
+  - `hf_alert.triggered=false`
+  - `hf_tuning_comment` not `BLOCKED_OBSERVABILITY`
+  - `hf_shadow_trend.alertRate` stable (no sudden spike)
+- **Needs action** if any are true:
+  - marker has `missing`
+  - repeated `hf_alert.triggered=true`
+  - `hf_tuning_comment=REVIEW_TUNE` for multiple consecutive runs
+
+### C. Interpretation while `progress < 20/20`
+
+- `hf_live_promotion=HOLD` is expected.
+- Prioritize:
+  - observability consistency (`hf_marker_audit`)
+  - payload-path evidence (`hf_payload_probe_forced`)
+  - no false drift/alert noise
+- Avoid aggressive threshold tuning.
+
+### D. Interpretation at `progress >= 20/20`
+
+- Check `perf_loop_gate_status` first:
+  - `GO`: review freeze/promotion checklist.
+  - `NO_GO`: tune one variable only, re-check 2~3 runs.
+- Target state for promotion review:
+  - `hf_live_promotion=PASS`
+  - `hf_freeze=FROZEN`
+  - `hf_alert.triggered=false`
+
+---
+
+## 9) Synergy operating principle (HF + existing gates)
+
+To maximize combined system quality:
+
+- Keep HF as **soft intelligence layer** (conviction/size/explainability).
+- Keep market/guard/preflight as **hard safety layer**.
+- Tune in this order:
+  1. marker/summary integrity
+  2. HF coverage quality (article/recency/score)
+  3. HF impact strength (relief/tighten, size reduce)
+  4. drift/shadow alert sensitivity
+  5. freeze/promotion decision timing
+
+This layering preserves safety while improving recommendation quality and operational confidence.
