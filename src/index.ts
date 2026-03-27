@@ -537,6 +537,40 @@ type HfShadowTrendSummary = {
   latestAt: string | null;
 };
 
+type HfEvidenceHistoryRecord = {
+  at: string;
+  stage6Hash: string;
+  stage6File: string;
+  profile: RegimeProfile;
+  payloadCount: number;
+  skippedCount: number;
+  hfLivePromotionStatus: HfLivePromotionStatus;
+  hfLivePromotionReason: string;
+  hfLivePromotionRequiredMissing: string[];
+  hfPayloadProbeStatus: HfPayloadProbeStatus;
+  hfPayloadProbeReason: string;
+  hfAlertTriggered: boolean;
+  hfAlertReason: string;
+  perfGateStatus: PerformanceLoopGateStatus;
+  perfGateProgress: string;
+  perfGateRemainingTrades: number;
+};
+
+type HfEvidenceHistorySummary = {
+  historySize: number;
+  latestAt: string | null;
+  latestStage6Hash: string | null;
+  latestLivePromotionStatus: HfLivePromotionStatus | "N/A";
+  latestPayloadProbeStatus: HfPayloadProbeStatus | "N/A";
+  latestAlertTriggered: boolean;
+  latestGateProgress: string;
+  recentWindowSize: number;
+  recentPassCount: number;
+  recentHoldCount: number;
+  recentBlockCount: number;
+  recentAlertCount: number;
+};
+
 type HfTuningPhase = "OBSERVE_ONLY" | "REVIEW_ONLY" | "FREEZE_READY";
 
 type HfTuningPhaseSummary = {
@@ -762,10 +796,13 @@ const PERFORMANCE_LOOP_CSV_PATH = "state/stage6-20trade-loop.csv";
 const HF_DRIFT_STATE_PATH = "state/hf-drift-state.json";
 const HF_SHADOW_STATE_PATH = "state/hf-shadow-last.json";
 const HF_SHADOW_HISTORY_PATH = "state/hf-shadow-history.jsonl";
+const HF_EVIDENCE_HISTORY_PATH = "state/hf-evidence-history.jsonl";
 const HF_TUNING_FREEZE_STATE_PATH = "state/hf-tuning-freeze.json";
 const HF_LIVE_PROMOTION_STATE_PATH = "state/hf-live-promotion-state.json";
 const HF_SHADOW_HISTORY_WINDOW = 20;
 const HF_SHADOW_HISTORY_MAX_ROWS = 200;
+const HF_EVIDENCE_HISTORY_WINDOW = 20;
+const HF_EVIDENCE_HISTORY_MAX_ROWS = 300;
 const PERFORMANCE_LOOP_REQUIRED_TRADES = 20;
 const BASE_ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 const NON_EXECUTABLE_DECISIONS = new Set(["WAIT_PRICE", "BLOCKED_RISK", "BLOCKED_EVENT"]);
@@ -4324,6 +4361,24 @@ function buildHfPayloadPathStickySummaryForRun(audit: HfPayloadPathStickyAudit |
   ].join("|");
 }
 
+function buildHfEvidenceSummaryForRun(summary: HfEvidenceHistorySummary | null): string {
+  if (!summary) return "n/a";
+  return [
+    `history:${summary.historySize}`,
+    `latestAt:${summary.latestAt ?? "n/a"}`,
+    `latestStage6Hash:${summary.latestStage6Hash ? summary.latestStage6Hash.slice(0, 12) : "none"}`,
+    `latestLive:${summary.latestLivePromotionStatus}`,
+    `latestProbe:${summary.latestPayloadProbeStatus}`,
+    `latestAlert:${summary.latestAlertTriggered}`,
+    `latestGate:${summary.latestGateProgress}`,
+    `window:${summary.recentWindowSize}`,
+    `pass:${summary.recentPassCount}`,
+    `hold:${summary.recentHoldCount}`,
+    `block:${summary.recentBlockCount}`,
+    `alerts:${summary.recentAlertCount}`
+  ].join("|");
+}
+
 function buildHfAlertSummaryForRun(alert: HfAnomalyAlert | null): string {
   if (!alert) return "n/a";
   return [
@@ -4809,6 +4864,78 @@ function parseHfShadowHistoryLine(line: string): HfShadowHistoryRecord | null {
   }
 }
 
+function parseHfEvidenceHistoryLine(line: string): HfEvidenceHistoryRecord | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<HfEvidenceHistoryRecord>;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.at !== "string" || typeof parsed.stage6Hash !== "string") return null;
+    if (typeof parsed.stage6File !== "string" || typeof parsed.profile !== "string") return null;
+    if (typeof parsed.hfLivePromotionStatus !== "string") return null;
+    if (typeof parsed.hfPayloadProbeStatus !== "string") return null;
+    return parsed as HfEvidenceHistoryRecord;
+  } catch {
+    return null;
+  }
+}
+
+async function loadHfEvidenceHistory(): Promise<HfEvidenceHistoryRecord[]> {
+  try {
+    const raw = await readFile(HF_EVIDENCE_HISTORY_PATH, "utf8");
+    return raw
+      .split("\n")
+      .map((line) => parseHfEvidenceHistoryLine(line))
+      .filter((row): row is HfEvidenceHistoryRecord => row != null);
+  } catch {
+    return [];
+  }
+}
+
+function computeHfEvidenceHistorySummary(
+  records: HfEvidenceHistoryRecord[],
+  windowSize = HF_EVIDENCE_HISTORY_WINDOW
+): HfEvidenceHistorySummary {
+  const latest = records.length > 0 ? records[records.length - 1] : null;
+  const window = records.slice(-Math.max(1, windowSize));
+  const recentPassCount = window.filter((row) => row.hfLivePromotionStatus === "PASS").length;
+  const recentHoldCount = window.filter((row) => row.hfLivePromotionStatus === "HOLD").length;
+  const recentBlockCount = window.filter((row) => row.hfLivePromotionStatus === "BLOCK").length;
+  const recentAlertCount = window.filter((row) => row.hfAlertTriggered).length;
+
+  return {
+    historySize: records.length,
+    latestAt: latest?.at ?? null,
+    latestStage6Hash: latest?.stage6Hash ?? null,
+    latestLivePromotionStatus: latest?.hfLivePromotionStatus ?? "N/A",
+    latestPayloadProbeStatus: latest?.hfPayloadProbeStatus ?? "N/A",
+    latestAlertTriggered: latest?.hfAlertTriggered ?? false,
+    latestGateProgress: latest?.perfGateProgress ?? "N/A",
+    recentWindowSize: window.length,
+    recentPassCount,
+    recentHoldCount,
+    recentBlockCount,
+    recentAlertCount
+  };
+}
+
+async function appendHfEvidenceHistory(
+  record: HfEvidenceHistoryRecord
+): Promise<HfEvidenceHistorySummary> {
+  await mkdir("state", { recursive: true });
+  const history = await loadHfEvidenceHistory();
+  history.push(record);
+  const trimmed = history.slice(-HF_EVIDENCE_HISTORY_MAX_ROWS);
+  const jsonl = trimmed.map((row) => JSON.stringify(row)).join("\n");
+  await writeFile(HF_EVIDENCE_HISTORY_PATH, `${jsonl}\n`, "utf8");
+  console.log(`[STATE] saved ${HF_EVIDENCE_HISTORY_PATH} rows=${trimmed.length}`);
+  const summary = computeHfEvidenceHistorySummary(trimmed, HF_EVIDENCE_HISTORY_WINDOW);
+  console.log(
+    `[HF_EVIDENCE] history=${summary.historySize} latestAt=${summary.latestAt ?? "N/A"} latestStage6Hash=${summary.latestStage6Hash ? summary.latestStage6Hash.slice(0, 12) : "none"} latestLive=${summary.latestLivePromotionStatus} latestProbe=${summary.latestPayloadProbeStatus} latestAlert=${summary.latestAlertTriggered} latestGate=${summary.latestGateProgress} window=${summary.recentWindowSize} pass=${summary.recentPassCount} hold=${summary.recentHoldCount} block=${summary.recentBlockCount} alerts=${summary.recentAlertCount}`
+  );
+  return summary;
+}
+
 async function loadHfShadowHistory(): Promise<HfShadowHistoryRecord[]> {
   try {
     const raw = await readFile(HF_SHADOW_HISTORY_PATH, "utf8");
@@ -4999,6 +5126,34 @@ function buildHfShadowHistoryRecord(
   };
 }
 
+function buildHfEvidenceHistoryRecord(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  hfLivePromotion: HfLivePromotionSummary,
+  hfPayloadProbeStatus: HfPayloadProbeGateSummary,
+  hfAlert: HfAnomalyAlert,
+  perfLoop: PerformanceLoopUpdateResult
+): HfEvidenceHistoryRecord {
+  return {
+    at: new Date().toISOString(),
+    stage6Hash: stage6.sha256,
+    stage6File: stage6.fileName,
+    profile: dryExec.regime.profile,
+    payloadCount: dryExec.payloads.length,
+    skippedCount: dryExec.skipped.length,
+    hfLivePromotionStatus: hfLivePromotion.status,
+    hfLivePromotionReason: hfLivePromotion.reason,
+    hfLivePromotionRequiredMissing: hfLivePromotion.requiredMissing,
+    hfPayloadProbeStatus: hfPayloadProbeStatus.status,
+    hfPayloadProbeReason: hfPayloadProbeStatus.reason,
+    hfAlertTriggered: hfAlert.triggered,
+    hfAlertReason: hfAlert.reason,
+    perfGateStatus: perfLoop.gate.status,
+    perfGateProgress: perfLoop.gate.progress,
+    perfGateRemainingTrades: perfLoop.gate.remainingTrades
+  };
+}
+
 async function loadRunState(): Promise<SidecarRunState | null> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
@@ -5045,7 +5200,8 @@ async function saveDryExecPreview(
   hfFreeze?: HfFreezeSummary,
   hfLivePromotion?: HfLivePromotionSummary,
   hfNextAction?: HfNextActionSummary,
-  hfPayloadPathSticky?: HfPayloadPathStickyAudit
+  hfPayloadPathSticky?: HfPayloadPathStickyAudit,
+  hfEvidenceSummary?: HfEvidenceHistorySummary
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
@@ -5074,6 +5230,7 @@ async function saveDryExecPreview(
     hfLivePromotion: hfLivePromotion ?? null,
     hfNextAction: hfNextAction ?? null,
     hfPayloadPathSticky: hfPayloadPathSticky ?? null,
+    hfEvidenceSummary: hfEvidenceSummary ?? null,
     minStopDistancePct: dryExec.minStopDistancePct,
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
@@ -5146,6 +5303,11 @@ async function saveDryExecPreview(
   if (hfPayloadPathSticky) {
     console.log(
       `[HF_PAYLOAD_PATH_STICKY] priorStage6Hash=${hfPayloadPathSticky.priorStage6Hash ? hfPayloadPathSticky.priorStage6Hash.slice(0, 12) : "none"} stage6HashChanged=${hfPayloadPathSticky.stage6HashChanged} stickyEligible=${hfPayloadPathSticky.stickyEligible} stickyCarried=${hfPayloadPathSticky.stickyCarried} stickyReset=${hfPayloadPathSticky.stickyReset} reason=${hfPayloadPathSticky.stickyResetReason} currentVerified=${hfPayloadPathSticky.currentVerified} currentSource=${hfPayloadPathSticky.currentSource} resolvedVerified=${hfPayloadPathSticky.resolvedVerified} resolvedSource=${hfPayloadPathSticky.resolvedSource}`
+    );
+  }
+  if (hfEvidenceSummary) {
+    console.log(
+      `[HF_EVIDENCE] history=${hfEvidenceSummary.historySize} latestAt=${hfEvidenceSummary.latestAt ?? "N/A"} latestStage6Hash=${hfEvidenceSummary.latestStage6Hash ? hfEvidenceSummary.latestStage6Hash.slice(0, 12) : "none"} latestLive=${hfEvidenceSummary.latestLivePromotionStatus} latestProbe=${hfEvidenceSummary.latestPayloadProbeStatus} latestAlert=${hfEvidenceSummary.latestAlertTriggered} latestGate=${hfEvidenceSummary.latestGateProgress} window=${hfEvidenceSummary.recentWindowSize} pass=${hfEvidenceSummary.recentPassCount} hold=${hfEvidenceSummary.recentHoldCount} block=${hfEvidenceSummary.recentBlockCount} alerts=${hfEvidenceSummary.recentAlertCount}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -6106,7 +6268,8 @@ function printRunSummary(
   hfFreeze?: HfFreezeSummary,
   hfLivePromotion?: HfLivePromotionSummary,
   hfNextAction?: HfNextActionSummary,
-  hfPayloadPathSticky?: HfPayloadPathStickyAudit
+  hfPayloadPathSticky?: HfPayloadPathStickyAudit,
+  hfEvidenceSummary?: HfEvidenceHistorySummary
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
@@ -6125,6 +6288,7 @@ function printRunSummary(
   const hfLivePromotionSummary = buildHfLivePromotionSummaryForRun(hfLivePromotion ?? null);
   const hfNextActionSummary = buildHfNextActionSummaryForRun(hfNextAction ?? null);
   const hfPayloadPathStickySummary = buildHfPayloadPathStickySummaryForRun(hfPayloadPathSticky ?? null);
+  const hfEvidenceSummaryForRun = buildHfEvidenceSummaryForRun(hfEvidenceSummary ?? null);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -6249,8 +6413,13 @@ function printRunSummary(
       `[HF_PAYLOAD_PATH_STICKY] priorStage6Hash=${hfPayloadPathSticky.priorStage6Hash ? hfPayloadPathSticky.priorStage6Hash.slice(0, 12) : "none"} stage6HashChanged=${hfPayloadPathSticky.stage6HashChanged} stickyEligible=${hfPayloadPathSticky.stickyEligible} stickyCarried=${hfPayloadPathSticky.stickyCarried} stickyReset=${hfPayloadPathSticky.stickyReset} reason=${hfPayloadPathSticky.stickyResetReason} currentVerified=${hfPayloadPathSticky.currentVerified} currentSource=${hfPayloadPathSticky.currentSource} resolvedVerified=${hfPayloadPathSticky.resolvedVerified} resolvedSource=${hfPayloadPathSticky.resolvedSource}`
     );
   }
+  if (hfEvidenceSummary) {
+    console.log(
+      `[HF_EVIDENCE] history=${hfEvidenceSummary.historySize} latestAt=${hfEvidenceSummary.latestAt ?? "N/A"} latestStage6Hash=${hfEvidenceSummary.latestStage6Hash ? hfEvidenceSummary.latestStage6Hash.slice(0, 12) : "none"} latestLive=${hfEvidenceSummary.latestLivePromotionStatus} latestProbe=${hfEvidenceSummary.latestPayloadProbeStatus} latestAlert=${hfEvidenceSummary.latestAlertTriggered} latestGate=${hfEvidenceSummary.latestGateProgress} window=${hfEvidenceSummary.recentWindowSize} pass=${hfEvidenceSummary.recentPassCount} hold=${hfEvidenceSummary.recentHoldCount} block=${hfEvidenceSummary.recentBlockCount} alerts=${hfEvidenceSummary.recentAlertCount}`
+    );
+  }
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -6436,6 +6605,16 @@ async function main() {
     hfFreeze,
     hfAlert
   );
+  const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(postPreflightDryExec, hfPayloadProbe);
+  const hfEvidenceRecord = buildHfEvidenceHistoryRecord(
+    stage6,
+    postPreflightDryExec,
+    hfLivePromotion,
+    hfPayloadProbeStatus,
+    hfAlert,
+    perfLoop
+  );
+  const hfEvidenceSummary = await appendHfEvidenceHistory(hfEvidenceRecord);
   await saveDryExecPreview(
     stage6,
     postPreflightDryExec,
@@ -6452,7 +6631,8 @@ async function main() {
     hfFreeze,
     hfLivePromotion,
     hfNextAction,
-    payloadPathVerification.stickyAudit
+    payloadPathVerification.stickyAudit,
+    hfEvidenceSummary
   );
   await sendSimulationTelegram(
     stage6,
@@ -6485,7 +6665,8 @@ async function main() {
     hfFreeze,
     hfLivePromotion,
     hfNextAction,
-    payloadPathVerification.stickyAudit
+    payloadPathVerification.stickyAudit,
+    hfEvidenceSummary
   );
 }
 

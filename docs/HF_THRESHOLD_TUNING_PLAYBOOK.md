@@ -67,6 +67,8 @@ Minimum lines to capture:
 - `hf_soft_gate`
 - `hf_payload_probe`
 - `hf_payload_probe_forced`
+- `hf_payload_path_sticky`
+- `hf_evidence`
 - `hf_shadow`
 - `hf_shadow_trend`
 - `hf_tuning_phase`
@@ -200,6 +202,14 @@ Minimum lines to capture:
     - same hash, sticky proof reused as designed.
   - `resolvedSource=current_probe|current_live`
     - current run re-validated payload path directly.
+
+### hf_evidence
+- Rolling evidence ledger snapshot (`state/hf-evidence-history.jsonl`).
+- Quick operator meaning:
+  - `history`: total evidence rows accumulated
+  - `latest*`: most recent run snapshot
+  - `window/pass/hold/block/alerts`: short-term distribution for promotion/tuning review
+- Use it to avoid one-run bias when deciding threshold changes.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
