@@ -206,6 +206,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 
 ### HF Sentiment Soft Gate (default OFF)
 - Purpose: reflect Stage6 HF advisory signal in sidecar conviction floor without touching hard risk gates.
+- Tuning guide: `docs/HF_THRESHOLD_TUNING_PLAYBOOK.md` (per-run checklist + threshold adjustment rules)
 - Env:
   - `HF_SENTIMENT_SOFT_GATE_ENABLED=false` -> no sentiment adjustment.
   - `HF_SENTIMENT_SOFT_GATE_ENABLED=true` -> per-symbol conviction floor is softly adjusted:
