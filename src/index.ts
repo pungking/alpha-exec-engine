@@ -609,12 +609,20 @@ type HfFreezeState = {
 
 type HfLivePromotionStatus = "BLOCK" | "HOLD" | "PASS";
 
+type HfLivePromotionPolicy = {
+  requirePerfGateGo: boolean;
+  requireFreezeFrozen: boolean;
+  requireShadowStable: boolean;
+  requirePayloadPathVerified: boolean;
+};
+
 type HfLivePromotionSummary = {
   status: HfLivePromotionStatus;
   reason: string;
   recommendation: string;
   payloadPathSource: "none" | "current_live" | "current_probe" | "sticky";
   payloadPathVerifiedAt: string | null;
+  policy: HfLivePromotionPolicy;
   checks: {
     perfGateGo: boolean;
     freezeFrozen: boolean;
@@ -624,6 +632,9 @@ type HfLivePromotionSummary = {
     probeActive: boolean;
     probeMode: HfPayloadProbeMode;
   };
+  requiredPass: number;
+  requiredTotal: number;
+  requiredMissing: string[];
   checklistPass: number;
   checklistTotal: number;
   generatedAt: string;
@@ -823,6 +834,10 @@ function printStartupSummary() {
   console.log(`HF_FREEZE_UNFRZ : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`);
   console.log(`HF_FREEZE_REQP  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_REQUIRE_PROGRESS", 20)))}`);
   console.log(`HF_FREEZE_SHDW  : ${clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1)}`);
+  console.log(`HF_PROMO_REQ_G  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO", true)}`);
+  console.log(`HF_PROMO_REQ_F  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`);
+  console.log(`HF_PROMO_REQ_S  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`);
+  console.log(`HF_PROMO_REQ_P  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -3975,7 +3990,13 @@ function buildHfLivePromotionSummaryForRun(promotion: HfLivePromotionSummary | n
     `rec:${promotion.recommendation}`,
     `payloadPathSource:${promotion.payloadPathSource}`,
     `payloadPathVerifiedAt:${promotion.payloadPathVerifiedAt ?? "n/a"}`,
+    `required:${promotion.requiredPass}/${promotion.requiredTotal}`,
+    `requiredMissing:${promotion.requiredMissing.length ? promotion.requiredMissing.join(",") : "none"}`,
     `pass:${promotion.checklistPass}/${promotion.checklistTotal}`,
+    `reqPerfGateGo:${promotion.policy.requirePerfGateGo}`,
+    `reqFreezeFrozen:${promotion.policy.requireFreezeFrozen}`,
+    `reqShadowStable:${promotion.policy.requireShadowStable}`,
+    `reqPayloadPathVerified:${promotion.policy.requirePayloadPathVerified}`,
     `perfGateGo:${promotion.checks.perfGateGo}`,
     `freezeFrozen:${promotion.checks.freezeFrozen}`,
     `alertClear:${promotion.checks.alertClear}`,
@@ -4000,6 +4021,15 @@ function buildHfAlertSummaryForRun(alert: HfAnomalyAlert | null): string {
   ].join("|");
 }
 
+function loadHfLivePromotionPolicy(): HfLivePromotionPolicy {
+  return {
+    requirePerfGateGo: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO", true),
+    requireFreezeFrozen: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true),
+    requireShadowStable: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true),
+    requirePayloadPathVerified: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)
+  };
+}
+
 function deriveHfLivePromotionSummary(
   perfLoop: PerformanceLoopUpdateResult,
   hfFreeze: HfFreezeSummary,
@@ -4019,6 +4049,7 @@ function deriveHfLivePromotionSummary(
   const shadowAlertRate = Number(hfShadowTrend?.alertTriggeredRate ?? 1);
   const shadowStable = shadowComparedRuns >= 3 && shadowAlertRate <= hfFreeze.maxShadowAlertRate;
   const payloadPathVerified = payloadPath.payloadPathVerified;
+  const policy = loadHfLivePromotionPolicy();
 
   const checks = {
     perfGateGo,
@@ -4029,6 +4060,18 @@ function deriveHfLivePromotionSummary(
     probeActive: hfPayloadProbe.active,
     probeMode: hfPayloadProbe.requestedMode
   };
+  const requiredChecks: Array<{ key: string; enabled: boolean; pass: boolean }> = [
+    { key: "alertClear", enabled: true, pass: checks.alertClear },
+    { key: "perfGateGo", enabled: policy.requirePerfGateGo, pass: checks.perfGateGo },
+    { key: "freezeFrozen", enabled: policy.requireFreezeFrozen, pass: checks.freezeFrozen },
+    { key: "shadowStable", enabled: policy.requireShadowStable, pass: checks.shadowStable },
+    { key: "payloadPathVerified", enabled: policy.requirePayloadPathVerified, pass: checks.payloadPathVerified }
+  ];
+  const requiredTotal = requiredChecks.filter((row) => row.enabled).length;
+  const requiredPass = requiredChecks.filter((row) => row.enabled && row.pass).length;
+  const requiredMissing = requiredChecks
+    .filter((row) => row.enabled && !row.pass)
+    .map((row) => row.key);
   const checklistItems = [
     checks.perfGateGo,
     checks.freezeFrozen,
@@ -4047,7 +4090,7 @@ function deriveHfLivePromotionSummary(
     status = "BLOCK";
     reason = `hf_alert_triggered(${hfAlert?.reason ?? "unknown"})`;
     recommendation = "resolve_hf_alert_before_live";
-  } else if (perfLoop.gate.status === "NO_GO") {
+  } else if (policy.requirePerfGateGo && perfLoop.gate.status === "NO_GO") {
     status = "BLOCK";
     reason = `perf_gate_no_go(${perfLoop.gate.reason})`;
     recommendation = "improve_perf_loop_metrics";
@@ -4055,23 +4098,23 @@ function deriveHfLivePromotionSummary(
     status = "BLOCK";
     reason = `freeze_unstable(${hfFreeze.reason})`;
     recommendation = "review_unfreeze_thresholds";
-  } else if (checklistPass === checklistTotal) {
+  } else if (requiredPass === requiredTotal) {
     status = "PASS";
-    reason = "all_live_promotion_checks_passed";
+    reason = "all_required_live_promotion_checks_passed";
     recommendation = "ready_for_live_promotion_review";
-  } else if (!checks.perfGateGo) {
+  } else if (policy.requirePerfGateGo && !checks.perfGateGo) {
     reason = `perf_gate_${String(perfLoop.gate.status || "unknown").toLowerCase()}`;
     recommendation = "wait_for_perf_gate_go";
-  } else if (!checks.freezeFrozen) {
+  } else if (policy.requireFreezeFrozen && !checks.freezeFrozen) {
     reason = `freeze_status_${String(hfFreeze.status || "unknown").toLowerCase()}`;
     recommendation = "wait_for_frozen_baseline";
-  } else if (!checks.shadowStable) {
+  } else if (policy.requireShadowStable && !checks.shadowStable) {
     reason =
       shadowComparedRuns < 3
         ? `shadow_history_insufficient(compared=${shadowComparedRuns})`
         : `shadow_alert_rate_high(${shadowAlertRate.toFixed(4)}>${hfFreeze.maxShadowAlertRate.toFixed(4)})`;
     recommendation = "stabilize_shadow_trend";
-  } else if (!checks.payloadPathVerified) {
+  } else if (policy.requirePayloadPathVerified && !checks.payloadPathVerified) {
     reason = "payload_path_unverified";
     recommendation = "run_payload_probe_or_wait_payload";
   }
@@ -4082,7 +4125,11 @@ function deriveHfLivePromotionSummary(
     recommendation,
     payloadPathSource: payloadPath.payloadPathSource,
     payloadPathVerifiedAt: payloadPath.payloadPathVerifiedAt,
+    policy,
     checks,
+    requiredPass,
+    requiredTotal,
+    requiredMissing,
     checklistPass,
     checklistTotal,
     generatedAt: new Date().toISOString()
@@ -4657,7 +4704,7 @@ async function saveDryExecPreview(
   }
   if (hfLivePromotion) {
     console.log(
-      `[HF_LIVE_PROMOTION] status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} recommendation=${hfLivePromotion.recommendation} pass=${hfLivePromotion.checklistPass}/${hfLivePromotion.checklistTotal} perfGateGo=${hfLivePromotion.checks.perfGateGo} freezeFrozen=${hfLivePromotion.checks.freezeFrozen} alertClear=${hfLivePromotion.checks.alertClear} shadowStable=${hfLivePromotion.checks.shadowStable} payloadPathVerified=${hfLivePromotion.checks.payloadPathVerified} payloadPathSource=${hfLivePromotion.payloadPathSource} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"} probeActive=${hfLivePromotion.checks.probeActive} probeMode=${hfLivePromotion.checks.probeMode}`
+      `[HF_LIVE_PROMOTION] status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} recommendation=${hfLivePromotion.recommendation} required=${hfLivePromotion.requiredPass}/${hfLivePromotion.requiredTotal} requiredMissing=${hfLivePromotion.requiredMissing.length ? hfLivePromotion.requiredMissing.join(",") : "none"} pass=${hfLivePromotion.checklistPass}/${hfLivePromotion.checklistTotal} reqPerfGateGo=${hfLivePromotion.policy.requirePerfGateGo} reqFreezeFrozen=${hfLivePromotion.policy.requireFreezeFrozen} reqShadowStable=${hfLivePromotion.policy.requireShadowStable} reqPayloadPathVerified=${hfLivePromotion.policy.requirePayloadPathVerified} perfGateGo=${hfLivePromotion.checks.perfGateGo} freezeFrozen=${hfLivePromotion.checks.freezeFrozen} alertClear=${hfLivePromotion.checks.alertClear} shadowStable=${hfLivePromotion.checks.shadowStable} payloadPathVerified=${hfLivePromotion.checks.payloadPathVerified} payloadPathSource=${hfLivePromotion.payloadPathSource} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"} probeActive=${hfLivePromotion.checks.probeActive} probeMode=${hfLivePromotion.checks.probeMode}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -5555,6 +5602,10 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_TUNING_UNFREEZE_ALERT_STREAK=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`,
     `HF_TUNING_FREEZE_REQUIRE_PROGRESS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_REQUIRE_PROGRESS", 20)))}`,
     `HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE=${clamp(readNonNegativeNumberEnv("HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE", 0.1), 0, 1)}`,
+    `HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO", true)}`,
+    `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`,
+    `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`,
+    `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -5686,6 +5737,12 @@ function printRunSummary(
     recommendation: "collect_more_evidence",
     payloadPathSource: "none" as const,
     payloadPathVerifiedAt: null,
+    policy: {
+      requirePerfGateGo: true,
+      requireFreezeFrozen: true,
+      requireShadowStable: true,
+      requirePayloadPathVerified: true
+    },
     checks: {
       perfGateGo: false,
       freezeFrozen: false,
@@ -5695,12 +5752,14 @@ function printRunSummary(
       probeActive: false,
       probeMode: "off" as HfPayloadProbeMode
     },
+    requiredPass: 1,
+    requiredTotal: 5,
     checklistPass: 0,
     checklistTotal: 5,
     generatedAt: new Date().toISOString()
   };
   console.log(
-    `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} payloadPathSource=${livePromotionForLog.payloadPathSource} payloadPathVerifiedAt=${livePromotionForLog.payloadPathVerifiedAt ?? "n/a"} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
+    `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} required=${livePromotionForLog.requiredPass}/${livePromotionForLog.requiredTotal} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} reqPerfGateGo=${livePromotionForLog.policy.requirePerfGateGo} reqFreezeFrozen=${livePromotionForLog.policy.requireFreezeFrozen} reqShadowStable=${livePromotionForLog.policy.requireShadowStable} reqPayloadPathVerified=${livePromotionForLog.policy.requirePayloadPathVerified} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} payloadPathSource=${livePromotionForLog.payloadPathSource} payloadPathVerifiedAt=${livePromotionForLog.payloadPathVerifiedAt ?? "n/a"} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
   );
   console.log(
     `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`

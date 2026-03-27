@@ -259,6 +259,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `[HF_LIVE_PROMOTION] ...` emits `BLOCK/HOLD/PASS` with checklist pass ratio.
     - Summary marker: `[RUN_SUMMARY] ... hf_live_promotion=...`.
     - Payload-path verification is sticky per Stage6 hash via `state/hf-live-promotion-state.json`.
+    - Policy env (all default `true`):
+      - `HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO`
+      - `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN`
+      - `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE`
+      - `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED`
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.
@@ -314,7 +319,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_tuning_phase` (`phase/reason/recommendation/gate/progress/trades`)
     - `hf_tuning_advice` (`status/action/variable/current/suggested/reason/confidence`)
     - `hf_freeze` (`enabled/status/reason/recommendation/progress/stable/alert/shadowRate/frozenAt`)
-    - `hf_live_promotion` (`status/reason/recommendation/pass/checks` + `payloadPathSource/payloadPathVerifiedAt`)
+    - `hf_live_promotion` (`status/reason/recommendation/required/requiredMissing/pass/checks` + `payloadPathSource/payloadPathVerifiedAt`)
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion` as `ok|missing`)

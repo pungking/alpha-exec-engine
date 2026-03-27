@@ -161,7 +161,10 @@ Minimum lines to capture:
   - `HOLD`: not blocked, but evidence/checklist incomplete.
   - `BLOCK`: explicit blocker active (alert/no-go/unfreeze review).
 - Check fields to watch:
+  - `required=x/y`
+  - `requiredMissing=...` (which required checks are currently failing)
   - `pass=x/y`
+  - `reqPerfGateGo`, `reqFreezeFrozen`, `reqShadowStable`, `reqPayloadPathVerified`
   - `perfGateGo`, `freezeFrozen`, `alertClear`, `shadowStable`, `payloadPathVerified`
   - `payloadPathSource`, `payloadPathVerifiedAt` (sticky verification trace)
 - Note:
@@ -232,6 +235,14 @@ Lower only after enough sample history.
 - `HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE` (default `0.10`)
 
 Use these only after observability is stable.
+
+## F. Live promotion policy
+- `HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO` (default `true`)
+- `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN` (default `true`)
+- `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE` (default `true`)
+- `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED` (default `true`)
+
+Recommended: keep all `true` for production-grade safety.
 
 ---
 
@@ -354,6 +365,20 @@ skip_reasons:
   - `hf_live_promotion=PASS`
   - `hf_freeze=FROZEN`
   - `hf_alert.triggered=false`
+
+### E. Live promotion checklist quick form
+
+Copy this for quick operator review:
+
+```text
+hf_live_promotion.status:
+hf_live_promotion.required:
+hf_live_promotion.requiredMissing:
+hf_live_promotion.pass:
+hf_live_promotion.payloadPathSource:
+hf_live_promotion.payloadPathVerifiedAt:
+decision: HOLD | PASS_REVIEW
+```
 
 ---
 
