@@ -635,6 +635,8 @@ type HfLivePromotionSummary = {
   requiredPass: number;
   requiredTotal: number;
   requiredMissing: string[];
+  requiredHintToken: string;
+  requiredHintText: string;
   checklistPass: number;
   checklistTotal: number;
   generatedAt: string;
@@ -3211,7 +3213,8 @@ function buildSimulationMessage(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
-  guardControl: GuardControlGate
+  guardControl: GuardControlGate,
+  hfLivePromotion?: HfLivePromotionSummary | null
 ): string {
   const cfg = loadRuntimeConfig();
   const formatTierMeta = (row: Stage6CandidateSummary) => {
@@ -3288,6 +3291,13 @@ function buildSimulationMessage(
   lines.push(
     `Stage6 Contract Gate: enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
+  if (hfLivePromotion) {
+    lines.push(
+      `HF Live Promotion: status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} required=${hfLivePromotion.requiredPass}/${hfLivePromotion.requiredTotal} missing=${hfLivePromotion.requiredMissing.length ? hfLivePromotion.requiredMissing.join(",") : "none"} hint=${hfLivePromotion.requiredHintText} payloadPath=${hfLivePromotion.payloadPathSource}/${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"}`
+    );
+  } else {
+    lines.push("HF Live Promotion: N/A (summary not generated yet)");
+  }
   lines.push(
     `Action Intent: enabled=${dryExec.actionIntent.enabled} previewOnly=${dryExec.actionIntent.previewOnly} allowed=${dryExec.actionIntent.allowedActionTypes.join("/")} counts=ENTRY_NEW:${dryExec.actionIntent.counts.ENTRY_NEW},HOLD_WAIT:${dryExec.actionIntent.counts.HOLD_WAIT},SCALE_UP:${dryExec.actionIntent.counts.SCALE_UP},SCALE_DOWN:${dryExec.actionIntent.counts.SCALE_DOWN},EXIT_PARTIAL:${dryExec.actionIntent.counts.EXIT_PARTIAL},EXIT_FULL:${dryExec.actionIntent.counts.EXIT_FULL}`
   );
@@ -3344,11 +3354,21 @@ async function sendSimulationTelegram(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
-  guardControl: GuardControlGate
+  guardControl: GuardControlGate,
+  hfLivePromotion?: HfLivePromotionSummary | null
 ): Promise<void> {
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
-  const text = buildSimulationMessage(result, actionable, actionableVerdicts, dryExec, preflight, ledger, guardControl);
+  const text = buildSimulationMessage(
+    result,
+    actionable,
+    actionableVerdicts,
+    dryExec,
+    preflight,
+    ledger,
+    guardControl,
+    hfLivePromotion
+  );
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_SIM");
 }
@@ -3992,6 +4012,7 @@ function buildHfLivePromotionSummaryForRun(promotion: HfLivePromotionSummary | n
     `payloadPathVerifiedAt:${promotion.payloadPathVerifiedAt ?? "n/a"}`,
     `required:${promotion.requiredPass}/${promotion.requiredTotal}`,
     `requiredMissing:${promotion.requiredMissing.length ? promotion.requiredMissing.join(",") : "none"}`,
+    `requiredHint:${promotion.requiredHintToken}`,
     `pass:${promotion.checklistPass}/${promotion.checklistTotal}`,
     `reqPerfGateGo:${promotion.policy.requirePerfGateGo}`,
     `reqFreezeFrozen:${promotion.policy.requireFreezeFrozen}`,
@@ -4028,6 +4049,39 @@ function loadHfLivePromotionPolicy(): HfLivePromotionPolicy {
     requireShadowStable: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true),
     requirePayloadPathVerified: readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)
   };
+}
+
+function describeHfLivePromotionRequiredMissing(requiredMissing: string[]): {
+  token: string;
+  text: string;
+} {
+  if (!requiredMissing.length) {
+    return { token: "none", text: "none" };
+  }
+
+  const tokenByKey: Record<string, string> = {
+    alertClear: "clear_hf_alert",
+    perfGateGo: "wait_perf_gate_go",
+    freezeFrozen: "wait_freeze_frozen",
+    shadowStable: "stabilize_shadow_trend",
+    payloadPathVerified: "verify_payload_path"
+  };
+  const textByKey: Record<string, string> = {
+    alertClear: "clear HF alert first",
+    perfGateGo: "wait for perf gate GO",
+    freezeFrozen: "wait for HF freeze status FROZEN",
+    shadowStable: "collect stable shadow trend",
+    payloadPathVerified: "verify payload path via probe/live payload"
+  };
+
+  const normalized = Array.from(new Set(requiredMissing.filter((key) => key && key !== "none")));
+  if (!normalized.length) {
+    return { token: "none", text: "none" };
+  }
+
+  const token = normalized.map((key) => tokenByKey[key] ?? `check_${key}`).join("+");
+  const text = normalized.map((key) => textByKey[key] ?? `check ${key}`).join("; ");
+  return { token, text };
 }
 
 function deriveHfLivePromotionSummary(
@@ -4072,6 +4126,7 @@ function deriveHfLivePromotionSummary(
   const requiredMissing = requiredChecks
     .filter((row) => row.enabled && !row.pass)
     .map((row) => row.key);
+  const requiredHint = describeHfLivePromotionRequiredMissing(requiredMissing);
   const checklistItems = [
     checks.perfGateGo,
     checks.freezeFrozen,
@@ -4130,6 +4185,8 @@ function deriveHfLivePromotionSummary(
     requiredPass,
     requiredTotal,
     requiredMissing,
+    requiredHintToken: requiredHint.token,
+    requiredHintText: requiredHint.text,
     checklistPass,
     checklistTotal,
     generatedAt: new Date().toISOString()
@@ -4704,7 +4761,7 @@ async function saveDryExecPreview(
   }
   if (hfLivePromotion) {
     console.log(
-      `[HF_LIVE_PROMOTION] status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} recommendation=${hfLivePromotion.recommendation} required=${hfLivePromotion.requiredPass}/${hfLivePromotion.requiredTotal} requiredMissing=${hfLivePromotion.requiredMissing.length ? hfLivePromotion.requiredMissing.join(",") : "none"} pass=${hfLivePromotion.checklistPass}/${hfLivePromotion.checklistTotal} reqPerfGateGo=${hfLivePromotion.policy.requirePerfGateGo} reqFreezeFrozen=${hfLivePromotion.policy.requireFreezeFrozen} reqShadowStable=${hfLivePromotion.policy.requireShadowStable} reqPayloadPathVerified=${hfLivePromotion.policy.requirePayloadPathVerified} perfGateGo=${hfLivePromotion.checks.perfGateGo} freezeFrozen=${hfLivePromotion.checks.freezeFrozen} alertClear=${hfLivePromotion.checks.alertClear} shadowStable=${hfLivePromotion.checks.shadowStable} payloadPathVerified=${hfLivePromotion.checks.payloadPathVerified} payloadPathSource=${hfLivePromotion.payloadPathSource} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"} probeActive=${hfLivePromotion.checks.probeActive} probeMode=${hfLivePromotion.checks.probeMode}`
+      `[HF_LIVE_PROMOTION] status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} recommendation=${hfLivePromotion.recommendation} required=${hfLivePromotion.requiredPass}/${hfLivePromotion.requiredTotal} requiredMissing=${hfLivePromotion.requiredMissing.length ? hfLivePromotion.requiredMissing.join(",") : "none"} requiredHint=${hfLivePromotion.requiredHintToken} requiredHintText=${hfLivePromotion.requiredHintText} pass=${hfLivePromotion.checklistPass}/${hfLivePromotion.checklistTotal} reqPerfGateGo=${hfLivePromotion.policy.requirePerfGateGo} reqFreezeFrozen=${hfLivePromotion.policy.requireFreezeFrozen} reqShadowStable=${hfLivePromotion.policy.requireShadowStable} reqPayloadPathVerified=${hfLivePromotion.policy.requirePayloadPathVerified} perfGateGo=${hfLivePromotion.checks.perfGateGo} freezeFrozen=${hfLivePromotion.checks.freezeFrozen} alertClear=${hfLivePromotion.checks.alertClear} shadowStable=${hfLivePromotion.checks.shadowStable} payloadPathVerified=${hfLivePromotion.checks.payloadPathVerified} payloadPathSource=${hfLivePromotion.payloadPathSource} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"} probeActive=${hfLivePromotion.checks.probeActive} probeMode=${hfLivePromotion.checks.probeMode}`
     );
   }
   console.log(`[STATE] saved ${DRY_EXEC_PREVIEW_PATH}`);
@@ -5754,12 +5811,16 @@ function printRunSummary(
     },
     requiredPass: 1,
     requiredTotal: 5,
+    requiredMissing: ["perfGateGo", "freezeFrozen", "shadowStable", "payloadPathVerified"],
+    requiredHintToken: "wait_perf_gate_go+wait_freeze_frozen+stabilize_shadow_trend+verify_payload_path",
+    requiredHintText:
+      "wait for perf gate GO; wait for HF freeze status FROZEN; collect stable shadow trend; verify payload path via probe/live payload",
     checklistPass: 0,
     checklistTotal: 5,
     generatedAt: new Date().toISOString()
   };
   console.log(
-    `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} required=${livePromotionForLog.requiredPass}/${livePromotionForLog.requiredTotal} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} reqPerfGateGo=${livePromotionForLog.policy.requirePerfGateGo} reqFreezeFrozen=${livePromotionForLog.policy.requireFreezeFrozen} reqShadowStable=${livePromotionForLog.policy.requireShadowStable} reqPayloadPathVerified=${livePromotionForLog.policy.requirePayloadPathVerified} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} payloadPathSource=${livePromotionForLog.payloadPathSource} payloadPathVerifiedAt=${livePromotionForLog.payloadPathVerifiedAt ?? "n/a"} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
+    `[HF_LIVE_PROMOTION] status=${livePromotionForLog.status} reason=${livePromotionForLog.reason} recommendation=${livePromotionForLog.recommendation} required=${livePromotionForLog.requiredPass}/${livePromotionForLog.requiredTotal} requiredMissing=${livePromotionForLog.requiredMissing.length ? livePromotionForLog.requiredMissing.join(",") : "none"} requiredHint=${livePromotionForLog.requiredHintToken} requiredHintText=${livePromotionForLog.requiredHintText} pass=${livePromotionForLog.checklistPass}/${livePromotionForLog.checklistTotal} reqPerfGateGo=${livePromotionForLog.policy.requirePerfGateGo} reqFreezeFrozen=${livePromotionForLog.policy.requireFreezeFrozen} reqShadowStable=${livePromotionForLog.policy.requireShadowStable} reqPayloadPathVerified=${livePromotionForLog.policy.requirePayloadPathVerified} perfGateGo=${livePromotionForLog.checks.perfGateGo} freezeFrozen=${livePromotionForLog.checks.freezeFrozen} alertClear=${livePromotionForLog.checks.alertClear} shadowStable=${livePromotionForLog.checks.shadowStable} payloadPathVerified=${livePromotionForLog.checks.payloadPathVerified} payloadPathSource=${livePromotionForLog.payloadPathSource} payloadPathVerifiedAt=${livePromotionForLog.payloadPathVerifiedAt ?? "n/a"} probeActive=${livePromotionForLog.checks.probeActive} probeMode=${livePromotionForLog.checks.probeMode}`
   );
   console.log(
     `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
@@ -5913,7 +5974,6 @@ async function main() {
   const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);
 
   const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
-  await sendSimulationTelegram(stage6, actionable, actionableVerdicts, postPreflightDryExec, preflight, ledger, guardControl);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   const hfShadowHistoryRecord = buildHfShadowHistoryRecord(
     stage6,
@@ -5953,6 +6013,16 @@ async function main() {
     hfTuningPhase,
     hfTuningAdvice,
     hfFreeze,
+    hfLivePromotion
+  );
+  await sendSimulationTelegram(
+    stage6,
+    actionable,
+    actionableVerdicts,
+    postPreflightDryExec,
+    preflight,
+    ledger,
+    guardControl,
     hfLivePromotion
   );
   await sendPerformanceLoopMilestoneAlert(perfLoop);

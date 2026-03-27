@@ -224,6 +224,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `HF_NEGATIVE_SIZE_REDUCTION_PCT=0.15` -> when negative tighten is applied, payload notional is reduced by fixed ratio.
   - Optional A/B shadow compare (default OFF):
     - `HF_SHADOW_ENABLED=true` -> computes on/off diff in-process and persists `state/hf-shadow-last.json` (no external API call).
+  - Simulation telegram/report now includes:
+    - `HF Live Promotion: ... missing=... hint=...` for operator-friendly blocker interpretation.
 - Notes:
   - Adjustment is bounded and audit-logged (`[HF_SOFT_GATE] ...`).
   - Explainability line is fixed in report/logs via `HF Explain: ...` and `hf_soft_explain=...`.
@@ -319,7 +321,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_tuning_phase` (`phase/reason/recommendation/gate/progress/trades`)
     - `hf_tuning_advice` (`status/action/variable/current/suggested/reason/confidence`)
     - `hf_freeze` (`enabled/status/reason/recommendation/progress/stable/alert/shadowRate/frozenAt`)
-    - `hf_live_promotion` (`status/reason/recommendation/required/requiredMissing/pass/checks` + `payloadPathSource/payloadPathVerifiedAt`)
+    - `hf_live_promotion` (`status/reason/recommendation/required/requiredMissing/requiredHint/pass/checks` + `payloadPathSource/payloadPathVerifiedAt`)
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion` as `ok|missing`)

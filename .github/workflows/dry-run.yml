@@ -614,8 +614,25 @@ jobs:
             tuningSignals.livePromotionStatus = String(hfLivePromotion.status ?? "N/A");
             tuningSignals.livePromotionReason = String(hfLivePromotion.reason ?? "N/A");
             tuningSignals.livePromotionRecommendation = String(hfLivePromotion.recommendation ?? "N/A");
+            const requiredMissingList =
+              Array.isArray(hfLivePromotion.requiredMissing) && hfLivePromotion.requiredMissing.length > 0
+                ? hfLivePromotion.requiredMissing.map((value) => String(value))
+                : [];
+            const requiredMissingHintMap = {
+              alertClear: "clear HF alert first",
+              perfGateGo: "wait for perf gate GO",
+              freezeFrozen: "wait for HF freeze status FROZEN",
+              shadowStable: "collect stable shadow trend",
+              payloadPathVerified: "verify payload path via probe/live payload"
+            };
+            const requiredMissingHint =
+              requiredMissingList.length > 0
+                ? requiredMissingList
+                    .map((key) => requiredMissingHintMap[key] || `check ${key}`)
+                    .join("; ")
+                : "none";
             lines.push(
-              `- hf_live_promotion: \`status=${hfLivePromotion.status ?? "N/A"} reason=${hfLivePromotion.reason ?? "N/A"} recommendation=${hfLivePromotion.recommendation ?? "N/A"} required=${hfLivePromotion.requiredPass ?? "N/A"}/${hfLivePromotion.requiredTotal ?? "N/A"} requiredMissing=${Array.isArray(hfLivePromotion.requiredMissing) && hfLivePromotion.requiredMissing.length > 0 ? hfLivePromotion.requiredMissing.join(",") : "none"} pass=${hfLivePromotion.checklistPass ?? "N/A"}/${hfLivePromotion.checklistTotal ?? "N/A"} reqPerfGateGo=${hfLivePromotion.policy?.requirePerfGateGo ?? "N/A"} reqFreezeFrozen=${hfLivePromotion.policy?.requireFreezeFrozen ?? "N/A"} reqShadowStable=${hfLivePromotion.policy?.requireShadowStable ?? "N/A"} reqPayloadPathVerified=${hfLivePromotion.policy?.requirePayloadPathVerified ?? "N/A"} perfGateGo=${hfLivePromotion.checks?.perfGateGo ?? "N/A"} freezeFrozen=${hfLivePromotion.checks?.freezeFrozen ?? "N/A"} alertClear=${hfLivePromotion.checks?.alertClear ?? "N/A"} shadowStable=${hfLivePromotion.checks?.shadowStable ?? "N/A"} payloadPathVerified=${hfLivePromotion.checks?.payloadPathVerified ?? "N/A"} payloadPathSource=${hfLivePromotion.payloadPathSource ?? "N/A"} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "N/A"} probeActive=${hfLivePromotion.checks?.probeActive ?? "N/A"} probeMode=${hfLivePromotion.checks?.probeMode ?? "N/A"}\``
+              `- hf_live_promotion: \`status=${hfLivePromotion.status ?? "N/A"} reason=${hfLivePromotion.reason ?? "N/A"} recommendation=${hfLivePromotion.recommendation ?? "N/A"} required=${hfLivePromotion.requiredPass ?? "N/A"}/${hfLivePromotion.requiredTotal ?? "N/A"} requiredMissing=${requiredMissingList.length > 0 ? requiredMissingList.join(",") : "none"} requiredHint=${requiredMissingHint} pass=${hfLivePromotion.checklistPass ?? "N/A"}/${hfLivePromotion.checklistTotal ?? "N/A"} reqPerfGateGo=${hfLivePromotion.policy?.requirePerfGateGo ?? "N/A"} reqFreezeFrozen=${hfLivePromotion.policy?.requireFreezeFrozen ?? "N/A"} reqShadowStable=${hfLivePromotion.policy?.requireShadowStable ?? "N/A"} reqPayloadPathVerified=${hfLivePromotion.policy?.requirePayloadPathVerified ?? "N/A"} perfGateGo=${hfLivePromotion.checks?.perfGateGo ?? "N/A"} freezeFrozen=${hfLivePromotion.checks?.freezeFrozen ?? "N/A"} alertClear=${hfLivePromotion.checks?.alertClear ?? "N/A"} shadowStable=${hfLivePromotion.checks?.shadowStable ?? "N/A"} payloadPathVerified=${hfLivePromotion.checks?.payloadPathVerified ?? "N/A"} payloadPathSource=${hfLivePromotion.payloadPathSource ?? "N/A"} payloadPathVerifiedAt=${hfLivePromotion.payloadPathVerifiedAt ?? "N/A"} probeActive=${hfLivePromotion.checks?.probeActive ?? "N/A"} probeMode=${hfLivePromotion.checks?.probeMode ?? "N/A"}\``
             );
             const hfAlert = preview?.hfAlert || {};
             lines.push(
@@ -677,7 +694,7 @@ jobs:
             lines.push("- hf_tuning_phase: `phase=N/A reason=N/A recommendation=N/A gate=N/A progress=N/A trades=N/A/N/A alertTriggered=N/A shadowAlertRate=N/A`");
             lines.push("- hf_tuning_advice: `status=N/A action=N/A variable=N/A current=N/A suggested=N/A reason=N/A confidence=N/A`");
             lines.push("- hf_freeze: `enabled=N/A status=N/A reason=N/A recommendation=N/A progress=N/A/N/A stable=N/A/N/A alert=N/A/N/A shadowRate=N/A shadowMax=N/A hfAlert=N/A frozenAt=N/A`");
-            lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A required=N/A/N/A requiredMissing=N/A pass=N/A/N/A reqPerfGateGo=N/A reqFreezeFrozen=N/A reqShadowStable=N/A reqPayloadPathVerified=N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A payloadPathSource=N/A payloadPathVerifiedAt=N/A probeActive=N/A probeMode=N/A`");
+            lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A required=N/A/N/A requiredMissing=N/A requiredHint=N/A pass=N/A/N/A reqPerfGateGo=N/A reqFreezeFrozen=N/A reqShadowStable=N/A reqPayloadPathVerified=N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A payloadPathSource=N/A payloadPathVerifiedAt=N/A probeActive=N/A probeMode=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
           }
 

@@ -163,6 +163,7 @@ Minimum lines to capture:
 - Check fields to watch:
   - `required=x/y`
   - `requiredMissing=...` (which required checks are currently failing)
+  - `requiredHint=...` (operator-friendly explanation for `requiredMissing`)
   - `pass=x/y`
   - `reqPerfGateGo`, `reqFreezeFrozen`, `reqShadowStable`, `reqPayloadPathVerified`
   - `perfGateGo`, `freezeFrozen`, `alertClear`, `shadowStable`, `payloadPathVerified`
@@ -374,6 +375,7 @@ Copy this for quick operator review:
 hf_live_promotion.status:
 hf_live_promotion.required:
 hf_live_promotion.requiredMissing:
+hf_live_promotion.requiredHint:
 hf_live_promotion.pass:
 hf_live_promotion.payloadPathSource:
 hf_live_promotion.payloadPathVerifiedAt:
