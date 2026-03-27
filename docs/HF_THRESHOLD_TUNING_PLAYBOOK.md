@@ -47,6 +47,7 @@ perf_loop_latest_kpi:
 
 hf_soft_gate:
 hf_payload_probe:
+hf_payload_probe_forced:
 hf_shadow:
 hf_shadow_trend:
 hf_tuning_phase:
@@ -62,6 +63,7 @@ notes:
 Minimum lines to capture:
 - `hf_soft_gate`
 - `hf_payload_probe`
+- `hf_payload_probe_forced`
 - `hf_shadow`
 - `hf_shadow_trend`
 - `hf_tuning_phase`
@@ -94,6 +96,14 @@ Minimum lines to capture:
   - `PASS_HF_APPLIED`: HF adjustment applied (size reduce may be disabled or tighten not triggered).
   - `PASS_SIZE_REDUCED`: tighten + size reduction observed as expected.
   - `WARN_SIZE_REDUCE_EXPECTED`: tighten happened but size reduction did not.
+
+### hf_payload_probe_forced
+- Manual drill lane (`payload_probe=true` + `payload_probe_mode`) for blocked-market sessions.
+- Reads base dry-exec path before guard/preflight squash.
+- Key checks:
+  - `active=true`, `modified=true`
+  - `baseApplied > 0` (HF adjustment observed)
+  - tighten drill + size reduction enabled -> `baseSizeReduced > 0`
 
 ### hf_shadow_trend
 - Rolling trend across recent runs.

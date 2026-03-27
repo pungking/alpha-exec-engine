@@ -285,21 +285,23 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Manual dispatch inputs:
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
+    - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - HF marker audit (warning-only):
     - Workflow stores marker status at `state/hf-marker-audit.json`.
-    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, `[HF_TUNING_PHASE]`, `[HF_TUNING_ADVICE]`, `[HF_ALERT]` or `[HF_ALERT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_drift=... hf_shadow=... hf_shadow_trend=... hf_tuning_phase=... hf_tuning_advice=... hf_alert=...`.
+    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_PAYLOAD_PROBE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, `[HF_TUNING_PHASE]`, `[HF_TUNING_ADVICE]`, `[HF_ALERT]` or `[HF_ALERT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_payload_probe_forced=... hf_drift=... hf_shadow=... hf_shadow_trend=... hf_tuning_phase=... hf_tuning_advice=... hf_alert=...`.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
     - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced/explain`)
     - `hf_payload_probe` (`status/payloads/hfApplied/tighten/sizeReduced/reason`)
+    - `hf_payload_probe_forced` (`mode/active/modified/reason/symbol/basePayloads/baseApplied/baseTighten/baseRelief/baseSizeReduced/baseSizeSaved`)
     - `hf_shadow` (`enabled/compared/reason/payloadDelta/notionalDelta`)
     - `hf_shadow_trend` (`history/window/compared/alertRate/avgAbsDelta/zeroPayloadRate`)
     - `hf_tuning_phase` (`phase/reason/recommendation/gate/progress/trades`)
     - `hf_tuning_advice` (`status/action/variable/current/suggested/reason/confidence`)
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
-    - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/alert/runSummaryAlert` as `ok|missing`)
+    - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert` as `ok|missing`)
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
