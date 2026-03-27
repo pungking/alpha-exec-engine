@@ -363,6 +363,7 @@ jobs:
           RUN_SUMMARY_HF_DRIFT="missing"
           SHADOW_MARKER="missing"
           RUN_SUMMARY_HF_SHADOW="missing"
+          RUN_SUMMARY_HF_SHADOW_TREND="missing"
           ALERT_MARKER="missing"
           RUN_SUMMARY_HF_ALERT="missing"
 
@@ -372,28 +373,30 @@ jobs:
             grep -Eq '\[RUN_SUMMARY\].*hf_drift=' "${LOG_PATH}" && RUN_SUMMARY_HF_DRIFT="ok" || true
             grep -q '\[HF_SHADOW\]' "${LOG_PATH}" && SHADOW_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_shadow=' "${LOG_PATH}" && RUN_SUMMARY_HF_SHADOW="ok" || true
+            grep -Eq '\[RUN_SUMMARY\].*hf_shadow_trend=' "${LOG_PATH}" && RUN_SUMMARY_HF_SHADOW_TREND="ok" || true
             grep -Eq '\[HF_ALERT\]|\[HF_ALERT_SUMMARY\]' "${LOG_PATH}" && ALERT_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_alert=' "${LOG_PATH}" && RUN_SUMMARY_HF_ALERT="ok" || true
           fi
 
-          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LOG_PATH}" <<'NODE'
+          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${RUN_SUMMARY_HF_SHADOW_TREND}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LOG_PATH}" <<'NODE'
           const fs = require("node:fs");
-          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, alertMarker, runSummaryHfAlert, logPath] = process.argv.slice(2);
+          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, alertMarker, runSummaryHfAlert, logPath] = process.argv.slice(2);
           const audit = {
             softGate,
             driftMarker,
             runSummaryHfDrift,
             shadowMarker,
             runSummaryHfShadow,
+            runSummaryHfShadowTrend,
             alertMarker,
             runSummaryHfAlert,
             logPath,
             auditedAt: new Date().toISOString(),
           };
           fs.writeFileSync("state/hf-marker-audit.json", `${JSON.stringify(audit, null, 2)}\n`, "utf8");
-          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, alertMarker, runSummaryHfAlert].every((v) => v === "ok");
+          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, alertMarker, runSummaryHfAlert].every((v) => v === "ok");
           const line =
-            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} ` +
+            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} runSummaryShadowTrend=${runSummaryHfShadowTrend} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} ` +
             `mode=warning-only state=state/hf-marker-audit.json`;
           if (allOk) {
             console.log(line);
@@ -480,6 +483,10 @@ jobs:
             lines.push(
               `- hf_shadow: \`enabled=${hfShadow.enabled ?? "N/A"} compared=${hfShadow.compared ?? "N/A"} reason=${hfShadow.reason ?? "N/A"} payloadDelta=${hfShadow.payloadDelta ?? "N/A"} notionalDelta=${hfShadow.notionalDelta ?? "N/A"} onOnly=${Array.isArray(hfShadow.onOnlySymbols) ? hfShadow.onOnlySymbols.length : "N/A"} offOnly=${Array.isArray(hfShadow.offOnlySymbols) ? hfShadow.offOnlySymbols.length : "N/A"} skipReasonDelta=${hfShadow.skipReasonDelta ?? "N/A"}\``
             );
+            const hfShadowTrend = preview?.hfShadowTrend || {};
+            lines.push(
+              `- hf_shadow_trend: \`history=${hfShadowTrend.historySize ?? "N/A"} window=${hfShadowTrend.windowSize ?? "N/A"} compared=${hfShadowTrend.comparedRuns ?? "N/A"} alertRate=${hfShadowTrend.alertTriggeredRate ?? "N/A"} avgAbsPayloadDelta=${hfShadowTrend.avgAbsPayloadDelta ?? "N/A"} avgAbsNotionalDelta=${hfShadowTrend.avgAbsNotionalDelta ?? "N/A"} avgAbsSkippedDelta=${hfShadowTrend.avgAbsSkippedDelta ?? "N/A"} zeroPayloadRate=${hfShadowTrend.zeroPayloadRate ?? "N/A"} latestAt=${hfShadowTrend.latestAt ?? "N/A"}\``
+            );
             const hfAlert = preview?.hfAlert || {};
             lines.push(
               `- hf_alert: \`enabled=${hfAlert.enabled ?? "N/A"} triggered=${hfAlert.triggered ?? "N/A"} reason=${hfAlert.reason ?? "N/A"} shadowCompared=${hfAlert.shadowCompared ?? "N/A"} payloadDelta=${hfAlert.shadowPayloadDelta ?? "N/A"} notionalDelta=${hfAlert.shadowNotionalDelta ?? "N/A"} skippedDelta=${hfAlert.shadowSkippedDelta ?? "N/A"} driftTriggered=${hfAlert.driftTriggered ?? "N/A"}\``
@@ -534,16 +541,17 @@ jobs:
             lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
             lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A sizeReduceEnabled=N/A sizeReducePct=N/A sizeReduced=N/A sizeSavedNotional=N/A explain=N/A`");
             lines.push("- hf_shadow: `enabled=N/A compared=N/A reason=N/A payloadDelta=N/A notionalDelta=N/A onOnly=N/A offOnly=N/A skipReasonDelta=N/A`");
+            lines.push("- hf_shadow_trend: `history=N/A window=N/A compared=N/A alertRate=N/A avgAbsPayloadDelta=N/A avgAbsNotionalDelta=N/A avgAbsSkippedDelta=N/A zeroPayloadRate=N/A latestAt=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
           }
 
           if (fs.existsSync(hfMarkerAuditPath)) {
             const hfAudit = JSON.parse(fs.readFileSync(hfMarkerAuditPath, "utf8"));
             lines.push(
-              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"}\``
+              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"}\``
             );
           } else {
-            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing alert=missing runSummaryAlert=missing`");
+            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing runSummaryShadowTrend=missing alert=missing runSummaryAlert=missing`");
           }
 
           if (fs.existsSync(idempPath)) {
@@ -722,6 +730,7 @@ jobs:
             state/last-dry-exec-preview.json
             state/hf-marker-audit.json
             state/hf-shadow-last.json
+            state/hf-shadow-history.jsonl
             state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json

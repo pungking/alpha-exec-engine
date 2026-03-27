@@ -47,6 +47,7 @@ perf_loop_latest_kpi:
 
 hf_soft_gate:
 hf_shadow:
+hf_shadow_trend:
 hf_alert:
 hf_marker_audit:
 
@@ -57,6 +58,7 @@ notes:
 Minimum lines to capture:
 - `hf_soft_gate`
 - `hf_shadow`
+- `hf_shadow_trend`
 - `hf_alert`
 - `hf_marker_audit`
 - `payloads/skipped` + `skip_reasons`
@@ -75,6 +77,15 @@ Minimum lines to capture:
 - `compared=true` means ON/OFF compare ran.
 - `payloadDelta`, `notionalDelta`, `skipReasonDelta` show behavior difference.
   - All zero can be normal when market/guard gates block everything.
+
+### hf_shadow_trend
+- Rolling trend across recent runs.
+- Watch these first:
+  - `alertRate`
+  - `avgAbsPayloadDelta`
+  - `avgAbsNotionalDelta`
+  - `zeroPayloadRate`
+- During risk-off blocks, high `zeroPayloadRate` is expected.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
