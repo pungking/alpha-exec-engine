@@ -13,6 +13,23 @@ Out of scope:
 
 ---
 
+## 0) Two-phase operating model (recommended)
+
+Tune HF with `perf_loop_gate_progress` as a paired control signal.
+
+- Phase A: **Observation tuning** (`progress < 20/20`)
+  - Goal: stabilize telemetry and avoid false alerts.
+  - Focus: `hf_soft_gate.explain`, `hf_shadow`, `hf_alert`, `hf_marker_audit`.
+  - Do **not** freeze thresholds yet.
+- Phase B: **Baseline freeze** (`progress >= 20/20`)
+  - Goal: confirm behavior under sufficient sample.
+  - Freeze default thresholds after review.
+  - Only make changes for clear drift/noise regressions.
+
+This avoids overtuning during low-sample periods.
+
+---
+
 ## 1) Per-run checklist (copy/paste)
 
 Use this block for every test result:
@@ -23,6 +40,10 @@ stage6_hash:
 regime:
 payloads/skipped:
 skip_reasons:
+perf_loop_gate_status:
+perf_loop_gate_reason:
+perf_loop_gate_progress:
+perf_loop_latest_kpi:
 
 hf_soft_gate:
 hf_shadow:
@@ -39,6 +60,7 @@ Minimum lines to capture:
 - `hf_alert`
 - `hf_marker_audit`
 - `payloads/skipped` + `skip_reasons`
+- `perf_loop_gate_progress` (+ status/reason)
 
 ---
 
@@ -61,6 +83,11 @@ Minimum lines to capture:
 ### hf_marker_audit
 - All `ok` means logging/summaries are synchronized.
 - Any `missing` means observability gap (warning-only by policy).
+
+### perf_loop_gate_progress
+- `x/20` means sample maturity toward go/no-go gate.
+- While `x < 20`, prioritize observability/noise tuning over aggressive threshold changes.
+- At `20/20`, decide freeze or targeted adjustment.
 
 ---
 
@@ -128,6 +155,10 @@ Recommended change budget per batch:
 - max 1~2 variables per batch
 - run 2~3 observations before next adjustment
 
+Progress gate policy:
+- `progress < 20/20`: soft tuning only (alert sensitivity / explainability clarity).
+- `progress >= 20/20`: allow baseline freeze and stricter threshold decisions.
+
 ---
 
 ## 5) Fast diagnosis map
@@ -164,6 +195,7 @@ A tuning cycle is complete when:
 - `hf_marker_audit` all `ok`
 - `hf_alert` stable (no repeated false positives)
 - `hf_soft_gate explain` is interpretable and consistent
+- `perf_loop_gate_progress` reaches `20/20` and gate status is reviewed
 - At least one payload-producing run validates:
   - `sizeReduced` and `sizeSavedNotional` behavior (when negative tighten occurs)
   - shadow deltas are explainable
