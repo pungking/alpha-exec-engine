@@ -54,6 +54,7 @@ hf_tuning_phase:
 hf_tuning_advice:
 hf_freeze:
 hf_live_promotion:
+hf_next_action:
 hf_tuning_comment:
 hf_alert:
 hf_marker_audit:
@@ -72,6 +73,7 @@ Minimum lines to capture:
 - `hf_tuning_advice`
 - `hf_freeze`
 - `hf_live_promotion`
+- `hf_next_action`
 - `hf_tuning_comment`
 - `hf_alert`
 - `hf_marker_audit`
@@ -173,6 +175,14 @@ Minimum lines to capture:
 - Note:
   - `payloadPathVerified` can stay true via sticky state for the same Stage6 hash
     after a successful probe/payload-path verification.
+
+### hf_next_action
+- Operator one-line action cue from live-promotion + tuning state.
+- Use it as first response playbook:
+  - `HOLD_OBSERVE` -> collect more runs.
+  - `HOLD_CHECKLIST` -> clear listed `requiredMissing`.
+  - `REVIEW_TUNE` -> adjust one variable only, then rerun.
+  - `LIVE_READY` -> promotion review candidate.
 
 ### hf_alert
 - `triggered=false reason=none` is healthy.
