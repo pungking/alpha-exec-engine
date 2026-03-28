@@ -4,6 +4,24 @@ Use this checklist to validate `market-guard` active execution safely, one step 
 
 ---
 
+## 0.0) Minimum Closure Set (Phase-1, recommended)
+
+Goal: close the highest-value operational gaps first before expanding to full active-exec coverage.
+
+- [ ] M1. Complete `0.9B` runtime evidence closure
+  - confirm latest artifact includes `state/stage6-20trade-loop.json`, `state/stage6-20trade-loop.csv`
+  - confirm 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
+- [ ] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
+- [ ] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
+- [ ] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
+- [ ] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
+- [ ] M6. Complete `6) Rollback to safe defaults` sign-off
+
+Phase-1 done condition:
+- [ ] `M1~M6` all checked with run id + key log lines attached
+
+---
+
 ## 0) Safety Baseline (required before all tests)
 
 - [ ] `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper only)
@@ -119,20 +137,20 @@ Goal: isolate whether `payload=0` is caused by policy floor (conviction) vs cont
 
 ### TC-0.7A (temporary conviction override probe)
 
-- [ ] Open `sidecar-dry-run` -> **Run workflow**
-- [ ] Set input `payload_probe=true`
-- [ ] Set input `payload_probe_min_conviction=30` (or 20/40/50)
-- [ ] Confirm Step Summary includes `Payload Path Probe` section
-- [ ] Confirm `skip_reasons` distribution is shown in Step Summary
-- [ ] Confirm `payloads/skipped` changes as expected vs baseline
-- [ ] Revert to baseline policy (no permanent var change needed; probe is one-shot env override)
+- [x] Open `sidecar-dry-run` -> **Run workflow**
+- [x] Set input `payload_probe=true`
+- [x] Set input `payload_probe_min_conviction=30` (or 20/40/50)
+- [x] Confirm Step Summary includes `Payload Path Probe` section
+- [x] Confirm `skip_reasons` distribution is shown in Step Summary
+- [x] Confirm `payloads/skipped` changes as expected vs baseline
+- [x] Revert to baseline policy (no permanent var change needed; probe is one-shot env override)
 
 Evidence
-- run id:
-- probe setting:
-- key log line:
-- payload/skipped:
-- notes:
+- run id: `workflow_dispatch` (2026-03-28, user-shared summary)
+- probe setting: `payload_probe=true`, `payload_probe_mode=tighten`, `payload_probe_min_conviction=50`
+- key log line: `hf_payload_probe: status=PASS_FORCED_SIZE_REDUCED ... reason=forced_tighten_and_size_reduce_observed`
+- payload/skipped: `0/1` (baseline and probe runs both policy-blocked; probe still validated forced HF path)
+- notes: `hf_payload_probe_forced` confirmed `active=true modified=true ... baseSizeReduced=1 baseSizeSaved=120`
 
 ---
 
@@ -210,23 +228,28 @@ Evidence
   - `sidecar-template/alpha-exec-engine/.github/workflows/dry-run.yml`
 - note: runtime evidence capture is tracked in TC-0.9B below
 
-### TC-0.9B (runtime evidence, pending)
+### TC-0.9B (runtime evidence, in progress)
 
-- [ ] Run sidecar-dry-run once and confirm `[PERF_LOOP]` log appears
-- [ ] At 10-trade boundary, confirm `[PERF_LOOP_KPI]` log appears
+- [x] Run sidecar-dry-run once and confirm `[PERF_LOOP]` log appears
+- [x] At 10-trade boundary, confirm `[PERF_LOOP_KPI]` log appears
 - [ ] Download artifact and verify both loop files exist
-- [ ] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
-- [ ] Confirm summary line `perf_loop_latest_kpi: trades=... fillRatePct=... avgR=... holdErrMedian=... noReasonDrift=...`
-- [ ] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
-- [ ] Confirm summary line `perf_loop_gate_reason: ...`
-- [ ] Confirm summary line `perf_loop_gate_progress: current/20`
+- [x] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
+- [x] Confirm summary line `perf_loop_latest_kpi: trades=... fillRatePct=... avgR=... holdErrMedian=... noReasonDrift=...`
+- [x] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
+- [x] Confirm summary line `perf_loop_gate_reason: ...`
+- [x] Confirm summary line `perf_loop_gate_progress: current/20`
 - [ ] At 10/20 trades, confirm Telegram simulation channel receives milestone alert (`TELEGRAM_PERF_LOOP`)
 
 Evidence
-- run id:
+- run id: `workflow_dispatch` (2026-03-28, user-shared summary set)
 - key log lines:
-- artifact:
-- summary snippet:
+  - `perf_loop: batch=stage6-20260316 trades=11 snapshots=1`
+  - `perf_loop_latest_kpi: trades=11 fillRatePct=0.00 avgR=0.0000 holdErrMedian=0.00 noReasonDrift=0`
+  - `perf_loop_gate_status: PENDING_SAMPLE`
+  - `perf_loop_gate_reason: sample_insufficient(trades=11,required>=20)`
+  - `perf_loop_gate_progress: 11/20`
+- artifact: pending explicit file-level confirmation for loop JSON/CSV in latest run artifact
+- summary snippet: runtime KPI/gate lines are consistently present in both normal/probe/validation-pack runs
 
 ### TC-0.9C (Stage6 -> Sidecar auto-trigger, PASS)
 
