@@ -330,6 +330,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_PAYLOAD_PROBE]`, `[HF_PAYLOAD_PROBE_STATUS]`, `[HF_PAYLOAD_PATH_STICKY]`, `[HF_EVIDENCE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, `[HF_TUNING_PHASE]`, `[HF_TUNING_ADVICE]`, `[HF_FREEZE]`, `[HF_LIVE_PROMOTION]`, `[HF_NEXT_ACTION]`, `[HF_DAILY_VERDICT]`, `[HF_ALERT]` or `[HF_ALERT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_payload_probe_forced=... hf_payload_probe_status=... hf_payload_path_sticky=... hf_evidence=... hf_drift=... hf_shadow=... hf_shadow_trend=... hf_tuning_phase=... hf_tuning_advice=... hf_freeze=... hf_live_promotion=... hf_next_action=... hf_daily_verdict=... hf_alert=...`.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
+    - `hf_verify_gate` (`outcome/mode`; `validation_pack=true`일 때 verify gate 선행 실행 결과)
     - `hf_soft_gate` (`enabled/applied/netDelta/earningsBlocked/earningsReduced/sizeReduced/explain`)
     - `hf_payload_probe` (`status/payloads/hfApplied/tighten/sizeReduced/reason`)
       - forced probe success statuses:

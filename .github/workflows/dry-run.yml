@@ -260,6 +260,7 @@ jobs:
         run: npm ci
 
       - name: HF Verify gate (validation pack)
+        id: hf_verify_gate
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
         run: npm run verify:hf
 
@@ -489,6 +490,7 @@ jobs:
           SUMMARY_INCLUDE_VALIDATION_PACK: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
           SUMMARY_INCLUDE_PAYLOAD_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack != 'true' && inputs.payload_probe == 'true' }}
           SUMMARY_LIFECYCLE_PRESET: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_action_preset || 'N/A' }}
+          SUMMARY_HF_VERIFY_OUTCOME: ${{ steps.hf_verify_gate.outcome || 'skipped' }}
         run: |
           node - <<'NODE'
           const fs = require("node:fs");
@@ -540,6 +542,9 @@ jobs:
           lines.push(
             `- manual_effective: \`event=${triggerEvent} lifecycle_preset=${process.env.SUMMARY_LIFECYCLE_PRESET ?? "N/A"} lifecycle_enabled=${process.env.POSITION_LIFECYCLE_ENABLED ?? "N/A"} lifecycle_preview_only=${process.env.POSITION_LIFECYCLE_PREVIEW_ONLY ?? "N/A"} lifecycle_actions=${process.env.POSITION_LIFECYCLE_ACTION_TYPES ?? "N/A"} allow_entry_outside_rth=${process.env.ALLOW_ENTRY_OUTSIDE_RTH ?? "N/A"} include_speculative=${process.env.ACTIONABLE_INCLUDE_SPECULATIVE_BUY ?? "N/A"} force_send_once=${process.env.FORCE_SEND_ONCE ?? "N/A"}\``
           );
+          const hfVerifyOutcome = String(process.env.SUMMARY_HF_VERIFY_OUTCOME || "skipped").trim() || "skipped";
+          const hfVerifyMode = includeValidationPack ? "required" : "optional";
+          lines.push(`- hf_verify_gate: \`outcome=${hfVerifyOutcome} mode=${hfVerifyMode}\``);
 
           if (fs.existsSync(statePath)) {
             const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
