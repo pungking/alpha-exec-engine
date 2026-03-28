@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { parseJsonText } from "./json-utils.js";
 
 type CliArgs = {
   previewPath: string;
@@ -164,12 +165,12 @@ function asStringArray(value: unknown): string[] {
 
 async function readJson(path: string): Promise<unknown> {
   const raw = await readFile(path, "utf8");
-  return JSON.parse(raw) as unknown;
+  return parseJsonText<unknown>(raw, `replay_json(${path})`);
 }
 
 async function describeStage6(path: string): Promise<ReplaySnapshot["optionalStage6"]> {
   const raw = await readFile(path);
-  const json = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+  const json = parseJsonText<Record<string, unknown>>(raw.toString("utf8"), `stage6_replay(${path})`);
   const hash = createHash("sha256").update(raw).digest("hex");
   const candidateCount =
     Array.isArray(json.executablePicks) ? json.executablePicks.length :
