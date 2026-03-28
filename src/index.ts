@@ -8,6 +8,7 @@ import {
   deriveHfTuningAdviceCore,
   deriveHfTuningPhaseCore
 } from "./hf-judgement-core.js";
+import { parseJsonText } from "./json-utils.js";
 
 function mask(value: string): string {
   if (!value) return "";
@@ -1073,19 +1074,6 @@ async function downloadStage6Json(accessToken: string, fileId: string): Promise<
   return response.text();
 }
 
-function parseDriveJsonText<T>(text: string, context: string): T {
-  const safeText = text
-    .replace(/:\s*NaN/g, ": null")
-    .replace(/:\s*Infinity/g, ": null")
-    .replace(/:\s*-Infinity/g, ": null");
-  try {
-    return JSON.parse(safeText) as T;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${context} JSON parse failed: ${message}`);
-  }
-}
-
 function extractCandidateSymbols(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
@@ -1745,7 +1733,7 @@ async function fetchLatestMarketSnapshotVix(accessToken: string): Promise<VixLoo
 
   try {
     const raw = await downloadStage6Json(accessToken, file.id);
-    const parsed = parseDriveJsonText<unknown>(raw, `market_snapshot(${file.name || file.id})`);
+    const parsed = parseJsonText<unknown>(raw, `market_snapshot(${file.name || file.id})`);
     const vix = extractVixFromMarketSnapshot(parsed);
     if (vix == null) {
       return {
@@ -2423,7 +2411,7 @@ async function resolveRegimeSelection(accessToken: string): Promise<RegimeSelect
 async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6LoadResult> {
   const meta = await fetchLatestStage6Metadata(accessToken);
   const jsonText = await downloadStage6Json(accessToken, meta.id);
-  const parsed = parseDriveJsonText<unknown>(jsonText, `stage6(${meta.name})`);
+  const parsed = parseJsonText<unknown>(jsonText, `stage6(${meta.name})`);
   const contractContext = parseStage6ContractContext(parsed);
   const fallbackCandidates = parseCandidateSummaries(parsed);
   const candidates =

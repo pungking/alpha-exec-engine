@@ -1,5 +1,6 @@
 import { loadRuntimeConfig } from "../config/policy.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { parseJsonText } from "./json-utils.js";
 
 type GuardLevel = 0 | 1 | 2 | 3;
 type GuardActionStatus =
@@ -268,19 +269,6 @@ async function downloadDriveJson(accessToken: string, fileId: string): Promise<s
     throw new Error(`Drive download failed (${response.status}): ${text.slice(0, 200)}`);
   }
   return response.text();
-}
-
-function parseJsonText<T>(text: string, context: string): T {
-  const safeText = text
-    .replace(/:\s*NaN/g, ": null")
-    .replace(/:\s*Infinity/g, ": null")
-    .replace(/:\s*-Infinity/g, ": null");
-  try {
-    return JSON.parse(safeText) as T;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${context} JSON parse failed: ${message}`);
-  }
 }
 
 async function fetchSnapshotVix(accessToken: string): Promise<VixLookupResult> {
