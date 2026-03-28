@@ -923,7 +923,7 @@ async function alpacaRequest(
 
   if (!text) return { status: response.status, data: null };
   try {
-    return { status: response.status, data: JSON.parse(text) as unknown };
+    return { status: response.status, data: parseJsonText<unknown>(text, `alpaca_response(${path})`) };
   } catch {
     return { status: response.status, data: text };
   }
