@@ -397,6 +397,8 @@ jobs:
           RUN_SUMMARY_HF_LIVE_PROMOTION="missing"
           NEXT_ACTION_MARKER="missing"
           RUN_SUMMARY_HF_NEXT_ACTION="missing"
+          DAILY_VERDICT_MARKER="missing"
+          RUN_SUMMARY_HF_DAILY_VERDICT="missing"
           PAYLOAD_PATH_STICKY_MARKER="missing"
           RUN_SUMMARY_HF_PAYLOAD_PATH_STICKY="missing"
           EVIDENCE_MARKER="missing"
@@ -423,15 +425,17 @@ jobs:
             grep -Eq '\[RUN_SUMMARY\].*hf_live_promotion=' "${LOG_PATH}" && RUN_SUMMARY_HF_LIVE_PROMOTION="ok" || true
             grep -q '\[HF_NEXT_ACTION\]' "${LOG_PATH}" && NEXT_ACTION_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_next_action=' "${LOG_PATH}" && RUN_SUMMARY_HF_NEXT_ACTION="ok" || true
+            grep -q '\[HF_DAILY_VERDICT\]' "${LOG_PATH}" && DAILY_VERDICT_MARKER="ok" || true
+            grep -Eq '\[RUN_SUMMARY\].*hf_daily_verdict=' "${LOG_PATH}" && RUN_SUMMARY_HF_DAILY_VERDICT="ok" || true
             grep -q '\[HF_PAYLOAD_PATH_STICKY\]' "${LOG_PATH}" && PAYLOAD_PATH_STICKY_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_payload_path_sticky=' "${LOG_PATH}" && RUN_SUMMARY_HF_PAYLOAD_PATH_STICKY="ok" || true
             grep -q '\[HF_EVIDENCE\]' "${LOG_PATH}" && EVIDENCE_MARKER="ok" || true
             grep -Eq '\[RUN_SUMMARY\].*hf_evidence=' "${LOG_PATH}" && RUN_SUMMARY_HF_EVIDENCE="ok" || true
           fi
 
-          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${RUN_SUMMARY_HF_SHADOW_TREND}" "${TUNING_PHASE_MARKER}" "${RUN_SUMMARY_HF_TUNING_PHASE}" "${TUNING_ADVICE_MARKER}" "${RUN_SUMMARY_HF_TUNING_ADVICE}" "${FREEZE_MARKER}" "${RUN_SUMMARY_HF_FREEZE}" "${PAYLOAD_PROBE_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PROBE}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LIVE_PROMOTION_MARKER}" "${RUN_SUMMARY_HF_LIVE_PROMOTION}" "${NEXT_ACTION_MARKER}" "${RUN_SUMMARY_HF_NEXT_ACTION}" "${PAYLOAD_PATH_STICKY_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PATH_STICKY}" "${EVIDENCE_MARKER}" "${RUN_SUMMARY_HF_EVIDENCE}" "${LOG_PATH}" <<'NODE'
+          node - "${SOFT_GATE}" "${DRIFT_MARKER}" "${RUN_SUMMARY_HF_DRIFT}" "${SHADOW_MARKER}" "${RUN_SUMMARY_HF_SHADOW}" "${RUN_SUMMARY_HF_SHADOW_TREND}" "${TUNING_PHASE_MARKER}" "${RUN_SUMMARY_HF_TUNING_PHASE}" "${TUNING_ADVICE_MARKER}" "${RUN_SUMMARY_HF_TUNING_ADVICE}" "${FREEZE_MARKER}" "${RUN_SUMMARY_HF_FREEZE}" "${PAYLOAD_PROBE_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PROBE}" "${ALERT_MARKER}" "${RUN_SUMMARY_HF_ALERT}" "${LIVE_PROMOTION_MARKER}" "${RUN_SUMMARY_HF_LIVE_PROMOTION}" "${NEXT_ACTION_MARKER}" "${RUN_SUMMARY_HF_NEXT_ACTION}" "${DAILY_VERDICT_MARKER}" "${RUN_SUMMARY_HF_DAILY_VERDICT}" "${PAYLOAD_PATH_STICKY_MARKER}" "${RUN_SUMMARY_HF_PAYLOAD_PATH_STICKY}" "${EVIDENCE_MARKER}" "${RUN_SUMMARY_HF_EVIDENCE}" "${LOG_PATH}" <<'NODE'
           const fs = require("node:fs");
-          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, livePromotionMarker, runSummaryHfLivePromotion, nextActionMarker, runSummaryHfNextAction, payloadPathStickyMarker, runSummaryHfPayloadPathSticky, evidenceMarker, runSummaryHfEvidence, logPath] = process.argv.slice(2);
+          const [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, livePromotionMarker, runSummaryHfLivePromotion, nextActionMarker, runSummaryHfNextAction, dailyVerdictMarker, runSummaryHfDailyVerdict, payloadPathStickyMarker, runSummaryHfPayloadPathSticky, evidenceMarker, runSummaryHfEvidence, logPath] = process.argv.slice(2);
           const audit = {
             softGate,
             driftMarker,
@@ -453,6 +457,8 @@ jobs:
             runSummaryHfLivePromotion,
             nextActionMarker,
             runSummaryHfNextAction,
+            dailyVerdictMarker,
+            runSummaryHfDailyVerdict,
             payloadPathStickyMarker,
             runSummaryHfPayloadPathSticky,
             evidenceMarker,
@@ -461,9 +467,9 @@ jobs:
             auditedAt: new Date().toISOString(),
           };
           fs.writeFileSync("state/hf-marker-audit.json", `${JSON.stringify(audit, null, 2)}\n`, "utf8");
-          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, livePromotionMarker, runSummaryHfLivePromotion, nextActionMarker, runSummaryHfNextAction, payloadPathStickyMarker, runSummaryHfPayloadPathSticky, evidenceMarker, runSummaryHfEvidence].every((v) => v === "ok");
+          const allOk = [softGate, driftMarker, runSummaryHfDrift, shadowMarker, runSummaryHfShadow, runSummaryHfShadowTrend, tuningPhaseMarker, runSummaryHfTuningPhase, tuningAdviceMarker, runSummaryHfTuningAdvice, freezeMarker, runSummaryHfFreeze, payloadProbeMarker, runSummaryHfPayloadProbe, alertMarker, runSummaryHfAlert, livePromotionMarker, runSummaryHfLivePromotion, nextActionMarker, runSummaryHfNextAction, dailyVerdictMarker, runSummaryHfDailyVerdict, payloadPathStickyMarker, runSummaryHfPayloadPathSticky, evidenceMarker, runSummaryHfEvidence].every((v) => v === "ok");
           const line =
-            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} runSummaryShadowTrend=${runSummaryHfShadowTrend} tuningPhase=${tuningPhaseMarker} runSummaryTuningPhase=${runSummaryHfTuningPhase} tuningAdvice=${tuningAdviceMarker} runSummaryTuningAdvice=${runSummaryHfTuningAdvice} freeze=${freezeMarker} runSummaryFreeze=${runSummaryHfFreeze} payloadProbe=${payloadProbeMarker} runSummaryPayloadProbe=${runSummaryHfPayloadProbe} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} livePromotion=${livePromotionMarker} runSummaryLivePromotion=${runSummaryHfLivePromotion} nextAction=${nextActionMarker} runSummaryNextAction=${runSummaryHfNextAction} payloadPathSticky=${payloadPathStickyMarker} runSummaryPayloadPathSticky=${runSummaryHfPayloadPathSticky} evidence=${evidenceMarker} runSummaryEvidence=${runSummaryHfEvidence} ` +
+            `[HF_MARKER_AUDIT] soft=${softGate} drift=${driftMarker} runSummary=${runSummaryHfDrift} shadow=${shadowMarker} runSummaryShadow=${runSummaryHfShadow} runSummaryShadowTrend=${runSummaryHfShadowTrend} tuningPhase=${tuningPhaseMarker} runSummaryTuningPhase=${runSummaryHfTuningPhase} tuningAdvice=${tuningAdviceMarker} runSummaryTuningAdvice=${runSummaryHfTuningAdvice} freeze=${freezeMarker} runSummaryFreeze=${runSummaryHfFreeze} payloadProbe=${payloadProbeMarker} runSummaryPayloadProbe=${runSummaryHfPayloadProbe} alert=${alertMarker} runSummaryAlert=${runSummaryHfAlert} livePromotion=${livePromotionMarker} runSummaryLivePromotion=${runSummaryHfLivePromotion} nextAction=${nextActionMarker} runSummaryNextAction=${runSummaryHfNextAction} dailyVerdict=${dailyVerdictMarker} runSummaryDailyVerdict=${runSummaryHfDailyVerdict} payloadPathSticky=${payloadPathStickyMarker} runSummaryPayloadPathSticky=${runSummaryHfPayloadPathSticky} evidence=${evidenceMarker} runSummaryEvidence=${runSummaryHfEvidence} ` +
             `mode=warning-only state=state/hf-marker-audit.json`;
           if (allOk) {
             console.log(line);
@@ -682,6 +688,10 @@ jobs:
             lines.push(
               `- hf_next_action: \`status=${hfNextAction.status ?? "N/A"} action=${hfNextAction.action ?? "N/A"} reason=${hfNextAction.reason ?? "N/A"} hint=${hfNextAction.hint ?? "N/A"} requiredMissing=${Array.isArray(hfNextAction.requiredMissing) && hfNextAction.requiredMissing.length > 0 ? hfNextAction.requiredMissing.join(",") : "none"} livePromotion=${hfNextAction.livePromotionStatus ?? "N/A"} gate=${hfNextAction.gateStatus ?? "N/A"} progress=${hfNextAction.gateProgress ?? "N/A"} remainingTrades=${hfNextAction.gateRemainingTrades ?? "N/A"}\``
             );
+            const hfDailyVerdict = preview?.hfDailyVerdict || {};
+            lines.push(
+              `- hf_daily_verdict: \`status=${hfDailyVerdict.status ?? "N/A"} action=${hfDailyVerdict.action ?? "N/A"} reason=${hfDailyVerdict.reason ?? "N/A"} requiredMissing=${Array.isArray(hfDailyVerdict.requiredMissing) && hfDailyVerdict.requiredMissing.length > 0 ? hfDailyVerdict.requiredMissing.join(",") : "none"} livePromotion=${hfDailyVerdict.livePromotionStatus ?? "N/A"} gate=${hfDailyVerdict.gateStatus ?? "N/A"} progress=${hfDailyVerdict.gateProgress ?? "N/A"} remainingTrades=${hfDailyVerdict.gateRemainingTrades ?? "N/A"}\``
+            );
             const hfPayloadPathSticky = preview?.hfPayloadPathSticky || {};
             lines.push(
               `- hf_payload_path_sticky: \`priorStage6Hash=${hfPayloadPathSticky.priorStage6Hash ?? "N/A"} stage6HashChanged=${hfPayloadPathSticky.stage6HashChanged ?? "N/A"} stickyEligible=${hfPayloadPathSticky.stickyEligible ?? "N/A"} stickyCarried=${hfPayloadPathSticky.stickyCarried ?? "N/A"} stickyReset=${hfPayloadPathSticky.stickyReset ?? "N/A"} reason=${hfPayloadPathSticky.stickyResetReason ?? "N/A"} currentVerified=${hfPayloadPathSticky.currentVerified ?? "N/A"} currentSource=${hfPayloadPathSticky.currentSource ?? "N/A"} resolvedVerified=${hfPayloadPathSticky.resolvedVerified ?? "N/A"} resolvedSource=${hfPayloadPathSticky.resolvedSource ?? "N/A"}\``
@@ -752,6 +762,7 @@ jobs:
             lines.push("- hf_freeze: `enabled=N/A status=N/A reason=N/A recommendation=N/A progress=N/A/N/A stable=N/A/N/A alert=N/A/N/A shadowRate=N/A shadowMax=N/A hfAlert=N/A frozenAt=N/A`");
             lines.push("- hf_live_promotion: `status=N/A reason=N/A recommendation=N/A required=N/A/N/A requiredMissing=N/A requiredHint=N/A pass=N/A/N/A reqPerfGateGo=N/A reqFreezeFrozen=N/A reqShadowStable=N/A reqPayloadPathVerified=N/A perfGateGo=N/A freezeFrozen=N/A alertClear=N/A shadowStable=N/A payloadPathVerified=N/A payloadPathSource=N/A payloadPathVerifiedAt=N/A probeActive=N/A probeMode=N/A`");
             lines.push("- hf_next_action: `status=N/A action=N/A reason=N/A hint=N/A requiredMissing=N/A livePromotion=N/A gate=N/A progress=N/A remainingTrades=N/A`");
+            lines.push("- hf_daily_verdict: `status=N/A action=N/A reason=N/A requiredMissing=N/A livePromotion=N/A gate=N/A progress=N/A remainingTrades=N/A`");
             lines.push("- hf_payload_path_sticky: `priorStage6Hash=N/A stage6HashChanged=N/A stickyEligible=N/A stickyCarried=N/A stickyReset=N/A reason=N/A currentVerified=N/A currentSource=N/A resolvedVerified=N/A resolvedSource=N/A`");
             lines.push("- hf_evidence: `history=N/A latestAt=N/A latestStage6Hash=N/A latestLive=N/A latestProbe=N/A latestAlert=N/A latestGate=N/A window=N/A pass=N/A hold=N/A block=N/A alerts=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
@@ -780,6 +791,8 @@ jobs:
               hfAudit.runSummaryHfLivePromotion,
               hfAudit.nextActionMarker,
               hfAudit.runSummaryHfNextAction,
+              hfAudit.dailyVerdictMarker,
+              hfAudit.runSummaryHfDailyVerdict,
               hfAudit.payloadPathStickyMarker,
               hfAudit.runSummaryHfPayloadPathSticky,
               hfAudit.evidenceMarker,
@@ -788,10 +801,10 @@ jobs:
             tuningSignals.markerAuditKnown = true;
             tuningSignals.markerAuditOk = markerAuditFields.every((value) => value === "ok");
             lines.push(
-              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} tuningPhase=${hfAudit.tuningPhaseMarker ?? "missing"} runSummaryTuningPhase=${hfAudit.runSummaryHfTuningPhase ?? "missing"} tuningAdvice=${hfAudit.tuningAdviceMarker ?? "missing"} runSummaryTuningAdvice=${hfAudit.runSummaryHfTuningAdvice ?? "missing"} freeze=${hfAudit.freezeMarker ?? "missing"} runSummaryFreeze=${hfAudit.runSummaryHfFreeze ?? "missing"} payloadProbe=${hfAudit.payloadProbeMarker ?? "missing"} runSummaryPayloadProbe=${hfAudit.runSummaryHfPayloadProbe ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"} livePromotion=${hfAudit.livePromotionMarker ?? "missing"} runSummaryLivePromotion=${hfAudit.runSummaryHfLivePromotion ?? "missing"} nextAction=${hfAudit.nextActionMarker ?? "missing"} runSummaryNextAction=${hfAudit.runSummaryHfNextAction ?? "missing"} payloadPathSticky=${hfAudit.payloadPathStickyMarker ?? "missing"} runSummaryPayloadPathSticky=${hfAudit.runSummaryHfPayloadPathSticky ?? "missing"} evidence=${hfAudit.evidenceMarker ?? "missing"} runSummaryEvidence=${hfAudit.runSummaryHfEvidence ?? "missing"}\``
+              `- hf_marker_audit: \`soft=${hfAudit.softGate ?? "missing"} drift=${hfAudit.driftMarker ?? "missing"} runSummary=${hfAudit.runSummaryHfDrift ?? "missing"} shadow=${hfAudit.shadowMarker ?? "missing"} runSummaryShadow=${hfAudit.runSummaryHfShadow ?? "missing"} runSummaryShadowTrend=${hfAudit.runSummaryHfShadowTrend ?? "missing"} tuningPhase=${hfAudit.tuningPhaseMarker ?? "missing"} runSummaryTuningPhase=${hfAudit.runSummaryHfTuningPhase ?? "missing"} tuningAdvice=${hfAudit.tuningAdviceMarker ?? "missing"} runSummaryTuningAdvice=${hfAudit.runSummaryHfTuningAdvice ?? "missing"} freeze=${hfAudit.freezeMarker ?? "missing"} runSummaryFreeze=${hfAudit.runSummaryHfFreeze ?? "missing"} payloadProbe=${hfAudit.payloadProbeMarker ?? "missing"} runSummaryPayloadProbe=${hfAudit.runSummaryHfPayloadProbe ?? "missing"} alert=${hfAudit.alertMarker ?? "missing"} runSummaryAlert=${hfAudit.runSummaryHfAlert ?? "missing"} livePromotion=${hfAudit.livePromotionMarker ?? "missing"} runSummaryLivePromotion=${hfAudit.runSummaryHfLivePromotion ?? "missing"} nextAction=${hfAudit.nextActionMarker ?? "missing"} runSummaryNextAction=${hfAudit.runSummaryHfNextAction ?? "missing"} dailyVerdict=${hfAudit.dailyVerdictMarker ?? "missing"} runSummaryDailyVerdict=${hfAudit.runSummaryHfDailyVerdict ?? "missing"} payloadPathSticky=${hfAudit.payloadPathStickyMarker ?? "missing"} runSummaryPayloadPathSticky=${hfAudit.runSummaryHfPayloadPathSticky ?? "missing"} evidence=${hfAudit.evidenceMarker ?? "missing"} runSummaryEvidence=${hfAudit.runSummaryHfEvidence ?? "missing"}\``
             );
           } else {
-            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing runSummaryShadowTrend=missing tuningPhase=missing runSummaryTuningPhase=missing tuningAdvice=missing runSummaryTuningAdvice=missing freeze=missing runSummaryFreeze=missing payloadProbe=missing runSummaryPayloadProbe=missing alert=missing runSummaryAlert=missing livePromotion=missing runSummaryLivePromotion=missing nextAction=missing runSummaryNextAction=missing payloadPathSticky=missing runSummaryPayloadPathSticky=missing evidence=missing runSummaryEvidence=missing`");
+            lines.push("- hf_marker_audit: `soft=missing drift=missing runSummary=missing shadow=missing runSummaryShadow=missing runSummaryShadowTrend=missing tuningPhase=missing runSummaryTuningPhase=missing tuningAdvice=missing runSummaryTuningAdvice=missing freeze=missing runSummaryFreeze=missing payloadProbe=missing runSummaryPayloadProbe=missing alert=missing runSummaryAlert=missing livePromotion=missing runSummaryLivePromotion=missing nextAction=missing runSummaryNextAction=missing dailyVerdict=missing runSummaryDailyVerdict=missing payloadPathSticky=missing runSummaryPayloadPathSticky=missing evidence=missing runSummaryEvidence=missing`");
           }
 
           if (fs.existsSync(idempPath)) {

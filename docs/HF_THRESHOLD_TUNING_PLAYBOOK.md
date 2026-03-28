@@ -55,6 +55,7 @@ hf_tuning_advice:
 hf_freeze:
 hf_live_promotion:
 hf_next_action:
+hf_daily_verdict:
 hf_tuning_comment:
 hf_alert:
 hf_marker_audit:
@@ -76,6 +77,7 @@ Minimum lines to capture:
 - `hf_freeze`
 - `hf_live_promotion`
 - `hf_next_action`
+- `hf_daily_verdict`
 - `hf_tuning_comment`
 - `hf_alert`
 - `hf_marker_audit`
@@ -191,6 +193,14 @@ Minimum lines to capture:
   - `LIVE_READY` -> promotion review candidate.
 - Fast check:
   - `gateProgress` + `gateRemainingTrades` together show how far we are from the 20-trade gate.
+
+### hf_daily_verdict
+- One-line daily operator grade: `PASS/HOLD/BLOCK`.
+- Interpretation:
+  - `PASS`: checklist path is ready for promotion review.
+  - `HOLD`: normal observation mode or pending required checks.
+  - `BLOCK`: explicit blocker (alert/live-promotion block) active.
+- Use as the first triage field before reading detailed lines.
 
 ### hf_payload_path_sticky
 - Payload-path sticky carry/reset observability line.
@@ -365,6 +375,7 @@ Use this when checking sidecar results every day.
 
 ```text
 hf_live_promotion:
+hf_daily_verdict:
 hf_freeze:
 hf_tuning_comment:
 hf_payload_probe:
