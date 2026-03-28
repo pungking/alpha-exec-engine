@@ -80,6 +80,7 @@ npm run replay:hf:fixture
 
 HF verification shortcuts:
 - `npm run verify:hf`: CI-equivalent one-shot gate (build once + unit/replay checks).
+- `npm run check:json-parse-guard`: fail fast if raw `JSON.parse(...)` appears outside `src/json-utils.ts`.
 - `npm run test:hf:dist`: run HF unit tests on existing `dist` build.
 - `npm run replay:hf:fixture:dist`: run fixture replay on existing `dist` build.
 
