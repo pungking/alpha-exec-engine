@@ -320,6 +320,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Default schedule is kept as low-frequency weekday fallback (once/day UTC) to reduce duplicate spend when dispatch auto-runs are enabled.
   - Manual dispatch inputs:
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
+      - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
