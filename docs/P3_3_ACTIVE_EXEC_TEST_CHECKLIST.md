@@ -22,6 +22,46 @@ Phase-1 done condition:
 
 ---
 
+## 0.1) Phase Status Board (current)
+
+Tracking unit: this checklist only (`P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`).
+
+Completed reference (already closed):
+- `0.5` Entry Feasibility Gate
+- `0.6` Stage6 Decision-Contract Alignment
+- `0.7` Payload Path Probe
+- `0.9A` automation baseline
+- `0.9C` Stage6 -> Sidecar auto-trigger
+
+### Phase-1 (보완중 / 부분완료)
+
+- `0.9B` runtime evidence: **7/9 complete**
+  - pending: artifact file-level confirmation (`stage6-20trade-loop.json/csv`)
+  - pending: 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
+
+### Phase-2 (보완예정 / 미체크)
+
+- `0.8A` quality gate enforcement: **0/5**
+- `0.8B` Telegram contract sync: **0/6**
+- `0.8C` sidecar skip-reason mapping sync: **0/3**
+- `TC-1` blocked safety mode: **0/8**
+- `6)` rollback safe defaults sign-off: **0/11**
+
+### Phase-3 (미보완 / 후속 확장)
+
+- `0)` safety baseline: **0/10**
+- `TC-2` tighten_stops: **0/12**
+- `TC-3` cancel_open_entries: **0/12**
+- `TC-4` reduce_positions_50: **0/14**
+- `5)` troubleshooting checklist: **0/4**
+
+Current subtotal:
+- complete: **46**
+- remaining: **91**
+- progress: **33.6%** (`46/137`)
+
+---
+
 ## 0) Safety Baseline (required before all tests)
 
 - [ ] `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper only)
