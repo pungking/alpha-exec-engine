@@ -35,6 +35,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
+- Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
 
 ## Market Guard (P3-2)
 - Separate runtime (`npm run guard`) for intraday guard checks.
@@ -66,6 +67,8 @@ These defaults must stay until dry-run validation is complete.
 npm install
 npm run build
 node dist/src/index.js
+# zero-credit judgement replay (uses saved state files)
+npm run replay:hf
 ```
 
 ## Environment

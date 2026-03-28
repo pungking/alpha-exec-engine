@@ -369,6 +369,7 @@ hf_freeze:
 hf_tuning_comment:
 hf_payload_probe:
 hf_payload_probe_forced:
+hf_evidence:
 hf_alert:
 hf_marker_audit:
 perf_loop_gate_status:
@@ -396,6 +397,9 @@ skip_reasons:
   - payload-path evidence (`hf_payload_probe_forced`)
   - no false drift/alert noise
 - Avoid aggressive threshold tuning.
+- Use zero-credit replay for consistency checks:
+  - `npm run replay:hf`
+  - output: `state/replay_summary.json`
 
 ### D. Interpretation at `progress >= 20/20`
 

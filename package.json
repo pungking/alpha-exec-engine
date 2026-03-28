@@ -10,7 +10,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/index.js",
-    "guard": "node dist/src/market-guard.js"
+    "guard": "node dist/src/market-guard.js",
+    "replay:hf": "npm run build && node dist/src/replay-hf-judgement.js",
+    "replay:hf:strict": "npm run build && node dist/src/replay-hf-judgement.js --strict"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
