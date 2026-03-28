@@ -400,6 +400,8 @@ skip_reasons:
 - Use zero-credit replay for consistency checks:
   - `npm run replay:hf`
   - output: `state/replay_summary.json`
+- Run judgement core unit tests before merging tuning-related code:
+  - `npm run test:hf`
 
 ### D. Interpretation at `progress >= 20/20`
 

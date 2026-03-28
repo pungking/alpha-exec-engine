@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/index.js",
     "guard": "node dist/src/market-guard.js",
+    "test:hf": "npm run build && node --test dist/src/hf-judgement-core.test.js",
     "replay:hf": "npm run build && node dist/src/replay-hf-judgement.js",
     "replay:hf:strict": "npm run build && node dist/src/replay-hf-judgement.js --strict"
   },

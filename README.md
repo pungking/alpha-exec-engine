@@ -67,6 +67,8 @@ These defaults must stay until dry-run validation is complete.
 npm install
 npm run build
 node dist/src/index.js
+# judgement unit tests (credit-free)
+npm run test:hf
 # zero-credit judgement replay (uses saved state files)
 npm run replay:hf
 ```
