@@ -78,6 +78,11 @@ npm run replay:hf
 npm run replay:hf:fixture
 ```
 
+HF verification shortcuts:
+- `npm run verify:hf`: CI-equivalent one-shot gate (build once + unit/replay checks).
+- `npm run test:hf:dist`: run HF unit tests on existing `dist` build.
+- `npm run replay:hf:fixture:dist`: run fixture replay on existing `dist` build.
+
 ## Environment
 Use `.env.example` as baseline.
 
