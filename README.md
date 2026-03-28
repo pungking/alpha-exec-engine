@@ -83,6 +83,7 @@ HF verification shortcuts:
 - `npm run check:json-parse-guard`: fail fast if raw `JSON.parse(...)` appears outside `src/json-utils.ts`.
 - `npm run test:hf:dist`: run HF unit tests on existing `dist` build.
 - `npm run replay:hf:fixture:dist`: run fixture replay on existing `dist` build.
+- `npm run progress:overall`: print current progress ratio from `docs/OVERALL_PROGRESS_TRACKER.md`.
 
 ## Environment
 Use `.env.example` as baseline.
@@ -324,6 +325,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
       - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
+  - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - HF marker audit (warning-only):
     - Workflow stores marker status at `state/hf-marker-audit.json`.
