@@ -36,6 +36,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
+- Uses shared JSON parse guard (`src/json-utils.ts`) for Drive/state payloads (`NaN/Infinity -> null`) to reduce runtime parse breaks.
 
 ## Market Guard (P3-2)
 - Separate runtime (`npm run guard`) for intraday guard checks.

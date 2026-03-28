@@ -6,6 +6,7 @@ Scope:
 - Sidecar HF soft gate
 - Sidecar HF shadow compare
 - Sidecar HF alert/drift telemetry
+- Sidecar JSON parse guard health (`src/json-utils.ts`)
 
 Out of scope:
 - Web app UI tuning
@@ -228,6 +229,11 @@ Minimum lines to capture:
 ### hf_marker_audit
 - All `ok` means logging/summaries are synchronized.
 - Any `missing` means observability gap (warning-only by policy).
+
+### JSON parse guard (ops note)
+- Sidecar JSON/state parsing now goes through shared guard `src/json-utils.ts`.
+- If corrupted payload text includes `NaN/Infinity`, parser normalizes to `null` before parse.
+- This is a runtime stability guard, not a signal-tuning control; keep tuning decisions based on HF telemetry lines.
 
 ### perf_loop_gate_progress
 - `x/20` means sample maturity toward go/no-go gate.
