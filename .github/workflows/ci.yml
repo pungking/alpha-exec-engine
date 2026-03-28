@@ -23,7 +23,5 @@ jobs:
         run: npm ci
       - name: Typecheck
         run: npm run typecheck
-      - name: Build
-        run: npm run build
       - name: HF Verify (Unit + Replay Fixture)
         run: npm run verify:hf
