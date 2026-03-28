@@ -270,6 +270,19 @@ async function downloadDriveJson(accessToken: string, fileId: string): Promise<s
   return response.text();
 }
 
+function parseJsonText<T>(text: string, context: string): T {
+  const safeText = text
+    .replace(/:\s*NaN/g, ": null")
+    .replace(/:\s*Infinity/g, ": null")
+    .replace(/:\s*-Infinity/g, ": null");
+  try {
+    return JSON.parse(safeText) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${context} JSON parse failed: ${message}`);
+  }
+}
+
 async function fetchSnapshotVix(accessToken: string): Promise<VixLookupResult> {
   const folderId = process.env.GDRIVE_MARKET_SNAPSHOT_FOLDER_ID?.trim() || process.env.GDRIVE_ROOT_FOLDER_ID || "";
   if (!folderId) {
@@ -302,7 +315,7 @@ async function fetchSnapshotVix(accessToken: string): Promise<VixLookupResult> {
 
   try {
     const raw = await downloadDriveJson(accessToken, file.id);
-    const payload = JSON.parse(raw) as unknown;
+    const payload = parseJsonText<unknown>(raw, `market_snapshot(${file.name || file.id})`);
     const vix = extractVixFromMarketSnapshot(payload);
     if (vix == null) {
       return {
@@ -1185,7 +1198,7 @@ async function executeAction(
 async function loadMarketGuardState(): Promise<MarketGuardState | null> {
   try {
     const raw = await readFile(MARKET_GUARD_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<MarketGuardState>;
+    const parsed = parseJsonText<Partial<MarketGuardState>>(raw, "market_guard_state");
     if (!parsed || typeof parsed !== "object") return null;
     const level = Number(parsed.lastLevel);
     if (!Number.isInteger(level) || level < 0 || level > 3) return null;
@@ -1216,7 +1229,7 @@ async function saveMarketGuardState(state: MarketGuardState): Promise<void> {
 async function loadActionLedger(): Promise<GuardActionLedgerState> {
   try {
     const raw = await readFile(GUARD_ACTION_LEDGER_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<GuardActionLedgerState>;
+    const parsed = parseJsonText<Partial<GuardActionLedgerState>>(raw, "guard_action_ledger");
     const actions =
       parsed && typeof parsed === "object" && parsed.actions && typeof parsed.actions === "object"
         ? (parsed.actions as GuardActionLedgerState["actions"])
