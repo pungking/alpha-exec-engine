@@ -84,6 +84,7 @@ HF verification shortcuts:
 - `npm run test:hf:dist`: run HF unit tests on existing `dist` build.
 - `npm run replay:hf:fixture:dist`: run fixture replay on existing `dist` build.
 - `npm run progress:overall`: print current progress ratio from `docs/OVERALL_PROGRESS_TRACKER.md`.
+- `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 
 ## Environment
 Use `.env.example` as baseline.

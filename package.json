@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "progress:overall": "node scripts/progress-summary.mjs",
+    "progress:daily": "node scripts/progress-daily.mjs",
     "start": "node dist/src/index.js",
     "guard": "node dist/src/market-guard.js",
     "check:json-parse-guard": "node scripts/check-json-parse-guard.mjs",

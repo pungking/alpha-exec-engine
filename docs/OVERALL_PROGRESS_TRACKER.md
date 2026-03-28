@@ -27,4 +27,4 @@ Scope baseline: **current stabilization and verification program** (JSON parse h
 - [x] Add this overall progress tracker file
 - [ ] Attach 1 validation-pack run evidence (log + summary snippet)
 - [ ] Attach 1 payload-probe run evidence (log + summary snippet)
-- [ ] Daily update loop: keep tracker status and evidence links current
+- [x] Daily update loop: keep tracker status and evidence links current (`npm run progress:daily` + `docs/OVERALL_PROGRESS_EVIDENCE.md`)
