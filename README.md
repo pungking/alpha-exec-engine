@@ -70,6 +70,8 @@ npm run build
 node dist/src/index.js
 # judgement unit tests (credit-free)
 npm run test:hf
+# one-shot local regression (tests + fixture replay)
+npm run verify:hf
 # zero-credit judgement replay (uses saved state files)
 npm run replay:hf
 # zero-credit regression replay against fixed fixture/baseline

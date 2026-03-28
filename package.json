@@ -12,6 +12,7 @@
     "start": "node dist/src/index.js",
     "guard": "node dist/src/market-guard.js",
     "test:hf": "npm run build && node --test dist/src/hf-judgement-core.test.js",
+    "verify:hf": "npm run test:hf && npm run replay:hf:fixture",
     "replay:hf": "npm run build && node dist/src/replay-hf-judgement.js",
     "replay:hf:strict": "npm run build && node dist/src/replay-hf-judgement.js --strict",
     "replay:hf:fixture": "npm run build && node dist/src/replay-hf-judgement.js --preview testdata/replay/preview.fixture.json --stage6 testdata/replay/stage6.fixture.json --baseline testdata/replay/baseline.summary.json --out state/replay_fixture_summary.json --strict --expect-no-diff"
