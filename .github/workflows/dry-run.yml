@@ -259,7 +259,12 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: HF Verify gate (validation pack)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}
+        run: npm run verify:hf
+
       - name: Build
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true') }}
         run: npm run build
 
       - name: Refresh market guard state
