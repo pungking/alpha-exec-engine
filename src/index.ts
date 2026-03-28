@@ -1921,7 +1921,7 @@ function evaluateSnapshotFreshness(
 async function loadRegimeGuardState(): Promise<RegimeGuardState | null> {
   try {
     const raw = await readFile(REGIME_GUARD_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<RegimeGuardState>;
+    const parsed = parseJsonText<Partial<RegimeGuardState>>(raw, "regime_guard_state");
     if (!parsed || typeof parsed !== "object") return null;
     if (parsed.lastProfile !== "default" && parsed.lastProfile !== "risk_off") return null;
     if (typeof parsed.lastSwitchedAt !== "string" || typeof parsed.updatedAt !== "string") return null;
@@ -2088,7 +2088,7 @@ async function applyRegimeGuards(base: RegimeSelection): Promise<RegimeSelection
 async function loadGuardControlState(): Promise<GuardControlState | null> {
   try {
     const raw = await readFile(GUARD_CONTROL_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as GuardControlState;
+    const parsed = parseJsonText<GuardControlState>(raw, "guard_control_state");
     if (!parsed || typeof parsed !== "object") return null;
     return parsed;
   } catch {
@@ -3627,7 +3627,7 @@ async function sendTelegramMessage(token: string, chatId: string, text: string, 
 async function loadHfDriftState(): Promise<HfDriftState> {
   try {
     const raw = await readFile(HF_DRIFT_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<HfDriftState>;
+    const parsed = parseJsonText<Partial<HfDriftState>>(raw, "hf_drift_state");
     const snapshots = Array.isArray(parsed?.snapshots)
       ? (parsed.snapshots as HfDriftSnapshot[])
       : [];
@@ -3767,7 +3767,7 @@ async function updateHfDriftAlert(
 async function loadHfFreezeState(): Promise<HfFreezeState> {
   try {
     const raw = await readFile(HF_TUNING_FREEZE_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<HfFreezeState>;
+    const parsed = parseJsonText<Partial<HfFreezeState>>(raw, "hf_freeze_state");
     const statusRaw = String(parsed?.status ?? "").trim().toUpperCase();
     const status: HfFreezeStatus =
       statusRaw === "OBSERVE" ||
@@ -3803,7 +3803,7 @@ async function saveHfFreezeState(state: HfFreezeState): Promise<void> {
 async function loadHfLivePromotionState(): Promise<HfLivePromotionState | null> {
   try {
     const raw = await readFile(HF_LIVE_PROMOTION_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<HfLivePromotionState>;
+    const parsed = parseJsonText<Partial<HfLivePromotionState>>(raw, "hf_live_promotion_state");
     const stage6Hash = String(parsed?.stage6Hash ?? "").trim();
     if (!stage6Hash) return null;
     const sourceRaw = String(parsed?.lastSource ?? "").trim().toLowerCase();
@@ -4752,7 +4752,7 @@ function parseHfShadowHistoryLine(line: string): HfShadowHistoryRecord | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as HfShadowHistoryRecord;
+    const parsed = parseJsonText<HfShadowHistoryRecord>(trimmed, "hf_shadow_history_line");
     if (!parsed || typeof parsed !== "object") return null;
     if (typeof parsed.at !== "string" || typeof parsed.stage6Hash !== "string") return null;
     return parsed;
@@ -4765,7 +4765,7 @@ function parseHfEvidenceHistoryLine(line: string): HfEvidenceHistoryRecord | nul
   const trimmed = line.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as Partial<HfEvidenceHistoryRecord>;
+    const parsed = parseJsonText<Partial<HfEvidenceHistoryRecord>>(trimmed, "hf_evidence_history_line");
     if (!parsed || typeof parsed !== "object") return null;
     if (typeof parsed.at !== "string" || typeof parsed.stage6Hash !== "string") return null;
     if (typeof parsed.stage6File !== "string" || typeof parsed.profile !== "string") return null;
@@ -5054,7 +5054,7 @@ function buildHfEvidenceHistoryRecord(
 async function loadRunState(): Promise<SidecarRunState | null> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as SidecarRunState;
+    const parsed = parseJsonText<SidecarRunState>(raw, "sidecar_run_state");
     if (!parsed?.lastStage6Sha256) return null;
     return parsed;
   } catch {
@@ -5500,7 +5500,7 @@ async function loadPerformanceLoopState(
 
   try {
     const raw = await readFile(PERFORMANCE_LOOP_JSON_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<PerformanceLoopState>;
+    const parsed = parseJsonText<Partial<PerformanceLoopState>>(raw, "performance_loop_state");
     const currentBatchRaw = typeof parsed.batchId === "string" ? parsed.batchId : "";
     const currentBatch = sanitizeBatchId(currentBatchRaw);
     const resolvedBatch = batchOverride || currentBatch || makeDefaultBatchId();
@@ -5775,7 +5775,7 @@ async function updatePerformanceLoop(
 async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
   try {
     const raw = await readFile(ORDER_IDEMPOTENCY_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<OrderIdempotencyState>;
+    const parsed = parseJsonText<Partial<OrderIdempotencyState>>(raw, "order_idempotency_state");
     const orders =
       parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
         ? (parsed.orders as OrderIdempotencyState["orders"])
@@ -5896,7 +5896,7 @@ async function applyOrderIdempotency(
 async function loadOrderLedgerState(): Promise<OrderLedgerState> {
   try {
     const raw = await readFile(ORDER_LEDGER_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<OrderLedgerState>;
+    const parsed = parseJsonText<Partial<OrderLedgerState>>(raw, "order_ledger_state");
     const orders =
       parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
         ? (parsed.orders as Record<string, OrderLedgerRecord>)
