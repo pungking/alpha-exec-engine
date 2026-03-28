@@ -85,6 +85,7 @@ HF verification shortcuts:
 - `npm run replay:hf:fixture:dist`: run fixture replay on existing `dist` build.
 - `npm run progress:overall`: print current progress ratio from `docs/OVERALL_PROGRESS_TRACKER.md`.
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
+- `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
 
 ## Environment
 Use `.env.example` as baseline.

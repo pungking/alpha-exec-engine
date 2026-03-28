@@ -25,6 +25,6 @@ Scope baseline: **current stabilization and verification program** (JSON parse h
 - [x] Sync README workflow notes (`validation_pack` verify pre-gate + parse guard lane)
 - [x] Sync HF playbook with JSON parse guard ops note
 - [x] Add this overall progress tracker file
-- [ ] Attach 1 validation-pack run evidence (log + summary snippet)
-- [ ] Attach 1 payload-probe run evidence (log + summary snippet)
+- [x] Attach 1 validation-pack run evidence (log + summary snippet)
+- [x] Attach 1 payload-probe run evidence (log + summary snippet)
 - [x] Daily update loop: keep tracker status and evidence links current (`npm run progress:daily` + `docs/OVERALL_PROGRESS_EVIDENCE.md`)
