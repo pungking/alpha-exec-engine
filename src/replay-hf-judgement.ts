@@ -8,6 +8,7 @@ type CliArgs = {
   baselinePath: string | null;
   stage6Path: string | null;
   strict: boolean;
+  expectNoDiff: boolean;
 };
 
 type ReplaySnapshot = {
@@ -62,6 +63,7 @@ type ReplayResult = {
     baselinePath: string | null;
     stage6Path: string | null;
     strict: boolean;
+    expectNoDiff: boolean;
   };
   replaySnapshot: ReplaySnapshot;
   invariants: {
@@ -85,7 +87,8 @@ function parseCliArgs(argv: string[]): CliArgs {
     outPath: "state/replay_summary.json",
     baselinePath: null,
     stage6Path: null,
-    strict: false
+    strict: false,
+    expectNoDiff: false
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -114,6 +117,10 @@ function parseCliArgs(argv: string[]): CliArgs {
       args.strict = true;
       continue;
     }
+    if (token === "--expect-no-diff") {
+      args.expectNoDiff = true;
+      continue;
+    }
     if (token === "--help" || token === "-h") {
       console.log(
         [
@@ -124,7 +131,8 @@ function parseCliArgs(argv: string[]): CliArgs {
           "  --out <path>       Output summary path (default: state/replay_summary.json)",
           "  --baseline <path>  Optional baseline replay summary to diff",
           "  --stage6 <path>    Optional stage6 json file for hash/size evidence",
-          "  --strict           Exit non-zero when invariants fail"
+          "  --strict           Exit non-zero when invariants fail",
+          "  --expect-no-diff   Exit non-zero when baseline diff is non-empty"
         ].join("\n")
       );
       process.exit(0);
@@ -183,7 +191,12 @@ function buildReplaySnapshot(previewRaw: unknown, stage6Info: ReplaySnapshot["op
   const next = asObject(preview.hfNextAction);
   const probe = asObject(preview.hfPayloadProbeStatus);
   const alert = asObject(preview.hfAlert);
-  const audit = asObject(preview.hfMarkerAudit);
+  const tuningComment = asObject(preview.hfTuningComment);
+  const markerAuditFromComment =
+    typeof tuningComment.markerAuditOk === "boolean" ? tuningComment.markerAuditOk : null;
+  const markerAuditSummary = asObject(preview.hfMarkerAudit);
+  const markerAuditFromSummary =
+    typeof markerAuditSummary.ok === "boolean" ? markerAuditSummary.ok : null;
   return {
     stage6Hash: asString(preview.stage6Hash, "N/A"),
     stage6File: asString(preview.stage6File, "N/A"),
@@ -218,7 +231,7 @@ function buildReplaySnapshot(previewRaw: unknown, stage6Info: ReplaySnapshot["op
       reason: asString(alert.reason, "N/A")
     },
     markerAudit: {
-      ok: typeof audit === "object" && audit !== null ? null : null
+      ok: markerAuditFromComment ?? markerAuditFromSummary
     },
     optionalStage6: stage6Info
   };
@@ -245,6 +258,9 @@ function evaluateInvariants(snapshot: ReplaySnapshot): string[] {
   if (snapshot.nextAction.status === "LIVE_READY" && snapshot.livePromotion.status !== "PASS") {
     failures.push("nextAction.live_ready_without_live_pass");
   }
+  if (snapshot.markerAudit.ok === false) {
+    failures.push("markerAudit.not_ok");
+  }
   return failures;
 }
 
@@ -268,6 +284,7 @@ function flattenSnapshot(snapshot: ReplaySnapshot): Record<string, string> {
     "next.requiredMissing": snapshot.nextAction.requiredMissing.join(",") || "none",
     "probe.status": snapshot.payloadProbe.status,
     "probe.reason": snapshot.payloadProbe.reason,
+    "markerAudit.ok": String(snapshot.markerAudit.ok),
     "alert.triggered": String(snapshot.alert.triggered),
     "alert.reason": snapshot.alert.reason
   };
@@ -332,7 +349,8 @@ async function main(): Promise<void> {
       outPath,
       baselinePath,
       stage6Path,
-      strict: args.strict
+      strict: args.strict,
+      expectNoDiff: args.expectNoDiff
     },
     replaySnapshot,
     invariants: {
@@ -361,6 +379,19 @@ async function main(): Promise<void> {
     );
   }
   console.log(`[REPLAY_HF] summary_saved=${outPath}`);
+
+  if (args.expectNoDiff && !baselinePath) {
+    console.error("[REPLAY_HF_ERR] --expect-no-diff requires --baseline");
+    process.exitCode = 3;
+    return;
+  }
+  if (args.expectNoDiff && result.diffFromBaseline.changedFields.length > 0) {
+    console.error(
+      `[REPLAY_HF_ERR] baseline_diff_detected changed=${result.diffFromBaseline.changedFields.length}`
+    );
+    process.exitCode = 3;
+    return;
+  }
 
   if (!result.invariants.passed) {
     console.warn(`[REPLAY_HF_WARN] ${result.invariants.failures.join(",")}`);

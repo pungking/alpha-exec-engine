@@ -400,6 +400,8 @@ skip_reasons:
 - Use zero-credit replay for consistency checks:
   - `npm run replay:hf`
   - output: `state/replay_summary.json`
+  - for fixed regression guardrail: `npm run replay:hf:fixture`
+    - enforces `--expect-no-diff` against `testdata/replay/baseline.summary.json`
 - Run judgement core unit tests before merging tuning-related code:
   - `npm run test:hf`
 

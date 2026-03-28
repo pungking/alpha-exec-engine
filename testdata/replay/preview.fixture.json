@@ -1,0 +1,49 @@
+{
+  "stage6Hash": "b762c619ae24",
+  "stage6File": "STAGE6_ALPHA_FINAL_2026-03-27_19-44-16.json",
+  "payloadCount": 0,
+  "skippedCount": 1,
+  "hfTuningPhase": {
+    "phase": "OBSERVE_ONLY",
+    "gateStatus": "PENDING_SAMPLE",
+    "gateProgress": "11/20",
+    "gateRemainingTrades": 9
+  },
+  "hfLivePromotion": {
+    "status": "HOLD",
+    "reason": "perf_gate_pending_sample",
+    "requiredMissing": [
+      "perfGateGo",
+      "freezeFrozen"
+    ]
+  },
+  "hfNextAction": {
+    "status": "HOLD_OBSERVE",
+    "action": "accumulate_more_runs",
+    "reason": "sample_insufficient(11/20)",
+    "gateStatus": "PENDING_SAMPLE",
+    "gateProgress": "11/20",
+    "gateRemainingTrades": 9,
+    "requiredMissing": [
+      "perfGateGo",
+      "freezeFrozen"
+    ]
+  },
+  "hfPayloadProbeStatus": {
+    "status": "PASS_FORCED_SIZE_REDUCED",
+    "reason": "forced_tighten_and_size_reduce_observed",
+    "payloadCount": 0,
+    "hfApplied": 1,
+    "tightenCount": 1,
+    "sizeReduceEnabled": true,
+    "sizeReducedCount": 1,
+    "savedNotional": 120
+  },
+  "hfAlert": {
+    "triggered": false,
+    "reason": "none"
+  },
+  "hfTuningComment": {
+    "markerAuditOk": true
+  }
+}

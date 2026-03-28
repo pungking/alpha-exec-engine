@@ -1,0 +1,20 @@
+{
+  "generatedAt": "2026-03-27T19:44:16.000Z",
+  "sourceRun": "2026-03-27_19-44-14",
+  "executablePicks": [
+    {
+      "symbol": "INVA",
+      "finalVerdict": "STRONG_BUY",
+      "convictionScore": 100
+    },
+    {
+      "symbol": "TGTX",
+      "finalVerdict": "SPECULATIVE_BUY",
+      "convictionScore": 84.8
+    }
+  ],
+  "watchlistTop": [],
+  "meta": {
+    "policyVersion": "stage6-exec-v1.0-rc1"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "replaySnapshot": {
+    "stage6Hash": "b762c619ae24",
+    "stage6File": "STAGE6_ALPHA_FINAL_2026-03-27_19-44-16.json",
+    "payloadCount": 0,
+    "skippedCount": 1,
+    "tuningPhase": {
+      "phase": "OBSERVE_ONLY",
+      "gateStatus": "PENDING_SAMPLE",
+      "gateProgress": "11/20",
+      "gateRemainingTrades": 9
+    },
+    "livePromotion": {
+      "status": "HOLD",
+      "reason": "perf_gate_pending_sample",
+      "requiredMissing": [
+        "perfGateGo",
+        "freezeFrozen"
+      ]
+    },
+    "nextAction": {
+      "status": "HOLD_OBSERVE",
+      "action": "accumulate_more_runs",
+      "reason": "sample_insufficient(11/20)",
+      "gateStatus": "PENDING_SAMPLE",
+      "gateProgress": "11/20",
+      "gateRemainingTrades": 9,
+      "requiredMissing": [
+        "perfGateGo",
+        "freezeFrozen"
+      ]
+    },
+    "payloadProbe": {
+      "status": "PASS_FORCED_SIZE_REDUCED",
+      "reason": "forced_tighten_and_size_reduce_observed"
+    },
+    "alert": {
+      "triggered": false,
+      "reason": "none"
+    },
+    "markerAudit": {
+      "ok": true
+    },
+    "optionalStage6": {
+      "path": "testdata/replay/stage6.fixture.json",
+      "sha256": "c97d97aa0a6fbb00fc142c1c5f182ee594a84bb5d93d33526ae4cb3d80c5592b",
+      "sizeBytes": 406,
+      "candidateCount": 2
+    }
+  }
+}

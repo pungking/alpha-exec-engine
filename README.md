@@ -71,6 +71,8 @@ node dist/src/index.js
 npm run test:hf
 # zero-credit judgement replay (uses saved state files)
 npm run replay:hf
+# zero-credit regression replay against fixed fixture/baseline
+npm run replay:hf:fixture
 ```
 
 ## Environment
