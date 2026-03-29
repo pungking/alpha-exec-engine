@@ -51,12 +51,12 @@ Completed reference (already closed):
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **12/12 complete**
 - `TC-4` reduce_positions_50: **14/14 complete**
-- `5)` troubleshooting checklist: **2/4 (in progress)**
+- `5)` troubleshooting checklist: **3/4 (in progress)**
 
 Current subtotal:
-- complete: **138**
-- remaining: **7**
-- progress: **95.2%** (`138/145`)
+- complete: **139**
+- remaining: **6**
+- progress: **95.9%** (`139/145`)
 
 ---
 
@@ -518,12 +518,19 @@ Evidence
 
 ## 5) Troubleshooting checklist
 
-- [ ] `[GUARD_INTERVAL] skip` -> set `MARKET_GUARD_FORCE_SEND_ONCE=true` or wait interval
+- [x] `[GUARD_INTERVAL] skip` -> set `MARKET_GUARD_FORCE_SEND_ONCE=true` or wait interval
 - [x] `action_reason=cooldown_active` -> wait cooldown and rerun
 - [x] `action_reason=market_closed_guard` -> check `GUARD_ALLOW_OUTSIDE_RTH=true`
 - [ ] Alpaca auth/base URL mismatch -> re-check secrets and `ALPACA_BASE_URL`
 
 Evidence
+- run id: `23711967548` (`logs_62486543315.zip`, `sidecar-guard-state-23711967548.zip`)
+  - baseline run: `action_reason=actions_allowed`, `run=true`
+- run id: `23711970927` (`logs_62486552115.zip`, `sidecar-guard-state-23711970927.zip`)
+  - second immediate run: `[GUARD_INTERVAL] skip: lastEvaluatedAge=0.3m < interval=5m` (expected)
+  - note: skip run reuses prior `state/last-market-guard.json`, so Step Summary can look identical to previous run
+- run id: `23712191846` (`logs_62487163800.zip`, `sidecar-guard-state-23712191846.zip`)
+  - with `MARKET_GUARD_FORCE_SEND_ONCE=true`, `action_reason=actions_allowed`, `run=true` (interval-skip recovery confirmed)
 - run id: `23711692232` (`logs_62485807067.zip`, `sidecar-guard-state-23711692232.zip`)
   - `action_reason=cooldown_active`, `run=false`
 - run id: `23711694594` (`logs_62485812799.zip`, `sidecar-guard-state-23711694594.zip`)
