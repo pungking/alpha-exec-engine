@@ -51,12 +51,12 @@ Completed reference (already closed):
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **12/12 complete**
 - `TC-4` reduce_positions_50: **14/14 complete**
-- `5)` troubleshooting checklist: **0/4**
+- `5)` troubleshooting checklist: **2/4 (in progress)**
 
 Current subtotal:
-- complete: **136**
-- remaining: **9**
-- progress: **93.8%** (`136/145`)
+- complete: **138**
+- remaining: **7**
+- progress: **95.2%** (`138/145`)
 
 ---
 
@@ -519,9 +519,19 @@ Evidence
 ## 5) Troubleshooting checklist
 
 - [ ] `[GUARD_INTERVAL] skip` -> set `MARKET_GUARD_FORCE_SEND_ONCE=true` or wait interval
-- [ ] `action_reason=cooldown_active` -> wait cooldown and rerun
-- [ ] `action_reason=market_closed_guard` -> check `GUARD_ALLOW_OUTSIDE_RTH=true`
+- [x] `action_reason=cooldown_active` -> wait cooldown and rerun
+- [x] `action_reason=market_closed_guard` -> check `GUARD_ALLOW_OUTSIDE_RTH=true`
 - [ ] Alpaca auth/base URL mismatch -> re-check secrets and `ALPACA_BASE_URL`
+
+Evidence
+- run id: `23711692232` (`logs_62485807067.zip`, `sidecar-guard-state-23711692232.zip`)
+  - `action_reason=cooldown_active`, `run=false`
+- run id: `23711694594` (`logs_62485812799.zip`, `sidecar-guard-state-23711694594.zip`)
+  - `action_reason=cooldown_active`, `run=false`
+- run id: `23711717554` (`logs_62485872264.zip`, `sidecar-guard-state-23711717554.zip`)
+  - after cooldown window, `action_reason=actions_allowed`, `run=true` (recovery confirmed)
+- run id: `23711839698` (`logs_62486192202.zip`, `sidecar-guard-state-23711839698.zip`)
+  - with `GUARD_ALLOW_OUTSIDE_RTH=false`, `action_reason=market_closed_guard`, `run=false`
 
 ---
 
