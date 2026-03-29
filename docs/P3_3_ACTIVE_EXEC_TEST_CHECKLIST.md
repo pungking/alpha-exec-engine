@@ -50,13 +50,13 @@ Completed reference (already closed):
 - `0)` safety baseline: **0/10**
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **11/12 (functional pass, config deviation)**
-- `TC-4` reduce_positions_50: **0/14**
+- `TC-4` reduce_positions_50: **12/14 (functional partial, rerun needed)**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **111**
-- remaining: **34**
-- progress: **76.6%** (`111/145`)
+- complete: **123**
+- remaining: **22**
+- progress: **84.8%** (`123/145`)
 
 ---
 
@@ -464,34 +464,39 @@ Goal: validate controlled reduction after cancellation path is proven.
 
 ### Preconditions
 
-- [ ] account has positions
-- [ ] no test-only open buy orders pending
-- [ ] cooldown window has elapsed
+- [x] account has positions
+- [x] no test-only open buy orders pending
+- [x] cooldown window has elapsed
 
 ### Variable overrides
 
-- [ ] `EXEC_ENABLED=true`
-- [ ] `READ_ONLY=false`
-- [ ] `GUARD_FORCE_LEVEL=l3`
+- [x] `EXEC_ENABLED=true`
+- [x] `READ_ONLY=false`
+- [x] `GUARD_FORCE_LEVEL=l3`
 - [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
-- [ ] `GUARD_EXECUTE_REDUCE_POSITIONS=true`
-- [ ] `GUARD_EXECUTE_FLATTEN=false`
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=true`
+- [x] `GUARD_EXECUTE_REDUCE_POSITIONS=true`
+- [x] `GUARD_EXECUTE_FLATTEN=false`
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
 
 ### Execute
 
-- [ ] Run `sidecar-market-guard` once
+- [x] Run `sidecar-market-guard` once
 
 ### Expected
 
 - [ ] `reduce_positions_50` -> `executed`
-- [ ] detail includes `submitted=...`
-- [ ] `flatten_if_triggered` remains `skipped_policy`
+- [x] detail includes `submitted=...`
+- [x] `flatten_if_triggered` remains `skipped_policy`
 
 Evidence
-- run id:
+- run id: `23710586720` (`logs_62482841764.zip`, `sidecar-guard-state-23710586720.zip`)
 - key log line:
+  - `[GUARD_LEDGER] ... exec_allowed=true executed=1 failed=1 blocked=0`
+  - `[GUARD_SUMMARY] ... mode=active actions=5 action_reason=actions_allowed`
 - position delta:
+  - `reduce_positions_50 -> failed | reduce_50 submitted=0 skipped=0 failed=1` (needs rerun)
+  - `flatten_if_triggered -> skipped_policy | GUARD_EXECUTE_FLATTEN=false`
+  - note: this run used `GUARD_EXECUTE_TIGHTEN_STOPS=true` (deviation from TC-4 strict variable profile)
 
 ---
 
