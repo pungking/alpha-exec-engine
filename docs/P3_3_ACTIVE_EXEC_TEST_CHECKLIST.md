@@ -51,12 +51,12 @@ Completed reference (already closed):
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **12/12 complete**
 - `TC-4` reduce_positions_50: **14/14 complete**
-- `5)` troubleshooting checklist: **3/4 (in progress)**
+- `5)` troubleshooting checklist: **4/4 complete**
 
 Current subtotal:
-- complete: **139**
-- remaining: **6**
-- progress: **95.9%** (`139/145`)
+- complete: **140**
+- remaining: **5**
+- progress: **96.6%** (`140/145`)
 
 ---
 
@@ -521,7 +521,7 @@ Evidence
 - [x] `[GUARD_INTERVAL] skip` -> set `MARKET_GUARD_FORCE_SEND_ONCE=true` or wait interval
 - [x] `action_reason=cooldown_active` -> wait cooldown and rerun
 - [x] `action_reason=market_closed_guard` -> check `GUARD_ALLOW_OUTSIDE_RTH=true`
-- [ ] Alpaca auth/base URL mismatch -> re-check secrets and `ALPACA_BASE_URL`
+- [x] Alpaca auth/base URL mismatch -> re-check secrets and `ALPACA_BASE_URL`
 
 Evidence
 - run id: `23711967548` (`logs_62486543315.zip`, `sidecar-guard-state-23711967548.zip`)
@@ -539,6 +539,10 @@ Evidence
   - after cooldown window, `action_reason=actions_allowed`, `run=true` (recovery confirmed)
 - run id: `23711839698` (`logs_62486192202.zip`, `sidecar-guard-state-23711839698.zip`)
   - with `GUARD_ALLOW_OUTSIDE_RTH=false`, `action_reason=market_closed_guard`, `run=false`
+- run id: `23712361623` (`logs_62487604065.zip`, `sidecar-guard-state-23712361623.zip`)
+  - mismatch case (`ALPACA_BASE_URL=https://api.alpaca.markets`): `[MARKET_GUARD] FAIL alpaca /v2/orders?... failed (401): {"code":40110000,"message":"request is not authorized"}`
+- run id: `23712381093` (`logs_62487665736.zip`, `sidecar-guard-state-23712381093.zip`)
+  - recovery case (`ALPACA_BASE_URL=https://paper-api.alpaca.markets`): `action_reason=actions_allowed`, `run=true`
 
 ---
 
