@@ -49,6 +49,8 @@ type Stage6ContractContext = {
   watchlistTop: Stage6CandidateSummary[];
   decisionCountsPrimary: Record<string, number>;
   decisionCountsTop6: Record<string, number>;
+  decisionReasonCountsPrimary: Record<string, number>;
+  decisionReasonCountsTop6: Record<string, number>;
 };
 
 type Stage6CandidateSummary = {
@@ -1258,6 +1260,18 @@ function mapStage6DecisionReasonToSkip(
   return `stage6_${key}`;
 }
 
+function mapStage6DecisionReasonCountsToSkipCounts(
+  counts: Record<string, number>
+): Record<string, number> {
+  return Object.entries(counts).reduce<Record<string, number>>((acc, [reason, countRaw]) => {
+    const count = Number(countRaw);
+    if (!Number.isFinite(count) || count <= 0) return acc;
+    const key = mapStage6DecisionReasonToSkip(reason);
+    acc[key] = Number((acc[key] || 0) + count);
+    return acc;
+  }, {});
+}
+
 function buildSkipReasonCounts(skipped: DryExecSkipReason[]): Record<string, number> {
   return skipped.reduce<Record<string, number>>((acc, row) => {
     const key = String(row?.reason || "unknown");
@@ -1680,6 +1694,8 @@ function parseStage6ContractContext(payload: unknown): Stage6ContractContext | n
   const watchlistTop = parseCandidateSummariesFromRaw(node.watchlistTop);
   const decisionCountsPrimary = parseStage6DecisionCounts(node.decisionCountsPrimary);
   const decisionCountsTop6 = parseStage6DecisionCounts(node.decisionCountsTop6);
+  const decisionReasonCountsPrimary = parseStage6DecisionCounts(node.decisionReasonCountsPrimary);
+  const decisionReasonCountsTop6 = parseStage6DecisionCounts(node.decisionReasonCountsTop6);
 
   if (modelTop6.length === 0 && executablePicks.length === 0 && watchlistTop.length === 0) return null;
 
@@ -1688,7 +1704,9 @@ function parseStage6ContractContext(payload: unknown): Stage6ContractContext | n
     executablePicks,
     watchlistTop,
     decisionCountsPrimary,
-    decisionCountsTop6
+    decisionCountsTop6,
+    decisionReasonCountsPrimary,
+    decisionReasonCountsTop6
   };
 }
 
@@ -5103,6 +5121,10 @@ async function saveDryExecPreview(
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
+  const stage6ContractReasonCountsPrimary = result.contractContext?.decisionReasonCountsPrimary ?? {};
+  const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
+    stage6ContractReasonCountsPrimary
+  );
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -5135,6 +5157,8 @@ async function saveDryExecPreview(
     stopDistancePolicy: dryExec.stopDistancePolicy,
     entryFeasibility: dryExec.entryFeasibility,
     stage6Contract: dryExec.stage6Contract,
+    stage6ContractReasonCountsPrimary,
+    stage6SkipHintCountsPrimary,
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     preflight,
@@ -5156,6 +5180,9 @@ async function saveDryExecPreview(
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
+  );
+  console.log(
+    `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${formatSkipReasonCounts(stage6ContractReasonCountsPrimary)} mapped=${formatSkipReasonCounts(stage6SkipHintCountsPrimary)}`
   );
   console.log(
     `[CONV_POLICY] base=${dryExec.minConvictionPolicy.base} applied=${dryExec.minConvictionPolicy.applied} floor=${dryExec.minConvictionPolicy.floor} ceiling=${dryExec.minConvictionPolicy.ceiling} vix+${dryExec.minConvictionPolicy.marketTighten} quality-${dryExec.minConvictionPolicy.qualityRelief} sampleN=${dryExec.minConvictionPolicy.sampleCount} q${Math.round(dryExec.minConvictionPolicy.sampleQuantileQ * 100)}=${dryExec.minConvictionPolicy.sampleQuantileValue ?? "N/A"} cap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}`
@@ -6190,6 +6217,12 @@ function printRunSummary(
   const hfDailyVerdictSummary = buildHfDailyVerdictSummaryForRun(hfDailyVerdict ?? null);
   const hfPayloadPathStickySummary = buildHfPayloadPathStickySummaryForRun(hfPayloadPathSticky ?? null);
   const hfEvidenceSummaryForRun = buildHfEvidenceSummaryForRun(hfEvidenceSummary ?? null);
+  const stage6ContractReasonCountsPrimary = stage6.contractContext?.decisionReasonCountsPrimary ?? {};
+  const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
+    stage6ContractReasonCountsPrimary
+  );
+  const stage6ContractReasonsPrimarySummary = formatSkipReasonCounts(stage6ContractReasonCountsPrimary);
+  const stage6SkipHintsPrimarySummary = formatSkipReasonCounts(stage6SkipHintCountsPrimary);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -6334,7 +6367,10 @@ function printRunSummary(
     );
   }
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
+  );
+  console.log(
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

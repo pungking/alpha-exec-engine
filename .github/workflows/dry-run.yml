@@ -525,6 +525,15 @@ jobs:
             perfGateReason: "N/A",
             perfGateProgress: "N/A"
           };
+          const formatCountMap = (raw) => {
+            if (!raw || typeof raw !== "object") return "none";
+            const entries = Object.entries(raw)
+              .map(([k, v]) => [String(k), Number(v)])
+              .filter(([k, v]) => k && Number.isFinite(v) && v > 0)
+              .sort((a, b) => b[1] - a[1]);
+            if (entries.length === 0) return "none";
+            return entries.map(([k, v]) => `${k}:${v}`).join(", ");
+          };
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
@@ -581,6 +590,12 @@ jobs:
             const stage6Contract = preview?.stage6Contract || {};
             lines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} watchlist=${stage6Contract.watchlist ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
+            );
+            lines.push(
+              `- stage6_contract_reason_primary: \`${formatCountMap(preview?.stage6ContractReasonCountsPrimary)}\``
+            );
+            lines.push(
+              `- stage6_skip_hint_primary: \`${formatCountMap(preview?.stage6SkipHintCountsPrimary)}\``
             );
             const hfGate = preview?.hfSentimentGate || {};
             lines.push(
@@ -780,6 +795,8 @@ jobs:
             lines.push("- hf_payload_path_sticky: `priorStage6Hash=N/A stage6HashChanged=N/A stickyEligible=N/A stickyCarried=N/A stickyReset=N/A reason=N/A currentVerified=N/A currentSource=N/A resolvedVerified=N/A resolvedSource=N/A`");
             lines.push("- hf_evidence: `history=N/A latestAt=N/A latestStage6Hash=N/A latestLive=N/A latestProbe=N/A latestAlert=N/A latestGate=N/A window=N/A pass=N/A hold=N/A block=N/A alerts=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
+            lines.push("- stage6_contract_reason_primary: `none`");
+            lines.push("- stage6_skip_hint_primary: `none`");
           }
 
           if (fs.existsSync(hfMarkerAuditPath)) {
@@ -908,6 +925,17 @@ jobs:
             lines.push(`- perf_loop_gate_status: \`${gateStatus}\``);
             lines.push(`- perf_loop_gate_reason: \`${gateReason}\``);
             lines.push(`- perf_loop_gate_progress: \`${gateProgress}\``);
+            const notifiedMilestones =
+              Array.isArray(perfLoop?.notifiedMilestones)
+                ? perfLoop.notifiedMilestones
+                    .map((value) => Number(value))
+                    .filter((value) => Number.isFinite(value) && value > 0)
+                    .sort((a, b) => a - b)
+                : [];
+            const nextMilestone = [10, 20].find((value) => !notifiedMilestones.includes(value));
+            lines.push(
+              `- perf_loop_milestones: \`notified=${notifiedMilestones.length ? notifiedMilestones.join(",") : "none"} next=${nextMilestone ?? "none"}\``
+            );
             tuningSignals.perfGateStatus = gateStatus;
             tuningSignals.perfGateReason = gateReason;
             tuningSignals.perfGateProgress = gateProgress;

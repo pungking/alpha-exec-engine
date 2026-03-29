@@ -241,6 +241,7 @@ Evidence
   - `stage6_quality_missing_expected_return`
   - `stage6_quality_conviction_floor`
   - `stage6_quality_verdict_unusable`
+  - (source can be either `skip_reasons` or `stage6_skip_hint_primary`)
 - [x] Confirm `[STAGE6_CONTRACT]` counters match Stage6 final decision distribution
 
 Evidence
