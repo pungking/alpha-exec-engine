@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: sidecar-market-guard-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   market-guard:
@@ -118,6 +118,12 @@ jobs:
 
           const lines = [];
           lines.push("## Sidecar Market Guard Summary");
+          lines.push(
+            `- runtime flags: \`EXEC_ENABLED=${process.env.EXEC_ENABLED ?? "N/A"} READ_ONLY=${process.env.READ_ONLY ?? "N/A"} MARKET_GUARD_MODE=${process.env.MARKET_GUARD_MODE ?? "N/A"} GUARD_FORCE_LEVEL=${process.env.GUARD_FORCE_LEVEL ?? "N/A"}\``
+          );
+          lines.push(
+            `- guard policy flags: \`forceSendOnce=${process.env.MARKET_GUARD_FORCE_SEND_ONCE ?? "N/A"} allowOutsideRth=${process.env.GUARD_ALLOW_OUTSIDE_RTH ?? "N/A"} tighten=${process.env.GUARD_EXECUTE_TIGHTEN_STOPS ?? "N/A"} reduce=${process.env.GUARD_EXECUTE_REDUCE_POSITIONS ?? "N/A"} flatten=${process.env.GUARD_EXECUTE_FLATTEN ?? "N/A"} cooldownMin=${process.env.GUARD_ACTION_COOLDOWN_MIN ?? "N/A"} intervalMin=${process.env.MARKET_GUARD_INTERVAL_MIN ?? "N/A"}\``
+          );
 
           if (fs.existsSync(guardPath)) {
             const guard = JSON.parse(fs.readFileSync(guardPath, "utf8"));

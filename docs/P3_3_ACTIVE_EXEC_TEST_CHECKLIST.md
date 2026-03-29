@@ -508,6 +508,9 @@ Evidence
 - [ ] `GUARD_EXECUTE_FLATTEN=false`
 - [ ] `GUARD_ACTION_COOLDOWN_MIN=15`
 - [ ] `MARKET_GUARD_INTERVAL_MIN=5`
+- [ ] Run `sidecar-market-guard` once and confirm Step Summary:
+  - `runtime flags` line matches rollback values
+  - `guard policy flags` line matches rollback values
 
 Sign-off
 - completed by:
