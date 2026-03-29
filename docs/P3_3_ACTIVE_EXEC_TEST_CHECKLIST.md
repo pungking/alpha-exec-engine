@@ -47,36 +47,39 @@ Completed reference (already closed):
 
 ### Phase-3 (미보완 / 후속 확장)
 
-- `0)` safety baseline: **0/10**
+- `0)` safety baseline: **10/10 complete**
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **12/12 complete**
 - `TC-4` reduce_positions_50: **14/14 complete**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **126**
-- remaining: **19**
-- progress: **86.9%** (`126/145`)
+- complete: **136**
+- remaining: **9**
+- progress: **93.8%** (`136/145`)
 
 ---
 
 ## 0) Safety Baseline (required before all tests)
 
-- [ ] `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper only)
-- [ ] `MARKET_GUARD_ENABLED=true`
-- [ ] `MARKET_GUARD_MODE=active`
-- [ ] `MARKET_GUARD_INTERVAL_MIN=1` (temporary for test cycle)
-- [ ] `GUARD_ACTION_COOLDOWN_MIN=1` (temporary for test cycle)
-- [ ] `GUARD_ALLOW_OUTSIDE_RTH=true` (temporary for test cycle)
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=true` (per test run)
-- [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
-- [ ] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
-- [ ] `GUARD_EXECUTE_FLATTEN=false`
+- [x] `ALPACA_BASE_URL=https://paper-api.alpaca.markets` (paper only)
+- [x] `MARKET_GUARD_ENABLED=true`
+- [x] `MARKET_GUARD_MODE=active`
+- [x] `MARKET_GUARD_INTERVAL_MIN=1` (temporary for test cycle)
+- [x] `GUARD_ACTION_COOLDOWN_MIN=1` (temporary for test cycle)
+- [x] `GUARD_ALLOW_OUTSIDE_RTH=true` (temporary for test cycle)
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=true` (per test run)
+- [x] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
+- [x] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
+- [x] `GUARD_EXECUTE_FLATTEN=false`
 
 Evidence
-- run id:
+- run id: `23711313772` (`logs_62484784824.zip`, `sidecar-guard-state-23711313772.zip`)
 - artifact:
-- notes:
+  - runtime summary: `run=true reason=actions_allowed`
+  - env lines: `ALPACA_BASE_URL=https://paper-api.alpaca.markets`, `MARKET_GUARD_ENABLED=true`, `MARKET_GUARD_MODE=active`, `MARKET_GUARD_INTERVAL_MIN=5`, `GUARD_ACTION_COOLDOWN_MIN=15`, `GUARD_ALLOW_OUTSIDE_RTH=true`, `MARKET_GUARD_FORCE_SEND_ONCE=true`, `GUARD_EXECUTE_TIGHTEN_STOPS=false`, `GUARD_EXECUTE_REDUCE_POSITIONS=false`, `GUARD_EXECUTE_FLATTEN=false`
+- additional run id: `23711511214` (`logs_62485304692.zip`, `sidecar-guard-state-23711511214.zip`)
+- notes: dedicated baseline run with `cooldownMin=1`, `intervalMin=1` completed (`run=true`, `reason=actions_allowed`).
 
 ---
 
