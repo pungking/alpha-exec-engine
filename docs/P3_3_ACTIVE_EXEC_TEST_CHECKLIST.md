@@ -15,10 +15,10 @@ Goal: close the highest-value operational gaps first before expanding to full ac
 - [x] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
 - [x] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
 - [x] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
-- [ ] M6. Complete `6) Rollback to safe defaults` sign-off
+- [x] M6. Complete `6) Rollback to safe defaults` sign-off
 
 Phase-1 done condition:
-- [ ] `M1~M6` all checked with run id + key log lines attached
+- [x] `M1~M6` all checked with run id + key log lines attached
 
 ---
 
@@ -33,7 +33,7 @@ Completed reference (already closed):
 - `0.9A` automation baseline
 - `0.9C` Stage6 -> Sidecar auto-trigger
 
-### Phase-1 (보완중 / 부분완료)
+### Phase-1 (완료)
 
 - `0.9B` runtime evidence: **9/9 complete**
 
@@ -43,7 +43,7 @@ Completed reference (already closed):
 - `0.8B` Telegram contract sync: **6/6 complete**
 - `0.8C` sidecar skip-reason mapping sync: **3/3 complete**
 - `TC-1` blocked safety mode: **8/8 complete**
-- `6)` rollback safe defaults sign-off: **0/11**
+- `6)` rollback safe defaults sign-off: **12/12 complete**
 
 ### Phase-3 (미보완 / 후속 확장)
 
@@ -54,9 +54,9 @@ Completed reference (already closed):
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **74**
-- remaining: **70**
-- progress: **51.4%** (`74/144`)
+- complete: **88**
+- remaining: **57**
+- progress: **60.7%** (`88/145`)
 
 ---
 
@@ -497,22 +497,22 @@ Evidence
 
 ## 6) Rollback to safe defaults (mandatory after testing)
 
-- [ ] `EXEC_ENABLED=false`
-- [ ] `READ_ONLY=true`
-- [ ] `MARKET_GUARD_MODE=observe`
-- [ ] `GUARD_FORCE_LEVEL=auto`
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=false`
-- [ ] `GUARD_ALLOW_OUTSIDE_RTH=false`
-- [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
-- [ ] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
-- [ ] `GUARD_EXECUTE_FLATTEN=false`
-- [ ] `GUARD_ACTION_COOLDOWN_MIN=15`
-- [ ] `MARKET_GUARD_INTERVAL_MIN=5`
-- [ ] Run `sidecar-market-guard` once and confirm Step Summary:
+- [x] `EXEC_ENABLED=false`
+- [x] `READ_ONLY=true`
+- [x] `MARKET_GUARD_MODE=observe`
+- [x] `GUARD_FORCE_LEVEL=auto`
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=false`
+- [x] `GUARD_ALLOW_OUTSIDE_RTH=false`
+- [x] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
+- [x] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
+- [x] `GUARD_EXECUTE_FLATTEN=false`
+- [x] `GUARD_ACTION_COOLDOWN_MIN=15`
+- [x] `MARKET_GUARD_INTERVAL_MIN=5`
+- [x] Run `sidecar-market-guard` once and confirm Step Summary:
   - `runtime flags` line matches rollback values
   - `guard policy flags` line matches rollback values
 
 Sign-off
-- completed by:
-- date:
-- final run id:
+- completed by: `givet-bsm`
+- date: `2026-03-29`
+- final run id: `workflow_dispatch` (user-shared summary, `generatedAt=2026-03-29T12:17:58.128Z`)
