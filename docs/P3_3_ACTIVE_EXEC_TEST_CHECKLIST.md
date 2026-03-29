@@ -14,7 +14,7 @@ Goal: close the highest-value operational gaps first before expanding to full ac
 - [x] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
 - [x] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
 - [x] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
-- [ ] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
+- [x] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
 - [ ] M6. Complete `6) Rollback to safe defaults` sign-off
 
 Phase-1 done condition:
@@ -42,7 +42,7 @@ Completed reference (already closed):
 - `0.8A` quality gate enforcement: **4/4 complete**
 - `0.8B` Telegram contract sync: **6/6 complete**
 - `0.8C` sidecar skip-reason mapping sync: **3/3 complete**
-- `TC-1` blocked safety mode: **0/8**
+- `TC-1` blocked safety mode: **8/8 complete**
 - `6)` rollback safe defaults sign-off: **0/11**
 
 ### Phase-3 (미보완 / 후속 확장)
@@ -54,9 +54,9 @@ Completed reference (already closed):
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **65**
-- remaining: **79**
-- progress: **45.1%** (`65/144`)
+- complete: **74**
+- remaining: **70**
+- progress: **51.4%** (`74/144`)
 
 ---
 
@@ -352,25 +352,30 @@ Goal: confirm active mode actions are blocked when safety gate is closed.
 
 ### Variable overrides
 
-- [ ] `EXEC_ENABLED=false`
-- [ ] `READ_ONLY=true`
-- [ ] `GUARD_FORCE_LEVEL=l2`
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=true`
+- [x] `EXEC_ENABLED=false`
+- [x] `READ_ONLY=true`
+- [x] `GUARD_FORCE_LEVEL=l2`
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
 
 ### Execute
 
-- [ ] Run `sidecar-market-guard` once
+- [x] Run `sidecar-market-guard` once
 
 ### Expected
 
-- [ ] log contains `action=actions_allowed`
-- [ ] log contains `[GUARD_LEDGER] ... blocked=` with value `>=1`
-- [ ] Telegram Actions lines include `status=blocked_safety_mode`
+- [x] log contains `action=actions_allowed`
+- [x] log contains `[GUARD_LEDGER] ... blocked=` with value `>=1`
+- [x] Telegram Actions lines include `status=blocked_safety_mode`
 
 Evidence
-- run id:
+- run id: `23699023088` (`logs_62453744501.zip`, `sidecar-guard-state-23699023088.zip`)
 - key log line:
+  - `[GUARD_LEVEL] ... action=actions_allowed`
+  - `[GUARD_LEDGER] ... blocked=3`
 - Telegram snippet:
+  - `halt_new_entries | status=blocked_safety_mode`
+  - `cancel_open_entries | status=blocked_safety_mode`
+  - `tighten_stops | status=blocked_safety_mode`
 
 ---
 
