@@ -49,14 +49,14 @@ Completed reference (already closed):
 
 - `0)` safety baseline: **0/10**
 - `TC-2` tighten_stops: **12/12 complete**
-- `TC-3` cancel_open_entries: **11/12 (functional pass, config deviation)**
+- `TC-3` cancel_open_entries: **12/12 complete**
 - `TC-4` reduce_positions_50: **14/14 complete**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **125**
-- remaining: **20**
-- progress: **86.2%** (`125/145`)
+- complete: **126**
+- remaining: **19**
+- progress: **86.9%** (`126/145`)
 
 ---
 
@@ -433,7 +433,7 @@ Goal: validate cancellation logic safely before position reduction.
 - [x] `EXEC_ENABLED=true`
 - [x] `READ_ONLY=false`
 - [x] `GUARD_FORCE_LEVEL=l3`
-- [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
+- [x] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
 - [x] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
 - [x] `GUARD_EXECUTE_FLATTEN=false`
 - [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
@@ -455,6 +455,13 @@ Evidence
 - order check:
   - `cancel_open_entries executed open_buy_orders canceled=1`
   - note: this run used `GUARD_EXECUTE_TIGHTEN_STOPS=true` (deviation from TC-3 strict variable profile)
+- strict-profile rerun pass:
+  - run id: `23711313772` (`logs_62484784824.zip`, `sidecar-guard-state-23711313772.zip`)
+  - key results:
+    - `cancel_open_entries -> executed | open_buy_orders canceled=1`
+    - `tighten_stops -> skipped_policy | GUARD_EXECUTE_TIGHTEN_STOPS=false`
+    - `reduce_positions_50 -> skipped_policy | GUARD_EXECUTE_REDUCE_POSITIONS=false`
+    - `flatten_if_triggered -> skipped_policy | GUARD_EXECUTE_FLATTEN=false`
 
 ---
 
