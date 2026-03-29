@@ -8,7 +8,7 @@ Use this checklist to validate `market-guard` active execution safely, one step 
 
 Goal: close the highest-value operational gaps first before expanding to full active-exec coverage.
 
-- [ ] M1. Complete `0.9B` runtime evidence closure
+- [x] M1. Complete `0.9B` runtime evidence closure
   - confirm latest artifact includes `state/stage6-20trade-loop.json`, `state/stage6-20trade-loop.csv`
   - confirm 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
 - [x] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
@@ -35,8 +35,7 @@ Completed reference (already closed):
 
 ### Phase-1 (보완중 / 부분완료)
 
-- `0.9B` runtime evidence: **8/9 complete**
-  - pending: 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
+- `0.9B` runtime evidence: **9/9 complete**
 
 ### Phase-2 (보완예정 / 미체크)
 
@@ -55,9 +54,9 @@ Completed reference (already closed):
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **63**
-- remaining: **81**
-- progress: **43.8%** (`63/144`)
+- complete: **65**
+- remaining: **79**
+- progress: **45.1%** (`65/144`)
 
 ---
 
@@ -290,7 +289,7 @@ Evidence
 - [x] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
 - [x] Confirm summary line `perf_loop_gate_reason: ...`
 - [x] Confirm summary line `perf_loop_gate_progress: current/20`
-- [ ] At 10/20 trades, confirm Telegram simulation channel receives milestone alert (`TELEGRAM_PERF_LOOP`)
+- [x] At 10/20 trades, confirm Telegram simulation channel receives milestone alert (`TELEGRAM_PERF_LOOP`)
 
 Evidence
 - run id: `workflow_dispatch` (2026-03-28, user-shared summary set)
@@ -304,7 +303,9 @@ Evidence
   - `sidecar-state-23690812125.zip` includes `stage6-20trade-loop.json`, `stage6-20trade-loop.csv`
   - `sidecar-state-23690819759.zip` includes `stage6-20trade-loop.json`, `stage6-20trade-loop.csv`
 - summary snippet: runtime KPI/gate lines are consistently present in both normal/probe/validation-pack runs
-- pending: explicit Telegram milestone marker (`TELEGRAM_PERF_LOOP`) log evidence
+- Telegram milestone evidence:
+  - user-confirmed: milestone alert received at 10 trades
+  - current progress context: `perf_loop_gate_progress=11/20`
 
 ### TC-0.9C (Stage6 -> Sidecar auto-trigger, PASS)
 
