@@ -49,14 +49,14 @@ Completed reference (already closed):
 
 - `0)` safety baseline: **0/10**
 - `TC-2` tighten_stops: **12/12 complete**
-- `TC-3` cancel_open_entries: **0/12**
+- `TC-3` cancel_open_entries: **11/12 (functional pass, config deviation)**
 - `TC-4` reduce_positions_50: **0/14**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **100**
-- remaining: **45**
-- progress: **69.0%** (`100/145`)
+- complete: **111**
+- remaining: **34**
+- progress: **76.6%** (`111/145`)
 
 ---
 
@@ -425,32 +425,36 @@ Goal: validate cancellation logic safely before position reduction.
 
 ### Preconditions
 
-- [ ] create at least one open BUY order in Alpaca paper
-- [ ] wait for cooldown window from previous run (`>=2 min` when cooldown base is `1`)
+- [x] create at least one open BUY order in Alpaca paper
+- [x] wait for cooldown window from previous run (`>=2 min` when cooldown base is `1`)
 
 ### Variable overrides
 
-- [ ] `EXEC_ENABLED=true`
-- [ ] `READ_ONLY=false`
-- [ ] `GUARD_FORCE_LEVEL=l3`
+- [x] `EXEC_ENABLED=true`
+- [x] `READ_ONLY=false`
+- [x] `GUARD_FORCE_LEVEL=l3`
 - [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
-- [ ] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
-- [ ] `GUARD_EXECUTE_FLATTEN=false`
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=true`
+- [x] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
+- [x] `GUARD_EXECUTE_FLATTEN=false`
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
 
 ### Execute
 
-- [ ] Run `sidecar-market-guard` once
+- [x] Run `sidecar-market-guard` once
 
 ### Expected
 
-- [ ] `cancel_open_entries` -> `executed`
-- [ ] detail includes `canceled=...`
+- [x] `cancel_open_entries` -> `executed`
+- [x] detail includes `canceled=...`
 
 Evidence
-- run id:
+- run id: `23709364763` (`logs_62479573459.zip`, `sidecar-guard-state-23709364763.zip`)
 - key log line:
+  - `[GUARD_LEDGER] ... exec_allowed=true executed=2 failed=0 blocked=0`
+  - `[GUARD_SUMMARY] ... mode=active actions=5 action_reason=actions_allowed`
 - order check:
+  - `cancel_open_entries executed open_buy_orders canceled=1`
+  - note: this run used `GUARD_EXECUTE_TIGHTEN_STOPS=true` (deviation from TC-3 strict variable profile)
 
 ---
 
