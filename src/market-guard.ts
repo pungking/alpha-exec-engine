@@ -1115,6 +1115,7 @@ async function executeReducePositions50(): Promise<{ status: GuardActionStatus; 
   let submitted = 0;
   let skipped = 0;
   let failed = 0;
+  const failedDetails: string[] = [];
   for (const position of positions) {
     const symbol = positionSymbol(position);
     const qty = positionQty(position);
@@ -1140,8 +1141,12 @@ async function executeReducePositions50(): Promise<{ status: GuardActionStatus; 
         time_in_force: tif
       });
       submitted += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      const compact = `${symbol}:${message.replace(/\s+/g, " ").trim().slice(0, 160)}`;
+      failedDetails.push(compact);
+      console.warn(`[GUARD_REDUCE_ERROR] ${compact}`);
     }
   }
 
@@ -1149,7 +1154,12 @@ async function executeReducePositions50(): Promise<{ status: GuardActionStatus; 
     return { status: "skipped_not_applicable", detail: "no_reducible_positions" };
   }
   if (failed > 0) {
-    return { status: "failed", detail: `reduce_50 submitted=${submitted} skipped=${skipped} failed=${failed}` };
+    const sample =
+      failedDetails.length > 0 ? ` errors=${failedDetails.slice(0, 3).join(" || ")}` : "";
+    return {
+      status: "failed",
+      detail: `reduce_50 submitted=${submitted} skipped=${skipped} failed=${failed}${sample}`
+    };
   }
   return { status: "executed", detail: `reduce_50 submitted=${submitted} skipped=${skipped}` };
 }
