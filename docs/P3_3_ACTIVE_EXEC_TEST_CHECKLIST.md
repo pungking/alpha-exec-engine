@@ -13,7 +13,7 @@ Goal: close the highest-value operational gaps first before expanding to full ac
   - confirm 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
 - [x] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
 - [x] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
-- [ ] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
+- [x] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
 - [ ] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
 - [ ] M6. Complete `6) Rollback to safe defaults` sign-off
 
@@ -42,7 +42,7 @@ Completed reference (already closed):
 
 - `0.8A` quality gate enforcement: **4/4 complete**
 - `0.8B` Telegram contract sync: **6/6 complete**
-- `0.8C` sidecar skip-reason mapping sync: **2/3 complete**
+- `0.8C` sidecar skip-reason mapping sync: **3/3 complete**
 - `TC-1` blocked safety mode: **0/8**
 - `6)` rollback safe defaults sign-off: **0/11**
 
@@ -55,9 +55,9 @@ Completed reference (already closed):
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **61**
-- remaining: **83**
-- progress: **42.4%** (`61/144`)
+- complete: **63**
+- remaining: **81**
+- progress: **43.8%** (`63/144`)
 
 ---
 
@@ -237,7 +237,7 @@ Evidence
 ### TC-0.8C (sidecar skip reason mapping sync)
 
 - [x] Run sidecar-dry-run against the new Stage6 dump
-- [ ] If quality-blocked names exist, confirm skip reason mapping appears as:
+- [x] If quality-blocked names exist, confirm skip reason mapping appears as:
   - `stage6_quality_missing_expected_return`
   - `stage6_quality_conviction_floor`
   - `stage6_quality_verdict_unusable`
@@ -245,11 +245,13 @@ Evidence
 - [x] Confirm `[STAGE6_CONTRACT]` counters match Stage6 final decision distribution
 
 Evidence
-- sidecar run id: normal/probe pair (`logs_62432780110.zip`, `logs_62432801084.zip`)
+- sidecar run id: normal/probe pair (`logs_62432780110.zip`, `logs_62432801084.zip`) + follow-up pair (2026-03-29 user-shared)
 - key log lines:
   - `[STAGE6_CONTRACT] enforce=true checked=3 executable=3 watchlist=0 blocked=0`
   - `[SKIP_REASONS] entry_blocked:guard_control_halt_new_entries(level=L3),simulated_live_parity:3`
-- skip_reasons summary: stage6 quality skip-reason mapping is not observed yet in sidecar summary path (open item)
+  - `stage6_contract_reason_primary: ... blocked_quality_verdict_unusable:2`
+  - `stage6_skip_hint_primary: ... stage6_quality_verdict_unusable:2`
+- skip_reasons summary: direct skip list stays guard-blocked in this safety mode; quality mapping confirmed via `stage6_skip_hint_primary`
 
 ---
 
