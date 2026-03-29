@@ -50,13 +50,13 @@ Completed reference (already closed):
 - `0)` safety baseline: **0/10**
 - `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **11/12 (functional pass, config deviation)**
-- `TC-4` reduce_positions_50: **12/14 (functional partial, rerun needed)**
+- `TC-4` reduce_positions_50: **14/14 complete**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **123**
-- remaining: **22**
-- progress: **84.8%** (`123/145`)
+- complete: **125**
+- remaining: **20**
+- progress: **86.2%** (`125/145`)
 
 ---
 
@@ -473,7 +473,7 @@ Goal: validate controlled reduction after cancellation path is proven.
 - [x] `EXEC_ENABLED=true`
 - [x] `READ_ONLY=false`
 - [x] `GUARD_FORCE_LEVEL=l3`
-- [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
+- [x] `GUARD_EXECUTE_TIGHTEN_STOPS=false`
 - [x] `GUARD_EXECUTE_REDUCE_POSITIONS=true`
 - [x] `GUARD_EXECUTE_FLATTEN=false`
 - [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
@@ -484,7 +484,7 @@ Goal: validate controlled reduction after cancellation path is proven.
 
 ### Expected
 
-- [ ] `reduce_positions_50` -> `executed`
+- [x] `reduce_positions_50` -> `executed`
 - [x] detail includes `submitted=...`
 - [x] `flatten_if_triggered` remains `skipped_policy`
 
@@ -497,6 +497,12 @@ Evidence
   - `reduce_positions_50 -> failed | reduce_50 submitted=0 skipped=0 failed=1` (needs rerun)
   - `flatten_if_triggered -> skipped_policy | GUARD_EXECUTE_FLATTEN=false`
   - note: this run used `GUARD_EXECUTE_TIGHTEN_STOPS=true` (deviation from TC-4 strict variable profile)
+- rerun pass (post-fix + post-order-cancel):
+  - run id: `23711137540` (`logs_62484319317.zip`, `sidecar-guard-state-23711137540.zip`)
+  - key results:
+    - `tighten_stops -> skipped_policy | GUARD_EXECUTE_TIGHTEN_STOPS=false`
+    - `reduce_positions_50 -> executed | reduce_50 submitted=1 skipped=0`
+    - `flatten_if_triggered -> skipped_policy | GUARD_EXECUTE_FLATTEN=false`
 
 ---
 
