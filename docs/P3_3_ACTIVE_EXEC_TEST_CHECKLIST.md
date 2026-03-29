@@ -11,8 +11,8 @@ Goal: close the highest-value operational gaps first before expanding to full ac
 - [ ] M1. Complete `0.9B` runtime evidence closure
   - confirm latest artifact includes `state/stage6-20trade-loop.json`, `state/stage6-20trade-loop.csv`
   - confirm 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
-- [ ] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
-- [ ] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
+- [x] M2. Complete `0.8A` Stage6 quality-gate enforcement evidence
+- [x] M3. Complete `0.8B` Telegram model/watchlist contract sync evidence
 - [ ] M4. Complete `0.8C` sidecar skip-reason mapping sync evidence
 - [ ] M5. Complete `TC-1` blocked-safety-mode smoke (active mode, safety gate closed)
 - [ ] M6. Complete `6) Rollback to safe defaults` sign-off
@@ -35,15 +35,14 @@ Completed reference (already closed):
 
 ### Phase-1 (보완중 / 부분완료)
 
-- `0.9B` runtime evidence: **7/9 complete**
-  - pending: artifact file-level confirmation (`stage6-20trade-loop.json/csv`)
+- `0.9B` runtime evidence: **8/9 complete**
   - pending: 10/20 Telegram milestone evidence (`TELEGRAM_PERF_LOOP`)
 
 ### Phase-2 (보완예정 / 미체크)
 
-- `0.8A` quality gate enforcement: **0/5**
-- `0.8B` Telegram contract sync: **0/6**
-- `0.8C` sidecar skip-reason mapping sync: **0/3**
+- `0.8A` quality gate enforcement: **4/4 complete**
+- `0.8B` Telegram contract sync: **6/6 complete**
+- `0.8C` sidecar skip-reason mapping sync: **2/3 complete**
 - `TC-1` blocked safety mode: **0/8**
 - `6)` rollback safe defaults sign-off: **0/11**
 
@@ -56,9 +55,9 @@ Completed reference (already closed):
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **46**
-- remaining: **91**
-- progress: **33.6%** (`46/137`)
+- complete: **61**
+- remaining: **83**
+- progress: **42.4%** (`61/144`)
 
 ---
 
@@ -194,52 +193,62 @@ Evidence
 
 ---
 
-## 0.8) Stage6 Quality Gate + Telegram Contract Sync (new, pending)
+## 0.8) Stage6 Quality Gate + Telegram Contract Sync (in progress)
 
 Goal: prevent low-quality executable leakage (e.g., Conv=0/ER=N-A) and keep Telegram sections aligned with Stage6 model/executable/watchlist semantics.
 
 ### TC-0.8A (quality gate enforcement)
 
-- [ ] Run Stage6 once with same Stage5 lock baseline
-- [ ] Confirm top log includes new quality reasons when applicable:
+- [x] Run Stage6 once with same Stage5 lock baseline
+- [x] Confirm top log includes new quality reasons when applicable:
   - `blocked_quality_missing_expected_return`
   - `blocked_quality_conviction_floor`
   - `blocked_quality_verdict_unusable`
-- [ ] Confirm low-quality candidate is **not** `EXECUTABLE_NOW`
-- [ ] Confirm `Decision reasons(primary)` includes `quality_*` counters
+- [x] Confirm low-quality candidate is **not** `EXECUTABLE_NOW`
+- [x] Confirm `Decision reasons(primary)` includes `quality_*` counters
 
 Evidence
-- stage6 run id:
+- stage6 run id: `2026-03-29_02-40-31` (`STAGE6_PART2_AI_RESULT_FULL_2026-03-29_02-40-31.json`, `STAGE6_ALPHA_FINAL_2026-03-29_02-40-33.json`)
 - key log lines:
-- affected symbols:
+  - `decisionReasonCountsPrimary ... blocked_quality_verdict_unusable: 2`
+  - `stage6_contract: enforce=true checked=3 executable=3 watchlist=0 blocked=0`
+- affected symbols: `PDD`, `ADMA` (`decisionReason=blocked_quality_verdict_unusable`, not executable-now)
+- notes: `blocked_quality_missing_expected_return` / `blocked_quality_conviction_floor` are not present in this sample window (N/A in this run)
 
 ### TC-0.8B (telegram model/watchlist semantic alignment)
 
-- [ ] Generate Telegram brief from the same Stage6 run
-- [ ] Confirm `Top6 (Model Rank)` reflects model-top6 universe (not executable-only list)
-- [ ] Confirm `Watchlist (실행 대기)` contains model-top6 non-executable names when they exist
-- [ ] Confirm `Executable Picks` matches execution-only set
-- [ ] Confirm each candidate line includes both `AQ`(추천 품질) and `XS`(실행 가능성)
-- [ ] Confirm no `TELEGRAM_CONTRACT_MISMATCH` in logs
+- [x] Generate Telegram brief from the same Stage6 run
+- [x] Confirm `Top6 (Model Rank)` reflects model-top6 universe (not executable-only list)
+- [x] Confirm `Watchlist (실행 대기)` contains model-top6 non-executable names when they exist
+- [x] Confirm `Executable Picks` matches execution-only set
+- [x] Confirm each candidate line includes both `AQ`(추천 품질) and `XS`(실행 가능성)
+- [x] Confirm no `TELEGRAM_CONTRACT_MISMATCH` in logs
 
 Evidence
-- stage6 run id:
-- telegram file:
+- stage6 run id: `2026-03-29_02-40-31`
+- telegram file: `TELEGRAM_BRIEF_REPORT_2026-03-29_02-40-41.md`
 - key section snippets:
+  - `Top6 (Model Rank)` present
+  - `Executable Picks` present (execution-only set)
+  - `Watchlist (실행 대기)` present (model-top6 non-executable names)
+  - candidate lines include `AQ` and `XS`
+  - mismatch marker not found (`TELEGRAM_CONTRACT_MISMATCH` absent)
 
 ### TC-0.8C (sidecar skip reason mapping sync)
 
-- [ ] Run sidecar-dry-run against the new Stage6 dump
+- [x] Run sidecar-dry-run against the new Stage6 dump
 - [ ] If quality-blocked names exist, confirm skip reason mapping appears as:
   - `stage6_quality_missing_expected_return`
   - `stage6_quality_conviction_floor`
   - `stage6_quality_verdict_unusable`
-- [ ] Confirm `[STAGE6_CONTRACT]` counters match Stage6 final decision distribution
+- [x] Confirm `[STAGE6_CONTRACT]` counters match Stage6 final decision distribution
 
 Evidence
-- sidecar run id:
+- sidecar run id: normal/probe pair (`logs_62432780110.zip`, `logs_62432801084.zip`)
 - key log lines:
-- skip_reasons summary:
+  - `[STAGE6_CONTRACT] enforce=true checked=3 executable=3 watchlist=0 blocked=0`
+  - `[SKIP_REASONS] entry_blocked:guard_control_halt_new_entries(level=L3),simulated_live_parity:3`
+- skip_reasons summary: stage6 quality skip-reason mapping is not observed yet in sidecar summary path (open item)
 
 ---
 
@@ -272,7 +281,7 @@ Evidence
 
 - [x] Run sidecar-dry-run once and confirm `[PERF_LOOP]` log appears
 - [x] At 10-trade boundary, confirm `[PERF_LOOP_KPI]` log appears
-- [ ] Download artifact and verify both loop files exist
+- [x] Download artifact and verify both loop files exist
 - [x] Confirm summary line `perf_loop: batch=... trades=... snapshots=...`
 - [x] Confirm summary line `perf_loop_latest_kpi: trades=... fillRatePct=... avgR=... holdErrMedian=... noReasonDrift=...`
 - [x] Confirm summary line `perf_loop_gate_status: GO|NO_GO|PENDING_SAMPLE`
@@ -288,8 +297,11 @@ Evidence
   - `perf_loop_gate_status: PENDING_SAMPLE`
   - `perf_loop_gate_reason: sample_insufficient(trades=11,required>=20)`
   - `perf_loop_gate_progress: 11/20`
-- artifact: pending explicit file-level confirmation for loop JSON/CSV in latest run artifact
+- artifact:
+  - `sidecar-state-23690812125.zip` includes `stage6-20trade-loop.json`, `stage6-20trade-loop.csv`
+  - `sidecar-state-23690819759.zip` includes `stage6-20trade-loop.json`, `stage6-20trade-loop.csv`
 - summary snippet: runtime KPI/gate lines are consistently present in both normal/probe/validation-pack runs
+- pending: explicit Telegram milestone marker (`TELEGRAM_PERF_LOOP`) log evidence
 
 ### TC-0.9C (Stage6 -> Sidecar auto-trigger, PASS)
 
