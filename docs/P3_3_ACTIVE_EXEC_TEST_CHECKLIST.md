@@ -340,12 +340,19 @@ Checklist
 - [ ] Change only one tuning variable per batch
 - [ ] Record GO/NO-GO at 20 trades
 
+Batch kickoff (in progress)
+- active batch id: `stage6-20260316`
+- freeze declaration: `ON` (until 20-trade review complete)
+- current progress: `11/20` (remaining `9`)
+- current rule: threshold/policy values stay fixed; if change is unavoidable, allow only one variable and record reason+timestamp
+- next checkpoint: `20/20` 도달 시 GO/NO-GO 기록
+
 Evidence
-- batch id:
-- trade count:
-- kpi snapshot:
-- tuning change:
-- go/no-go:
+- batch id: `stage6-20260316`
+- trade count: `11/20` (remaining `9`)
+- kpi snapshot: `snapshot=1` (`perf_loop_latest_kpi: trades=11 fillRatePct=0.00 avgR=0.0000 holdErrMedian=0.00 noReasonDrift=0`)
+- tuning change: `none` (freeze active)
+- go/no-go: `pending` (record at `20/20`)
 
 ---
 
