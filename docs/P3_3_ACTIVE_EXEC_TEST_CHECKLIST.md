@@ -48,15 +48,15 @@ Completed reference (already closed):
 ### Phase-3 (미보완 / 후속 확장)
 
 - `0)` safety baseline: **0/10**
-- `TC-2` tighten_stops: **0/12**
+- `TC-2` tighten_stops: **12/12 complete**
 - `TC-3` cancel_open_entries: **0/12**
 - `TC-4` reduce_positions_50: **0/14**
 - `5)` troubleshooting checklist: **0/4**
 
 Current subtotal:
-- complete: **88**
-- remaining: **57**
-- progress: **60.7%** (`88/145`)
+- complete: **100**
+- remaining: **45**
+- progress: **69.0%** (`100/145`)
 
 ---
 
@@ -385,32 +385,37 @@ Goal: allow live gate and validate `tighten_stops` path first.
 
 ### Preconditions
 
-- [ ] account has at least one position (or `skipped_not_applicable` is expected)
+- [x] account has at least one position (or `skipped_not_applicable` is expected)
 
 ### Variable overrides
 
-- [ ] `EXEC_ENABLED=true`
-- [ ] `READ_ONLY=false`
-- [ ] `GUARD_FORCE_LEVEL=l3`
-- [ ] `GUARD_EXECUTE_TIGHTEN_STOPS=true`
-- [ ] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
-- [ ] `GUARD_EXECUTE_FLATTEN=false`
-- [ ] `MARKET_GUARD_FORCE_SEND_ONCE=true`
+- [x] `EXEC_ENABLED=true`
+- [x] `READ_ONLY=false`
+- [x] `GUARD_FORCE_LEVEL=l3`
+- [x] `GUARD_EXECUTE_TIGHTEN_STOPS=true`
+- [x] `GUARD_EXECUTE_REDUCE_POSITIONS=false`
+- [x] `GUARD_EXECUTE_FLATTEN=false`
+- [x] `MARKET_GUARD_FORCE_SEND_ONCE=true`
 
 ### Execute
 
-- [ ] Run `sidecar-market-guard` once
+- [x] Run `sidecar-market-guard` once
 
 ### Expected
 
-- [ ] `tighten_stops` -> `executed` OR `skipped_not_applicable`
-- [ ] `reduce_positions_50` -> `skipped_policy`
-- [ ] `flatten_if_triggered` -> `skipped_policy`
+- [x] `tighten_stops` -> `executed` OR `skipped_not_applicable`
+- [x] `reduce_positions_50` -> `skipped_policy`
+- [x] `flatten_if_triggered` -> `skipped_policy`
 
 Evidence
-- run id:
+- run id: `23708962321` (`logs_62478486518.zip`, `sidecar-guard-state-23708962321.zip`)
 - key log line:
+  - `[GUARD_LEDGER] ... exec_allowed=true executed=2 failed=0 blocked=0`
+  - `[GUARD_SUMMARY] ... mode=active actions=5 action_reason=actions_allowed`
 - Telegram snippet:
+  - `tighten_stops | status=executed | ... created=1`
+  - `reduce_positions_50 | status=skipped_policy | GUARD_EXECUTE_REDUCE_POSITIONS=false`
+  - `flatten_if_triggered | status=skipped_policy | GUARD_EXECUTE_FLATTEN=false`
 
 ---
 
