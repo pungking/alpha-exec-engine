@@ -602,6 +602,214 @@ const syncKeyRotationLedger = async ({ notionToken, kind, runKey }) => {
   return `ok(rows=${rows.length})`;
 };
 
+const fmtFixed = (value, digits = 2) => {
+  const n = toNumber(value);
+  if (n == null) return "N/A";
+  return Number(n).toFixed(digits);
+};
+
+const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
+  const dashboard = readJson("state/performance-dashboard.json") || {};
+  const simulation = dashboard?.simulation || {};
+  const live = dashboard?.live || {};
+  const chartSeries = Array.isArray(simulation?.chartSeries) ? simulation.chartSeries : [];
+  const topWinners = Array.isArray(simulation?.topWinners) ? simulation.topWinners : [];
+  const topLosers = Array.isArray(simulation?.topLosers) ? simulation.topLosers : [];
+
+  const seriesCompact = chartSeries
+    .slice(-30)
+    .map((row) => {
+      const at = toIsoDateTime(row?.at || dashboard?.generatedAt || Date.now()).slice(0, 16);
+      const fillRatePct = fmtFixed(row?.fillRatePct, 2);
+      const avgR = fmtFixed(row?.avgR, 4);
+      const closedCount = fmtFixed(row?.closedCount ?? row?.tradeCount, 0);
+      return `${at}|${fillRatePct}|${avgR}|${closedCount}`;
+    })
+    .join(";");
+
+  const winnerText = topWinners
+    .slice(0, 5)
+    .map((row) => `${String(row?.symbol || "N/A").toUpperCase()}:${fmtFixed(row?.avgReturnPct, 2)}%`)
+    .join(", ");
+  const loserText = topLosers
+    .slice(0, 5)
+    .map((row) => `${String(row?.symbol || "N/A").toUpperCase()}:${fmtFixed(row?.avgReturnPct, 2)}%`)
+    .join(", ");
+
+  const liveTotals = live?.totals || {};
+  const liveAccount = live?.account || {};
+  const liveAvailable = Boolean(live?.available);
+  const generatedAt = dashboard?.generatedAt || simulation?.updatedAt || new Date().toISOString();
+  const summary = [
+    `kind=${kind}`,
+    `status=${statusRaw}`,
+    `batch=${simulation?.batchId || "N/A"}`,
+    `simRows=${simulation?.totalRows ?? "N/A"}`,
+    `simClosed=${simulation?.closedRows ?? "N/A"}`,
+    `simWinRate=${fmtFixed(simulation?.winRatePct, 2)}%`,
+    `simAvgClosedR=${fmtFixed(simulation?.avgClosedR, 4)}`,
+    `simAvgClosedReturn=${fmtFixed(simulation?.avgClosedReturnPct, 2)}%`,
+    `liveAvailable=${liveAvailable}`,
+    `livePositions=${liveTotals?.positionCount ?? "N/A"}`,
+    `liveUnrealized=${fmtFixed(liveTotals?.totalUnrealizedPl, 2)}`,
+    `liveReturnPct=${fmtFixed(liveTotals?.totalReturnPct, 2)}%`,
+    `equity=${fmtFixed(liveAccount?.equity, 2)}`
+  ].join(" ");
+
+  return {
+    title: runKey,
+    runKey,
+    time: generatedAt,
+    kind,
+    statusRaw,
+    source: `sidecar_${kind}`,
+    batchId: shortText(simulation?.batchId || "N/A", 120),
+    simulation: {
+      totalRows: toNumber(simulation?.totalRows),
+      filledRows: toNumber(simulation?.filledRows),
+      openRows: toNumber(simulation?.openRows),
+      closedRows: toNumber(simulation?.closedRows),
+      winRatePct: toNumber(simulation?.winRatePct),
+      avgClosedReturnPct: toNumber(simulation?.avgClosedReturnPct),
+      avgClosedR: toNumber(simulation?.avgClosedR),
+      topWinners: shortText(winnerText || "N/A", 500),
+      topLosers: shortText(loserText || "N/A", 500),
+      seriesCompact: shortText(seriesCompact || "N/A", 1800)
+    },
+    live: {
+      available: liveAvailable,
+      positionCount: toNumber(liveTotals?.positionCount),
+      totalUnrealizedPl: toNumber(liveTotals?.totalUnrealizedPl),
+      totalReturnPct: toNumber(liveTotals?.totalReturnPct),
+      equity: toNumber(liveAccount?.equity)
+    },
+    summary: shortText(summary, 1800),
+    hasData: Boolean(simulation && Object.keys(simulation).length > 0)
+  };
+};
+
+const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }) => {
+  const enabled = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED", false);
+  const databaseId = env("NOTION_DB_PERFORMANCE_DASHBOARD");
+  if (!enabled) {
+    console.log(`[NOTION_PERFORMANCE_DASHBOARD] skip: disabled_by_env key=${runKey}`);
+    return "skipped_disabled";
+  }
+  if (!databaseId) {
+    const message = `[NOTION_PERFORMANCE_DASHBOARD] skip: missing NOTION_DB_PERFORMANCE_DASHBOARD key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_db";
+  }
+
+  const row = buildPerformanceDashboardRow({ kind, runKey, statusRaw });
+  if (!row.hasData) {
+    const message = `[NOTION_PERFORMANCE_DASHBOARD] skip: missing state/performance-dashboard.json key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_state";
+  }
+
+  const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
+  const schema = db?.properties || {};
+  const titlePropertyName = findTitlePropertyName(schema) || "Run Key";
+
+  const properties = {
+    [titlePropertyName]: titleProp(row.title)
+  };
+  setPropertyAliases(properties, schema, ["Run Key"], {
+    rich_text: () => textProp(row.runKey)
+  });
+  setPropertyAliases(properties, schema, ["Time", "Date", "Generated At"], {
+    date: () => dateTimeProp(row.time),
+    rich_text: () => textProp(row.time)
+  });
+  setPropertyAliases(properties, schema, ["Kind", "Mode"], {
+    select: () => selectProp(row.kind),
+    rich_text: () => textProp(row.kind)
+  });
+  setPropertyAliases(properties, schema, ["Status"], {
+    select: () => selectProp(row.statusRaw),
+    rich_text: () => textProp(row.statusRaw)
+  });
+  setPropertyAliases(properties, schema, ["Source"], {
+    select: () => selectProp(row.source),
+    rich_text: () => textProp(row.source)
+  });
+  setPropertyAliases(properties, schema, ["Batch ID"], {
+    rich_text: () => textProp(row.batchId)
+  });
+
+  setPropertyAliases(properties, schema, ["Sim Rows"], {
+    number: () => numberProp(row.simulation.totalRows),
+    rich_text: () => textProp(row.simulation.totalRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Filled"], {
+    number: () => numberProp(row.simulation.filledRows),
+    rich_text: () => textProp(row.simulation.filledRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Open"], {
+    number: () => numberProp(row.simulation.openRows),
+    rich_text: () => textProp(row.simulation.openRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Closed"], {
+    number: () => numberProp(row.simulation.closedRows),
+    rich_text: () => textProp(row.simulation.closedRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Win Rate %"], {
+    number: () => numberProp(row.simulation.winRatePct),
+    rich_text: () => textProp(row.simulation.winRatePct ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Avg Closed Return %"], {
+    number: () => numberProp(row.simulation.avgClosedReturnPct),
+    rich_text: () => textProp(row.simulation.avgClosedReturnPct ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Avg Closed R"], {
+    number: () => numberProp(row.simulation.avgClosedR),
+    rich_text: () => textProp(row.simulation.avgClosedR ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Top Winners"], {
+    rich_text: () => textProp(row.simulation.topWinners)
+  });
+  setPropertyAliases(properties, schema, ["Sim Top Losers"], {
+    rich_text: () => textProp(row.simulation.topLosers)
+  });
+  setPropertyAliases(properties, schema, ["Series"], {
+    rich_text: () => textProp(row.simulation.seriesCompact)
+  });
+
+  setPropertyAliases(properties, schema, ["Live Available"], {
+    checkbox: () => checkboxProp(row.live.available),
+    rich_text: () => textProp(row.live.available ? "true" : "false")
+  });
+  setPropertyAliases(properties, schema, ["Live Position Count"], {
+    number: () => numberProp(row.live.positionCount),
+    rich_text: () => textProp(row.live.positionCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Unrealized PnL"], {
+    number: () => numberProp(row.live.totalUnrealizedPl),
+    rich_text: () => textProp(row.live.totalUnrealizedPl ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Return %"], {
+    number: () => numberProp(row.live.totalReturnPct),
+    rich_text: () => textProp(row.live.totalReturnPct ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Equity"], {
+    number: () => numberProp(row.live.equity),
+    rich_text: () => textProp(row.live.equity ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Summary"], {
+    rich_text: () => textProp(row.summary)
+  });
+
+  const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
+  console.log(
+    `[NOTION_PERFORMANCE_DASHBOARD] ${upsertStatus} key=${runKey} simRows=${row.simulation.totalRows ?? "N/A"} live=${row.live.available}`
+  );
+  return upsertStatus;
+};
+
 const syncGuardActionLog = async ({ notionToken, runKey, statusRaw }) => {
   const enabled = boolFromEnv("NOTION_GUARD_ACTION_LOG_SYNC_ENABLED", true);
   const required = boolFromEnv("NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED", false);
@@ -898,6 +1106,7 @@ const main = async () => {
   if (kind === "market_guard") {
     await syncGuardActionLog({ notionToken, runKey, statusRaw });
   }
+  await syncPerformanceDashboard({ notionToken, kind, runKey, statusRaw });
   await syncAutomationIncidentLog({ notionToken, kind, runKey, statusRaw });
   await syncKeyRotationLedger({ notionToken, kind, runKey });
 };

@@ -212,6 +212,7 @@ Use `.env.example` as baseline.
 - `NOTION_DB_DAILY_SNAPSHOT` (optional; target DB for workflow summary rows)
 - `NOTION_DB_GUARD_ACTION_LOG` (optional; target DB for market-guard action rows)
 - `NOTION_DB_HF_TUNING_TRACKER` (optional; target DB for dry-run HF tuning rows)
+- `NOTION_DB_PERFORMANCE_DASHBOARD` (optional; target DB for simulation/live dashboard rows)
 - `NOTION_DB_AUTOMATION_INCIDENT_LOG` (optional; target DB for failure/incident rows)
 - `NOTION_DB_KEY_ROTATION_LEDGER` (optional; target DB for key verification ledger rows)
 - `NOTION_SIDECAR_SYNC_ENABLED` (optional, default `true`)
@@ -222,6 +223,8 @@ Use `.env.example` as baseline.
 - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, guard action log sync failure fails workflow)
 - `NOTION_HF_TUNING_TRACKER_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED` (optional, default `false`; when `true`, HF tuning tracker sync failure fails workflow)
+- `NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED` (optional, default `false`; when `true`, performance dashboard sync failure fails workflow)
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, incident log sync failure fails workflow)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED` (optional, default `true`)
@@ -349,6 +352,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Optional secondary DB variables:
   - `NOTION_DB_GUARD_ACTION_LOG` (market guard only)
   - `NOTION_DB_HF_TUNING_TRACKER` (dry-run only)
+  - `NOTION_DB_PERFORMANCE_DASHBOARD` (simulation/live dashboard row)
   - `NOTION_DB_AUTOMATION_INCIDENT_LOG` (incident rows when run fails or guard action fails)
   - `NOTION_DB_KEY_ROTATION_LEDGER` (key presence/verification heartbeat)
 - Optional workspace pointers:
@@ -360,6 +364,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - per-DB strict mode:
     - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED=true`
     - `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED=true`
+    - `NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED=true`
     - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED=true`
     - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED=true`
 - Manual Notion schema/view tune-up checklist:
@@ -421,6 +426,15 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`
+- Optional Notion sync:
+  - `NOTION_DB_PERFORMANCE_DASHBOARD`
+  - `NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED` (default `true`)
+  - `NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED` (default `false`)
+  - Recommended DB columns:
+    - `Run Key`(title), `Time`(date), `Kind`(select), `Status`(select), `Batch ID`(text)
+    - `Sim Rows`, `Sim Filled`, `Sim Open`, `Sim Closed`, `Sim Win Rate %`, `Sim Avg Closed Return %`, `Sim Avg Closed R`(number)
+    - `Sim Top Winners`, `Sim Top Losers`, `Series`, `Summary`(text)
+    - `Live Available`(checkbox), `Live Position Count`, `Live Unrealized PnL`, `Live Return %`, `Live Equity`(number)
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`
