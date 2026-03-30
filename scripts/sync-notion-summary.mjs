@@ -18,6 +18,11 @@ const toNumber = (value) => {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
+const toIsoDateTime = (isoLike) => {
+  const parsed = new Date(isoLike);
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString();
+  return parsed.toISOString();
+};
 
 const toDateOnly = (isoLike) => {
   const parsed = new Date(isoLike);
@@ -82,6 +87,9 @@ const numberProp = (value) => ({
 const dateProp = (value) => ({
   date: { start: toDateOnly(value) }
 });
+const dateTimeProp = (value) => ({
+  date: { start: toIsoDateTime(value) }
+});
 
 const selectProp = (value) => ({
   select: { name: shortText(value, 100) || "Partial" }
@@ -128,6 +136,18 @@ const setProperty = (target, schema, name, handlers) => {
   const handler = handlers[def.type];
   if (!handler) return;
   target[name] = handler();
+};
+
+const setPropertyAliases = (target, schema, names, handlers) => {
+  for (const name of names) {
+    const def = schema?.[name];
+    if (!def || !def.type) continue;
+    const handler = handlers[def.type];
+    if (!handler) continue;
+    target[name] = handler();
+    return true;
+  }
+  return false;
 };
 
 const flattenCounts = (obj) => {
@@ -257,6 +277,261 @@ const buildMarketGuardPayload = () => {
   };
 };
 
+const normalizeGuardResult = (rawStatus) => {
+  const status = String(rawStatus || "").trim().toLowerCase();
+  if (status === "executed") return "submitted";
+  if (status === "failed") return "failed";
+  return "skipped";
+};
+
+const buildGuardActionRows = (runKey) => {
+  const guard = readJson("state/last-market-guard.json") || {};
+  const records = Array.isArray(guard?.actionResult?.records) ? guard.actionResult.records : [];
+  const fallbackTime = guard.generatedAt || new Date().toISOString();
+  const level = guard.level ?? null;
+  const source = "sidecar_market_guard";
+  const engine = "sidecar_market_guard";
+  if (records.length === 0) {
+    return [
+      {
+        title: `${runKey}:none`,
+        runKey,
+        time: fallbackTime,
+        level,
+        action: "none",
+        symbol: "N/A",
+        result: "skipped",
+        reason: shortText(guard.actionReason || "no_action_records", 500),
+        orderId: "N/A",
+        rawStatus: "none",
+        source,
+        engine
+      }
+    ];
+  }
+  return records.map((row, index) => {
+    const action = String(row?.action || `action_${index + 1}`);
+    const rawStatus = String(row?.status || "unknown");
+    const reasonTokens = [row?.reason, row?.detail].filter(Boolean).map((v) => String(v));
+    return {
+      title: `${runKey}:${action}`,
+      runKey,
+      time: row?.lastSeenAt || fallbackTime,
+      level,
+      action,
+      symbol: "N/A",
+      result: normalizeGuardResult(rawStatus),
+      reason: shortText(reasonTokens.join(" | ") || "N/A", 500),
+      orderId: "N/A",
+      rawStatus,
+      source,
+      engine
+    };
+  });
+};
+
+const buildHfTuningTrackerRow = (runKey, statusRaw) => {
+  const preview = readJson("state/last-dry-exec-preview.json") || {};
+  const state = readJson("state/last-run.json") || {};
+  const tuning = preview?.hfTuningPhase || {};
+  const perfLoop = preview?.perfLoop || {};
+  const freeze = preview?.hfFreeze || {};
+  const live = preview?.hfLivePromotion || {};
+  const probe = preview?.hfPayloadProbeStatus || preview?.hfPayloadProbe || {};
+  const alert = preview?.hfAlert || {};
+  const nextAction = preview?.hfNextAction || {};
+  const dailyVerdict = preview?.hfDailyVerdict || {};
+  const stage6File = state.lastStage6FileName || preview.stage6File || "N/A";
+  const stage6Hash = shortText(state.lastStage6Sha256 || preview.stage6Hash || "", 64);
+
+  const alertText = alert?.triggered ? `TRIGGERED:${alert?.reason || "unknown"}` : `CLEAR:${alert?.reason || "none"}`;
+  const decision = [
+    nextAction?.status || dailyVerdict?.status || "N/A",
+    nextAction?.action || dailyVerdict?.action || "N/A",
+    nextAction?.reason || dailyVerdict?.reason || "N/A"
+  ].join(" | ");
+
+  return {
+    title: runKey,
+    runKey,
+    time: state.lastSentAt || preview.generatedAt || new Date().toISOString(),
+    gateProgress: tuning?.gateProgress || "N/A",
+    perfGate: perfLoop?.gateStatus || tuning?.gateStatus || "N/A",
+    freezeStatus: freeze?.status || "N/A",
+    livePromotion: live?.status || "N/A",
+    payloadProbe: probe?.status || "N/A",
+    alert: alertText,
+    decision: shortText(decision, 500),
+    stage6File,
+    stage6Hash: stage6Hash ? stage6Hash.slice(0, 12) : "N/A",
+    source: "sidecar_dry_run",
+    engine: "sidecar_dry_run",
+    statusRaw
+  };
+};
+
+const syncGuardActionLog = async ({ notionToken, runKey, statusRaw }) => {
+  const enabled = boolFromEnv("NOTION_GUARD_ACTION_LOG_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED", false);
+  const databaseId = env("NOTION_DB_GUARD_ACTION_LOG");
+  if (!enabled) {
+    console.log(`[NOTION_GUARD_ACTION_LOG] skip: disabled_by_env key=${runKey}`);
+    return "skipped_disabled";
+  }
+  if (!databaseId) {
+    const message = `[NOTION_GUARD_ACTION_LOG] skip: missing NOTION_DB_GUARD_ACTION_LOG key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_db";
+  }
+
+  const rows = buildGuardActionRows(runKey);
+  const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
+  const schema = db?.properties || {};
+  const titlePropertyName = findTitlePropertyName(schema) || "Name";
+  let created = 0;
+  let updated = 0;
+
+  for (const row of rows) {
+    const properties = {
+      [titlePropertyName]: titleProp(row.title)
+    };
+    setPropertyAliases(properties, schema, ["Run Key"], {
+      rich_text: () => textProp(row.runKey)
+    });
+    setPropertyAliases(properties, schema, ["Time", "Date"], {
+      date: () => dateTimeProp(row.time),
+      rich_text: () => textProp(row.time)
+    });
+    setPropertyAliases(properties, schema, ["Level", "Guard Level"], {
+      number: () => numberProp(row.level),
+      rich_text: () => textProp(row.level ?? "N/A")
+    });
+    setPropertyAliases(properties, schema, ["Action"], {
+      select: () => selectProp(row.action),
+      rich_text: () => textProp(row.action)
+    });
+    setPropertyAliases(properties, schema, ["Symbol"], {
+      rich_text: () => textProp(row.symbol)
+    });
+    setPropertyAliases(properties, schema, ["Result"], {
+      select: () => selectProp(row.result),
+      rich_text: () => textProp(row.result)
+    });
+    setPropertyAliases(properties, schema, ["Reason"], {
+      rich_text: () => textProp(row.reason)
+    });
+    setPropertyAliases(properties, schema, ["OrderId", "Order ID"], {
+      rich_text: () => textProp(row.orderId)
+    });
+    setPropertyAliases(properties, schema, ["Raw Status"], {
+      select: () => selectProp(row.rawStatus),
+      rich_text: () => textProp(row.rawStatus)
+    });
+    setPropertyAliases(properties, schema, ["Engine"], {
+      select: () => selectProp(row.engine),
+      rich_text: () => textProp(row.engine)
+    });
+    setPropertyAliases(properties, schema, ["Source"], {
+      select: () => selectProp(row.source),
+      rich_text: () => textProp(row.source)
+    });
+    setPropertyAliases(properties, schema, ["Status"], {
+      select: () => selectProp(statusRaw),
+      rich_text: () => textProp(statusRaw)
+    });
+
+    const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
+    if (upsertStatus === "created") created += 1;
+    if (upsertStatus === "updated") updated += 1;
+  }
+
+  console.log(
+    `[NOTION_GUARD_ACTION_LOG] synced key=${runKey} rows=${rows.length} created=${created} updated=${updated}`
+  );
+  return `ok(rows=${rows.length})`;
+};
+
+const syncHfTuningTracker = async ({ notionToken, runKey, statusRaw }) => {
+  const enabled = boolFromEnv("NOTION_HF_TUNING_TRACKER_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED", false);
+  const databaseId = env("NOTION_DB_HF_TUNING_TRACKER");
+  if (!enabled) {
+    console.log(`[NOTION_HF_TUNING_TRACKER] skip: disabled_by_env key=${runKey}`);
+    return "skipped_disabled";
+  }
+  if (!databaseId) {
+    const message = `[NOTION_HF_TUNING_TRACKER] skip: missing NOTION_DB_HF_TUNING_TRACKER key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_db";
+  }
+
+  const row = buildHfTuningTrackerRow(runKey, statusRaw);
+  const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
+  const schema = db?.properties || {};
+  const titlePropertyName = findTitlePropertyName(schema) || "Name";
+
+  const properties = {
+    [titlePropertyName]: titleProp(row.title)
+  };
+  setPropertyAliases(properties, schema, ["Run Key"], {
+    rich_text: () => textProp(row.runKey)
+  });
+  setPropertyAliases(properties, schema, ["Time", "Date"], {
+    date: () => dateTimeProp(row.time),
+    rich_text: () => textProp(row.time)
+  });
+  setPropertyAliases(properties, schema, ["Gate Progress"], {
+    rich_text: () => textProp(row.gateProgress)
+  });
+  setPropertyAliases(properties, schema, ["Perf Gate"], {
+    select: () => selectProp(row.perfGate),
+    rich_text: () => textProp(row.perfGate)
+  });
+  setPropertyAliases(properties, schema, ["Freeze Status"], {
+    select: () => selectProp(row.freezeStatus),
+    rich_text: () => textProp(row.freezeStatus)
+  });
+  setPropertyAliases(properties, schema, ["Live Promotion"], {
+    select: () => selectProp(row.livePromotion),
+    rich_text: () => textProp(row.livePromotion)
+  });
+  setPropertyAliases(properties, schema, ["Payload Probe"], {
+    select: () => selectProp(row.payloadProbe),
+    rich_text: () => textProp(row.payloadProbe)
+  });
+  setPropertyAliases(properties, schema, ["Alert"], {
+    select: () => selectProp(row.alert),
+    rich_text: () => textProp(row.alert)
+  });
+  setPropertyAliases(properties, schema, ["Decision"], {
+    rich_text: () => textProp(row.decision)
+  });
+  setPropertyAliases(properties, schema, ["Engine"], {
+    select: () => selectProp(row.engine),
+    rich_text: () => textProp(row.engine)
+  });
+  setPropertyAliases(properties, schema, ["Source"], {
+    select: () => selectProp(row.source),
+    rich_text: () => textProp(row.source)
+  });
+  setPropertyAliases(properties, schema, ["Stage6 File"], {
+    rich_text: () => textProp(row.stage6File)
+  });
+  setPropertyAliases(properties, schema, ["Stage6 Hash"], {
+    rich_text: () => textProp(row.stage6Hash)
+  });
+  setPropertyAliases(properties, schema, ["Status"], {
+    select: () => selectProp(statusRaw),
+    rich_text: () => textProp(statusRaw)
+  });
+
+  const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
+  console.log(`[NOTION_HF_TUNING_TRACKER] ${upsertStatus} key=${runKey} perfGate=${row.perfGate} decision=${row.decision}`);
+  return upsertStatus;
+};
+
 const kindConfig = {
   dry_run: {
     enabledVar: "NOTION_SIDECAR_SYNC_ENABLED",
@@ -384,6 +659,13 @@ const main = async () => {
   console.log(
     `[NOTION_SIDECAR_SYNC] ${upsertStatus} kind=${kind} key=${runKey} status=${statusRaw} engine=${payload.engine}`
   );
+
+  if (kind === "dry_run") {
+    await syncHfTuningTracker({ notionToken, runKey, statusRaw });
+  }
+  if (kind === "market_guard") {
+    await syncGuardActionLog({ notionToken, runKey, statusRaw });
+  }
 };
 
 main().catch((error) => {

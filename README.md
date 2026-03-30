@@ -209,10 +209,16 @@ Use `.env.example` as baseline.
 - `GUARD_EXECUTE_REDUCE_POSITIONS` (`true|false`)
 - `GUARD_EXECUTE_FLATTEN` (`true|false`)
 - `NOTION_DB_DAILY_SNAPSHOT` (optional; target DB for workflow summary rows)
+- `NOTION_DB_GUARD_ACTION_LOG` (optional; target DB for market-guard action rows)
+- `NOTION_DB_HF_TUNING_TRACKER` (optional; target DB for dry-run HF tuning rows)
 - `NOTION_SIDECAR_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_SIDECAR_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
 - `NOTION_MARKET_GUARD_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_MARKET_GUARD_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
+- `NOTION_GUARD_ACTION_LOG_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, guard action log sync failure fails workflow)
+- `NOTION_HF_TUNING_TRACKER_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED` (optional, default `false`; when `true`, HF tuning tracker sync failure fails workflow)
 - `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)
 - `NOTION_WORK_LIST` (optional; work-list DB ID pointer for workspace ops)
 
@@ -333,12 +339,18 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `NOTION_TOKEN`
 - Required variable:
   - `NOTION_DB_DAILY_SNAPSHOT`
+- Optional secondary DB variables:
+  - `NOTION_DB_GUARD_ACTION_LOG` (market guard only)
+  - `NOTION_DB_HF_TUNING_TRACKER` (dry-run only)
 - Optional workspace pointers:
   - `NOTION_PROJECT` (Notion project page ID)
   - `NOTION_WORK_LIST` (Notion work-list database ID)
 - Behavior:
   - default: warning-only (workflow does not fail on Notion API/network issues)
   - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
+  - per-DB strict mode:
+    - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED=true`
+    - `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED=true`
 - Manual Notion schema/view tune-up checklist:
   - `docs/NOTION_WORKSPACE_TUNEUP_CHECKLIST.md` (repo root)
 
