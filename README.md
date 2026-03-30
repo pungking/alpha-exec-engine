@@ -213,6 +213,8 @@ Use `.env.example` as baseline.
 - `NOTION_SIDECAR_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
 - `NOTION_MARKET_GUARD_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_MARKET_GUARD_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
+- `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)
+- `NOTION_WORK_LIST` (optional; work-list DB ID pointer for workspace ops)
 
 ### Ops Presets (2 profiles)
 - `DRY_DEFAULT_*` : market normal profile
@@ -331,6 +333,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `NOTION_TOKEN`
 - Required variable:
   - `NOTION_DB_DAILY_SNAPSHOT`
+- Optional workspace pointers:
+  - `NOTION_PROJECT` (Notion project page ID)
+  - `NOTION_WORK_LIST` (Notion work-list database ID)
 - Behavior:
   - default: warning-only (workflow does not fail on Notion API/network issues)
   - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
