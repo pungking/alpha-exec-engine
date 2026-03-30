@@ -12,6 +12,7 @@
     "progress:overall": "node scripts/progress-summary.mjs",
     "progress:daily": "node scripts/progress-daily.mjs",
     "evidence:snippet": "node scripts/evidence-snippet.mjs",
+    "dashboard:perf": "node scripts/build-performance-dashboard.mjs",
     "start": "node dist/src/index.js",
     "guard": "node dist/src/market-guard.js",
     "check:json-parse-guard": "node scripts/check-json-parse-guard.mjs",

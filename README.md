@@ -86,6 +86,7 @@ HF verification shortcuts:
 - `npm run progress:overall`: print current progress ratio from `docs/OVERALL_PROGRESS_TRACKER.md`.
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
+- `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
 - `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
 - `npm run sync:notion:market-guard`: upsert `state/last-market-guard.json` into Notion (optional).
 
@@ -408,6 +409,18 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.
+
+## Trading Dashboard Snapshot
+- Both workflows now generate a dashboard snapshot after run summary:
+  - `state/performance-dashboard.json` (chart-ready machine data)
+  - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
+- Simulation source:
+  - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
+- Live source (optional, auto-detected):
+  - Alpaca `/v2/account`, `/v2/positions`, `/v2/orders?status=open`
+  - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
+- Manual build:
+  - `npm run dashboard:perf`
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

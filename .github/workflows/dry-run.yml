@@ -1074,6 +1074,21 @@ jobs:
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
 
+      - name: Build performance dashboard snapshot
+        if: always()
+        run: npm run dashboard:perf
+
+      - name: Publish performance dashboard summary
+        if: always()
+        run: |
+          if [[ -f state/performance-dashboard.md ]]; then
+            cat state/performance-dashboard.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Trading Performance Dashboard" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/performance-dashboard.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Sync dry-run summary to Notion
         if: always()
         continue-on-error: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED != 'true' && vars.NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED != 'true' && vars.NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED != 'true' }}
@@ -1115,6 +1130,8 @@ jobs:
             state/regime-guard-state.json
             state/stage6-20trade-loop.json
             state/stage6-20trade-loop.csv
+            state/performance-dashboard.json
+            state/performance-dashboard.md
             state/validation-pack/**
             state/payload-probe/**
           if-no-files-found: warn
