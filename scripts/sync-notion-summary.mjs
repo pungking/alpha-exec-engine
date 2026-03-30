@@ -3,6 +3,7 @@ import fs from "node:fs";
 const NOTION_VERSION = "2022-06-28";
 
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
+const hasValue = (value) => String(value ?? "").trim().length > 0;
 
 const boolFromEnv = (name, fallback = true) => {
   const raw = env(name);
@@ -82,6 +83,9 @@ const textProp = (value) => ({
 
 const numberProp = (value) => ({
   number: toNumber(value)
+});
+const checkboxProp = (value) => ({
+  checkbox: Boolean(value)
 });
 
 const dateProp = (value) => ({
@@ -368,6 +372,234 @@ const buildHfTuningTrackerRow = (runKey, statusRaw) => {
     engine: "sidecar_dry_run",
     statusRaw
   };
+};
+
+const workflowLabelForKind = (kind) => {
+  if (kind === "market_guard") return "market-guard";
+  return "dry-run";
+};
+
+const parseErrorClassFromMessage = (message) => {
+  const text = String(message || "").toLowerCase();
+  if (!text) return "Unknown";
+  if (text.includes("auth") || text.includes("credential") || text.includes("forbidden") || text.includes("401")) {
+    return "AuthError";
+  }
+  if (text.includes("timeout")) return "Timeout";
+  if (
+    text.includes("network") ||
+    text.includes("dns") ||
+    text.includes("econn") ||
+    text.includes("503") ||
+    text.includes("502")
+  ) {
+    return "NetworkError";
+  }
+  if (text.includes("rate") || text.includes("429")) return "RateLimit";
+  if (text.includes("missing") || text.includes("invalid") || text.includes("config")) return "ConfigError";
+  if (text.includes("parse") || text.includes("schema") || text.includes("data")) return "DataError";
+  return "Unknown";
+};
+
+const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
+  const workflow = workflowLabelForKind(kind);
+  const runId = env("GITHUB_RUN_ID", "local");
+  const incidents = [];
+
+  if (statusRaw !== "success") {
+    incidents.push({
+      title: `${runKey}:job:${statusRaw}`,
+      workflow,
+      runId,
+      errorClass: "Unknown",
+      severity: "P1",
+      rootCause: `workflow_status_${statusRaw}`,
+      fix: "Inspect failing step logs, patch root cause, rerun workflow.",
+      resolved: false
+    });
+  }
+
+  if (kind === "market_guard") {
+    const guard = readJson("state/last-market-guard.json") || {};
+    const records = Array.isArray(guard?.actionResult?.records) ? guard.actionResult.records : [];
+    for (const row of records) {
+      if (String(row?.status || "").toLowerCase() !== "failed") continue;
+      const action = String(row?.action || "unknown_action");
+      const reason = [row?.reason, row?.detail].filter(Boolean).map((v) => String(v)).join(" | ");
+      incidents.push({
+        title: `${runKey}:action:${action}:failed`,
+        workflow,
+        runId,
+        errorClass: parseErrorClassFromMessage(reason),
+        severity: "P1",
+        rootCause: shortText(reason || "guard_action_failed", 500),
+        fix: "Review Alpaca/API response in market-guard logs and retry after resolving external/API condition.",
+        resolved: false
+      });
+    }
+  }
+
+  if (kind === "dry_run") {
+    const preview = readJson("state/last-dry-exec-preview.json") || {};
+    const hfAlert = preview?.hfAlert || {};
+    if (hfAlert?.triggered) {
+      incidents.push({
+        title: `${runKey}:hf_alert`,
+        workflow,
+        runId,
+        errorClass: "DataError",
+        severity: "P2",
+        rootCause: shortText(String(hfAlert?.reason || "hf_alert_triggered"), 500),
+        fix: "Review HF shadow/drift deltas, tune thresholds, and rerun validation pack.",
+        resolved: false
+      });
+    }
+  }
+
+  return incidents;
+};
+
+const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw }) => {
+  const enabled = boolFromEnv("NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED", false);
+  const databaseId = env("NOTION_DB_AUTOMATION_INCIDENT_LOG");
+  if (!enabled) {
+    console.log(`[NOTION_AUTOMATION_INCIDENT_LOG] skip: disabled_by_env key=${runKey}`);
+    return "skipped_disabled";
+  }
+  if (!databaseId) {
+    const message = `[NOTION_AUTOMATION_INCIDENT_LOG] skip: missing NOTION_DB_AUTOMATION_INCIDENT_LOG key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_db";
+  }
+
+  const incidents = buildAutomationIncidents({ kind, runKey, statusRaw });
+  if (incidents.length === 0) {
+    console.log(`[NOTION_AUTOMATION_INCIDENT_LOG] skip: no_incident key=${runKey}`);
+    return "skipped_no_incident";
+  }
+
+  const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
+  const schema = db?.properties || {};
+  const titlePropertyName = findTitlePropertyName(schema) || "Incident Key";
+  let created = 0;
+  let updated = 0;
+
+  for (const row of incidents) {
+    const properties = {
+      [titlePropertyName]: titleProp(row.title)
+    };
+    setPropertyAliases(properties, schema, ["Workflow"], {
+      select: () => selectProp(row.workflow),
+      rich_text: () => textProp(row.workflow)
+    });
+    setPropertyAliases(properties, schema, ["RunId", "Run ID"], {
+      rich_text: () => textProp(row.runId)
+    });
+    setPropertyAliases(properties, schema, ["Error Class"], {
+      select: () => selectProp(row.errorClass),
+      rich_text: () => textProp(row.errorClass)
+    });
+    setPropertyAliases(properties, schema, ["Severity"], {
+      select: () => selectProp(row.severity),
+      rich_text: () => textProp(row.severity)
+    });
+    setPropertyAliases(properties, schema, ["Root Cause"], {
+      rich_text: () => textProp(row.rootCause)
+    });
+    setPropertyAliases(properties, schema, ["Fix"], {
+      rich_text: () => textProp(row.fix)
+    });
+    setPropertyAliases(properties, schema, ["Resolved"], {
+      checkbox: () => checkboxProp(row.resolved)
+    });
+
+    const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
+    if (upsertStatus === "created") created += 1;
+    if (upsertStatus === "updated") updated += 1;
+  }
+
+  console.log(
+    `[NOTION_AUTOMATION_INCIDENT_LOG] synced key=${runKey} rows=${incidents.length} created=${created} updated=${updated}`
+  );
+  return `ok(rows=${incidents.length})`;
+};
+
+const KEY_ROTATION_CATALOG = [
+  { keyName: "NOTION_TOKEN", scope: "Notion" },
+  { keyName: "NOTION_DB_DAILY_SNAPSHOT", scope: "GitHub Variables" },
+  { keyName: "NOTION_DB_GUARD_ACTION_LOG", scope: "GitHub Variables" },
+  { keyName: "NOTION_DB_HF_TUNING_TRACKER", scope: "GitHub Variables" },
+  { keyName: "ALPACA_KEY_ID", scope: "Alpaca" },
+  { keyName: "ALPACA_SECRET_KEY", scope: "Alpaca" },
+  { keyName: "TELEGRAM_TOKEN", scope: "Telegram" },
+  { keyName: "GDRIVE_CLIENT_ID", scope: "Google Drive" },
+  { keyName: "GDRIVE_CLIENT_SECRET", scope: "Google Drive" },
+  { keyName: "GDRIVE_REFRESH_TOKEN", scope: "Google Drive" },
+  { keyName: "FINNHUB_API_KEY", scope: "Other" },
+  { keyName: "CNBC_RAPIDAPI_KEY", scope: "Other" },
+  { keyName: "RAPID_API_KEY", scope: "Other" }
+];
+
+const syncKeyRotationLedger = async ({ notionToken, kind, runKey }) => {
+  const enabled = boolFromEnv("NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED", false);
+  const databaseId = env("NOTION_DB_KEY_ROTATION_LEDGER");
+  if (!enabled) {
+    console.log(`[NOTION_KEY_ROTATION_LEDGER] skip: disabled_by_env key=${runKey}`);
+    return "skipped_disabled";
+  }
+  if (!databaseId) {
+    const message = `[NOTION_KEY_ROTATION_LEDGER] skip: missing NOTION_DB_KEY_ROTATION_LEDGER key=${runKey}`;
+    if (required) throw new Error(message);
+    console.log(message);
+    return "skipped_missing_db";
+  }
+
+  const rows = KEY_ROTATION_CATALOG.filter((entry) => hasValue(process.env[entry.keyName])).map((entry) => ({
+    keyName: entry.keyName,
+    scope: entry.scope
+  }));
+  if (!rows.length) {
+    console.log(`[NOTION_KEY_ROTATION_LEDGER] skip: no_visible_keys key=${runKey}`);
+    return "skipped_no_keys";
+  }
+
+  const verifiedAt = new Date().toISOString();
+  const workflow = workflowLabelForKind(kind);
+  const note = `auto-verified via ${workflow} (${runKey})`;
+  const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
+  const schema = db?.properties || {};
+  const titlePropertyName = findTitlePropertyName(schema) || "Key Name";
+  let created = 0;
+  let updated = 0;
+
+  for (const row of rows) {
+    const properties = {
+      [titlePropertyName]: titleProp(row.keyName)
+    };
+    setPropertyAliases(properties, schema, ["Scope"], {
+      select: () => selectProp(row.scope),
+      rich_text: () => textProp(row.scope)
+    });
+    setPropertyAliases(properties, schema, ["Last Verified At"], {
+      date: () => dateTimeProp(verifiedAt),
+      rich_text: () => textProp(verifiedAt)
+    });
+    setPropertyAliases(properties, schema, ["Notes"], {
+      rich_text: () => textProp(note)
+    });
+
+    const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.keyName, properties);
+    if (upsertStatus === "created") created += 1;
+    if (upsertStatus === "updated") updated += 1;
+  }
+
+  console.log(
+    `[NOTION_KEY_ROTATION_LEDGER] synced key=${runKey} rows=${rows.length} created=${created} updated=${updated}`
+  );
+  return `ok(rows=${rows.length})`;
 };
 
 const syncGuardActionLog = async ({ notionToken, runKey, statusRaw }) => {
@@ -666,6 +898,8 @@ const main = async () => {
   if (kind === "market_guard") {
     await syncGuardActionLog({ notionToken, runKey, statusRaw });
   }
+  await syncAutomationIncidentLog({ notionToken, kind, runKey, statusRaw });
+  await syncKeyRotationLedger({ notionToken, kind, runKey });
 };
 
 main().catch((error) => {

@@ -211,6 +211,8 @@ Use `.env.example` as baseline.
 - `NOTION_DB_DAILY_SNAPSHOT` (optional; target DB for workflow summary rows)
 - `NOTION_DB_GUARD_ACTION_LOG` (optional; target DB for market-guard action rows)
 - `NOTION_DB_HF_TUNING_TRACKER` (optional; target DB for dry-run HF tuning rows)
+- `NOTION_DB_AUTOMATION_INCIDENT_LOG` (optional; target DB for failure/incident rows)
+- `NOTION_DB_KEY_ROTATION_LEDGER` (optional; target DB for key verification ledger rows)
 - `NOTION_SIDECAR_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_SIDECAR_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
 - `NOTION_MARKET_GUARD_SYNC_ENABLED` (optional, default `true`)
@@ -219,6 +221,10 @@ Use `.env.example` as baseline.
 - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, guard action log sync failure fails workflow)
 - `NOTION_HF_TUNING_TRACKER_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED` (optional, default `false`; when `true`, HF tuning tracker sync failure fails workflow)
+- `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, incident log sync failure fails workflow)
+- `NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED` (optional, default `false`; when `true`, key-rotation ledger sync failure fails workflow)
 - `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)
 - `NOTION_WORK_LIST` (optional; work-list DB ID pointer for workspace ops)
 
@@ -342,6 +348,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Optional secondary DB variables:
   - `NOTION_DB_GUARD_ACTION_LOG` (market guard only)
   - `NOTION_DB_HF_TUNING_TRACKER` (dry-run only)
+  - `NOTION_DB_AUTOMATION_INCIDENT_LOG` (incident rows when run fails or guard action fails)
+  - `NOTION_DB_KEY_ROTATION_LEDGER` (key presence/verification heartbeat)
 - Optional workspace pointers:
   - `NOTION_PROJECT` (Notion project page ID)
   - `NOTION_WORK_LIST` (Notion work-list database ID)
@@ -351,6 +359,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - per-DB strict mode:
     - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED=true`
     - `NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED=true`
+    - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED=true`
+    - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED=true`
 - Manual Notion schema/view tune-up checklist:
   - `docs/NOTION_WORKSPACE_TUNEUP_CHECKLIST.md` (repo root)
 
