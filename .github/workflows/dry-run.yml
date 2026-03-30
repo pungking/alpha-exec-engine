@@ -1074,6 +1074,18 @@ jobs:
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
 
+      - name: Sync dry-run summary to Notion
+        if: always()
+        continue-on-error: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED != 'true' }}
+        env:
+          NOTION_SYNC_KIND: dry_run
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_DAILY_SNAPSHOT: ${{ vars.NOTION_DB_DAILY_SNAPSHOT }}
+          NOTION_SIDECAR_SYNC_ENABLED: ${{ vars.NOTION_SIDECAR_SYNC_ENABLED }}
+          NOTION_SIDECAR_SYNC_REQUIRED: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED }}
+          GHA_JOB_STATUS: ${{ job.status }}
+        run: node scripts/sync-notion-summary.mjs
+
       - name: Upload sidecar state artifact
         if: always()
         uses: actions/upload-artifact@v5

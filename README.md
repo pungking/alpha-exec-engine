@@ -86,6 +86,8 @@ HF verification shortcuts:
 - `npm run progress:overall`: print current progress ratio from `docs/OVERALL_PROGRESS_TRACKER.md`.
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
+- `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
+- `npm run sync:notion:market-guard`: upsert `state/last-market-guard.json` into Notion (optional).
 
 ## Environment
 Use `.env.example` as baseline.
@@ -100,6 +102,7 @@ Use `.env.example` as baseline.
 - `FINNHUB_API_KEY` (optional fallback source for VIX)
 - `CNBC_RAPIDAPI_KEY` (optional VIX fallback via RapidAPI)
 - `RAPID_API_KEY` (optional alias for `CNBC_RAPIDAPI_KEY`)
+- `NOTION_TOKEN` (optional; required only for workflow Notion sync)
 
 ### Variables (GitHub Actions)
 - `ALPACA_BASE_URL`
@@ -205,6 +208,11 @@ Use `.env.example` as baseline.
 - `GUARD_EXECUTE_TIGHTEN_STOPS` (`true|false`)
 - `GUARD_EXECUTE_REDUCE_POSITIONS` (`true|false`)
 - `GUARD_EXECUTE_FLATTEN` (`true|false`)
+- `NOTION_DB_DAILY_SNAPSHOT` (optional; target DB for workflow summary rows)
+- `NOTION_SIDECAR_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_SIDECAR_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
+- `NOTION_MARKET_GUARD_SYNC_ENABLED` (optional, default `true`)
+- `NOTION_MARKET_GUARD_SYNC_REQUIRED` (optional, default `false`; when `true`, Notion sync failure fails workflow)
 
 ### Ops Presets (2 profiles)
 - `DRY_DEFAULT_*` : market normal profile
@@ -314,6 +322,17 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 
 ### Runtime Guard
 `src/index.ts` validates required env keys at startup and exits with non-zero code on missing values.
+
+### Notion Workflow Sync (optional)
+- Dry-run workflow writes one Notion upsert row per run key: `sidecar-dryrun-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
+- Market-guard workflow writes one upsert row per run key: `sidecar-guard-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
+- Required secret:
+  - `NOTION_TOKEN`
+- Required variable:
+  - `NOTION_DB_DAILY_SNAPSHOT`
+- Behavior:
+  - default: warning-only (workflow does not fail on Notion API/network issues)
+  - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
 
 ## Workflow
 - `sidecar-ci`: typecheck/build gate on push/PR.
