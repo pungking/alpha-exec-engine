@@ -14,6 +14,10 @@ const boolFromEnv = (name, fallback = true) => {
 };
 
 const shortText = (value, max = 1800) => String(value ?? "").trim().slice(0, max);
+const toNumber = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
 
 const toDateOnly = (isoLike) => {
   const parsed = new Date(isoLike);
@@ -69,6 +73,10 @@ const titleProp = (value) => ({
 
 const textProp = (value) => ({
   rich_text: [{ text: { content: shortText(value, 1900) } }]
+});
+
+const numberProp = (value) => ({
+  number: toNumber(value)
 });
 
 const dateProp = (value) => ({
@@ -132,6 +140,18 @@ const flattenCounts = (obj) => {
   return entries.map(([key, value]) => `${key}:${value}`).join(",");
 };
 
+const resolveMarketCondition = ({ profile, vix, level }) => {
+  const normalized = String(profile || "").toLowerCase();
+  const vixNum = toNumber(vix);
+  const levelNum = toNumber(level);
+  if (levelNum !== null && levelNum >= 3) return "VOLATILE";
+  if (vixNum !== null && vixNum >= 30) return "VOLATILE";
+  if (normalized === "risk_off") return "BEAR";
+  if (vixNum !== null && vixNum >= 24) return "BEAR";
+  if (vixNum !== null && vixNum <= 18) return "BULL";
+  return "NEUTRAL";
+};
+
 const buildDryRunPayload = () => {
   const state = readJson("state/last-run.json") || {};
   const preview = readJson("state/last-dry-exec-preview.json") || {};
@@ -141,9 +161,19 @@ const buildDryRunPayload = () => {
   const skippedCount = Number(preview.skippedCount ?? 0);
   const gate = preview?.hfTuningPhase?.gateStatus || "N/A";
   const livePromotion = preview?.hfLivePromotion?.status || "N/A";
+  const regime = preview?.regime || {};
+  const stage6Contract = preview?.stage6Contract || {};
+  const hfGate = preview?.hfSentimentGate || {};
   const preflight = preview?.preflight || {};
   const guardControl = preview?.guardControl || {};
   const mode = preview?.mode || {};
+  const vixLevel = toNumber(regime?.vix);
+  const stage6Count = toNumber(stage6Contract?.checked);
+  const finalPicksCount = toNumber(stage6Contract?.executable);
+  const marketCondition = resolveMarketCondition({
+    profile: regime?.profile,
+    vix: regime?.vix
+  });
   const summary = [
     "source=sidecar_dry_run",
     `stage6File=${stage6File}`,
@@ -156,11 +186,25 @@ const buildDryRunPayload = () => {
     `guardBlocked=${guardControl.blocked ?? "N/A"}`,
     `hfGate=${gate}`,
     `hfLivePromotion=${livePromotion}`,
+    `hfApplied=${hfGate.applied ?? "N/A"}`,
     `execEnabled=${mode.execEnabled ?? "N/A"}`,
     `readOnly=${mode.readOnly ?? "N/A"}`
   ].join(" ");
   return {
     engine: "sidecar_dry_run",
+    source: "sidecar_dry_run",
+    date: state.lastSentAt || preview?.generatedAt || new Date().toISOString(),
+    stage6Count,
+    finalPicksCount,
+    vixLevel,
+    marketCondition,
+    stage6File,
+    stage6HashShort: stage6Hash ? stage6Hash.slice(0, 12) : "N/A",
+    payloadCount,
+    skippedCount,
+    guardLevel: guardControl.level ?? "N/A",
+    hfGateStatus: gate,
+    hfLivePromotion: livePromotion,
     topTickers: `${stage6File} (${stage6Hash ? stage6Hash.slice(0, 12) : "N/A"})`,
     summary
   };
@@ -170,6 +214,11 @@ const buildMarketGuardPayload = () => {
   const guard = readJson("state/last-market-guard.json") || {};
   const guardState = readJson("state/market-guard-state.json") || {};
   const control = readJson("state/guard-control.json") || {};
+  const vixLevel = toNumber(guard?.vix);
+  const marketCondition = resolveMarketCondition({
+    vix: guard?.vix,
+    level: guard?.level
+  });
   const summary = [
     "source=sidecar_market_guard",
     `level=L${guard.level ?? "N/A"}`,
@@ -188,6 +237,21 @@ const buildMarketGuardPayload = () => {
   ].join(" ");
   return {
     engine: "sidecar_market_guard",
+    source: "sidecar_market_guard",
+    date: guard.generatedAt || new Date().toISOString(),
+    vixLevel,
+    marketCondition,
+    stage6Count: null,
+    finalPicksCount: null,
+    stage6File: "N/A",
+    stage6HashShort: "N/A",
+    payloadCount: null,
+    skippedCount: null,
+    guardLevel: guard.level ?? "N/A",
+    hfGateStatus: "N/A",
+    hfLivePromotion: "N/A",
+    actionReason: guard.actionReason || "N/A",
+    runActions: guard.shouldRunActions ?? "N/A",
     topTickers: `L${guard.level ?? "N/A"} ${guard.actionReason || "N/A"}`,
     summary
   };
@@ -246,8 +310,8 @@ const main = async () => {
   };
 
   setProperty(properties, schema, "Date", {
-    date: () => dateProp(new Date().toISOString()),
-    rich_text: () => textProp(toDateOnly(new Date().toISOString()))
+    date: () => dateProp(payload.date || new Date().toISOString()),
+    rich_text: () => textProp(toDateOnly(payload.date || new Date().toISOString()))
   });
   setProperty(properties, schema, "Status", {
     select: () => selectProp(status),
@@ -262,6 +326,58 @@ const main = async () => {
   setProperty(properties, schema, "Engine", {
     rich_text: () => textProp(payload.engine),
     select: () => selectProp(payload.engine)
+  });
+  setProperty(properties, schema, "Source", {
+    rich_text: () => textProp(payload.source),
+    select: () => selectProp(payload.source)
+  });
+  setProperty(properties, schema, "VIX Level", {
+    number: () => numberProp(payload.vixLevel),
+    rich_text: () => textProp(payload.vixLevel ?? "N/A")
+  });
+  setProperty(properties, schema, "Market Condition", {
+    select: () => selectProp(payload.marketCondition),
+    rich_text: () => textProp(payload.marketCondition)
+  });
+  setProperty(properties, schema, "Stage 6 Count", {
+    number: () => numberProp(payload.stage6Count),
+    rich_text: () => textProp(payload.stage6Count ?? "N/A")
+  });
+  setProperty(properties, schema, "Final Picks Count", {
+    number: () => numberProp(payload.finalPicksCount),
+    rich_text: () => textProp(payload.finalPicksCount ?? "N/A")
+  });
+  setProperty(properties, schema, "Stage6 File", {
+    rich_text: () => textProp(payload.stage6File ?? "N/A")
+  });
+  setProperty(properties, schema, "Stage6 Hash", {
+    rich_text: () => textProp(payload.stage6HashShort ?? "N/A")
+  });
+  setProperty(properties, schema, "Payload Count", {
+    number: () => numberProp(payload.payloadCount),
+    rich_text: () => textProp(payload.payloadCount ?? "N/A")
+  });
+  setProperty(properties, schema, "Skipped Count", {
+    number: () => numberProp(payload.skippedCount),
+    rich_text: () => textProp(payload.skippedCount ?? "N/A")
+  });
+  setProperty(properties, schema, "Guard Level", {
+    number: () => numberProp(payload.guardLevel),
+    rich_text: () => textProp(payload.guardLevel ?? "N/A")
+  });
+  setProperty(properties, schema, "HF Gate", {
+    select: () => selectProp(payload.hfGateStatus ?? "N/A"),
+    rich_text: () => textProp(payload.hfGateStatus ?? "N/A")
+  });
+  setProperty(properties, schema, "HF Live Promotion", {
+    select: () => selectProp(payload.hfLivePromotion ?? "N/A"),
+    rich_text: () => textProp(payload.hfLivePromotion ?? "N/A")
+  });
+  setProperty(properties, schema, "Action Reason", {
+    rich_text: () => textProp(payload.actionReason ?? "N/A")
+  });
+  setProperty(properties, schema, "Run Actions", {
+    rich_text: () => textProp(payload.runActions ?? "N/A")
   });
 
   const upsertStatus = await upsertPage(notionToken, dbDaily, titlePropertyName, runKey, properties);

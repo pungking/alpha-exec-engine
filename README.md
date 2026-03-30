@@ -326,6 +326,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 ### Notion Workflow Sync (optional)
 - Dry-run workflow writes one Notion upsert row per run key: `sidecar-dryrun-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
 - Market-guard workflow writes one upsert row per run key: `sidecar-guard-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
+- Sync script auto-populates extra Daily Snapshot columns (`Source`, `Engine`, `Stage6 File`, `Stage6 Hash`, `Payload Count`, `Skipped Count`, `Guard Level`, `HF Gate`, `HF Live Promotion`, `Action Reason`, `Run Actions`) **only when those columns exist**.
 - Required secret:
   - `NOTION_TOKEN`
 - Required variable:
@@ -333,6 +334,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Behavior:
   - default: warning-only (workflow does not fail on Notion API/network issues)
   - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
+- Manual Notion schema/view tune-up checklist:
+  - `docs/NOTION_WORKSPACE_TUNEUP_CHECKLIST.md` (repo root)
 
 ## Workflow
 - `sidecar-ci`: typecheck/build gate on push/PR.
