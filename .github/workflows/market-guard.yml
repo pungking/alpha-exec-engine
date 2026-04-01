@@ -189,6 +189,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build ops health snapshot
+        if: always()
+        run: npm run ops:health:market-guard
+
+      - name: Publish ops health summary
+        if: always()
+        run: |
+          if [[ -f state/ops-health-report.md ]]; then
+            cat state/ops-health-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Sidecar Ops Health" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ops-health-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Sync market guard summary to Notion
         if: always()
         continue-on-error: ${{ vars.NOTION_MARKET_GUARD_SYNC_REQUIRED != 'true' && vars.NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED != 'true' && vars.NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED != 'true' }}
@@ -230,6 +245,8 @@ jobs:
             state/regime-guard-state.json
             state/performance-dashboard.json
             state/performance-dashboard.md
+            state/ops-health-report.json
+            state/ops-health-report.md
           if-no-files-found: warn
 
       - name: Save sidecar state

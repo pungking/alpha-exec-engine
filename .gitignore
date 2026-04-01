@@ -3,4 +3,5 @@ dist
 .env
 .DS_Store
 state/*.json
+state/*.md
 !state/.gitkeep

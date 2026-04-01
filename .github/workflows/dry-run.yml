@@ -1116,6 +1116,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build ops health snapshot
+        if: always()
+        run: npm run ops:health:dry-run
+
+      - name: Publish ops health summary
+        if: always()
+        run: |
+          if [[ -f state/ops-health-report.md ]]; then
+            cat state/ops-health-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Sidecar Ops Health" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ops-health-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Sync dry-run summary to Notion
         if: always()
         continue-on-error: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED != 'true' && vars.NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED != 'true' && vars.NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED != 'true' && vars.NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED != 'true' }}
@@ -1162,6 +1177,8 @@ jobs:
             state/stage6-20trade-loop.csv
             state/performance-dashboard.json
             state/performance-dashboard.md
+            state/ops-health-report.json
+            state/ops-health-report.md
             state/validation-pack/**
             state/payload-probe/**
           if-no-files-found: warn
