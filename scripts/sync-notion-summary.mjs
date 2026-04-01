@@ -84,6 +84,39 @@ const textProp = (value) => ({
 const numberProp = (value) => ({
   number: toNumber(value)
 });
+
+const toRoundedNumber = (value, digits = 2) => {
+  const n = toNumber(value);
+  if (n == null) return null;
+  return Number(n.toFixed(digits));
+};
+
+const numberFormatFromSchema = (schema, propertyName) => {
+  const def = schema?.[propertyName];
+  if (!def || def.type !== "number") return "";
+  const format = def?.number?.format ?? def?.number_format ?? "";
+  return String(format || "").toLowerCase();
+};
+
+const normalizeNumberForProperty = (schema, propertyName, value, options = {}) => {
+  const { digits = 2, percentFromWhole = false } = options;
+  let n = toRoundedNumber(value, digits);
+  if (n == null) return null;
+  const format = numberFormatFromSchema(schema, propertyName);
+  if (format === "percent" && percentFromWhole && Math.abs(n) > 1) {
+    // Notion percent-format numbers use 0~1 scale for 0~100%.
+    n = Number((n / 100).toFixed(Math.min(6, digits + 2)));
+  }
+  return n;
+};
+
+const resolveNumberByAliases = (schema, names, value, options = {}) => {
+  for (const name of names) {
+    if (schema?.[name]?.type !== "number") continue;
+    return normalizeNumberForProperty(schema, name, value, options);
+  }
+  return toRoundedNumber(value, options.digits ?? 2);
+};
 const checkboxProp = (value) => ({
   checkbox: Boolean(value)
 });
@@ -348,9 +381,11 @@ const buildHfTuningTrackerRow = (runKey, statusRaw) => {
   const stage6File = state.lastStage6FileName || preview.stage6File || "N/A";
   const stage6Hash = shortText(state.lastStage6Sha256 || preview.stage6Hash || "", 64);
 
-  const alertText = alert?.triggered ? `TRIGGERED:${alert?.reason || "unknown"}` : `CLEAR:${alert?.reason || "none"}`;
-  const decision = [
-    nextAction?.status || dailyVerdict?.status || "N/A",
+  const alertStatus = alert?.triggered ? "TRIGGERED" : "CLEAR";
+  const alertDetail = `${alertStatus}:${alert?.reason || (alert?.triggered ? "unknown" : "none")}`;
+  const decisionStatus = String(nextAction?.status || dailyVerdict?.status || "N/A").toUpperCase();
+  const decisionText = [
+    decisionStatus,
     nextAction?.action || dailyVerdict?.action || "N/A",
     nextAction?.reason || dailyVerdict?.reason || "N/A"
   ].join(" | ");
@@ -364,8 +399,10 @@ const buildHfTuningTrackerRow = (runKey, statusRaw) => {
     freezeStatus: freeze?.status || "N/A",
     livePromotion: live?.status || "N/A",
     payloadProbe: probe?.status || "N/A",
-    alert: alertText,
-    decision: shortText(decision, 500),
+    alertStatus,
+    alertDetail: shortText(alertDetail, 300),
+    decisionStatus: shortText(decisionStatus, 100),
+    decisionText: shortText(decisionText, 500),
     stage6File,
     stage6Hash: stage6Hash ? stage6Hash.slice(0, 12) : "N/A",
     source: "sidecar_dry_run",
@@ -669,9 +706,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       filledRows: toNumber(simulation?.filledRows),
       openRows: toNumber(simulation?.openRows),
       closedRows: toNumber(simulation?.closedRows),
-      winRatePct: toNumber(simulation?.winRatePct),
-      avgClosedReturnPct: toNumber(simulation?.avgClosedReturnPct),
-      avgClosedR: toNumber(simulation?.avgClosedR),
+      winRatePct: toRoundedNumber(simulation?.winRatePct, 2),
+      avgClosedReturnPct: toRoundedNumber(simulation?.avgClosedReturnPct, 2),
+      avgClosedR: toRoundedNumber(simulation?.avgClosedR, 4),
       topWinners: shortText(winnerText || "N/A", 500),
       topLosers: shortText(loserText || "N/A", 500),
       seriesCompact: shortText(seriesCompact || "N/A", 1800)
@@ -679,9 +716,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     live: {
       available: liveAvailable,
       positionCount: toNumber(liveTotals?.positionCount),
-      totalUnrealizedPl: toNumber(liveTotals?.totalUnrealizedPl),
-      totalReturnPct: toNumber(liveTotals?.totalReturnPct),
-      equity: toNumber(liveAccount?.equity)
+      totalUnrealizedPl: toRoundedNumber(liveTotals?.totalUnrealizedPl, 2),
+      totalReturnPct: toRoundedNumber(liveTotals?.totalReturnPct, 2),
+      equity: toRoundedNumber(liveAccount?.equity, 2)
     },
     summary: shortText(summary, 1800),
     hasData: Boolean(simulation && Object.keys(simulation).length > 0)
@@ -758,11 +795,18 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     rich_text: () => textProp(row.simulation.closedRows ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Sim Win Rate %"], {
-    number: () => numberProp(row.simulation.winRatePct),
+    number: () =>
+      numberProp(resolveNumberByAliases(schema, ["Sim Win Rate %"], row.simulation.winRatePct, { digits: 2, percentFromWhole: true })),
     rich_text: () => textProp(row.simulation.winRatePct ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Sim Avg Closed Return %"], {
-    number: () => numberProp(row.simulation.avgClosedReturnPct),
+    number: () =>
+      numberProp(
+        resolveNumberByAliases(schema, ["Sim Avg Closed Return %"], row.simulation.avgClosedReturnPct, {
+          digits: 2,
+          percentFromWhole: true
+        })
+      ),
     rich_text: () => textProp(row.simulation.avgClosedReturnPct ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Sim Avg Closed R"], {
@@ -792,7 +836,8 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     rich_text: () => textProp(row.live.totalUnrealizedPl ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Live Return %"], {
-    number: () => numberProp(row.live.totalReturnPct),
+    number: () =>
+      numberProp(resolveNumberByAliases(schema, ["Live Return %"], row.live.totalReturnPct, { digits: 2, percentFromWhole: true })),
     rich_text: () => textProp(row.live.totalReturnPct ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Live Equity"], {
@@ -836,6 +881,7 @@ const syncGuardActionLog = async ({ notionToken, runKey, statusRaw }) => {
     const properties = {
       [titlePropertyName]: titleProp(row.title)
     };
+    const levelLabel = row.level == null ? "N/A" : `L${row.level}`;
     setPropertyAliases(properties, schema, ["Run Key"], {
       rich_text: () => textProp(row.runKey)
     });
@@ -845,7 +891,8 @@ const syncGuardActionLog = async ({ notionToken, runKey, statusRaw }) => {
     });
     setPropertyAliases(properties, schema, ["Level", "Guard Level"], {
       number: () => numberProp(row.level),
-      rich_text: () => textProp(row.level ?? "N/A")
+      rich_text: () => textProp(row.level ?? "N/A"),
+      select: () => selectProp(levelLabel)
     });
     setPropertyAliases(properties, schema, ["Action"], {
       select: () => selectProp(row.action),
@@ -941,12 +988,17 @@ const syncHfTuningTracker = async ({ notionToken, runKey, statusRaw }) => {
     select: () => selectProp(row.payloadProbe),
     rich_text: () => textProp(row.payloadProbe)
   });
-  setPropertyAliases(properties, schema, ["Alert"], {
-    select: () => selectProp(row.alert),
-    rich_text: () => textProp(row.alert)
+  setPropertyAliases(properties, schema, ["Alert", "Alert (Select)"], {
+    select: () => selectProp(row.alertStatus),
+    checkbox: () => checkboxProp(row.alertStatus === "TRIGGERED"),
+    rich_text: () => textProp(row.alertDetail)
   });
   setPropertyAliases(properties, schema, ["Decision"], {
-    rich_text: () => textProp(row.decision)
+    select: () => selectProp(row.decisionStatus),
+    rich_text: () => textProp(row.decisionText)
+  });
+  setPropertyAliases(properties, schema, ["Decision (Text)"], {
+    rich_text: () => textProp(row.decisionText)
   });
   setPropertyAliases(properties, schema, ["Engine"], {
     select: () => selectProp(row.engine),
@@ -968,7 +1020,9 @@ const syncHfTuningTracker = async ({ notionToken, runKey, statusRaw }) => {
   });
 
   const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
-  console.log(`[NOTION_HF_TUNING_TRACKER] ${upsertStatus} key=${runKey} perfGate=${row.perfGate} decision=${row.decision}`);
+  console.log(
+    `[NOTION_HF_TUNING_TRACKER] ${upsertStatus} key=${runKey} perfGate=${row.perfGate} decision=${row.decisionStatus}`
+  );
   return upsertStatus;
 };
 
