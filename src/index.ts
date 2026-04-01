@@ -6514,8 +6514,14 @@ async function main() {
   console.log(
     `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} wouldBlockLive=${preflight.wouldBlockLive} liveParity=${preflight.simulatedLiveParity} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
   );
-  if (preflight.blocking && cfg.execEnabled) {
+  const preflightBlockingHardFail = readBoolEnv("PREFLIGHT_BLOCKING_HARD_FAIL", true);
+  if (preflight.blocking && cfg.execEnabled && preflightBlockingHardFail) {
     throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
+  }
+  if (preflight.blocking && cfg.execEnabled && !preflightBlockingHardFail) {
+    console.log(
+      `[PREFLIGHT] blocking gate suppressed by PREFLIGHT_BLOCKING_HARD_FAIL=false code=${preflight.code}`
+    );
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
@@ -6633,5 +6639,11 @@ async function main() {
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[DRY_RUN] FAIL ${message}`);
+  if (error instanceof Error) {
+    console.error(`[DRY_RUN] ERROR_CLASS ${error.name}`);
+    if (error.stack) {
+      console.error(`[DRY_RUN] STACK ${error.stack}`);
+    }
+  }
   process.exit(1);
 });

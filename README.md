@@ -29,7 +29,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Market guard auto-tunes effective thresholds by profile/quality while keeping env guardrails as base bounds.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
-- Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in dry-run it reports only, in exec mode it blocks on fail.
+- Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in exec mode it blocks on fail by default (`PREFLIGHT_BLOCKING_HARD_FAIL=true`).
 - Adds lifecycle state machine ledger (`state/order-ledger.json`) with transition validation and history trail.
 - Optional one-shot dedupe bypass (`FORCE_SEND_ONCE=true`) sends once per current `stage6Hash+mode`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
@@ -157,6 +157,7 @@ Use `.env.example` as baseline.
 - `PREFLIGHT_ENABLED`
 - `DAILY_MAX_NOTIONAL`
 - `ALLOW_ENTRY_OUTSIDE_RTH`
+- `PREFLIGHT_BLOCKING_HARD_FAIL` (default `true`; when `false`, keep run green and convert preflight block into payload skip + telemetry)
 - `ORDER_LIFECYCLE_ENABLED`
 - `ORDER_LEDGER_TTL_DAYS`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
