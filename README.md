@@ -234,6 +234,7 @@ Use `.env.example` as baseline.
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, incident log sync failure fails workflow)
 - `NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED` (optional, default `true`; dedupe incidents by fingerprint and update existing open row)
+- `NOTION_SYNC_MAX_RETRIES` (optional, default `2`; retry count for retryable Notion HTTP statuses `429/5xx`)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED` (optional, default `false`; when `true`, key-rotation ledger sync failure fails workflow)
 - `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)
@@ -368,6 +369,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Behavior:
   - default: warning-only (workflow does not fail on Notion API/network issues)
   - incident rollup: `NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED=true` keeps one open row per fingerprint (updates count/last-seen instead of creating duplicates)
+  - retry: `NOTION_SYNC_MAX_RETRIES=2` retries transient Notion errors (`429/5xx`) before failing
+  - secondary DB syncs are non-blocking by default; only fail the workflow when each `*_SYNC_REQUIRED=true`
   - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
   - per-DB strict mode:
     - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED=true`

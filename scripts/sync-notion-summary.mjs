@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 const NOTION_VERSION = "2022-06-28";
+const RETRYABLE_NOTION_STATUS = new Set([429, 500, 502, 503, 504]);
 
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
 const hasValue = (value) => String(value ?? "").trim().length > 0;
@@ -40,6 +41,8 @@ const readJson = (path) => {
   }
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const notionHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
   "Notion-Version": NOTION_VERSION,
@@ -47,24 +50,43 @@ const notionHeaders = (token) => ({
 });
 
 const notionRequest = async (token, path, init = {}) => {
-  const response = await fetch(`https://api.notion.com${path}`, {
-    ...init,
-    headers: {
-      ...notionHeaders(token),
-      ...(init.headers || {})
+  const maxRetriesRaw = Number(env("NOTION_SYNC_MAX_RETRIES", "2"));
+  const maxRetries = Number.isFinite(maxRetriesRaw) ? Math.max(0, Math.min(5, Math.trunc(maxRetriesRaw))) : 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const response = await fetch(`https://api.notion.com${path}`, {
+      ...init,
+      headers: {
+        ...notionHeaders(token),
+        ...(init.headers || {})
+      }
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = {};
     }
-  });
-  const text = await response.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    data = {};
+    if (response.ok) {
+      return data;
+    }
+
+    const message = `Notion ${path} failed (${response.status}): ${JSON.stringify(data).slice(0, 400)}`;
+    const retryable = RETRYABLE_NOTION_STATUS.has(response.status);
+    if (!retryable || attempt >= maxRetries) {
+      throw new Error(message);
+    }
+
+    const retryAfterRaw = Number(response.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfterRaw) && retryAfterRaw > 0
+      ? Math.min(60000, retryAfterRaw * 1000)
+      : Math.min(10000, 1000 * (2 ** attempt));
+    console.log(
+      `[NOTION_RETRY] path=${path} status=${response.status} attempt=${attempt + 1}/${maxRetries + 1} waitMs=${waitMs}`
+    );
+    await sleep(waitMs);
   }
-  if (!response.ok) {
-    throw new Error(`Notion ${path} failed (${response.status}): ${JSON.stringify(data).slice(0, 400)}`);
-  }
-  return data;
+  throw new Error(`Notion ${path} failed: exhausted retries`);
 };
 
 const findTitlePropertyName = (schema) => {
@@ -1380,6 +1402,20 @@ const kindConfig = {
   }
 };
 
+const runSecondarySync = async (label, requiredVarName, runner) => {
+  try {
+    return await runner();
+  } catch (error) {
+    const required = boolFromEnv(requiredVarName, false);
+    const message = `[${label}] failed: ${error?.message || error}`;
+    if (required) {
+      throw new Error(message);
+    }
+    console.log(`::warning::${message}`);
+    return "failed_non_blocking";
+  }
+};
+
 const main = async () => {
   const kind = env("NOTION_SYNC_KIND", "dry_run").toLowerCase();
   const config = kindConfig[kind];
@@ -1494,14 +1530,24 @@ const main = async () => {
   );
 
   if (kind === "dry_run") {
-    await syncHfTuningTracker({ notionToken, runKey, statusRaw });
+    await runSecondarySync("NOTION_HF_TUNING_TRACKER", "NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED", () =>
+      syncHfTuningTracker({ notionToken, runKey, statusRaw })
+    );
   }
   if (kind === "market_guard") {
-    await syncGuardActionLog({ notionToken, runKey, statusRaw });
+    await runSecondarySync("NOTION_GUARD_ACTION_LOG", "NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED", () =>
+      syncGuardActionLog({ notionToken, runKey, statusRaw })
+    );
   }
-  await syncPerformanceDashboard({ notionToken, kind, runKey, statusRaw });
-  await syncAutomationIncidentLog({ notionToken, kind, runKey, statusRaw });
-  await syncKeyRotationLedger({ notionToken, kind, runKey });
+  await runSecondarySync("NOTION_PERFORMANCE_DASHBOARD", "NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED", () =>
+    syncPerformanceDashboard({ notionToken, kind, runKey, statusRaw })
+  );
+  await runSecondarySync("NOTION_AUTOMATION_INCIDENT_LOG", "NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED", () =>
+    syncAutomationIncidentLog({ notionToken, kind, runKey, statusRaw })
+  );
+  await runSecondarySync("NOTION_KEY_ROTATION_LEDGER", "NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED", () =>
+    syncKeyRotationLedger({ notionToken, kind, runKey })
+  );
 };
 
 main().catch((error) => {
