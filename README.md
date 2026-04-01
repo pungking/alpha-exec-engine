@@ -233,6 +233,7 @@ Use `.env.example` as baseline.
 - `NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED` (optional, default `false`; when `true`, performance dashboard sync failure fails workflow)
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, incident log sync failure fails workflow)
+- `NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED` (optional, default `true`; dedupe incidents by fingerprint and update existing open row)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED` (optional, default `false`; when `true`, key-rotation ledger sync failure fails workflow)
 - `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)
@@ -366,6 +367,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `NOTION_WORK_LIST` (Notion work-list database ID)
 - Behavior:
   - default: warning-only (workflow does not fail on Notion API/network issues)
+  - incident rollup: `NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED=true` keeps one open row per fingerprint (updates count/last-seen instead of creating duplicates)
   - strict mode: set `NOTION_SIDECAR_SYNC_REQUIRED=true` / `NOTION_MARKET_GUARD_SYNC_REQUIRED=true`
   - per-DB strict mode:
     - `NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED=true`

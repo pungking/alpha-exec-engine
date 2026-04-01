@@ -147,6 +147,22 @@ const queryExistingByTitle = async (token, databaseId, titlePropertyName, titleV
   return Array.isArray(data?.results) && data.results.length > 0 ? data.results[0] : null;
 };
 
+const queryPagesByRichText = async (token, databaseId, richTextPropertyName, value, pageSize = 10) => {
+  if (!richTextPropertyName || !hasValue(value)) return [];
+  const payload = {
+    filter: {
+      property: richTextPropertyName,
+      rich_text: { equals: String(value) }
+    },
+    page_size: Math.max(1, Math.min(100, pageSize))
+  };
+  const data = await notionRequest(token, `/v1/databases/${databaseId}/query`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  return Array.isArray(data?.results) ? data.results : [];
+};
+
 const upsertPage = async (token, databaseId, titlePropertyName, titleValue, properties) => {
   const existing = await queryExistingByTitle(token, databaseId, titlePropertyName, titleValue);
   if (existing?.id) {
@@ -185,6 +201,54 @@ const setPropertyAliases = (target, schema, names, handlers) => {
     return true;
   }
   return false;
+};
+
+const findPropertyAlias = (schema, names, allowedTypes = []) => {
+  for (const name of names) {
+    const def = schema?.[name];
+    if (!def || !def.type) continue;
+    if (allowedTypes.length > 0 && !allowedTypes.includes(def.type)) continue;
+    return name;
+  }
+  return null;
+};
+
+const readPagePropertyValue = (page, schema, name) => {
+  if (!page?.properties || !schema?.[name]) return "";
+  const prop = page.properties[name];
+  const def = schema[name];
+  if (!prop || !def?.type) return "";
+  switch (def.type) {
+    case "title":
+      return (prop.title || []).map((row) => row.plain_text || row.text?.content || "").join("").trim();
+    case "rich_text":
+      return (prop.rich_text || []).map((row) => row.plain_text || row.text?.content || "").join("").trim();
+    case "select":
+      return String(prop.select?.name || "").trim();
+    case "status":
+      return String(prop.status?.name || "").trim();
+    case "number":
+      return Number.isFinite(prop.number) ? String(prop.number) : "";
+    case "checkbox":
+      return prop.checkbox ? "true" : "false";
+    case "date":
+      return String(prop.date?.start || "").trim();
+    default:
+      return "";
+  }
+};
+
+const readPagePropertyNumber = (page, schema, name) => {
+  if (!page?.properties || !schema?.[name]) return null;
+  const def = schema[name];
+  const prop = page.properties[name];
+  if (!prop || def?.type !== "number") return null;
+  return toNumber(prop.number);
+};
+
+const isResolvedIncidentStatus = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "resolved" || normalized === "closed" || normalized === "done";
 };
 
 const flattenCounts = (obj) => {
@@ -443,6 +507,7 @@ const slugify = (value, max = 80) =>
 const parseErrorClassFromMessage = (message) => {
   const text = String(message || "").toLowerCase();
   if (!text) return "Unknown";
+  if (text.includes("hf_alert") || text.includes("drift") || text.includes("marker")) return "DataError";
   if (text.includes("auth") || text.includes("credential") || text.includes("forbidden") || text.includes("401")) {
     return "AuthError";
   }
@@ -460,6 +525,23 @@ const parseErrorClassFromMessage = (message) => {
   if (text.includes("missing") || text.includes("invalid") || text.includes("config")) return "ConfigError";
   if (text.includes("parse") || text.includes("schema") || text.includes("data")) return "DataError";
   return "Unknown";
+};
+
+const parseErrorClassFromOpsHealthCheck = (check) => {
+  const id = String(check?.id || "").toLowerCase();
+  if (id.includes("workflow") || id.includes("job")) return "ConfigError";
+  if (id.includes("auth") || id.includes("credential")) return "AuthError";
+  if (id.includes("network") || id.includes("timeout") || id.includes("rate")) return "NetworkError";
+  if (
+    id.includes("hf_alert") ||
+    id.includes("marker") ||
+    id.includes("return_outlier") ||
+    id.includes("perf") ||
+    id.includes("stage")
+  ) {
+    return "DataError";
+  }
+  return parseErrorClassFromMessage(`${check?.id || ""} ${check?.detail || ""}`);
 };
 
 const severityFromErrorClass = (errorClass) => {
@@ -500,7 +582,7 @@ const buildOpsHealthCheckIncident = ({ runKey, workflow, runId, runUrl, kind, ch
   const id = slugify(check?.id || "ops_health");
   const status = String(check?.status || "").toLowerCase();
   const detail = shortText(check?.detail || "ops_health_check_triggered", 500);
-  const errorClass = parseErrorClassFromMessage(`${check?.id || ""} ${detail}`);
+  const errorClass = parseErrorClassFromOpsHealthCheck(check);
   const severity = status === "fail" ? "P1" : "P2";
   return {
     title: `${runKey}:ops_health:${id}:${status || "warn"}`,
@@ -645,6 +727,7 @@ const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
 const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw }) => {
   const enabled = boolFromEnv("NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED", true);
   const required = boolFromEnv("NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED", false);
+  const rollupEnabled = boolFromEnv("NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED", true);
   const databaseId = env("NOTION_DB_AUTOMATION_INCIDENT_LOG");
   if (!enabled) {
     console.log(`[NOTION_AUTOMATION_INCIDENT_LOG] skip: disabled_by_env key=${runKey}`);
@@ -666,13 +749,19 @@ const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw 
   const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
   const schema = db?.properties || {};
   const titlePropertyName = findTitlePropertyName(schema) || "Incident Key";
+  const fingerprintPropertyName = findPropertyAlias(schema, ["Fingerprint", "Issue Fingerprint"], ["rich_text"]);
+  const statusPropertyName = findPropertyAlias(schema, ["Status"], ["select", "status", "rich_text"]);
+  const occurrencesPropertyName = findPropertyAlias(schema, ["Occurrences", "Run Count", "Seen Count"], ["number"]);
+  const firstSeenPropertyName = findPropertyAlias(schema, ["First Seen", "First Seen At"], ["date", "rich_text"]);
+  const lastSeenPropertyName = findPropertyAlias(schema, ["Last Seen", "Occurred At", "Time", "Date"], [
+    "date",
+    "rich_text"
+  ]);
   let created = 0;
   let updated = 0;
 
   for (const row of incidents) {
-    const properties = {
-      [titlePropertyName]: titleProp(row.title)
-    };
+    const properties = {};
     setPropertyAliases(properties, schema, ["Workflow"], {
       select: () => selectProp(row.workflow),
       rich_text: () => textProp(row.workflow)
@@ -727,14 +816,88 @@ const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw 
     setPropertyAliases(properties, schema, ["Resolved"], {
       checkbox: () => checkboxProp(row.resolved)
     });
+    let existing = null;
+    if (rollupEnabled && fingerprintPropertyName) {
+      const matches = await queryPagesByRichText(
+        notionToken,
+        databaseId,
+        fingerprintPropertyName,
+        row.fingerprint,
+        10
+      );
+      if (matches.length > 0) {
+        existing =
+          matches.find((page) => {
+            if (!statusPropertyName) return true;
+            const statusValue = readPagePropertyValue(page, schema, statusPropertyName);
+            return !isResolvedIncidentStatus(statusValue);
+          }) || matches[0];
+      }
+    }
+    if (!existing) {
+      existing = await queryExistingByTitle(notionToken, databaseId, titlePropertyName, row.title);
+    }
 
-    const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
-    if (upsertStatus === "created") created += 1;
-    if (upsertStatus === "updated") updated += 1;
+    if (existing?.id) {
+      const existingFirstSeen =
+        readPagePropertyValue(existing, schema, firstSeenPropertyName) ||
+        readPagePropertyValue(existing, schema, lastSeenPropertyName) ||
+        row.occurredAt;
+      const existingOccurrences = readPagePropertyNumber(existing, schema, occurrencesPropertyName);
+      if (occurrencesPropertyName) {
+        properties[occurrencesPropertyName] = numberProp((existingOccurrences ?? 0) + 1);
+      }
+      if (firstSeenPropertyName) {
+        const firstSeenText = existingFirstSeen || row.occurredAt;
+        setPropertyAliases(properties, schema, [firstSeenPropertyName], {
+          date: () => dateTimeProp(firstSeenText),
+          rich_text: () => textProp(firstSeenText)
+        });
+      }
+      if (lastSeenPropertyName) {
+        setPropertyAliases(properties, schema, [lastSeenPropertyName], {
+          date: () => dateTimeProp(row.occurredAt),
+          rich_text: () => textProp(row.occurredAt)
+        });
+      }
+
+      await notionRequest(notionToken, `/v1/pages/${existing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ properties })
+      });
+      updated += 1;
+      continue;
+    }
+
+    if (occurrencesPropertyName) {
+      properties[occurrencesPropertyName] = numberProp(1);
+    }
+    if (firstSeenPropertyName) {
+      setPropertyAliases(properties, schema, [firstSeenPropertyName], {
+        date: () => dateTimeProp(row.occurredAt),
+        rich_text: () => textProp(row.occurredAt)
+      });
+    }
+    if (lastSeenPropertyName) {
+      setPropertyAliases(properties, schema, [lastSeenPropertyName], {
+        date: () => dateTimeProp(row.occurredAt),
+        rich_text: () => textProp(row.occurredAt)
+      });
+    }
+
+    properties[titlePropertyName] = titleProp(row.title);
+    await notionRequest(notionToken, "/v1/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { database_id: databaseId },
+        properties
+      })
+    });
+    created += 1;
   }
 
   console.log(
-    `[NOTION_AUTOMATION_INCIDENT_LOG] synced key=${runKey} rows=${incidents.length} created=${created} updated=${updated}`
+    `[NOTION_AUTOMATION_INCIDENT_LOG] synced key=${runKey} rows=${incidents.length} created=${created} updated=${updated} rollup=${rollupEnabled}`
   );
   return `ok(rows=${incidents.length})`;
 };
