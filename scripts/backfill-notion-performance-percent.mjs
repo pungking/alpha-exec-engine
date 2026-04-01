@@ -19,6 +19,11 @@ const toInt = (value, fallback) => {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 };
 
+const toNonNegativeInt = (value, fallback) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+};
+
 const notionHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
   "Notion-Version": NOTION_VERSION,
@@ -59,15 +64,20 @@ const getPageNumber = (page, propertyName) => {
   return Number.isFinite(value) ? value : null;
 };
 
-const correctPercent = (value) => Number((value / 100).toFixed(6));
+const roundPercentStoredValue = (storedValue, displayDigits) => {
+  const storedDigits = Math.max(0, displayDigits + 2);
+  return Number(storedValue.toFixed(storedDigits));
+};
 
 const main = async () => {
   const notionToken = env("NOTION_TOKEN");
   const databaseId = env("NOTION_DB_PERFORMANCE_DASHBOARD");
   const dryRun = boolFromEnv("NOTION_PERF_PERCENT_BACKFILL_DRY_RUN", true);
+  const roundAll = boolFromEnv("NOTION_PERF_PERCENT_BACKFILL_ROUND_ALL", false);
   const pageSize = toInt(env("NOTION_PERF_PERCENT_BACKFILL_PAGE_SIZE"), 100);
   const maxPages = toInt(env("NOTION_PERF_PERCENT_BACKFILL_MAX_PAGES"), 50);
   const threshold = Number(env("NOTION_PERF_PERCENT_BACKFILL_THRESHOLD", "1"));
+  const displayDigits = toNonNegativeInt(env("NOTION_PERF_PERCENT_BACKFILL_DISPLAY_DIGITS"), 2);
 
   if (!notionToken || !databaseId) {
     throw new Error("missing NOTION_TOKEN or NOTION_DB_PERFORMANCE_DASHBOARD");
@@ -88,7 +98,7 @@ const main = async () => {
   }
 
   console.log(
-    `[NOTION_PERF_BACKFILL] start dryRun=${dryRun} threshold=${threshold} percentProps=${percentProps.join(",")}`
+    `[NOTION_PERF_BACKFILL] start dryRun=${dryRun} threshold=${threshold} displayDigits=${displayDigits} roundAll=${roundAll} percentProps=${percentProps.join(",")}`
   );
 
   let nextCursor = null;
@@ -123,11 +133,18 @@ const main = async () => {
       for (const propName of percentProps) {
         const current = getPageNumber(row, propName);
         if (current == null) continue;
-        if (Math.abs(current) <= threshold) continue;
-        const corrected = correctPercent(current);
+        const shouldScale = Math.abs(current) > threshold;
+        if (!shouldScale && !roundAll) continue;
+        const scaled = shouldScale ? current / 100 : current;
+        const corrected = roundPercentStoredValue(scaled, displayDigits);
         if (!Number.isFinite(corrected) || corrected === current) continue;
         properties[propName] = { number: corrected };
-        changes.push({ property: propName, before: current, after: corrected });
+        changes.push({
+          property: propName,
+          before: current,
+          after: corrected,
+          reason: shouldScale ? "scale_and_round" : "round_only"
+        });
         changed = true;
       }
 

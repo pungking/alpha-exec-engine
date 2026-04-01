@@ -436,6 +436,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Percent backfill controls (manual only):
     - `NOTION_PERF_PERCENT_BACKFILL_DRY_RUN` (default `true`)
     - `NOTION_PERF_PERCENT_BACKFILL_THRESHOLD` (default `1`; fix rows when `abs(value) > threshold`)
+    - `NOTION_PERF_PERCENT_BACKFILL_ROUND_ALL` (default `false`; round in-range percent rows too)
+    - `NOTION_PERF_PERCENT_BACKFILL_DISPLAY_DIGITS` (default `2`; visible percent digits target)
     - `NOTION_PERF_PERCENT_BACKFILL_PAGE_SIZE` (default `100`)
     - `NOTION_PERF_PERCENT_BACKFILL_MAX_PAGES` (default `50`)
   - Recommended DB columns:
