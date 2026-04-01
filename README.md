@@ -87,6 +87,8 @@ HF verification shortcuts:
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
+- `npm run backfill:notion:perf-pct:dry`: dry-run check for legacy Notion percent-scale rows.
+- `npm run backfill:notion:perf-pct`: one-time fix for legacy Notion percent-scale rows.
 - `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
 - `npm run sync:notion:market-guard`: upsert `state/last-market-guard.json` into Notion (optional).
 
@@ -431,6 +433,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `NOTION_DB_PERFORMANCE_DASHBOARD`
   - `NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED` (default `true`)
   - `NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED` (default `false`)
+  - Percent backfill controls (manual only):
+    - `NOTION_PERF_PERCENT_BACKFILL_DRY_RUN` (default `true`)
+    - `NOTION_PERF_PERCENT_BACKFILL_THRESHOLD` (default `1`; fix rows when `abs(value) > threshold`)
+    - `NOTION_PERF_PERCENT_BACKFILL_PAGE_SIZE` (default `100`)
+    - `NOTION_PERF_PERCENT_BACKFILL_MAX_PAGES` (default `50`)
   - Recommended DB columns:
     - `Run Key`(title), `Time`(date), `Kind`(select), `Status`(select), `Batch ID`(text)
     - `Sim Rows`, `Sim Filled`, `Sim Open`, `Sim Closed`, `Sim Win Rate %`, `Sim Avg Closed Return %`, `Sim Avg Closed R`(number)

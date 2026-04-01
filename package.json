@@ -13,6 +13,8 @@
     "progress:daily": "node scripts/progress-daily.mjs",
     "evidence:snippet": "node scripts/evidence-snippet.mjs",
     "dashboard:perf": "node scripts/build-performance-dashboard.mjs",
+    "backfill:notion:perf-pct:dry": "node scripts/backfill-notion-performance-percent.mjs",
+    "backfill:notion:perf-pct": "NOTION_PERF_PERCENT_BACKFILL_DRY_RUN=false node scripts/backfill-notion-performance-percent.mjs",
     "start": "node dist/src/index.js",
     "guard": "node dist/src/market-guard.js",
     "check:json-parse-guard": "node scripts/check-json-parse-guard.mjs",
