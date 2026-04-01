@@ -359,7 +359,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `NOTION_DB_GUARD_ACTION_LOG` (market guard only)
   - `NOTION_DB_HF_TUNING_TRACKER` (dry-run only)
   - `NOTION_DB_PERFORMANCE_DASHBOARD` (simulation/live dashboard row)
-  - `NOTION_DB_AUTOMATION_INCIDENT_LOG` (incident rows when run fails or guard action fails)
+  - `NOTION_DB_AUTOMATION_INCIDENT_LOG` (incident triage rows: workflow fail, guard-action fail, HF alert, ops-health warn/fail)
   - `NOTION_DB_KEY_ROTATION_LEDGER` (key presence/verification heartbeat)
 - Optional workspace pointers:
   - `NOTION_PROJECT` (Notion project page ID)

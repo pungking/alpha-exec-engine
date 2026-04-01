@@ -416,6 +416,30 @@ const workflowLabelForKind = (kind) => {
   return "dry-run";
 };
 
+const runUrlFromEnv = () => {
+  const server = env("GITHUB_SERVER_URL", "https://github.com");
+  const repo = env("GITHUB_REPOSITORY");
+  const runId = env("GITHUB_RUN_ID");
+  if (!repo || !runId) return "";
+  return `${server}/${repo}/actions/runs/${runId}`;
+};
+
+const readText = (path, maxLen = 200000) => {
+  if (!path || !fs.existsSync(path)) return "";
+  try {
+    return String(fs.readFileSync(path, "utf8") || "").slice(0, maxLen);
+  } catch {
+    return "";
+  }
+};
+
+const slugify = (value, max = 80) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, max);
+
 const parseErrorClassFromMessage = (message) => {
   const text = String(message || "").toLowerCase();
   if (!text) return "Unknown";
@@ -438,20 +462,112 @@ const parseErrorClassFromMessage = (message) => {
   return "Unknown";
 };
 
+const severityFromErrorClass = (errorClass) => {
+  switch (String(errorClass || "")) {
+    case "AuthError":
+    case "ConfigError":
+      return "P1";
+    case "NetworkError":
+    case "Timeout":
+    case "RateLimit":
+    case "DataError":
+      return "P2";
+    default:
+      return "P2";
+  }
+};
+
+const fixTemplateByErrorClass = (errorClass) => {
+  switch (String(errorClass || "")) {
+    case "AuthError":
+      return "Check secret/token validity and integration permissions, then rerun workflow.";
+    case "ConfigError":
+      return "Validate required env/vars naming and values, then rerun workflow.";
+    case "NetworkError":
+      return "Retry run once; if persistent, verify provider/API availability and fallback sources.";
+    case "Timeout":
+      return "Increase timeout/retry or reduce request volume and rerun workflow.";
+    case "RateLimit":
+      return "Throttle request frequency, stagger schedules, and rerun after cooldown.";
+    case "DataError":
+      return "Inspect source payload/schema mismatch and patch parser/guard before rerun.";
+    default:
+      return "Inspect logs, identify root cause, patch safely, and rerun workflow.";
+  }
+};
+
+const buildOpsHealthCheckIncident = ({ runKey, workflow, runId, runUrl, kind, check }) => {
+  const id = slugify(check?.id || "ops_health");
+  const status = String(check?.status || "").toLowerCase();
+  const detail = shortText(check?.detail || "ops_health_check_triggered", 500);
+  const errorClass = parseErrorClassFromMessage(`${check?.id || ""} ${detail}`);
+  const severity = status === "fail" ? "P1" : "P2";
+  return {
+    title: `${runKey}:ops_health:${id}:${status || "warn"}`,
+    workflow,
+    runId,
+    runUrl,
+    kind,
+    component: "ops_health",
+    source: "ops_health_report",
+    occurredAt: new Date().toISOString(),
+    errorClass,
+    severity,
+    rootCause: shortText(`${check?.id || "ops_health"} | ${detail}`, 500),
+    fix: fixTemplateByErrorClass(errorClass),
+    nextAction: shortText(
+      `Open ${workflow} run logs, focus on check=${check?.id || "unknown"}, then rerun after fix.`,
+      500
+    ),
+    fingerprint: slugify(`${workflow}|${kind}|ops_health|${id}|${status || "warn"}`, 120),
+    resolved: false
+  };
+};
+
 const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
   const workflow = workflowLabelForKind(kind);
   const runId = env("GITHUB_RUN_ID", "local");
+  const runUrl = runUrlFromEnv() || "N/A";
+  const runAttempt = env("GITHUB_RUN_ATTEMPT", "1");
+  const occurredAt = new Date().toISOString();
+  const incidentByFingerprint = new Map();
   const incidents = [];
-
-  if (statusRaw !== "success") {
+  const pushIncident = (incident) => {
+    const fingerprint =
+      shortText(
+        incident?.fingerprint ||
+          slugify(
+            `${incident?.workflow || workflow}|${incident?.kind || kind}|${incident?.errorClass || "Unknown"}|${
+              incident?.rootCause || incident?.title || "unknown"
+            }`,
+            120
+          ),
+        120
+      ) || `fp_${incidents.length + 1}`;
+    if (incidentByFingerprint.has(fingerprint)) return;
+    incidentByFingerprint.set(fingerprint, true);
     incidents.push({
-      title: `${runKey}:job:${statusRaw}`,
+      ...incident,
       workflow,
       runId,
+      runUrl,
+      kind,
+      occurredAt,
+      fingerprint
+    });
+  };
+
+  if (statusRaw !== "success") {
+    pushIncident({
+      title: `${runKey}:job:${statusRaw}`,
       errorClass: "Unknown",
       severity: "P1",
       rootCause: `workflow_status_${statusRaw}`,
       fix: "Inspect failing step logs, patch root cause, rerun workflow.",
+      nextAction: "Open failed step in GitHub Actions and apply minimal safe fix before rerun.",
+      component: "workflow",
+      source: "gha_status",
+      fingerprint: slugify(`${workflow}|${kind}|workflow_status_${statusRaw}|attempt_${runAttempt}`, 120),
       resolved: false
     });
   }
@@ -463,14 +579,17 @@ const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
       if (String(row?.status || "").toLowerCase() !== "failed") continue;
       const action = String(row?.action || "unknown_action");
       const reason = [row?.reason, row?.detail].filter(Boolean).map((v) => String(v)).join(" | ");
-      incidents.push({
+      const errorClass = parseErrorClassFromMessage(reason);
+      pushIncident({
         title: `${runKey}:action:${action}:failed`,
-        workflow,
-        runId,
-        errorClass: parseErrorClassFromMessage(reason),
-        severity: "P1",
+        errorClass,
+        severity: severityFromErrorClass(errorClass),
         rootCause: shortText(reason || "guard_action_failed", 500),
-        fix: "Review Alpaca/API response in market-guard logs and retry after resolving external/API condition.",
+        fix: fixTemplateByErrorClass(errorClass),
+        nextAction: `Inspect market-guard action=${action} failure detail, then rerun market-guard after fix.`,
+        component: "market_guard_action",
+        source: "market_guard_action_result",
+        fingerprint: slugify(`${workflow}|${kind}|action|${action}|${errorClass}`, 120),
         resolved: false
       });
     }
@@ -479,18 +598,45 @@ const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
   if (kind === "dry_run") {
     const preview = readJson("state/last-dry-exec-preview.json") || {};
     const hfAlert = preview?.hfAlert || {};
+    const logText = readText("state/last-run-output.log");
+    const dedupeRun = logText.includes("[DEDUPE] SKIP send");
     if (hfAlert?.triggered) {
-      incidents.push({
+      const errorClass = parseErrorClassFromMessage(hfAlert?.reason || "hf_alert_triggered");
+      pushIncident({
         title: `${runKey}:hf_alert`,
-        workflow,
-        runId,
-        errorClass: "DataError",
-        severity: "P2",
+        errorClass,
+        severity: dedupeRun ? "P3" : "P2",
         rootCause: shortText(String(hfAlert?.reason || "hf_alert_triggered"), 500),
-        fix: "Review HF shadow/drift deltas, tune thresholds, and rerun validation pack.",
+        fix: fixTemplateByErrorClass(errorClass),
+        nextAction: dedupeRun
+          ? "Previous alert is still active (dedupe run). Keep observe mode and wait for next non-dedupe sample."
+          : "Review HF shadow/drift deltas and rerun validation pack after threshold sanity check.",
+        component: "hf_alert",
+        source: dedupeRun ? "dry_run_dedupe" : "dry_run_preview",
+        fingerprint: slugify(
+          `${workflow}|${kind}|hf_alert|${hfAlert?.reason || "hf_alert_triggered"}|dedupe_${dedupeRun}`,
+          120
+        ),
         resolved: false
       });
     }
+  }
+
+  const opsHealth = readJson("state/ops-health-report.json") || {};
+  const checks = Array.isArray(opsHealth?.checks) ? opsHealth.checks : [];
+  for (const check of checks) {
+    const status = String(check?.status || "").toLowerCase();
+    if (status !== "warn" && status !== "fail") continue;
+    pushIncident(
+      buildOpsHealthCheckIncident({
+        runKey,
+        workflow,
+        runId,
+        runUrl,
+        kind,
+        check
+      })
+    );
   }
 
   return incidents;
@@ -534,6 +680,26 @@ const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw 
     setPropertyAliases(properties, schema, ["RunId", "Run ID"], {
       rich_text: () => textProp(row.runId)
     });
+    setPropertyAliases(properties, schema, ["Run URL", "Workflow Run URL"], {
+      url: () => ({ url: row.runUrl }),
+      rich_text: () => textProp(row.runUrl)
+    });
+    setPropertyAliases(properties, schema, ["Occurred At", "Time", "Date"], {
+      date: () => dateTimeProp(row.occurredAt),
+      rich_text: () => textProp(row.occurredAt)
+    });
+    setPropertyAliases(properties, schema, ["Kind", "Mode"], {
+      select: () => selectProp(row.kind),
+      rich_text: () => textProp(row.kind)
+    });
+    setPropertyAliases(properties, schema, ["Component"], {
+      select: () => selectProp(row.component || "unknown"),
+      rich_text: () => textProp(row.component || "unknown")
+    });
+    setPropertyAliases(properties, schema, ["Source"], {
+      select: () => selectProp(row.source || "notion_sync"),
+      rich_text: () => textProp(row.source || "notion_sync")
+    });
     setPropertyAliases(properties, schema, ["Error Class"], {
       select: () => selectProp(row.errorClass),
       rich_text: () => textProp(row.errorClass)
@@ -547,6 +713,16 @@ const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw 
     });
     setPropertyAliases(properties, schema, ["Fix"], {
       rich_text: () => textProp(row.fix)
+    });
+    setPropertyAliases(properties, schema, ["Next Action", "Action"], {
+      rich_text: () => textProp(row.nextAction || row.fix)
+    });
+    setPropertyAliases(properties, schema, ["Fingerprint", "Issue Fingerprint"], {
+      rich_text: () => textProp(row.fingerprint)
+    });
+    setPropertyAliases(properties, schema, ["Status"], {
+      select: () => selectProp(row.resolved ? "resolved" : "open"),
+      rich_text: () => textProp(row.resolved ? "resolved" : "open")
     });
     setPropertyAliases(properties, schema, ["Resolved"], {
       checkbox: () => checkboxProp(row.resolved)
