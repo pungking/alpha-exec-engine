@@ -156,6 +156,7 @@ Use `.env.example` as baseline.
 - `HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA` (default `0.35`; baseline delta threshold for negative ratio)
 - `HF_DRIFT_ALERT_APPLIED_RATIO_DROP` (default `0.25`; baseline drop threshold for applied ratio)
 - `HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR` (default `0.15`; absolute low floor for applied ratio drop alerts)
+- `HF_DRIFT_ALERT_REQUIRE_PAYLOAD` (default `true`; skip drift alert evaluation when payload count is zero)
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`

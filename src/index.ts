@@ -456,6 +456,7 @@ type HfDriftSnapshot = {
   stage6File: string;
   profile: RegimeProfile;
   hfSoftEnabled: boolean;
+  payloadCount?: number;
   checkedCandidates: number;
   appliedCount: number;
   tightenCount: number;
@@ -472,6 +473,8 @@ type HfDriftAlert = {
   enabled: boolean;
   triggered: boolean;
   reason: string;
+  requirePayload: boolean;
+  payloadCount: number;
   windowRuns: number;
   minHistory: number;
   minCandidates: number;
@@ -961,6 +964,7 @@ function printStartupSummary() {
   console.log(`HF_DRIFT_NEG_DEL: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`);
   console.log(`HF_DRIFT_APP_DRP: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`);
   console.log(`HF_DRIFT_APP_FLR: ${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`);
+  console.log(`HF_DRIFT_REQ_PAY: ${readBoolEnv("HF_DRIFT_ALERT_REQUIRE_PAYLOAD", true)}`);
   console.log(`HF_FREEZE_EN    : ${readBoolEnv("HF_TUNING_FREEZE_ENABLED", false)}`);
   console.log(`HF_FREEZE_STBL  : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3)))}`);
   console.log(`HF_FREEZE_UNFRZ : ${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`);
@@ -3680,6 +3684,8 @@ async function updateHfDriftAlert(
   const negativeRatioDelta = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1);
   const appliedRatioDrop = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1);
   const appliedRatioFloor = clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1);
+  const requirePayload = readBoolEnv("HF_DRIFT_ALERT_REQUIRE_PAYLOAD", true);
+  const payloadCount = Math.max(0, dryExec.payloads.length);
   const checkedCandidatesRaw =
     dryExec.stage6Contract.checked > 0 ? dryExec.stage6Contract.checked : actionableCount;
   const checkedCandidates = Math.max(0, checkedCandidatesRaw);
@@ -3696,6 +3702,7 @@ async function updateHfDriftAlert(
     stage6File: stage6.fileName,
     profile: dryExec.regime.profile,
     hfSoftEnabled: dryExec.hfSentimentGate.enabled,
+    payloadCount,
     checkedCandidates,
     appliedCount,
     tightenCount,
@@ -3711,11 +3718,22 @@ async function updateHfDriftAlert(
   const recent = snapshots.slice(-windowRuns);
   const baselinePool = recent
     .slice(0, -1)
-    .filter((row) => row.hfSoftEnabled && row.checkedCandidates >= minCandidates);
+    .filter((row) => {
+      const rowPayloadCount = typeof row.payloadCount === "number" ? Math.max(0, row.payloadCount) : 1;
+      return (
+        row.hfSoftEnabled &&
+        row.checkedCandidates >= minCandidates &&
+        (!requirePayload || rowPayloadCount > 0)
+      );
+    });
   const baselineAppliedRatio = average(baselinePool.map((row) => row.appliedRatio)) ?? 0;
   const baselineNegativeRatio = average(baselinePool.map((row) => row.negativeRatio)) ?? 0;
   const baselineSamples = baselinePool.length;
-  const hasSample = baselineSamples >= minHistory && snapshot.checkedCandidates >= minCandidates;
+  const hasPayloadSample = !requirePayload || (snapshot.payloadCount ?? 0) > 0;
+  const hasSample =
+    baselineSamples >= minHistory &&
+    snapshot.checkedCandidates >= minCandidates &&
+    hasPayloadSample;
   const negativeSpikeTriggered =
     hasSample &&
     snapshot.negativeRatio >= Math.max(negativeRatioSpike, baselineNegativeRatio + negativeRatioDelta);
@@ -3732,6 +3750,8 @@ async function updateHfDriftAlert(
     ? "disabled"
     : !snapshot.hfSoftEnabled
       ? "hf_soft_disabled"
+      : !hasPayloadSample
+        ? `insufficient_payload(${snapshot.payloadCount ?? 0}/1)`
       : !hasSample
         ? baselineSamples < minHistory
           ? `insufficient_history(${baselineSamples}/${minHistory})`
@@ -3748,6 +3768,8 @@ async function updateHfDriftAlert(
     enabled,
     triggered,
     reason,
+    requirePayload,
+    payloadCount: snapshot.payloadCount ?? 0,
     windowRuns,
     minHistory,
     minCandidates,
@@ -3767,6 +3789,7 @@ async function updateHfDriftAlert(
 
   const driftLine =
     `[HF_DRIFT] enabled=${alert.enabled} triggered=${alert.triggered} reason=${alert.reason} ` +
+    `requirePayload=${alert.requirePayload} payloads=${alert.payloadCount} ` +
     `window=${alert.windowRuns} baseline=${alert.baselineSamples} minHistory=${alert.minHistory} ` +
     `checked=${alert.checkedCandidates} minCandidates=${alert.minCandidates} ` +
     `currentApplied=${alert.currentAppliedRatio.toFixed(4)} baselineApplied=${alert.baselineAppliedRatio.toFixed(4)} ` +
@@ -5198,7 +5221,7 @@ async function saveDryExecPreview(
   );
   if (hfDrift) {
     console.log(
-      `[HF_DRIFT_SUMMARY] triggered=${hfDrift.triggered} reason=${hfDrift.reason} currentApplied=${hfDrift.currentAppliedRatio.toFixed(4)} baselineApplied=${hfDrift.baselineAppliedRatio.toFixed(4)} currentNegative=${hfDrift.currentNegativeRatio.toFixed(4)} baselineNegative=${hfDrift.baselineNegativeRatio.toFixed(4)}`
+      `[HF_DRIFT_SUMMARY] triggered=${hfDrift.triggered} reason=${hfDrift.reason} requirePayload=${hfDrift.requirePayload} payloads=${hfDrift.payloadCount} currentApplied=${hfDrift.currentAppliedRatio.toFixed(4)} baselineApplied=${hfDrift.baselineAppliedRatio.toFixed(4)} currentNegative=${hfDrift.currentNegativeRatio.toFixed(4)} baselineNegative=${hfDrift.baselineNegativeRatio.toFixed(4)}`
     );
   }
   if (hfAlert) {
@@ -6138,6 +6161,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA", 0.35), 0, 1)}`,
     `HF_DRIFT_ALERT_APPLIED_RATIO_DROP=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_DROP", 0.25), 0, 1)}`,
     `HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR=${clamp(readNonNegativeNumberEnv("HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR", 0.15), 0, 1)}`,
+    `HF_DRIFT_ALERT_REQUIRE_PAYLOAD=${readBoolEnv("HF_DRIFT_ALERT_REQUIRE_PAYLOAD", true)}`,
     `HF_TUNING_FREEZE_ENABLED=${readBoolEnv("HF_TUNING_FREEZE_ENABLED", false)}`,
     `HF_TUNING_FREEZE_STABLE_RUNS=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_FREEZE_STABLE_RUNS", 3)))}`,
     `HF_TUNING_UNFREEZE_ALERT_STREAK=${Math.max(1, Math.round(readNonNegativeNumberEnv("HF_TUNING_UNFREEZE_ALERT_STREAK", 2)))}`,
@@ -6199,7 +6223,7 @@ function printRunSummary(
 ): void {
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
-    ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
+    ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|requirePayload:${hfDrift.requirePayload}|payloads:${hfDrift.payloadCount}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
     : "n/a";
   const hfShadowSummary = buildHfShadowSummaryForRun(hfShadow ?? null);
   const hfAlertSummary = buildHfAlertSummaryForRun(hfAlert ?? null);
