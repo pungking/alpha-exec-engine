@@ -175,6 +175,7 @@ jobs:
       HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN }}
       HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE }}
       HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED }}
+      VALIDATION_PACK_AUTO_TRIGGER_ENABLED: ${{ vars.VALIDATION_PACK_AUTO_TRIGGER_ENABLED }}
       REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
       REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
       REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
@@ -1155,6 +1156,15 @@ jobs:
           GHA_JOB_STATUS: ${{ job.status }}
         run: node scripts/sync-notion-summary.mjs
 
+      - name: Auto-trigger validation pack on 20/20
+        if: always()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_VALIDATION_PACK_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack || 'false' }}
+          RUN_PAYLOAD_PROBE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.payload_probe || 'false' }}
+        run: node scripts/maybe-trigger-validation-pack.mjs
+
       - name: Upload sidecar state artifact
         if: always()
         uses: actions/upload-artifact@v5
@@ -1179,6 +1189,7 @@ jobs:
             state/performance-dashboard.md
             state/ops-health-report.json
             state/ops-health-report.md
+            state/validation-pack-auto-trigger.json
             state/validation-pack/**
             state/payload-probe/**
           if-no-files-found: warn

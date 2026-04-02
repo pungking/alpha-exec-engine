@@ -95,6 +95,7 @@ HF verification shortcuts:
 - `npm run backfill:notion:perf-pct`: one-time fix for legacy Notion percent-scale rows.
 - `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
 - `npm run sync:notion:market-guard`: upsert `state/last-market-guard.json` into Notion (optional).
+- `npm run validation-pack:auto`: evaluate current gate state and dispatch one-shot `validation_pack=true` when auto-trigger conditions are met.
 
 ## Environment
 Use `.env.example` as baseline.
@@ -171,6 +172,7 @@ Use `.env.example` as baseline.
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `TELEGRAM_MAX_MESSAGE_LENGTH` (optional, default `3900`; auto-chunk guard for long messages)
+- `VALIDATION_PACK_AUTO_TRIGGER_ENABLED` (default `false`; auto-dispatch one `validation_pack=true` run when gate reaches final `20/20`)
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
 - `REGIME_VIX_SOURCE_PRIORITY` (`realtime_first|snapshot_first`)
@@ -383,6 +385,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED=true`
 - Manual Notion schema/view tune-up checklist:
   - `docs/NOTION_WORKSPACE_TUNEUP_CHECKLIST.md` (repo root)
+- 20-trade gate operations runbook:
+  - `docs/OPS_RUNBOOK_20TRADE_GATE.md`
 
 ## Workflow
 - `sidecar-ci`: typecheck/build gate on push/PR.
@@ -397,6 +401,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
   - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
+  - Optional auto-dispatch (`VALIDATION_PACK_AUTO_TRIGGER_ENABLED=true`):
+    - when `hf_tuning_phase.gateProgress` reaches `20/20` with final gate status (`GO` or `NO_GO`), dispatches a one-shot `validation_pack=true`.
+    - skipped for manual `validation_pack=true` or `payload_probe=true` runs.
+    - dedupe ledger: `state/validation-pack-auto-trigger.json` (`batchId + gateStatus + gateProgress` key).
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - HF marker audit (warning-only):
     - Workflow stores marker status at `state/hf-marker-audit.json`.
@@ -424,7 +432,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.

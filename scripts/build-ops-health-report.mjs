@@ -134,10 +134,16 @@ const main = () => {
   const stage6Hash = short(preview?.stage6Hash || "", 12) || null;
   const perfGateProgress =
     short(preview?.hfTuningPhase?.gateProgress || preview?.hfNextAction?.gateProgress || "", 32) || null;
+  const tuningGateProgress = short(preview?.hfTuningPhase?.gateProgress || "", 32) || null;
+  const nextActionGateProgress = short(preview?.hfNextAction?.gateProgress || "", 32) || null;
+  const dailyVerdictGateProgress = short(preview?.hfDailyVerdict?.gateProgress || "", 32) || null;
   const perfGateParsed = parseProgress(perfGateProgress);
   const perfGateRemainingTrades = toNum(
     preview?.hfTuningPhase?.gateRemainingTrades ?? preview?.hfNextAction?.gateRemainingTrades
   );
+  const tuningGateRemaining = toNum(preview?.hfTuningPhase?.gateRemainingTrades);
+  const nextActionGateRemaining = toNum(preview?.hfNextAction?.gateRemainingTrades);
+  const dailyVerdictGateRemaining = toNum(preview?.hfDailyVerdict?.gateRemainingTrades);
   const perfGateRemainingComputed =
     perfGateParsed != null ? Math.max(perfGateParsed.required - perfGateParsed.current, 0) : null;
   const hfAlertTriggered = preview?.hfAlert?.triggered;
@@ -153,6 +159,36 @@ const main = () => {
       "warn",
       "perf_gate_progress_mismatch",
       `gateProgress current=${perfGateParsed.current} but simulation totalRows=${simulationRows}; run summary/dashboard may be out of sync`
+    );
+  }
+
+  const progressPairs = [
+    ["hfTuningPhase", tuningGateProgress],
+    ["hfNextAction", nextActionGateProgress],
+    ["hfDailyVerdict", dailyVerdictGateProgress]
+  ].filter(([, value]) => value);
+  const uniqueProgress = Array.from(new Set(progressPairs.map(([, value]) => String(value))));
+  if (uniqueProgress.length > 1) {
+    addCheck(
+      checks,
+      "warn",
+      "gate_progress_source_mismatch",
+      progressPairs.map(([source, value]) => `${source}:${value}`).join(", ")
+    );
+  }
+
+  const remainingPairs = [
+    ["hfTuningPhase", tuningGateRemaining],
+    ["hfNextAction", nextActionGateRemaining],
+    ["hfDailyVerdict", dailyVerdictGateRemaining]
+  ].filter(([, value]) => value != null);
+  const uniqueRemaining = Array.from(new Set(remainingPairs.map(([, value]) => Number(value))));
+  if (uniqueRemaining.length > 1) {
+    addCheck(
+      checks,
+      "warn",
+      "gate_remaining_source_mismatch",
+      remainingPairs.map(([source, value]) => `${source}:${value}`).join(", ")
     );
   }
 
