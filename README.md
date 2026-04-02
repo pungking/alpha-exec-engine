@@ -87,7 +87,7 @@ HF verification shortcuts:
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
-- `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`).
+- `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
 - `npm run ops:health:dry-run`: build dry-run focused health snapshot.
 - `npm run ops:health:market-guard`: build market-guard focused health snapshot.
 - `npm run backfill:notion:perf-pct:dry`: dry-run check for legacy Notion percent-scale rows.

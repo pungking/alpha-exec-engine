@@ -34,6 +34,16 @@ const toIso = (value) => {
 
 const short = (value, max = 120) => String(value ?? "").trim().slice(0, max);
 
+const parseProgress = (value) => {
+  const text = String(value ?? "").trim();
+  const match = text.match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (!match) return null;
+  const current = Number(match[1]);
+  const required = Number(match[2]);
+  if (!Number.isFinite(current) || !Number.isFinite(required) || required <= 0) return null;
+  return { current, required };
+};
+
 const parseMarkerMissingKeys = (markerAudit) => {
   if (!markerAudit || typeof markerAudit !== "object") return [];
   const runEvent = String(markerAudit.runEvent || "").trim().toLowerCase();
@@ -84,7 +94,7 @@ const buildMarkdown = (report) => {
     `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
@@ -124,8 +134,69 @@ const main = () => {
   const stage6Hash = short(preview?.stage6Hash || "", 12) || null;
   const perfGateProgress =
     short(preview?.hfTuningPhase?.gateProgress || preview?.hfNextAction?.gateProgress || "", 32) || null;
+  const perfGateParsed = parseProgress(perfGateProgress);
+  const perfGateRemainingTrades = toNum(
+    preview?.hfTuningPhase?.gateRemainingTrades ?? preview?.hfNextAction?.gateRemainingTrades
+  );
+  const perfGateRemainingComputed =
+    perfGateParsed != null ? Math.max(perfGateParsed.required - perfGateParsed.current, 0) : null;
   const hfAlertTriggered = preview?.hfAlert?.triggered;
   const hfAlertReason = short(preview?.hfAlert?.reason || "", 120) || null;
+  const simulationRows = toNum(perf?.simulation?.totalRows);
+  const simulationSnapshotTrades = toNum(perf?.simulation?.latestSnapshotTradeCount);
+  const simulationRowSnapshotGap = toNum(perf?.simulation?.rowVsSnapshotGap);
+  const simulationSnapshotCoveragePct = toNum(perf?.simulation?.snapshotCoveragePct);
+
+  if (perfGateParsed && simulationRows != null && perfGateParsed.current !== simulationRows) {
+    addCheck(
+      checks,
+      "warn",
+      "perf_gate_progress_mismatch",
+      `gateProgress current=${perfGateParsed.current} but simulation totalRows=${simulationRows}; run summary/dashboard may be out of sync`
+    );
+  }
+
+  if (
+    perfGateParsed &&
+    perfGateRemainingTrades != null &&
+    perfGateRemainingComputed != null &&
+    perfGateRemainingTrades !== perfGateRemainingComputed
+  ) {
+    addCheck(
+      checks,
+      "warn",
+      "perf_gate_remaining_mismatch",
+      `gateRemainingTrades=${perfGateRemainingTrades} but computed=${perfGateRemainingComputed} from progress=${perfGateProgress}`
+    );
+  }
+
+  const observedTrades = toNum(preview?.hfTuningPhase?.observedTrades);
+  const requiredTrades = toNum(preview?.hfTuningPhase?.requiredTrades);
+  if (perfGateParsed && observedTrades != null && observedTrades !== perfGateParsed.current) {
+    addCheck(
+      checks,
+      "warn",
+      "tuning_observed_trades_mismatch",
+      `hfTuningPhase.observedTrades=${observedTrades} but gateProgress current=${perfGateParsed.current}`
+    );
+  }
+  if (perfGateParsed && requiredTrades != null && requiredTrades !== perfGateParsed.required) {
+    addCheck(
+      checks,
+      "warn",
+      "tuning_required_trades_mismatch",
+      `hfTuningPhase.requiredTrades=${requiredTrades} but gateProgress required=${perfGateParsed.required}`
+    );
+  }
+
+  if (simulationRowSnapshotGap != null && simulationRowSnapshotGap >= 5) {
+    addCheck(
+      checks,
+      "warn",
+      "simulation_snapshot_lag",
+      `simulation row/snapshot gap is ${simulationRowSnapshotGap} (coverage=${fmt(simulationSnapshotCoveragePct)}%); snapshot refresh may lag`
+    );
+  }
 
   if (hfAlertTriggered === true) {
     addCheck(
@@ -191,8 +262,16 @@ const main = () => {
       payloadCount,
       skippedCount,
       perfGateProgress,
+      perfGateCurrentTrades: perfGateParsed?.current ?? null,
+      perfGateRequiredTrades: perfGateParsed?.required ?? null,
+      perfGateRemainingTrades,
+      perfGateRemainingComputed,
       hfAlertTriggered: typeof hfAlertTriggered === "boolean" ? hfAlertTriggered : null,
       hfAlertReason,
+      simulationRows,
+      simulationSnapshotTrades,
+      simulationRowSnapshotGap,
+      simulationSnapshotCoveragePct,
       guardLevel,
       haltNewEntries,
       liveAvailable,
