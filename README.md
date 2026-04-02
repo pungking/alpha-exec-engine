@@ -433,6 +433,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
+  - `Sim Rows` = cumulative loop rows (history total), `latest snapshot tradeCount` = latest KPI snapshot count (can lag by design)
 - Live source (optional, auto-detected):
   - Alpaca `/v2/account`, `/v2/positions`, `/v2/orders?status=open`
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
@@ -451,7 +452,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `NOTION_PERF_PERCENT_BACKFILL_MAX_PAGES` (default `50`)
   - Recommended DB columns:
     - `Run Key`(title), `Time`(date), `Kind`(select), `Status`(select), `Batch ID`(text)
-    - `Sim Rows`, `Sim Filled`, `Sim Open`, `Sim Closed`, `Sim Win Rate %`, `Sim Avg Closed Return %`, `Sim Avg Closed R`(number)
+    - `Sim Rows`, `Sim Snapshot Trades`(optional), `Sim Rows vs Snapshot Gap`(optional), `Sim Filled`, `Sim Open`, `Sim Closed`, `Sim Win Rate %`, `Sim Avg Closed Return %`, `Sim Avg Closed R`(number)
     - `Sim Top Winners`, `Sim Top Losers`, `Series`, `Summary`(text)
     - `Live Available`(checkbox), `Live Position Count`, `Live Unrealized PnL`, `Live Return %`, `Live Equity`(number)
 

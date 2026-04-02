@@ -1010,6 +1010,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
+  const simRows = toNumber(simulation?.totalRows);
+  const simSnapshotTrades = toNumber(simulation?.latestSnapshotTradeCount ?? simulation?.latestSnapshot?.tradeCount);
+  const simRowSnapshotGap =
+    simRows != null && simSnapshotTrades != null ? simRows - simSnapshotTrades : null;
   const chartSeries = Array.isArray(simulation?.chartSeries) ? simulation.chartSeries : [];
   const topWinners = Array.isArray(simulation?.topWinners) ? simulation.topWinners : [];
   const topLosers = Array.isArray(simulation?.topLosers) ? simulation.topLosers : [];
@@ -1042,7 +1046,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `kind=${kind}`,
     `status=${statusRaw}`,
     `batch=${simulation?.batchId || "N/A"}`,
-    `simRows=${simulation?.totalRows ?? "N/A"}`,
+    `simRowsCumulative=${simulation?.totalRows ?? "N/A"}`,
+    `simSnapshotTrades=${simSnapshotTrades ?? "N/A"}`,
+    `simRowsVsSnapshotGap=${simRowSnapshotGap ?? "N/A"}`,
     `simClosed=${simulation?.closedRows ?? "N/A"}`,
     `simWinRate=${fmtFixed(simulation?.winRatePct, 2)}%`,
     `simAvgClosedR=${fmtFixed(simulation?.avgClosedR, 4)}`,
@@ -1064,6 +1070,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     batchId: shortText(simulation?.batchId || "N/A", 120),
     simulation: {
       totalRows: toNumber(simulation?.totalRows),
+      latestSnapshotTradeCount: simSnapshotTrades,
+      rowSnapshotGap: simRowSnapshotGap,
       filledRows: toNumber(simulation?.filledRows),
       openRows: toNumber(simulation?.openRows),
       closedRows: toNumber(simulation?.closedRows),
@@ -1143,6 +1151,14 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     number: () => numberProp(row.simulation.totalRows),
     rich_text: () => textProp(row.simulation.totalRows ?? "N/A")
   });
+  setPropertyAliases(properties, schema, ["Sim Snapshot Trades", "Sim Latest Snapshot Trades"], {
+    number: () => numberProp(row.simulation.latestSnapshotTradeCount),
+    rich_text: () => textProp(row.simulation.latestSnapshotTradeCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Sim Rows vs Snapshot Gap", "Sim Row/Snapshot Gap"], {
+    number: () => numberProp(row.simulation.rowSnapshotGap),
+    rich_text: () => textProp(row.simulation.rowSnapshotGap ?? "N/A")
+  });
   setPropertyAliases(properties, schema, ["Sim Filled"], {
     number: () => numberProp(row.simulation.filledRows),
     rich_text: () => textProp(row.simulation.filledRows ?? "N/A")
@@ -1211,7 +1227,7 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
 
   const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
   console.log(
-    `[NOTION_PERFORMANCE_DASHBOARD] ${upsertStatus} key=${runKey} simRows=${row.simulation.totalRows ?? "N/A"} live=${row.live.available}`
+    `[NOTION_PERFORMANCE_DASHBOARD] ${upsertStatus} key=${runKey} simRows=${row.simulation.totalRows ?? "N/A"} snapshotTrades=${row.simulation.latestSnapshotTradeCount ?? "N/A"} gap=${row.simulation.rowSnapshotGap ?? "N/A"} live=${row.live.available}`
   );
   return upsertStatus;
 };

@@ -152,6 +152,12 @@ const buildSimulationSummary = (loop) => {
       : null;
 
   const latestSnapshot = snapshots[snapshots.length - 1] || null;
+  const latestSnapshotTradeCount =
+    latestSnapshot && Number.isFinite(latestSnapshot.tradeCount) ? latestSnapshot.tradeCount : null;
+  const rowVsSnapshotGap =
+    latestSnapshotTradeCount != null ? rows.length - latestSnapshotTradeCount : null;
+  const snapshotCoveragePct =
+    latestSnapshotTradeCount != null && rows.length > 0 ? (latestSnapshotTradeCount / rows.length) * 100 : null;
   const topByReturn = [...perSymbol]
     .filter((row) => row.avgReturnPct != null)
     .sort((a, b) => (b.avgReturnPct || 0) - (a.avgReturnPct || 0));
@@ -169,6 +175,9 @@ const buildSimulationSummary = (loop) => {
     avgClosedReturnPct,
     avgClosedR,
     latestSnapshot,
+    latestSnapshotTradeCount,
+    rowVsSnapshotGap,
+    snapshotCoveragePct,
     chartSeries: snapshots,
     rows,
     perSymbol,
@@ -307,6 +316,9 @@ const buildMarkdown = ({ generatedAt, simulation, live }) => {
   lines.push(`- generatedAt: \`${generatedAt}\``);
   lines.push(
     `- simulation: \`rows=${simulation.totalRows} filled=${simulation.filledRows} open=${simulation.openRows} closed=${simulation.closedRows} winRate=${fmt(simulation.winRatePct)}% avgClosedR=${fmt(simulation.avgClosedR, 4)} avgClosedReturn=${fmt(simulation.avgClosedReturnPct)}%\``
+  );
+  lines.push(
+    `- simulation_scope: \`simRows(cumulative_loop_rows)=${simulation.totalRows} snapshotTradeCount(latest_kpi_snapshot)=${simulation.latestSnapshotTradeCount ?? "N/A"} rowSnapshotGap=${fmt(simulation.rowVsSnapshotGap, 0)} snapshotCoveragePct=${fmt(simulation.snapshotCoveragePct)}%\``
   );
   if (simulation.latestSnapshot) {
     lines.push(
