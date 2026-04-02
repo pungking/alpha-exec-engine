@@ -5429,10 +5429,9 @@ function evaluatePerformanceLoopGate(
   tradeCount: number
 ): PerformanceLoopGate {
   const requiredTrades = PERFORMANCE_LOOP_REQUIRED_TRADES;
-  const observedTrades =
-    latestSnapshot && Number.isFinite(Number(latestSnapshot.tradeCount))
-      ? Number(latestSnapshot.tradeCount)
-      : tradeCount;
+  // Use row-count as single source of truth for gate progress.
+  // Snapshot tradeCount is milestone-based and can be stale between milestones (e.g. 13 rows but last snapshot at 11).
+  const observedTrades = Number.isFinite(Number(tradeCount)) ? Number(tradeCount) : 0;
   const remainingTrades = Math.max(0, requiredTrades - observedTrades);
   const progressPct = Number(
     clamp((Math.min(observedTrades, requiredTrades) / requiredTrades) * 100, 0, 100).toFixed(1)
