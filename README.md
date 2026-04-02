@@ -33,6 +33,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Adds lifecycle state machine ledger (`state/order-ledger.json`) with transition validation and history trail.
 - Optional one-shot dedupe bypass (`FORCE_SEND_ONCE=true`) sends once per current `stage6Hash+mode`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
+- Optional Telegram send gate (`TELEGRAM_SEND_ENABLED=false`) disables Telegram delivery while keeping run telemetry.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
@@ -167,6 +168,7 @@ Use `.env.example` as baseline.
 - `ORDER_LIFECYCLE_ENABLED`
 - `ORDER_LEDGER_TTL_DAYS`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
+- `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `TELEGRAM_MAX_MESSAGE_LENGTH` (optional, default `3900`; auto-chunk guard for long messages)
 - `REGIME_AUTO_ENABLED`
@@ -423,6 +425,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json` as run artifacts.
+- `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
+  - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
+  - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
+  - Does **not** restore/save `state` cache and does **not** sync Notion (no persistent baseline contamination).
+  - Uploads probe artifacts only (`state/last-run.json`, `state/last-dry-exec-preview.json`, `state/payload-probe/**`).
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.
