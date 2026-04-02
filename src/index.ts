@@ -890,6 +890,7 @@ function runEnvGuard(): EnvCheckResult {
   const cfg = loadRuntimeConfig();
   const missing: string[] = [];
   const warnings: string[] = [];
+  const telegramSendEnabled = readBoolEnv("TELEGRAM_SEND_ENABLED", true);
 
   const requiredAlways = [
     "ALPACA_BASE_URL",
@@ -898,14 +899,21 @@ function runEnvGuard(): EnvCheckResult {
     "GDRIVE_REFRESH_TOKEN",
     "GDRIVE_ROOT_FOLDER_ID",
     "GDRIVE_STAGE6_FOLDER",
-    "GDRIVE_REPORT_FOLDER",
-    "TELEGRAM_TOKEN",
-    "TELEGRAM_PRIMARY_CHAT_ID",
-    "TELEGRAM_SIMULATION_CHAT_ID"
+    "GDRIVE_REPORT_FOLDER"
   ];
 
   for (const key of requiredAlways) {
     if (!hasValue(process.env[key])) missing.push(key);
+  }
+
+  if (telegramSendEnabled) {
+    for (const key of ["TELEGRAM_TOKEN", "TELEGRAM_PRIMARY_CHAT_ID", "TELEGRAM_SIMULATION_CHAT_ID"]) {
+      if (!hasValue(process.env[key])) missing.push(key);
+    }
+  } else {
+    if (!hasValue(process.env.TELEGRAM_TOKEN) || !hasValue(process.env.TELEGRAM_SIMULATION_CHAT_ID)) {
+      warnings.push("TELEGRAM send disabled; TELEGRAM_TOKEN/TELEGRAM_SIMULATION_CHAT_ID missing is allowed");
+    }
   }
 
   const needsAlpacaCreds = cfg.execEnabled || !cfg.readOnly || cfg.simulationLiveParity;
@@ -974,6 +982,7 @@ function printStartupSummary() {
   console.log(`HF_PROMO_REQ_F  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`);
   console.log(`HF_PROMO_REQ_S  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`);
   console.log(`HF_PROMO_REQ_P  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`);
+  console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -3620,6 +3629,11 @@ function splitTelegramText(text: string, maxLen: number): string[] {
 }
 
 async function sendTelegramMessage(token: string, chatId: string, text: string, tag: string): Promise<void> {
+  if (!readBoolEnv("TELEGRAM_SEND_ENABLED", true)) {
+    console.log(`[${tag}] skipped (TELEGRAM_SEND_ENABLED=false)`);
+    return;
+  }
+
   const maxLen = Math.max(500, Math.floor(readPositiveNumberEnv("TELEGRAM_MAX_MESSAGE_LENGTH", 3900)));
   const chunks = splitTelegramText(text, maxLen);
 

@@ -1,0 +1,247 @@
+name: sidecar-payload-probe-isolated
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload_probe_mode:
+        description: "Payload probe mode (HF forced path): tighten or relief"
+        required: false
+        default: "tighten"
+        type: choice
+        options:
+          - "tighten"
+          - "relief"
+      payload_probe_min_conviction:
+        description: "Temporary DRY_RISK_OFF_MIN_CONVICTION for payload probe"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "20"
+          - "30"
+          - "40"
+          - "50"
+
+concurrency:
+  group: sidecar-payload-probe-isolated-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  payload-probe-isolated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TZ: ${{ vars.TZ }}
+      POLICY_VERSION: stage6-exec-v1.0-rc1
+
+      # Isolated lane: keep core baseline data untouched.
+      EXEC_ENABLED: false
+      READ_ONLY: true
+      SIMULATION_LIVE_PARITY: false
+      FORCE_SEND_ONCE: true
+      TELEGRAM_SEND_ENABLED: false
+      HF_PAYLOAD_PROBE_MODE: ${{ inputs.payload_probe_mode }}
+      DRY_RISK_OFF_MIN_CONVICTION: ${{ inputs.payload_probe_min_conviction }}
+
+      DRY_NOTIONAL_PER_TRADE: ${{ vars.DRY_NOTIONAL_PER_TRADE }}
+      DRY_MAX_ORDERS: ${{ vars.DRY_MAX_ORDERS }}
+      DRY_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_MAX_TOTAL_NOTIONAL }}
+      DRY_MIN_CONVICTION: ${{ vars.DRY_MIN_CONVICTION }}
+      DRY_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_MIN_STOP_DISTANCE_PCT }}
+      DRY_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_MAX_STOP_DISTANCE_PCT }}
+      ENTRY_FEASIBILITY_ENFORCE: ${{ vars.ENTRY_FEASIBILITY_ENFORCE }}
+      ENTRY_MAX_DISTANCE_PCT: ${{ vars.ENTRY_MAX_DISTANCE_PCT }}
+      STAGE6_EXECUTION_BUCKET_ENFORCE: ${{ vars.STAGE6_EXECUTION_BUCKET_ENFORCE }}
+      ACTIONABLE_INCLUDE_SPECULATIVE_BUY: ${{ vars.ACTIONABLE_INCLUDE_SPECULATIVE_BUY }}
+      ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
+      ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN: ${{ vars.ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN }}
+      ORDER_IDEMPOTENCY_TTL_DAYS: ${{ vars.ORDER_IDEMPOTENCY_TTL_DAYS }}
+      PREFLIGHT_ENABLED: ${{ vars.PREFLIGHT_ENABLED }}
+      DAILY_MAX_NOTIONAL: ${{ vars.DAILY_MAX_NOTIONAL }}
+      ALLOW_ENTRY_OUTSIDE_RTH: ${{ vars.ALLOW_ENTRY_OUTSIDE_RTH }}
+      PREFLIGHT_BLOCKING_HARD_FAIL: ${{ vars.PREFLIGHT_BLOCKING_HARD_FAIL }}
+      ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
+      ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
+
+      POSITION_LIFECYCLE_ENABLED: ${{ vars.POSITION_LIFECYCLE_ENABLED }}
+      POSITION_LIFECYCLE_PREVIEW_ONLY: ${{ vars.POSITION_LIFECYCLE_PREVIEW_ONLY }}
+      POSITION_LIFECYCLE_ACTION_TYPES: ${{ vars.POSITION_LIFECYCLE_ACTION_TYPES }}
+      POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION }}
+
+      HF_SENTIMENT_SOFT_GATE_ENABLED: ${{ vars.HF_SENTIMENT_SOFT_GATE_ENABLED }}
+      HF_SENTIMENT_SCORE_FLOOR: ${{ vars.HF_SENTIMENT_SCORE_FLOOR }}
+      HF_SENTIMENT_MIN_ARTICLE_COUNT: ${{ vars.HF_SENTIMENT_MIN_ARTICLE_COUNT }}
+      HF_SENTIMENT_MAX_NEWS_AGE_HOURS: ${{ vars.HF_SENTIMENT_MAX_NEWS_AGE_HOURS }}
+      HF_EARNINGS_WINDOW_ENABLED: ${{ vars.HF_EARNINGS_WINDOW_ENABLED }}
+      HF_EARNINGS_WINDOW_BLOCK_DAYS: ${{ vars.HF_EARNINGS_WINDOW_BLOCK_DAYS }}
+      HF_EARNINGS_WINDOW_REDUCE_DAYS: ${{ vars.HF_EARNINGS_WINDOW_REDUCE_DAYS }}
+      HF_EARNINGS_WINDOW_REDUCE_FACTOR: ${{ vars.HF_EARNINGS_WINDOW_REDUCE_FACTOR }}
+      HF_SENTIMENT_POSITIVE_RELIEF_MAX: ${{ vars.HF_SENTIMENT_POSITIVE_RELIEF_MAX }}
+      HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX: ${{ vars.HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX }}
+      HF_NEGATIVE_SIZE_REDUCTION_ENABLED: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_ENABLED }}
+      HF_NEGATIVE_SIZE_REDUCTION_PCT: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_PCT }}
+      HF_SHADOW_ENABLED: ${{ vars.HF_SHADOW_ENABLED }}
+      HF_ALERT_ENABLED: ${{ vars.HF_ALERT_ENABLED }}
+      HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS: ${{ vars.HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS }}
+      HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS: ${{ vars.HF_ALERT_SHADOW_NOTIONAL_DELTA_ABS }}
+      HF_ALERT_SHADOW_SKIPPED_DELTA_ABS: ${{ vars.HF_ALERT_SHADOW_SKIPPED_DELTA_ABS }}
+      HF_DRIFT_ALERT_ENABLED: ${{ vars.HF_DRIFT_ALERT_ENABLED }}
+      HF_DRIFT_ALERT_WINDOW_RUNS: ${{ vars.HF_DRIFT_ALERT_WINDOW_RUNS }}
+      HF_DRIFT_ALERT_MIN_HISTORY: ${{ vars.HF_DRIFT_ALERT_MIN_HISTORY }}
+      HF_DRIFT_ALERT_MIN_CANDIDATES: ${{ vars.HF_DRIFT_ALERT_MIN_CANDIDATES }}
+      HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE: ${{ vars.HF_DRIFT_ALERT_NEGATIVE_RATIO_SPIKE }}
+      HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA: ${{ vars.HF_DRIFT_ALERT_NEGATIVE_RATIO_DELTA }}
+      HF_DRIFT_ALERT_APPLIED_RATIO_DROP: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_DROP }}
+      HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR: ${{ vars.HF_DRIFT_ALERT_APPLIED_RATIO_FLOOR }}
+      HF_TUNING_FREEZE_ENABLED: ${{ vars.HF_TUNING_FREEZE_ENABLED }}
+      HF_TUNING_FREEZE_STABLE_RUNS: ${{ vars.HF_TUNING_FREEZE_STABLE_RUNS }}
+      HF_TUNING_UNFREEZE_ALERT_STREAK: ${{ vars.HF_TUNING_UNFREEZE_ALERT_STREAK }}
+      HF_TUNING_FREEZE_REQUIRE_PROGRESS: ${{ vars.HF_TUNING_FREEZE_REQUIRE_PROGRESS }}
+      HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE: ${{ vars.HF_TUNING_FREEZE_MAX_SHADOW_ALERT_RATE }}
+      HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO }}
+      HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN }}
+      HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE }}
+      HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED: ${{ vars.HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED }}
+
+      REGIME_AUTO_ENABLED: ${{ vars.REGIME_AUTO_ENABLED }}
+      REGIME_FORCE_PROFILE: ${{ vars.REGIME_FORCE_PROFILE }}
+      REGIME_VIX_SOURCE_PRIORITY: ${{ vars.REGIME_VIX_SOURCE_PRIORITY }}
+      REGIME_SNAPSHOT_MAX_AGE_MIN: ${{ vars.REGIME_SNAPSHOT_MAX_AGE_MIN }}
+      REGIME_QUALITY_GUARD_ENABLED: ${{ vars.REGIME_QUALITY_GUARD_ENABLED }}
+      REGIME_QUALITY_MIN_SCORE: ${{ vars.REGIME_QUALITY_MIN_SCORE }}
+      REGIME_HYSTERESIS_ENABLED: ${{ vars.REGIME_HYSTERESIS_ENABLED }}
+      REGIME_MIN_HOLD_MIN: ${{ vars.REGIME_MIN_HOLD_MIN }}
+      REGIME_VIX_MISMATCH_PCT: ${{ vars.REGIME_VIX_MISMATCH_PCT }}
+      GUARD_CONTROL_ENFORCE: ${{ vars.GUARD_CONTROL_ENFORCE }}
+      GUARD_CONTROL_MAX_AGE_MIN: ${{ vars.GUARD_CONTROL_MAX_AGE_MIN }}
+      GUARD_QUALITY_MIN_SCORE: ${{ vars.GUARD_QUALITY_MIN_SCORE }}
+      VIX_RISK_ON_THRESHOLD: ${{ vars.VIX_RISK_ON_THRESHOLD }}
+      VIX_RISK_OFF_THRESHOLD: ${{ vars.VIX_RISK_OFF_THRESHOLD }}
+      DRY_STOP_DISTANCE_STAGE6_SYNC: ${{ vars.DRY_STOP_DISTANCE_STAGE6_SYNC }}
+      VITE_STAGE6_MIN_STOP_DISTANCE_PCT: ${{ vars.VITE_STAGE6_MIN_STOP_DISTANCE_PCT }}
+      VITE_STAGE6_MAX_STOP_DISTANCE_PCT: ${{ vars.VITE_STAGE6_MAX_STOP_DISTANCE_PCT }}
+
+      DRY_DEFAULT_NOTIONAL_PER_TRADE: ${{ vars.DRY_DEFAULT_NOTIONAL_PER_TRADE }}
+      DRY_DEFAULT_MAX_ORDERS: ${{ vars.DRY_DEFAULT_MAX_ORDERS }}
+      DRY_DEFAULT_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_DEFAULT_MAX_TOTAL_NOTIONAL }}
+      DRY_DEFAULT_MIN_CONVICTION: ${{ vars.DRY_DEFAULT_MIN_CONVICTION }}
+      DRY_DEFAULT_MIN_CONVICTION_FLOOR: ${{ vars.DRY_DEFAULT_MIN_CONVICTION_FLOOR }}
+      DRY_DEFAULT_MIN_CONVICTION_CEILING: ${{ vars.DRY_DEFAULT_MIN_CONVICTION_CEILING }}
+      DRY_DEFAULT_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_DEFAULT_MIN_STOP_DISTANCE_PCT }}
+      DRY_DEFAULT_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_DEFAULT_MAX_STOP_DISTANCE_PCT }}
+
+      DRY_RISK_OFF_NOTIONAL_PER_TRADE: ${{ vars.DRY_RISK_OFF_NOTIONAL_PER_TRADE }}
+      DRY_RISK_OFF_MAX_ORDERS: ${{ vars.DRY_RISK_OFF_MAX_ORDERS }}
+      DRY_RISK_OFF_MAX_TOTAL_NOTIONAL: ${{ vars.DRY_RISK_OFF_MAX_TOTAL_NOTIONAL }}
+      DRY_RISK_OFF_MIN_CONVICTION_FLOOR: ${{ vars.DRY_RISK_OFF_MIN_CONVICTION_FLOOR }}
+      DRY_RISK_OFF_MIN_CONVICTION_CEILING: ${{ vars.DRY_RISK_OFF_MIN_CONVICTION_CEILING }}
+      DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT: ${{ vars.DRY_RISK_OFF_MIN_STOP_DISTANCE_PCT }}
+      DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT: ${{ vars.DRY_RISK_OFF_MAX_STOP_DISTANCE_PCT }}
+
+      ALPACA_BASE_URL: ${{ vars.ALPACA_BASE_URL }}
+
+      GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+      GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ vars.GDRIVE_ROOT_FOLDER_ID }}
+      GDRIVE_STAGE6_FOLDER: ${{ vars.GDRIVE_STAGE6_FOLDER }}
+      GDRIVE_REPORT_FOLDER: ${{ vars.GDRIVE_REPORT_FOLDER }}
+      GDRIVE_MARKET_SNAPSHOT_FOLDER_ID: ${{ vars.GDRIVE_MARKET_SNAPSHOT_FOLDER_ID }}
+
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      CNBC_RAPIDAPI_ENABLED: ${{ vars.CNBC_RAPIDAPI_ENABLED }}
+      CNBC_RAPIDAPI_KEY: ${{ secrets.CNBC_RAPIDAPI_KEY }}
+      RAPID_API_KEY: ${{ secrets.RAPID_API_KEY }}
+      CNBC_RAPIDAPI_HOST: ${{ vars.CNBC_RAPIDAPI_HOST }}
+      CNBC_RAPIDAPI_ENDPOINT: ${{ vars.CNBC_RAPIDAPI_ENDPOINT }}
+      CNBC_RAPIDAPI_SYMBOL_PARAM: ${{ vars.CNBC_RAPIDAPI_SYMBOL_PARAM }}
+
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_PRIMARY_CHAT_ID: ${{ vars.TELEGRAM_PRIMARY_CHAT_ID }}
+      TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
+
+      WORKFLOW_EVENT_NAME: workflow_dispatch
+      WORKFLOW_EVENT_ACTION: payload_probe_isolated
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Check JSON parse guard
+        run: npm run check:json-parse-guard
+
+      - name: Run isolated payload path probe (one-shot)
+        run: |
+          set -euo pipefail
+          mkdir -p state/payload-probe
+          : > state/last-run-output.log
+          echo "[PROBE_ISOLATED] mode=${HF_PAYLOAD_PROBE_MODE} minConviction=${DRY_RISK_OFF_MIN_CONVICTION} readOnly=${READ_ONLY} execEnabled=${EXEC_ENABLED} telegramSend=${TELEGRAM_SEND_ENABLED}"
+          node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
+          cp state/last-run.json state/payload-probe/last-run.json
+          cp state/last-dry-exec-preview.json state/payload-probe/last-dry-exec-preview.json
+
+      - name: Build ops health snapshot
+        if: always()
+        run: npm run ops:health:dry-run
+
+      - name: Publish isolated probe summary
+        if: always()
+        run: |
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const previewPath = "state/last-dry-exec-preview.json";
+          const runPath = "state/last-run.json";
+          const lines = [];
+          lines.push("## Sidecar Isolated Payload Probe");
+          lines.push(`- requested: \`mode=${process.env.HF_PAYLOAD_PROBE_MODE || "N/A"} minConviction=${process.env.DRY_RISK_OFF_MIN_CONVICTION || "N/A"}\``);
+          lines.push(`- isolated_flags: \`readOnly=${process.env.READ_ONLY} execEnabled=${process.env.EXEC_ENABLED} simParity=${process.env.SIMULATION_LIVE_PARITY} telegramSend=${process.env.TELEGRAM_SEND_ENABLED}\``);
+          if (fs.existsSync(runPath)) {
+            const runState = JSON.parse(fs.readFileSync(runPath, "utf8"));
+            lines.push(`- run_state: \`lastSentAt=${runState.lastSentAt || "N/A"} stage6File=${runState.lastStage6FileName || "N/A"} stage6Hash=${String(runState.lastStage6Sha256 || "").slice(0, 12) || "N/A"}\``);
+          } else {
+            lines.push("- run_state: `missing state/last-run.json`");
+          }
+          if (fs.existsSync(previewPath)) {
+            const preview = JSON.parse(fs.readFileSync(previewPath, "utf8"));
+            const forced = preview?.hfPayloadProbeForced || {};
+            const status = preview?.hfPayloadProbeStatus || {};
+            lines.push(
+              `- probe_forced: \`mode=${forced.requestedMode ?? "N/A"} active=${forced.active ?? "N/A"} modified=${forced.modified ?? "N/A"} reason=${forced.reason ?? "N/A"} symbol=${forced.symbol ?? "N/A"} basePayloads=${forced.basePayloadCount ?? "N/A"}\``
+            );
+            lines.push(
+              `- probe_status: \`status=${status.status ?? "N/A"} reason=${status.reason ?? "N/A"} payloads=${status.payloadCount ?? "N/A"} hfApplied=${status.hfAppliedCount ?? "N/A"} tighten=${status.tightenCount ?? "N/A"} sizeReduced=${status.sizeReducedCount ?? "N/A"}\``
+            );
+          } else {
+            lines.push("- probe_preview: `missing state/last-dry-exec-preview.json`");
+          }
+          lines.push("- persistence: `cache_restore=off cache_save=off notion_sync=off`");
+          lines.push("");
+          fs.appendFileSync(summaryPath, lines.join("\n"));
+          NODE
+
+      - name: Upload isolated probe artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: sidecar-payload-probe-isolated-${{ github.run_id }}
+          path: |
+            state/last-run.json
+            state/last-dry-exec-preview.json
+            state/last-run-output.log
+            state/ops-health-report.json
+            state/ops-health-report.md
+            state/payload-probe/**
+          if-no-files-found: warn
