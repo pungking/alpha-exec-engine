@@ -234,6 +234,7 @@ jobs:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_PRIMARY_CHAT_ID: ${{ vars.TELEGRAM_PRIMARY_CHAT_ID }}
       TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
+      TELEGRAM_ALERT_CHAT_ID: ${{ vars.TELEGRAM_ALERT_CHAT_ID || vars.TELEGRAM_SIMULATION_CHAT_ID }}
       WORKFLOW_EVENT_NAME: ${{ github.event_name }}
       WORKFLOW_EVENT_ACTION: ${{ github.event.action || '' }}
       TRIGGER_STAGE6_HASH: ${{ github.event.client_payload.stage6Hash || github.event.client_payload.stage6_hash || '' }}

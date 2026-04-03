@@ -226,6 +226,7 @@ function printStartupSummary() {
   console.log(`READ_ONLY        : ${cfg.readOnly}`);
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
+  console.log(`TELEGRAM_ALERT   : ${mask(process.env.TELEGRAM_ALERT_CHAT_ID || "")}`);
 
   for (const warning of check.warnings) {
     console.warn(`[WARN] ${warning}`);
@@ -1546,6 +1547,25 @@ async function sendHeartbeatOnDedupe(signature: string): Promise<void> {
   await sendTelegramMessage(token, chatId, text, "GUARD_HEARTBEAT");
 }
 
+function resolveAlertChatId(): string {
+  return (
+    process.env.TELEGRAM_ALERT_CHAT_ID ||
+    process.env.TELEGRAM_SIMULATION_CHAT_ID ||
+    process.env.TELEGRAM_PRIMARY_CHAT_ID ||
+    ""
+  );
+}
+
+async function sendFailureAlert(message: string): Promise<void> {
+  const token = process.env.TELEGRAM_TOKEN || "";
+  const chatId = resolveAlertChatId();
+  if (!token || !chatId) return;
+  const text = ["🚨 Sidecar Market Guard Failed", `time=${new Date().toISOString()}`, `message=${message.slice(0, 1000)}`].join(
+    "\n"
+  );
+  await sendTelegramMessage(token, chatId, text, "GUARD_ALERT");
+}
+
 async function saveLastGuardRun(
   decision: GuardDecision,
   actionResult: { upserted: number; updated: number; pruned: number; records: GuardActionLedgerRecord[] },
@@ -1676,8 +1696,14 @@ async function main() {
   printGuardSummary("sent", decision, actionResult);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[MARKET_GUARD] FAIL ${message}`);
+  try {
+    await sendFailureAlert(message);
+  } catch (notifyError) {
+    const notifyMessage = notifyError instanceof Error ? notifyError.message : String(notifyError);
+    console.error(`[MARKET_GUARD] ALERT_NOTIFY_FAIL ${notifyMessage}`);
+  }
   process.exit(1);
 });

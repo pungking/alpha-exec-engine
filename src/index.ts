@@ -986,6 +986,7 @@ function printStartupSummary() {
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
+  console.log(`TELEGRAM_ALERT   : ${mask(process.env.TELEGRAM_ALERT_CHAT_ID || "")}`);
   console.log(`GDRIVE_ROOT      : ${mask(process.env.GDRIVE_ROOT_FOLDER_ID || "")}`);
   console.log(`GDRIVE_STAGE6    : ${mask(process.env.GDRIVE_STAGE6_FOLDER || "")}`);
   console.log(`GDRIVE_REPORT    : ${mask(process.env.GDRIVE_REPORT_FOLDER || "")}`);
@@ -3589,6 +3590,30 @@ async function sendHeartbeatOnDedupe(stage6: Stage6LoadResult, mode: string): Pr
   ].join("\n");
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_HEARTBEAT");
+}
+
+function resolveAlertChatId(): string {
+  return (
+    process.env.TELEGRAM_ALERT_CHAT_ID ||
+    process.env.TELEGRAM_SIMULATION_CHAT_ID ||
+    process.env.TELEGRAM_PRIMARY_CHAT_ID ||
+    ""
+  );
+}
+
+async function sendFailureAlert(message: string): Promise<void> {
+  if (!readBoolEnv("TELEGRAM_SEND_ENABLED", true)) return;
+
+  const token = process.env.TELEGRAM_TOKEN || "";
+  const chatId = resolveAlertChatId();
+  if (!token || !chatId) return;
+
+  const text = [
+    "🚨 Sidecar Dry-Run Failed",
+    `time=${new Date().toISOString()}`,
+    `message=${message.slice(0, 1000)}`
+  ].join("\n");
+  await sendTelegramMessage(token, chatId, text, "TELEGRAM_ALERT");
 }
 
 function splitTelegramText(text: string, maxLen: number): string[] {
@@ -6673,7 +6698,7 @@ async function main() {
   );
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[DRY_RUN] FAIL ${message}`);
   if (error instanceof Error) {
@@ -6681,6 +6706,12 @@ main().catch((error) => {
     if (error.stack) {
       console.error(`[DRY_RUN] STACK ${error.stack}`);
     }
+  }
+  try {
+    await sendFailureAlert(message);
+  } catch (notifyError) {
+    const notifyMessage = notifyError instanceof Error ? notifyError.message : String(notifyError);
+    console.error(`[DRY_RUN] ALERT_NOTIFY_FAIL ${notifyMessage}`);
   }
   process.exit(1);
 });

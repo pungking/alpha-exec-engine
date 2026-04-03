@@ -73,6 +73,7 @@ jobs:
 
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_SIMULATION_CHAT_ID: ${{ vars.TELEGRAM_SIMULATION_CHAT_ID }}
+      TELEGRAM_ALERT_CHAT_ID: ${{ vars.TELEGRAM_ALERT_CHAT_ID || vars.TELEGRAM_SIMULATION_CHAT_ID }}
 
     steps:
       - uses: actions/checkout@v5
