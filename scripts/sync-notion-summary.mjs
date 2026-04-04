@@ -225,6 +225,17 @@ const setPropertyAliases = (target, schema, names, handlers) => {
   return false;
 };
 
+const classifyWorkflowTrigger = (eventName) => {
+  const event = String(eventName || "").trim().toLowerCase();
+  if (!event) return "UNKNOWN";
+  if (event === "schedule") return "SCHEDULED";
+  if (event === "workflow_dispatch") return "MANUAL";
+  if (event === "repository_dispatch") return "DISPATCH";
+  if (event === "push") return "PUSH";
+  if (event === "pull_request") return "PR";
+  return event.toUpperCase();
+};
+
 const findPropertyAlias = (schema, names, allowedTypes = []) => {
   for (const name of names) {
     const def = schema?.[name];
@@ -632,6 +643,10 @@ const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
   const workflow = workflowLabelForKind(kind);
   const runId = env("GITHUB_RUN_ID", "local");
   const runUrl = runUrlFromEnv() || "N/A";
+  const eventName = env("GITHUB_EVENT_NAME", "");
+  const eventAction = env("GITHUB_EVENT_ACTION", "");
+  const triggerType = classifyWorkflowTrigger(eventName);
+  const eventLabel = eventAction ? `${eventName}:${eventAction}` : eventName || "N/A";
   const runAttempt = env("GITHUB_RUN_ATTEMPT", "1");
   const occurredAt = new Date().toISOString();
   const incidentByFingerprint = new Map();
@@ -656,6 +671,8 @@ const buildAutomationIncidents = ({ kind, runKey, statusRaw }) => {
       runId,
       runUrl,
       kind,
+      triggerType,
+      eventLabel,
       occurredAt,
       fingerprint
     });
@@ -810,6 +827,14 @@ const syncAutomationIncidentLog = async ({ notionToken, kind, runKey, statusRaw 
     setPropertyAliases(properties, schema, ["Source"], {
       select: () => selectProp(row.source || "notion_sync"),
       rich_text: () => textProp(row.source || "notion_sync")
+    });
+    setPropertyAliases(properties, schema, ["Run Trigger", "Trigger", "Execution Mode", "Run Mode"], {
+      select: () => selectProp(row.triggerType || "UNKNOWN"),
+      rich_text: () => textProp(row.triggerType || "UNKNOWN")
+    });
+    setPropertyAliases(properties, schema, ["Event", "Workflow Event", "GitHub Event"], {
+      select: () => selectProp(env("GITHUB_EVENT_NAME", "N/A")),
+      rich_text: () => textProp(row.eventLabel || "N/A")
     });
     setPropertyAliases(properties, schema, ["Error Class"], {
       select: () => selectProp(row.errorClass),
@@ -1042,9 +1067,15 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const liveAccount = live?.account || {};
   const liveAvailable = Boolean(live?.available);
   const generatedAt = dashboard?.generatedAt || simulation?.updatedAt || new Date().toISOString();
+  const eventName = env("GITHUB_EVENT_NAME", "");
+  const eventAction = env("GITHUB_EVENT_ACTION", "");
+  const triggerType = classifyWorkflowTrigger(eventName);
+  const eventLabel = eventAction ? `${eventName}:${eventAction}` : eventName || "N/A";
   const summary = [
     `kind=${kind}`,
     `status=${statusRaw}`,
+    `trigger=${triggerType}`,
+    `event=${eventLabel}`,
     `batch=${simulation?.batchId || "N/A"}`,
     `simRowsCumulative=${simulation?.totalRows ?? "N/A"}`,
     `simSnapshotTrades=${simSnapshotTrades ?? "N/A"}`,
@@ -1065,6 +1096,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     runKey,
     time: generatedAt,
     kind,
+    triggerType,
+    eventLabel,
     statusRaw,
     source: `sidecar_${kind}`,
     batchId: shortText(simulation?.batchId || "N/A", 120),
@@ -1142,6 +1175,14 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Source"], {
     select: () => selectProp(row.source),
     rich_text: () => textProp(row.source)
+  });
+  setPropertyAliases(properties, schema, ["Run Trigger", "Trigger", "Execution Mode", "Run Mode"], {
+    select: () => selectProp(row.triggerType || "UNKNOWN"),
+    rich_text: () => textProp(row.triggerType || "UNKNOWN")
+  });
+  setPropertyAliases(properties, schema, ["Event", "Workflow Event", "GitHub Event"], {
+    select: () => selectProp(env("GITHUB_EVENT_NAME", "N/A")),
+    rich_text: () => textProp(row.eventLabel || "N/A")
   });
   setPropertyAliases(properties, schema, ["Batch ID"], {
     rich_text: () => textProp(row.batchId)
@@ -1460,6 +1501,14 @@ const main = async () => {
   const statusRaw = env("GHA_JOB_STATUS", "success").toLowerCase();
   const status = statusRaw === "success" ? "Success" : "Partial";
   const payload = config.payloadBuilder();
+  const eventName = env("GITHUB_EVENT_NAME", "");
+  const eventAction = env("GITHUB_EVENT_ACTION", "");
+  const triggerType = classifyWorkflowTrigger(eventName);
+  const eventLabel = eventAction ? `${eventName}:${eventAction}` : eventName || "N/A";
+  const payloadSummary = shortText(
+    [payload.summary, `trigger=${triggerType}`, `event=${eventLabel}`].filter(Boolean).join(" "),
+    1800
+  );
 
   const db = await notionRequest(notionToken, `/v1/databases/${dbDaily}`, { method: "GET" });
   const schema = db?.properties || {};
@@ -1478,7 +1527,7 @@ const main = async () => {
     rich_text: () => textProp(status)
   });
   setProperty(properties, schema, "Summary", {
-    rich_text: () => textProp(payload.summary)
+    rich_text: () => textProp(payloadSummary)
   });
   setProperty(properties, schema, "Top Tickers", {
     rich_text: () => textProp(payload.topTickers)
@@ -1538,6 +1587,14 @@ const main = async () => {
   });
   setProperty(properties, schema, "Run Actions", {
     rich_text: () => textProp(payload.runActions ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Run Trigger", "Trigger", "Execution Mode", "Run Mode"], {
+    select: () => selectProp(triggerType),
+    rich_text: () => textProp(triggerType)
+  });
+  setPropertyAliases(properties, schema, ["Event", "Workflow Event", "GitHub Event"], {
+    select: () => selectProp(eventName || "N/A"),
+    rich_text: () => textProp(eventLabel)
   });
 
   const upsertStatus = await upsertPage(notionToken, dbDaily, titlePropertyName, runKey, properties);
