@@ -208,6 +208,25 @@ type VixLookupResult = {
   source?: "market_snapshot" | "finnhub" | "cnbc_direct" | "cnbc_rapidapi" | "env_fallback";
 };
 
+type ShadowDataBusSummary = {
+  enabled: boolean;
+  mode: "off" | "shadow_only";
+  sources: {
+    alpacaReadOnly: boolean;
+    alphaVantage: boolean;
+    secEdgar: boolean;
+    perplexity: boolean;
+    supabase: boolean;
+  };
+  enabledSourceCount: number;
+  keyReadiness: {
+    alphaVantage: boolean;
+    perplexity: boolean;
+    supabase: boolean;
+    alpaca: boolean;
+  };
+};
+
 type RegimeGuardState = {
   lastProfile: RegimeProfile;
   lastSwitchedAt: string;
@@ -934,6 +953,7 @@ function printStartupSummary() {
   const cfg = loadRuntimeConfig();
   const now = new Date().toISOString();
   const check = runEnvGuard();
+  const shadowDataBus = buildShadowDataBusSummary();
 
   console.log("=== alpha-exec-engine bootstrap ===");
   console.log(`timestamp        : ${now}`);
@@ -983,6 +1003,9 @@ function printStartupSummary() {
   console.log(`HF_PROMO_REQ_S  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`);
   console.log(`HF_PROMO_REQ_P  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
+  console.log(
+    `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
+  );
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
   console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
@@ -5182,6 +5205,7 @@ async function saveDryExecPreview(
   hfEvidenceSummary?: HfEvidenceHistorySummary
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
+  const shadowDataBus = buildShadowDataBusSummary();
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
   const stage6ContractReasonCountsPrimary = result.contractContext?.decisionReasonCountsPrimary ?? {};
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
@@ -5225,6 +5249,7 @@ async function saveDryExecPreview(
     orderLifecycle: ledger,
     preflight,
     guardControl,
+    shadowDataBus,
     mode: {
       readOnly: cfg.readOnly,
       execEnabled: cfg.execEnabled,
@@ -6132,6 +6157,7 @@ async function updateOrderLedger(
 
 function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardControlGate): string {
   const cfg = loadRuntimeConfig();
+  const shadowDataBus = buildShadowDataBusSummary();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
   const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
@@ -6210,6 +6236,10 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`,
     `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`,
     `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`,
+    `SHADOW_DATA_BUS_ENABLED=${shadowDataBus.enabled}`,
+    `SHADOW_DATA_BUS_MODE=${shadowDataBus.mode}`,
+    `SHADOW_DATA_SOURCES=${formatShadowDataBusSources(shadowDataBus)}`,
+    `SHADOW_DATA_KEYS=${formatShadowDataBusKeyReadiness(shadowDataBus)}`,
     `SOURCE_PRIORITY=${sourcePriority}`,
     `SNAPSHOT_MAX_AGE_MIN=${snapshotMaxAgeMin}`,
     `ORDER_IDEMP_ENABLED=${idempotencyEnabled}`,
@@ -6239,6 +6269,53 @@ function formatVix(vix: number | null): string {
   return vix == null ? "N/A" : vix.toFixed(2);
 }
 
+function buildShadowDataBusSummary(): ShadowDataBusSummary {
+  const enabled = readBoolEnv("SHADOW_DATA_BUS_ENABLED", false);
+  const mode: ShadowDataBusSummary["mode"] = enabled ? "shadow_only" : "off";
+  const sources: ShadowDataBusSummary["sources"] = {
+    alpacaReadOnly: enabled && readBoolEnv("SHADOW_SOURCE_ALPACA_ENABLED", true),
+    alphaVantage: enabled && readBoolEnv("SHADOW_SOURCE_ALPHA_VANTAGE_ENABLED", true),
+    secEdgar: enabled && readBoolEnv("SHADOW_SOURCE_SEC_EDGAR_ENABLED", true),
+    perplexity: enabled && readBoolEnv("SHADOW_SOURCE_PERPLEXITY_ENABLED", true),
+    supabase: enabled && readBoolEnv("SHADOW_SOURCE_SUPABASE_ENABLED", false)
+  };
+  const enabledSourceCount = Object.values(sources).filter((value) => value).length;
+  const keyReadiness: ShadowDataBusSummary["keyReadiness"] = {
+    alphaVantage: hasValue(process.env.ALPHA_VANTAGE_API_KEY),
+    perplexity: hasValue(process.env.PERPLEXITY_API_KEY),
+    supabase:
+      hasValue(process.env.SUPABASE_URL) &&
+      (hasValue(process.env.SUPABASE_SERVICE_ROLE_KEY) || hasValue(process.env.SUPABASE_ANON_KEY)),
+    alpaca: hasValue(process.env.ALPACA_KEY_ID) && hasValue(process.env.ALPACA_SECRET_KEY)
+  };
+  return {
+    enabled,
+    mode,
+    sources,
+    enabledSourceCount,
+    keyReadiness
+  };
+}
+
+function formatShadowDataBusSources(summary: ShadowDataBusSummary): string {
+  const labels: string[] = [];
+  if (summary.sources.alpacaReadOnly) labels.push("alpaca");
+  if (summary.sources.alphaVantage) labels.push("alpha_vantage");
+  if (summary.sources.secEdgar) labels.push("sec_edgar");
+  if (summary.sources.perplexity) labels.push("perplexity");
+  if (summary.sources.supabase) labels.push("supabase");
+  return labels.length > 0 ? labels.join(",") : "none";
+}
+
+function formatShadowDataBusKeyReadiness(summary: ShadowDataBusSummary): string {
+  return [
+    `av:${summary.keyReadiness.alphaVantage ? "ok" : "missing"}`,
+    `px:${summary.keyReadiness.perplexity ? "ok" : "missing"}`,
+    `sb:${summary.keyReadiness.supabase ? "ok" : "missing"}`,
+    `alpaca:${summary.keyReadiness.alpaca ? "ok" : "missing"}`
+  ].join(",");
+}
+
 function printRunSummary(
   event: "sent" | "dedupe",
   stage6: Stage6LoadResult,
@@ -6260,6 +6337,10 @@ function printRunSummary(
   hfPayloadPathSticky?: HfPayloadPathStickyAudit,
   hfEvidenceSummary?: HfEvidenceHistorySummary
 ): void {
+  const shadowDataBus = buildShadowDataBusSummary();
+  const shadowDataBusSources = formatShadowDataBusSources(shadowDataBus);
+  const shadowDataBusKeys = formatShadowDataBusKeyReadiness(shadowDataBus);
+  const shadowDataBusSummary = `enabled:${shadowDataBus.enabled}|mode:${shadowDataBus.mode}|sources:${shadowDataBusSources}|keys:${shadowDataBusKeys}`;
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
     ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|requirePayload:${hfDrift.requirePayload}|payloads:${hfDrift.payloadCount}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
@@ -6432,7 +6513,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} shadow_data_bus=${shadowDataBusSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

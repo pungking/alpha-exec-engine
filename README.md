@@ -37,6 +37,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
+- Adds MCP Shadow Data Bus telemetry (Phase-1): Alpaca(read-only), Alpha Vantage, SEC EDGAR, Perplexity, Supabase toggles are recorded in startup/run summary/preview without changing trade path.
 - Uses shared JSON parse guard (`src/json-utils.ts`) for Drive/state payloads (`NaN/Infinity -> null`) to reduce runtime parse breaks.
 
 ## Market Guard (P3-2)
@@ -111,6 +112,10 @@ Use `.env.example` as baseline.
 - `CNBC_RAPIDAPI_KEY` (optional VIX fallback via RapidAPI)
 - `RAPID_API_KEY` (optional alias for `CNBC_RAPIDAPI_KEY`)
 - `NOTION_TOKEN` (optional; required only for workflow Notion sync)
+- `ALPHA_VANTAGE_API_KEY` (optional; shadow-lane readiness telemetry)
+- `PERPLEXITY_API_KEY` (optional; shadow-lane readiness telemetry)
+- `SUPABASE_URL` (optional; shadow-lane readiness telemetry)
+- `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (optional; shadow-lane readiness telemetry)
 
 ### Variables (GitHub Actions)
 - `ALPACA_BASE_URL`
@@ -143,6 +148,12 @@ Use `.env.example` as baseline.
 - `HF_EARNINGS_WINDOW_REDUCE_FACTOR` (default `0.3`; apply delta multiplier in reduce zone)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
+- `SHADOW_DATA_BUS_ENABLED` (default `false`; enables read-only MCP shadow lane telemetry)
+- `SHADOW_SOURCE_ALPACA_ENABLED` (default `true`; includes Alpaca source in shadow lane)
+- `SHADOW_SOURCE_ALPHA_VANTAGE_ENABLED` (default `true`; includes Alpha Vantage source in shadow lane)
+- `SHADOW_SOURCE_SEC_EDGAR_ENABLED` (default `true`; includes SEC EDGAR source in shadow lane)
+- `SHADOW_SOURCE_PERPLEXITY_ENABLED` (default `true`; includes Perplexity source in shadow lane)
+- `SHADOW_SOURCE_SUPABASE_ENABLED` (default `false`; includes Supabase/Postgres source in shadow lane)
 - `HF_NEGATIVE_SIZE_REDUCTION_ENABLED` (default `false`; reduce order notional when HF negative tighten is applied)
 - `HF_NEGATIVE_SIZE_REDUCTION_PCT` (default `0.15`; fixed notional reduction ratio, clamped `0~0.5`)
 - `HF_SHADOW_ENABLED` (default `false`; writes HF on/off shadow comparison telemetry only)
