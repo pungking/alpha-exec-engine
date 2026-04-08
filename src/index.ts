@@ -6499,7 +6499,7 @@ function selectShadowParsingCandidates(stage6: Stage6LoadResult): Stage6Candidat
 }
 
 function printRunSummary(
-  event: "sent" | "dedupe",
+  event: "sent" | "dedupe" | "blocked_preflight",
   stage6: Stage6LoadResult,
   actionableCount: number,
   dryExec: DryExecBuildResult,
@@ -6842,8 +6842,11 @@ async function main() {
     `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} wouldBlockLive=${preflight.wouldBlockLive} liveParity=${preflight.simulatedLiveParity} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
   );
   const preflightBlockingHardFail = readBoolEnv("PREFLIGHT_BLOCKING_HARD_FAIL", true);
-  if (preflight.blocking && cfg.execEnabled && preflightBlockingHardFail) {
-    throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
+  const shouldHardFailAfterSummary = preflight.blocking && cfg.execEnabled && preflightBlockingHardFail;
+  if (shouldHardFailAfterSummary) {
+    console.warn(
+      `[PREFLIGHT] blocking gate detected; continuing to produce full summary before hard-fail code=${preflight.code}`
+    );
   }
   if (preflight.blocking && cfg.execEnabled && !preflightBlockingHardFail) {
     console.log(
@@ -6939,9 +6942,18 @@ async function main() {
     hfNextAction
   );
   await sendPerformanceLoopMilestoneAlert(perfLoop);
-  await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
+  if (preflight.blocking && cfg.execEnabled) {
+    console.log(
+      `[STATE] skip saveRunState due preflight blocking (code=${preflight.code}) to keep rerun eligibility on same stage6 hash`
+    );
+  } else {
+    await saveRunState(stage6, mode, priorState, forceSendBypassDedupe ? forceSendKey : undefined);
+  }
+  const runSummaryEvent: "sent" | "blocked_preflight" = shouldHardFailAfterSummary
+    ? "blocked_preflight"
+    : "sent";
   printRunSummary(
-    "sent",
+    runSummaryEvent,
     stage6,
     actionable.length,
     postPreflightDryExec,
@@ -6961,6 +6973,9 @@ async function main() {
     payloadPathVerification.stickyAudit,
     hfEvidenceSummary
   );
+  if (shouldHardFailAfterSummary) {
+    throw new Error(`Preflight blocked execution: ${preflight.code} | ${preflight.message}`);
+  }
 }
 
 main().catch(async (error) => {
