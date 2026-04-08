@@ -111,6 +111,34 @@ type Stage6CandidateSummary = {
   hfSentimentArticleCount: number | null;
   hfSentimentNewestAgeHours: number | null;
   earningsDaysToEvent: number | null;
+  shadowIntel: Stage6ShadowIntelSummary | null;
+};
+
+type Stage6ShadowIntelSummary = {
+  alphaVantage: {
+    source: string;
+    marketCap: number | null;
+    peRatio: number | null;
+    beta: number | null;
+    earningsDate: string | null;
+  } | null;
+  secEdgar: {
+    source: string;
+    cik: string | null;
+    latestFormType: string | null;
+    latestFiledAt: string | null;
+    filingCount30d: number | null;
+  } | null;
+};
+
+type ShadowFieldParsingSummary = {
+  totalCandidates: number;
+  alphaVantageParsed: number;
+  secEdgarParsed: number;
+  alphaVantageCoveragePct: number;
+  secEdgarCoveragePct: number;
+  alphaVantageSymbols: string[];
+  secEdgarSymbols: string[];
 };
 
 type DryExecOrderPayload = {
@@ -1506,6 +1534,99 @@ function normalizeStage6LifecycleState(value: unknown): Stage6CandidateSummary["
   return "UNKNOWN";
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function normalizeShadowDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.includes("T") ? trimmed : `${trimmed}T00:00:00Z`;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function normalizeShadowString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseStage6ShadowAlphaVantage(node: Record<string, unknown>): Stage6ShadowIntelSummary["alphaVantage"] {
+  const payload =
+    asRecord(node.alphaVantage) ??
+    asRecord(node.alpha_vantage) ??
+    asRecord(node.shadowAlphaVantage) ??
+    asRecord(node.fundamentalsAlphaVantage) ??
+    asRecord(getNestedValue(node, ["shadow", "alphaVantage"])) ??
+    asRecord(getNestedValue(node, ["shadow", "alpha_vantage"]));
+  if (!payload) return null;
+
+  const marketCap = parseFiniteNumber(payload.marketCap ?? payload.market_cap ?? payload.mktCap);
+  const peRatio = parseFiniteNumber(payload.peRatio ?? payload.pe ?? payload.priceEarningsRatio ?? payload.ttmPE);
+  const beta = parseFiniteNumber(payload.beta);
+  const earningsDate = normalizeShadowDate(
+    payload.earningsDate ??
+      payload.nextEarningsDate ??
+      payload.next_earnings_date ??
+      payload.reportDate
+  );
+  const source =
+    normalizeShadowString(payload.source ?? payload.provider ?? payload.vendor) ?? "alpha_vantage";
+
+  if (marketCap == null && peRatio == null && beta == null && earningsDate == null) return null;
+  return {
+    source,
+    marketCap: marketCap != null ? Number(marketCap.toFixed(2)) : null,
+    peRatio: peRatio != null ? Number(peRatio.toFixed(3)) : null,
+    beta: beta != null ? Number(beta.toFixed(4)) : null,
+    earningsDate
+  };
+}
+
+function parseStage6ShadowSecEdgar(node: Record<string, unknown>): Stage6ShadowIntelSummary["secEdgar"] {
+  const payload =
+    asRecord(node.secEdgar) ??
+    asRecord(node.sec_edgar) ??
+    asRecord(node.shadowSecEdgar) ??
+    asRecord(getNestedValue(node, ["shadow", "secEdgar"])) ??
+    asRecord(getNestedValue(node, ["shadow", "sec_edgar"]));
+  if (!payload) return null;
+
+  const cik = normalizeShadowString(payload.cik ?? payload.CIK);
+  const latestFormType = normalizeShadowString(
+    payload.latestFormType ?? payload.latest_form_type ?? payload.lastForm ?? payload.formType
+  );
+  const latestFiledAt = normalizeShadowDate(
+    payload.latestFiledAt ?? payload.latest_filed_at ?? payload.lastFiledAt ?? payload.last_filed_at ?? payload.filedAt
+  );
+  const filingCount30d = parseFiniteNumber(
+    payload.filingCount30d ?? payload.filing_count_30d ?? payload.recentFilingCount ?? payload.filingCount
+  );
+  const source = normalizeShadowString(payload.source ?? payload.provider ?? payload.vendor) ?? "sec_edgar";
+
+  if (cik == null && latestFormType == null && latestFiledAt == null && filingCount30d == null) return null;
+  return {
+    source,
+    cik,
+    latestFormType,
+    latestFiledAt,
+    filingCount30d: filingCount30d != null ? Math.max(0, Math.round(filingCount30d)) : null
+  };
+}
+
+function parseStage6ShadowIntel(node: Record<string, unknown>): Stage6ShadowIntelSummary | null {
+  const alphaVantage = parseStage6ShadowAlphaVantage(node);
+  const secEdgar = parseStage6ShadowSecEdgar(node);
+  if (!alphaVantage && !secEdgar) return null;
+  return {
+    alphaVantage,
+    secEdgar
+  };
+}
+
 function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
   const actionableVerdicts = resolveActionableVerdicts();
@@ -1564,6 +1685,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
       const hfSentimentArticleCountRaw = parseFiniteNumber(node.hfSentimentArticleCount);
       const hfSentimentNewestAgeHoursRaw = parseFiniteNumber(node.hfSentimentNewestAgeHours);
       const earningsDaysToEventRaw = parseFiniteNumber(node.earningsDaysToEvent);
+      const shadowIntel = parseStage6ShadowIntel(node);
       const instrumentType = normalizeStage6InstrumentType(node.instrumentType);
       const historyTier = normalizeStage6HistoryTier(node.historyTier);
       const symbolLifecycleState = normalizeStage6LifecycleState(node.symbolLifecycleState);
@@ -1700,7 +1822,8 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
         hfSentimentNewestAgeHours:
           hfSentimentNewestAgeHoursRaw != null ? Number(Math.max(0, hfSentimentNewestAgeHoursRaw).toFixed(2)) : null,
         earningsDaysToEvent:
-          earningsDaysToEventRaw != null ? Number(earningsDaysToEventRaw.toFixed(0)) : null
+          earningsDaysToEventRaw != null ? Number(earningsDaysToEventRaw.toFixed(0)) : null,
+        shadowIntel
       };
     })
     .filter((row): row is Stage6CandidateSummary => row !== null)
@@ -5206,6 +5329,7 @@ async function saveDryExecPreview(
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   const shadowDataBus = buildShadowDataBusSummary();
+  const shadowDataParsing = buildShadowFieldParsingSummary(result.candidates);
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
   const stage6ContractReasonCountsPrimary = result.contractContext?.decisionReasonCountsPrimary ?? {};
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
@@ -5250,6 +5374,7 @@ async function saveDryExecPreview(
     preflight,
     guardControl,
     shadowDataBus,
+    shadowDataParsing,
     mode: {
       readOnly: cfg.readOnly,
       execEnabled: cfg.execEnabled,
@@ -5264,6 +5389,9 @@ async function saveDryExecPreview(
   };
   await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
   console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
+  console.log(
+    `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
+  );
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
@@ -6316,6 +6444,35 @@ function formatShadowDataBusKeyReadiness(summary: ShadowDataBusSummary): string 
   ].join(",");
 }
 
+function buildShadowFieldParsingSummary(candidates: Stage6CandidateSummary[]): ShadowFieldParsingSummary {
+  const totalCandidates = candidates.length;
+  const alphaVantageSymbols = candidates
+    .filter((row) => row.shadowIntel?.alphaVantage)
+    .map((row) => row.symbol);
+  const secEdgarSymbols = candidates.filter((row) => row.shadowIntel?.secEdgar).map((row) => row.symbol);
+  const alphaVantageParsed = alphaVantageSymbols.length;
+  const secEdgarParsed = secEdgarSymbols.length;
+  const alphaVantageCoveragePct =
+    totalCandidates > 0 ? Number(((alphaVantageParsed / totalCandidates) * 100).toFixed(2)) : 0;
+  const secEdgarCoveragePct =
+    totalCandidates > 0 ? Number(((secEdgarParsed / totalCandidates) * 100).toFixed(2)) : 0;
+  return {
+    totalCandidates,
+    alphaVantageParsed,
+    secEdgarParsed,
+    alphaVantageCoveragePct,
+    secEdgarCoveragePct,
+    alphaVantageSymbols,
+    secEdgarSymbols
+  };
+}
+
+function formatShadowFieldParsingSummary(summary: ShadowFieldParsingSummary): string {
+  const avSample = summary.alphaVantageSymbols.slice(0, 3).join("/") || "none";
+  const secSample = summary.secEdgarSymbols.slice(0, 3).join("/") || "none";
+  return `total:${summary.totalCandidates}|av:${summary.alphaVantageParsed}(${summary.alphaVantageCoveragePct.toFixed(1)}%)|sec:${summary.secEdgarParsed}(${summary.secEdgarCoveragePct.toFixed(1)}%)|avSample:${avSample}|secSample:${secSample}`;
+}
+
 function printRunSummary(
   event: "sent" | "dedupe",
   stage6: Stage6LoadResult,
@@ -6341,6 +6498,8 @@ function printRunSummary(
   const shadowDataBusSources = formatShadowDataBusSources(shadowDataBus);
   const shadowDataBusKeys = formatShadowDataBusKeyReadiness(shadowDataBus);
   const shadowDataBusSummary = `enabled:${shadowDataBus.enabled}|mode:${shadowDataBus.mode}|sources:${shadowDataBusSources}|keys:${shadowDataBusKeys}`;
+  const shadowFieldParsing = buildShadowFieldParsingSummary(stage6.candidates);
+  const shadowFieldParsingSummary = formatShadowFieldParsingSummary(shadowFieldParsing);
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
     ? `enabled:${hfDrift.enabled}|triggered:${hfDrift.triggered}|reason:${hfDrift.reason}|requirePayload:${hfDrift.requirePayload}|payloads:${hfDrift.payloadCount}|currentApplied:${hfDrift.currentAppliedRatio.toFixed(4)}|baselineApplied:${hfDrift.baselineAppliedRatio.toFixed(4)}|currentNegative:${hfDrift.currentNegativeRatio.toFixed(4)}|baselineNegative:${hfDrift.baselineNegativeRatio.toFixed(4)}`
@@ -6513,7 +6672,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} shadow_data_bus=${shadowDataBusSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

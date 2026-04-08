@@ -419,7 +419,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Step Summary now includes `skip_reasons` distribution for faster `payload=0` diagnosis.
   - HF marker audit (warning-only):
     - Workflow stores marker status at `state/hf-marker-audit.json`.
-    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_PAYLOAD_PROBE]`, `[HF_PAYLOAD_PROBE_STATUS]`, `[HF_PAYLOAD_PATH_STICKY]`, `[HF_EVIDENCE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, `[HF_TUNING_PHASE]`, `[HF_TUNING_ADVICE]`, `[HF_FREEZE]`, `[HF_LIVE_PROMOTION]`, `[HF_NEXT_ACTION]`, `[HF_DAILY_VERDICT]`, `[HF_ALERT]` or `[HF_ALERT_SUMMARY]`, and `[RUN_SUMMARY] ... hf_payload_probe_forced=... hf_payload_probe_status=... hf_payload_path_sticky=... hf_evidence=... hf_drift=... hf_shadow=... hf_shadow_trend=... hf_tuning_phase=... hf_tuning_advice=... hf_freeze=... hf_live_promotion=... hf_next_action=... hf_daily_verdict=... hf_alert=...`.
+    - Expected keywords in run log: `[HF_SOFT_GATE]`, `[HF_PAYLOAD_PROBE]`, `[HF_PAYLOAD_PROBE_STATUS]`, `[HF_PAYLOAD_PATH_STICKY]`, `[HF_EVIDENCE]`, `[HF_DRIFT]` or `[HF_DRIFT_SUMMARY]`, `[HF_SHADOW]`, `[HF_TUNING_PHASE]`, `[HF_TUNING_ADVICE]`, `[HF_FREEZE]`, `[HF_LIVE_PROMOTION]`, `[HF_NEXT_ACTION]`, `[HF_DAILY_VERDICT]`, `[HF_ALERT]` or `[HF_ALERT_SUMMARY]`, `[SHADOW_PARSE]`, and `[RUN_SUMMARY] ... hf_payload_probe_forced=... hf_payload_probe_status=... hf_payload_path_sticky=... hf_evidence=... hf_drift=... hf_shadow=... hf_shadow_trend=... hf_tuning_phase=... hf_tuning_advice=... hf_freeze=... hf_live_promotion=... hf_next_action=... hf_daily_verdict=... hf_alert=... shadow_data_bus=... shadow_parse=...`.
     - Missing markers only emit warning (`[HF_MARKER_AUDIT] ...`), run still passes.
   - Step Summary includes:
     - `hf_verify_gate` (`outcome/mode`; `validation_pack=true`일 때 verify gate 선행 실행 결과)
@@ -442,6 +442,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `hf_evidence` (`history/latest*/window/pass/hold/block/alerts`)
     - `hf_tuning_comment` (`status/action/reason` operator cue for next step)
     - `hf_alert` (`enabled/triggered/reason/shadowCompared/payloadDelta/notionalDelta/skippedDelta/driftTriggered`)
+    - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
+    - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
   - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
