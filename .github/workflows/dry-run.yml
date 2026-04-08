@@ -153,6 +153,12 @@ jobs:
       HF_PAYLOAD_PROBE_MODE: off
       HF_NEGATIVE_SIZE_REDUCTION_ENABLED: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_ENABLED }}
       HF_NEGATIVE_SIZE_REDUCTION_PCT: ${{ vars.HF_NEGATIVE_SIZE_REDUCTION_PCT }}
+      SHADOW_DATA_BUS_ENABLED: ${{ vars.SHADOW_DATA_BUS_ENABLED }}
+      SHADOW_SOURCE_ALPACA_ENABLED: ${{ vars.SHADOW_SOURCE_ALPACA_ENABLED }}
+      SHADOW_SOURCE_ALPHA_VANTAGE_ENABLED: ${{ vars.SHADOW_SOURCE_ALPHA_VANTAGE_ENABLED }}
+      SHADOW_SOURCE_SEC_EDGAR_ENABLED: ${{ vars.SHADOW_SOURCE_SEC_EDGAR_ENABLED }}
+      SHADOW_SOURCE_PERPLEXITY_ENABLED: ${{ vars.SHADOW_SOURCE_PERPLEXITY_ENABLED }}
+      SHADOW_SOURCE_SUPABASE_ENABLED: ${{ vars.SHADOW_SOURCE_SUPABASE_ENABLED }}
       HF_SHADOW_ENABLED: ${{ vars.HF_SHADOW_ENABLED }}
       HF_ALERT_ENABLED: ${{ vars.HF_ALERT_ENABLED }}
       HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS: ${{ vars.HF_ALERT_SHADOW_PAYLOAD_DELTA_ABS }}
@@ -613,6 +619,27 @@ jobs:
             lines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} watchlist=${stage6Contract.watchlist ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
             );
+            const shadowDataBus = preview?.shadowDataBus || {};
+            const shadowSources =
+              shadowDataBus?.sources && typeof shadowDataBus.sources === "object"
+                ? Object.entries(shadowDataBus.sources)
+                    .filter(([, enabled]) => enabled === true)
+                    .map(([name]) => name)
+                    .join(",") || "none"
+                : "none";
+            const shadowKeys =
+              shadowDataBus?.keyReadiness && typeof shadowDataBus.keyReadiness === "object"
+                ? Object.entries(shadowDataBus.keyReadiness)
+                    .map(([name, ready]) => `${name}:${ready === true ? "ok" : "missing"}`)
+                    .join(",")
+                : "N/A";
+            lines.push(
+              `- shadow_data_bus: \`enabled=${shadowDataBus.enabled ?? "N/A"} mode=${shadowDataBus.mode ?? "N/A"} sources=${shadowSources} enabledCount=${shadowDataBus.enabledSourceCount ?? "N/A"} keys=${shadowKeys}\``
+            );
+            const shadowParse = preview?.shadowDataParsing || {};
+            lines.push(
+              `- shadow_parse: \`total=${shadowParse.totalCandidates ?? "N/A"} av=${shadowParse.alphaVantageParsed ?? "N/A"} (${shadowParse.alphaVantageCoveragePct ?? "N/A"}%) sec=${shadowParse.secEdgarParsed ?? "N/A"} (${shadowParse.secEdgarCoveragePct ?? "N/A"}%) avSymbols=${Array.isArray(shadowParse.alphaVantageSymbols) && shadowParse.alphaVantageSymbols.length > 0 ? shadowParse.alphaVantageSymbols.join("/") : "none"} secSymbols=${Array.isArray(shadowParse.secEdgarSymbols) && shadowParse.secEdgarSymbols.length > 0 ? shadowParse.secEdgarSymbols.join("/") : "none"}\``
+            );
             lines.push(
               `- stage6_contract_reason_primary: \`${formatCountMap(preview?.stage6ContractReasonCountsPrimary)}\``
             );
@@ -817,6 +844,8 @@ jobs:
             lines.push("- hf_payload_path_sticky: `priorStage6Hash=N/A stage6HashChanged=N/A stickyEligible=N/A stickyCarried=N/A stickyReset=N/A reason=N/A currentVerified=N/A currentSource=N/A resolvedVerified=N/A resolvedSource=N/A`");
             lines.push("- hf_evidence: `history=N/A latestAt=N/A latestStage6Hash=N/A latestLive=N/A latestProbe=N/A latestAlert=N/A latestGate=N/A window=N/A pass=N/A hold=N/A block=N/A alerts=N/A`");
             lines.push("- hf_alert: `enabled=N/A triggered=N/A reason=N/A shadowCompared=N/A payloadDelta=N/A notionalDelta=N/A skippedDelta=N/A driftTriggered=N/A`");
+            lines.push("- shadow_data_bus: `enabled=N/A mode=N/A sources=N/A enabledCount=N/A keys=N/A`");
+            lines.push("- shadow_parse: `total=N/A av=N/A sec=N/A avSymbols=N/A secSymbols=N/A`");
             lines.push("- stage6_contract_reason_primary: `none`");
             lines.push("- stage6_skip_hint_primary: `none`");
           }

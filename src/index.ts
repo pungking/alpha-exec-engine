@@ -5329,7 +5329,7 @@ async function saveDryExecPreview(
 ): Promise<void> {
   const cfg = loadRuntimeConfig();
   const shadowDataBus = buildShadowDataBusSummary();
-  const shadowDataParsing = buildShadowFieldParsingSummary(result.candidates);
+  const shadowDataParsing = buildShadowFieldParsingSummary(selectShadowParsingCandidates(result));
   const hfPayloadProbeStatus = deriveHfPayloadProbeGateSummary(dryExec, hfPayloadProbe);
   const stage6ContractReasonCountsPrimary = result.contractContext?.decisionReasonCountsPrimary ?? {};
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
@@ -6473,6 +6473,29 @@ function formatShadowFieldParsingSummary(summary: ShadowFieldParsingSummary): st
   return `total:${summary.totalCandidates}|av:${summary.alphaVantageParsed}(${summary.alphaVantageCoveragePct.toFixed(1)}%)|sec:${summary.secEdgarParsed}(${summary.secEdgarCoveragePct.toFixed(1)}%)|avSample:${avSample}|secSample:${secSample}`;
 }
 
+function selectShadowParsingCandidates(stage6: Stage6LoadResult): Stage6CandidateSummary[] {
+  if (Array.isArray(stage6.candidates) && stage6.candidates.length > 0) {
+    return stage6.candidates;
+  }
+  const merged: Stage6CandidateSummary[] = [];
+  const pushUnique = (rows: Stage6CandidateSummary[] | undefined) => {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (!row?.symbol) continue;
+      const existingIndex = merged.findIndex((item) => item.symbol === row.symbol);
+      if (existingIndex === -1) {
+        merged.push(row);
+      } else if (!merged[existingIndex].shadowIntel && row.shadowIntel) {
+        merged[existingIndex] = row;
+      }
+    }
+  };
+  pushUnique(stage6.contractContext?.modelTop6);
+  pushUnique(stage6.contractContext?.executablePicks);
+  pushUnique(stage6.contractContext?.watchlistTop);
+  return merged;
+}
+
 function printRunSummary(
   event: "sent" | "dedupe",
   stage6: Stage6LoadResult,
@@ -6498,7 +6521,7 @@ function printRunSummary(
   const shadowDataBusSources = formatShadowDataBusSources(shadowDataBus);
   const shadowDataBusKeys = formatShadowDataBusKeyReadiness(shadowDataBus);
   const shadowDataBusSummary = `enabled:${shadowDataBus.enabled}|mode:${shadowDataBus.mode}|sources:${shadowDataBusSources}|keys:${shadowDataBusKeys}`;
-  const shadowFieldParsing = buildShadowFieldParsingSummary(stage6.candidates);
+  const shadowFieldParsing = buildShadowFieldParsingSummary(selectShadowParsingCandidates(stage6));
   const shadowFieldParsingSummary = formatShadowFieldParsingSummary(shadowFieldParsing);
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
   const hfDriftSummary = hfDrift
