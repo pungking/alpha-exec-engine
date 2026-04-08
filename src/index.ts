@@ -6408,9 +6408,11 @@ function buildShadowDataBusSummary(): ShadowDataBusSummary {
     supabase: enabled && readBoolEnv("SHADOW_SOURCE_SUPABASE_ENABLED", false)
   };
   const enabledSourceCount = Object.values(sources).filter((value) => value).length;
+  const alphaVantageReady = hasValue(process.env.ALPHA_VANTAGE_API_KEY) || hasValue(process.env.ALPHA_VANTAGE_KEY);
+  const perplexityReady = hasValue(process.env.PERPLEXITY_API_KEY) || hasValue(process.env.VITE_PERPLEXITY_API_KEY);
   const keyReadiness: ShadowDataBusSummary["keyReadiness"] = {
-    alphaVantage: hasValue(process.env.ALPHA_VANTAGE_API_KEY),
-    perplexity: hasValue(process.env.PERPLEXITY_API_KEY),
+    alphaVantage: alphaVantageReady,
+    perplexity: perplexityReady,
     supabase:
       hasValue(process.env.SUPABASE_URL) &&
       (hasValue(process.env.SUPABASE_SERVICE_ROLE_KEY) || hasValue(process.env.SUPABASE_ANON_KEY)),
