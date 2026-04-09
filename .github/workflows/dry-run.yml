@@ -93,8 +93,10 @@ on:
           - "40"
           - "50"
   schedule:
-    # Weekday fallback run (UTC): keep low-frequency to avoid duplicate spend with dispatch-driven runs.
-    - cron: "15 10 * * 1-5"
+    # RTH simulation cadence (UTC, weekdays): every 15m in broad US cash-session window.
+    # - Covers DST (EDT) and non-DST (EST) without manual seasonal edits.
+    # - Final execution still gated by preflight market-open checks in code.
+    - cron: "5,20,35,50 13-21 * * 1-5"
   repository_dispatch:
     types:
       - stage6_result_created

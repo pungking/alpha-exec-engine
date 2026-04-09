@@ -406,7 +406,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Publishes concise run summary to GitHub Step Summary.
   - Also supports `repository_dispatch` (`type=stage6_result_created`) for one-shot run right after a new Stage6 dump is generated.
     - Optional `client_payload`: `stage6Hash`, `stage6File`, `sourceRunId` (included in Step Summary trigger trace).
-  - Default schedule is kept as low-frequency weekday fallback (once/day UTC) to reduce duplicate spend when dispatch auto-runs are enabled.
+  - Default schedule runs weekday UTC `13-21` every 15 minutes (`5,20,35,50`) for simulation-for-live monitoring.
+    - This single UTC window covers both EDT/EST seasons without manual cron edits.
+    - Market-closed/entry-blocking cases are still controlled by preflight gate (`PREFLIGHT_*`).
+    - Recommended lifecycle vars (simulation mode): `POSITION_LIFECYCLE_ENABLED=true`, `POSITION_LIFECYCLE_PREVIEW_ONLY=true`, `POSITION_LIFECYCLE_ACTION_TYPES=ENTRY_NEW,HOLD_WAIT,SCALE_UP,SCALE_DOWN,EXIT_PARTIAL,EXIT_FULL`.
   - Manual dispatch inputs:
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
       - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
