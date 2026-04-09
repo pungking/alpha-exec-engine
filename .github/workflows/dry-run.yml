@@ -429,6 +429,8 @@ jobs:
           if [[ -f "${LOG_PATH}" ]]; then
             if grep -Eq '\[RUN_SUMMARY\] event=dedupe\b' "${LOG_PATH}"; then
               RUN_EVENT="dedupe"
+            elif grep -Eq '\[RUN_SUMMARY\] event=blocked_preflight\b' "${LOG_PATH}"; then
+              RUN_EVENT="blocked_preflight"
             elif grep -Eq '\[RUN_SUMMARY\] event=sent\b' "${LOG_PATH}"; then
               RUN_EVENT="sent"
             elif grep -Eq '\[RUN_SUMMARY\] event=' "${LOG_PATH}"; then
@@ -592,14 +594,16 @@ jobs:
           if (fs.existsSync(statePath)) {
             const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
             lines.push(`- lastSentAt: \`${state.lastSentAt || "N/A"}\``);
-            lines.push(`- stage6File: \`${state.lastStage6FileName || "N/A"}\``);
-            lines.push(`- stage6Hash: \`${(state.lastStage6Sha256 || "").slice(0, 12) || "N/A"}\``);
+            lines.push(`- last_sent_stage6File: \`${state.lastStage6FileName || "N/A"}\``);
+            lines.push(`- last_sent_stage6Hash: \`${(state.lastStage6Sha256 || "").slice(0, 12) || "N/A"}\``);
           } else {
             lines.push("- state/last-run.json: not found");
           }
 
           if (fs.existsSync(previewPath)) {
             const preview = JSON.parse(fs.readFileSync(previewPath, "utf8"));
+            lines.push(`- stage6File: \`${preview.stage6File || "N/A"}\``);
+            lines.push(`- stage6Hash: \`${(preview.stage6Hash || "").slice(0, 12) || "N/A"}\``);
             const regime = preview?.regime?.profile || "N/A";
             const source = preview?.regime?.source || "N/A";
             const vix = Number.isFinite(preview?.regime?.vix) ? preview.regime.vix.toFixed(2) : "N/A";
