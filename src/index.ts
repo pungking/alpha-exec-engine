@@ -160,6 +160,7 @@ type DryExecOrderPayload = {
 type DryExecSkipReason = {
   symbol: string;
   reason: string;
+  detail?: string;
   actionType?: LifecycleActionType;
   actionReason?: string;
 };
@@ -1351,6 +1352,16 @@ function formatSkipReasonCounts(counts: Record<string, number>): string {
   return entries.map(([reason, count]) => `${reason}:${count}`).join(",");
 }
 
+function formatSkipDetails(skipped: DryExecSkipReason[], maxItems = 8): string {
+  const detailRows = skipped.filter((row) => typeof row.detail === "string" && row.detail.trim().length > 0);
+  if (detailRows.length === 0) return "none";
+  const visible = detailRows
+    .slice(0, maxItems)
+    .map((row) => `${row.symbol}:${row.reason}[${row.detail}]`);
+  const suffix = detailRows.length > maxItems ? ` (+${detailRows.length - maxItems} more)` : "";
+  return `${visible.join(" || ")}${suffix}`;
+}
+
 function createEmptyActionIntentCounts(): Record<LifecycleActionType, number> {
   return {
     ENTRY_NEW: 0,
@@ -1944,23 +1955,40 @@ async function fetchFinnhubVix(): Promise<VixLookupResult> {
 
   const candidates = ["VIX", "^VIX", "CBOE:VIX"];
   const attempts: string[] = [];
+  let sawAuthFailure = false;
+  let sawCoverageOnly = false;
   for (const symbol of candidates) {
     try {
       const params = new URLSearchParams({ symbol, token });
       const response = await fetch(`https://finnhub.io/api/v1/quote?${params.toString()}`);
       if (!response.ok) {
-        attempts.push(`${symbol}:${response.status}`);
+        if (response.status === 401) sawAuthFailure = true;
+        attempts.push(`${symbol}:http_${response.status}`);
         continue;
       }
-      const data = (await response.json()) as { c?: unknown };
+      const data = (await response.json()) as { c?: unknown; error?: unknown };
+      const errorText = typeof data.error === "string" ? data.error.toLowerCase() : "";
+      if (errorText.includes("subscription required")) {
+        sawCoverageOnly = true;
+        attempts.push(`${symbol}:subscription_required`);
+        continue;
+      }
       const parsed = toFinitePositiveNumber(data.c);
       if (parsed != null) return { vix: parsed, reason: `finnhub ok: ${symbol}`, source: "finnhub" };
-      attempts.push(`${symbol}:invalid_quote`);
+      sawCoverageOnly = true;
+      attempts.push(`${symbol}:no_price`);
     } catch {
       attempts.push(`${symbol}:network_error`);
     }
   }
-  return { vix: null, reason: `finnhub failed (${attempts.join(", ") || "no candidates"})`, source: "finnhub" };
+  const attemptSummary = attempts.join(", ") || "no candidates";
+  if (sawAuthFailure) {
+    return { vix: null, reason: `finnhub auth_failed (${attemptSummary})`, source: "finnhub" };
+  }
+  if (sawCoverageOnly) {
+    return { vix: null, reason: `finnhub no_vix_coverage (${attemptSummary})`, source: "finnhub" };
+  }
+  return { vix: null, reason: `finnhub failed (${attemptSummary})`, source: "finnhub" };
 }
 
 async function fetchCnbcDirectVix(): Promise<VixLookupResult> {
@@ -2156,9 +2184,14 @@ function evaluateRegimeQuality(selection: RegimeSelection): RegimeQualityGuard {
     score -= 10;
     reasons.push("snapshot_stale");
   }
-  if (selection.diagnostics.some((line) => line.includes("finnhub failed"))) {
+  if (selection.diagnostics.some((line) => line.includes("finnhub auth_failed"))) {
+    score -= 8;
+    reasons.push("finnhub_auth_failed");
+  } else if (selection.diagnostics.some((line) => line.includes("finnhub failed"))) {
     score -= 5;
     reasons.push("finnhub_unavailable");
+  } else if (selection.diagnostics.some((line) => line.includes("finnhub no_vix_coverage"))) {
+    reasons.push("finnhub_vix_uncovered");
   }
   if (selection.diagnostics.some((line) => line.includes("cnbc-direct") && line.includes("failed"))) {
     score -= 10;
@@ -3042,9 +3075,11 @@ function buildDryExecPayloads(
     symbol: string,
     reason: string,
     actionType?: LifecycleActionType,
-    actionReason?: string
+    actionReason?: string,
+    detail?: string
   ) => {
     const row: DryExecSkipReason = { symbol, reason };
+    if (detail && detail.trim().length > 0) row.detail = detail;
     if (lifecycle.enabled && actionType && isActionTypeAllowed(actionType, lifecycle)) {
       actionIntentCounts[actionType] += 1;
       row.actionType = actionType;
@@ -3172,7 +3207,12 @@ function buildDryExecPayloads(
       const skipReason =
         hfAdjustment.mode === "tighten" ? "conviction_below_floor_hf_negative" : "conviction_below_floor";
       if (hfAdjustment.mode === "tighten") hfSoftBlockedNegative += 1;
-      pushSkip(row.symbol, skipReason, "HOLD_WAIT", "conviction_gate_not_passed");
+      const convictionToken = conviction == null ? "n/a" : conviction.toFixed(1);
+      const decisionToken = isMissingContractToken(row.finalDecision) ? "n/a" : row.finalDecision;
+      const decisionReasonToken = isMissingContractToken(row.decisionReason) ? "n/a" : row.decisionReason;
+      const executionReasonToken = isMissingContractToken(row.executionReason) ? "n/a" : row.executionReason;
+      const detail = `conv=${convictionToken}|floor=${convictionFloorWithHf.toFixed(1)}|hfMode=${hfAdjustment.mode}|decision=${decisionToken}|decisionReason=${decisionReasonToken}|executionReason=${executionReasonToken}`;
+      pushSkip(row.symbol, skipReason, "HOLD_WAIT", "conviction_gate_not_passed", detail);
       return;
     }
 
@@ -3652,7 +3692,7 @@ function buildSimulationMessage(
   }
   if (dryExec.skipped.length > 0) {
     const skippedLog = dryExec.skipped
-      .map((s) => `${s.symbol}:${s.reason}${s.actionType ? `(${s.actionType})` : ""}`)
+      .map((s) => `${s.symbol}:${s.reason}${s.detail ? `[${s.detail}]` : ""}${s.actionType ? `(${s.actionType})` : ""}`)
       .join(", ");
     lines.push(`Skipped: ${skippedLog}`);
   }
@@ -5393,6 +5433,7 @@ async function saveDryExecPreview(
     `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
   );
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
+  console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
@@ -6087,7 +6128,10 @@ async function applyOrderIdempotency(
     if (existing) {
       duplicateCount += 1;
       if (enforced) {
-        skipped.push({ symbol: payload.symbol, reason: "idempotency_duplicate" });
+        const existingFirstSeen = existing.firstSeenAt || "n/a";
+        const existingStage6 = existing.stage6File || "n/a";
+        const detail = `key=${key.slice(0, 18)}...|firstSeenAt=${existingFirstSeen}|stage6=${existingStage6}`;
+        skipped.push({ symbol: payload.symbol, reason: "idempotency_duplicate", detail });
         continue;
       }
       payloads.push(payload);
