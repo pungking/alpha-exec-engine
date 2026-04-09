@@ -6426,6 +6426,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ORDER_IDEMP_ENFORCE_DRY_RUN=${idempotencyEnforceDryRun}`,
     `ORDER_IDEMP_TTL_DAYS=${idempotencyTtlDays}`,
     `PREFLIGHT_ENABLED=${preflightEnabled}`,
+    `PREFLIGHT_SOFT_CODES=${String(process.env.PREFLIGHT_SOFT_CODES || "PREFLIGHT_MARKET_CLOSED")}`,
     `ALLOW_ENTRY_OUTSIDE_RTH=${allowEntryOutsideRth}`,
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
@@ -6897,16 +6898,29 @@ async function main() {
     `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} wouldBlockLive=${preflight.wouldBlockLive} liveParity=${preflight.simulatedLiveParity} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
   );
   const preflightBlockingHardFail = readBoolEnv("PREFLIGHT_BLOCKING_HARD_FAIL", true);
-  const shouldHardFailAfterSummary = preflight.blocking && cfg.execEnabled && preflightBlockingHardFail;
-  if (shouldHardFailAfterSummary) {
-    console.warn(
-      `[PREFLIGHT] blocking gate detected; continuing to produce full summary before hard-fail code=${preflight.code}`
-    );
-  }
-  if (preflight.blocking && cfg.execEnabled && !preflightBlockingHardFail) {
-    console.log(
-      `[PREFLIGHT] blocking gate suppressed by PREFLIGHT_BLOCKING_HARD_FAIL=false code=${preflight.code}`
-    );
+  const preflightSoftCodes = new Set(
+    String(process.env.PREFLIGHT_SOFT_CODES || "PREFLIGHT_MARKET_CLOSED")
+      .split(",")
+      .map((code) => code.trim())
+      .filter(Boolean)
+  );
+  const preflightSoftCodeMatched = preflightSoftCodes.has(preflight.code);
+  const shouldHardFailAfterSummary =
+    preflight.blocking && cfg.execEnabled && preflightBlockingHardFail && !preflightSoftCodeMatched;
+  if (preflight.blocking && cfg.execEnabled) {
+    if (shouldHardFailAfterSummary) {
+      console.warn(
+        `[PREFLIGHT] blocking gate detected; continuing to produce full summary before hard-fail code=${preflight.code}`
+      );
+    } else if (!preflightBlockingHardFail) {
+      console.log(
+        `[PREFLIGHT] blocking gate suppressed by PREFLIGHT_BLOCKING_HARD_FAIL=false code=${preflight.code}`
+      );
+    } else if (preflightSoftCodeMatched) {
+      console.log(
+        `[PREFLIGHT] blocking gate suppressed by PREFLIGHT_SOFT_CODES code=${preflight.code}`
+      );
+    }
   }
   let finalDryExec = preflightDryExec;
   if (!preflight.blocking) {

@@ -131,6 +131,7 @@ jobs:
       DAILY_MAX_NOTIONAL: ${{ vars.DAILY_MAX_NOTIONAL }}
       ALLOW_ENTRY_OUTSIDE_RTH: ${{ github.event_name == 'workflow_dispatch' && inputs.run_allow_entry_outside_rth || vars.ALLOW_ENTRY_OUTSIDE_RTH }}
       PREFLIGHT_BLOCKING_HARD_FAIL: ${{ vars.PREFLIGHT_BLOCKING_HARD_FAIL }}
+      PREFLIGHT_SOFT_CODES: ${{ vars.PREFLIGHT_SOFT_CODES }}
       ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
       FORCE_SEND_ONCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_force_send_once || vars.FORCE_SEND_ONCE }}

@@ -177,6 +177,7 @@ Use `.env.example` as baseline.
 - `DAILY_MAX_NOTIONAL`
 - `ALLOW_ENTRY_OUTSIDE_RTH`
 - `PREFLIGHT_BLOCKING_HARD_FAIL` (default `true`; when `false`, keep run green and convert preflight block into payload skip + telemetry)
+- `PREFLIGHT_SOFT_CODES` (comma-separated blocking codes to keep green even when hard-fail is enabled; default `PREFLIGHT_MARKET_CLOSED`)
 - `ORDER_LIFECYCLE_ENABLED`
 - `ORDER_LEDGER_TTL_DAYS`
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
