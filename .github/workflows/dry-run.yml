@@ -143,6 +143,10 @@ jobs:
       POSITION_LIFECYCLE_PREVIEW_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_preview_only || vars.POSITION_LIFECYCLE_PREVIEW_ONLY }}
       POSITION_LIFECYCLE_ACTION_TYPES: ${{ vars.POSITION_LIFECYCLE_ACTION_TYPES }}
       POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION }}
+      APPROVAL_REQUIRED: ${{ vars.APPROVAL_REQUIRED }}
+      APPROVAL_ENFORCE_IN_PREVIEW: ${{ vars.APPROVAL_ENFORCE_IN_PREVIEW }}
+      APPROVAL_QUEUE_FILE_NAME: ${{ vars.APPROVAL_QUEUE_FILE_NAME }}
+      APPROVAL_REQUEST_TTL_MINUTES: ${{ vars.APPROVAL_REQUEST_TTL_MINUTES }}
       HF_SENTIMENT_SOFT_GATE_ENABLED: ${{ vars.HF_SENTIMENT_SOFT_GATE_ENABLED }}
       HF_SENTIMENT_SCORE_FLOOR: ${{ vars.HF_SENTIMENT_SCORE_FLOOR }}
       HF_SENTIMENT_MIN_ARTICLE_COUNT: ${{ vars.HF_SENTIMENT_MIN_ARTICLE_COUNT }}
@@ -627,6 +631,10 @@ jobs:
             const stage6Contract = preview?.stage6Contract || {};
             lines.push(
               `- stage6_contract: \`enforce=${stage6Contract.enforce ?? "N/A"} checked=${stage6Contract.checked ?? "N/A"} executable=${stage6Contract.executable ?? "N/A"} watchlist=${stage6Contract.watchlist ?? "N/A"} blocked=${stage6Contract.blocked ?? "N/A"}\``
+            );
+            const approvalQueueGate = preview?.approvalQueueGate || {};
+            lines.push(
+              `- approval_queue: \`enabled=${approvalQueueGate.enabled ?? "N/A"} required=${approvalQueueGate.required ?? "N/A"} enforced=${approvalQueueGate.enforced ?? "N/A"} previewBypassed=${approvalQueueGate.previewBypassed ?? "N/A"} queueLoaded=${approvalQueueGate.queueLoaded ?? "N/A"} total=${approvalQueueGate.total ?? "N/A"} pending=${approvalQueueGate.pending ?? "N/A"} approved=${approvalQueueGate.approved ?? "N/A"} rejected=${approvalQueueGate.rejected ?? "N/A"} expired=${approvalQueueGate.expired ?? "N/A"} matchedApproved=${approvalQueueGate.matchedApproved ?? "N/A"} createdPending=${approvalQueueGate.createdPending ?? "N/A"} blocked=${approvalQueueGate.blocked ?? "N/A"} reason=${approvalQueueGate.reason ?? "N/A"}\``
             );
             const shadowDataBus = preview?.shadowDataBus || {};
             const shadowSources =

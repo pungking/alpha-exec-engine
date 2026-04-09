@@ -31,6 +31,64 @@ type DriveListResponse = {
   }>;
 };
 
+type ApprovalQueueStatus = "pending" | "approved" | "rejected" | "expired";
+
+type ApprovalQueueRecord = {
+  id: string;
+  type: "trade" | "param_change" | "live_switch";
+  symbol?: string;
+  side?: string;
+  notional?: number;
+  limitPrice?: number;
+  takeProfit?: number;
+  stopLoss?: number;
+  detail?: string;
+  status: ApprovalQueueStatus;
+  requestedAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  stage6Hash?: string;
+  ttlMinutes?: number;
+};
+
+type ApprovalQueueState = {
+  queue: ApprovalQueueRecord[];
+  updatedAt: string;
+};
+
+type ApprovalQueueLoadResult = {
+  state: ApprovalQueueState;
+  fileId: string | null;
+};
+
+type ApprovalQueueGateConfig = {
+  required: boolean;
+  enforceInPreview: boolean;
+  queueFileName: string;
+  requestTtlMinutes: number;
+};
+
+type ApprovalQueueGateSummary = {
+  enabled: boolean;
+  required: boolean;
+  enforced: boolean;
+  previewBypassed: boolean;
+  queueFileName: string;
+  queueLoaded: boolean;
+  queueLoadError: string | null;
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  expired: number;
+  matchedApproved: number;
+  matchedPending: number;
+  createdPending: number;
+  blocked: number;
+  reason: string;
+  blockedSymbols: string[];
+};
+
 type Stage6LoadResult = {
   fileId: string;
   fileName: string;
@@ -906,6 +964,79 @@ function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
 }
 
+function normalizeApprovalQueueStatus(raw: unknown): ApprovalQueueStatus {
+  const normalized = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "approved") return "approved";
+  if (normalized === "rejected") return "rejected";
+  if (normalized === "expired") return "expired";
+  return "pending";
+}
+
+function buildApprovalQueueGateConfig(): ApprovalQueueGateConfig {
+  return {
+    required: readBoolEnv("APPROVAL_REQUIRED", false),
+    enforceInPreview: readBoolEnv("APPROVAL_ENFORCE_IN_PREVIEW", false),
+    queueFileName: String(process.env.APPROVAL_QUEUE_FILE_NAME || "APPROVAL_QUEUE.json").trim() || "APPROVAL_QUEUE.json",
+    requestTtlMinutes: Math.max(5, Math.round(readNonNegativeNumberEnv("APPROVAL_REQUEST_TTL_MINUTES", 180)))
+  };
+}
+
+function createApprovalQueueState(): ApprovalQueueState {
+  return { queue: [], updatedAt: new Date().toISOString() };
+}
+
+function createApprovalQueueGateSummary(
+  cfg: ApprovalQueueGateConfig,
+  reason: string,
+  overrides?: Partial<ApprovalQueueGateSummary>
+): ApprovalQueueGateSummary {
+  return {
+    enabled: cfg.required,
+    required: cfg.required,
+    enforced: false,
+    previewBypassed: false,
+    queueFileName: cfg.queueFileName,
+    queueLoaded: false,
+    queueLoadError: null,
+    total: 0,
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    expired: 0,
+    matchedApproved: 0,
+    matchedPending: 0,
+    createdPending: 0,
+    blocked: 0,
+    reason,
+    blockedSymbols: [],
+    ...(overrides || {})
+  };
+}
+
+function formatApprovalQueueGateSummary(summary: ApprovalQueueGateSummary): string {
+  return [
+    `enabled:${summary.enabled}`,
+    `required:${summary.required}`,
+    `enforced:${summary.enforced}`,
+    `previewBypassed:${summary.previewBypassed}`,
+    `queueLoaded:${summary.queueLoaded}`,
+    `queueFile:${summary.queueFileName}`,
+    `total:${summary.total}`,
+    `pending:${summary.pending}`,
+    `approved:${summary.approved}`,
+    `rejected:${summary.rejected}`,
+    `expired:${summary.expired}`,
+    `matchedApproved:${summary.matchedApproved}`,
+    `matchedPending:${summary.matchedPending}`,
+    `createdPending:${summary.createdPending}`,
+    `blocked:${summary.blocked}`,
+    `reason:${summary.reason}`,
+    `blockedSample:${summarizeSymbols(summary.blockedSymbols)}`
+  ].join("|");
+}
+
 function normalizeStage6Verdict(raw: unknown): string {
   const key = String(raw ?? "").trim().toUpperCase().replace(/\s+/g, "_").replace(/-/g, "_");
   if (!key || key === "N/A" || key === "NA" || key === "NONE" || key === "NULL" || key === "UNDEFINED" || key === "TBD") {
@@ -983,6 +1114,7 @@ function printStartupSummary() {
   const now = new Date().toISOString();
   const check = runEnvGuard();
   const shadowDataBus = buildShadowDataBusSummary();
+  const approvalCfg = buildApprovalQueueGateConfig();
 
   console.log("=== alpha-exec-engine bootstrap ===");
   console.log(`timestamp        : ${now}`);
@@ -995,6 +1127,9 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_PREVIEW: ${cfg.positionLifecycle.previewOnly}`);
   console.log(`LIFECYCLE_ACTIONS: ${cfg.positionLifecycle.allowedActionTypes.join("/")}`);
   console.log(`LIFECYCLE_SCALEUP: ${cfg.positionLifecycle.scaleUpMinConviction}`);
+  console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
+  console.log(`APPROVAL_PREVIEW: ${approvalCfg.enforceInPreview}`);
+  console.log(`APPROVAL_TTL_MIN: ${approvalCfg.requestTtlMinutes}`);
   console.log(`HF_SOFT_GATE_EN : ${readBoolEnv("HF_SENTIMENT_SOFT_GATE_ENABLED", false)}`);
   console.log(`HF_SOFT_SCORE_FL: ${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_SCORE_FLOOR", 0.55), 0.5, 0.95)}`);
   console.log(`HF_SOFT_MIN_ART : ${Math.max(0, Math.round(readNonNegativeNumberEnv("HF_SENTIMENT_MIN_ARTICLE_COUNT", 2)))}`);
@@ -1140,6 +1275,419 @@ async function downloadStage6Json(accessToken: string, fileId: string): Promise<
     throw new Error(`Drive download failed (${response.status}): ${text.slice(0, 240)}`);
   }
   return response.text();
+}
+
+function normalizeApprovalQueueState(raw: unknown): ApprovalQueueState {
+  if (!raw || typeof raw !== "object") return createApprovalQueueState();
+  const node = raw as Record<string, unknown>;
+  const queueRaw = Array.isArray(node.queue) ? node.queue : [];
+  const queue: ApprovalQueueRecord[] = [];
+  for (const item of queueRaw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const id = String(row.id ?? "").trim();
+    if (!id) continue;
+    const symbol = String(row.symbol ?? "")
+      .trim()
+      .toUpperCase();
+    const stage6Hash = String(row.stage6Hash ?? "").trim().toLowerCase();
+    queue.push({
+      id,
+      type: row.type === "param_change" || row.type === "live_switch" ? (row.type as ApprovalQueueRecord["type"]) : "trade",
+      symbol: symbol || undefined,
+      side: typeof row.side === "string" ? row.side : undefined,
+      notional: parseFiniteNumber(row.notional) ?? undefined,
+      limitPrice: parseFiniteNumber(row.limitPrice) ?? undefined,
+      takeProfit: parseFiniteNumber(row.takeProfit) ?? undefined,
+      stopLoss: parseFiniteNumber(row.stopLoss) ?? undefined,
+      detail: typeof row.detail === "string" ? row.detail : undefined,
+      status: normalizeApprovalQueueStatus(row.status),
+      requestedAt:
+        typeof row.requestedAt === "string" && row.requestedAt.trim().length > 0
+          ? row.requestedAt
+          : new Date().toISOString(),
+      resolvedAt: typeof row.resolvedAt === "string" ? row.resolvedAt : undefined,
+      resolvedBy: typeof row.resolvedBy === "string" ? row.resolvedBy : undefined,
+      stage6Hash: stage6Hash || undefined,
+      ttlMinutes:
+        typeof row.ttlMinutes === "number" && Number.isFinite(row.ttlMinutes) ? Math.max(5, Math.round(row.ttlMinutes)) : undefined
+    });
+  }
+  return {
+    queue,
+    updatedAt:
+      typeof node.updatedAt === "string" && node.updatedAt.trim().length > 0
+        ? node.updatedAt
+        : new Date().toISOString()
+  };
+}
+
+async function loadApprovalQueueFromDrive(
+  accessToken: string,
+  cfg: ApprovalQueueGateConfig
+): Promise<ApprovalQueueLoadResult> {
+  const folderId = (process.env.GDRIVE_ROOT_FOLDER_ID || "").trim();
+  if (!folderId) {
+    throw new Error("GDRIVE_ROOT_FOLDER_ID missing");
+  }
+  const escapedName = cfg.queueFileName.replace(/'/g, "\\'");
+  const query = [`'${folderId}' in parents`, "trashed=false", `name = '${escapedName}'`].join(" and ");
+  const params = new URLSearchParams({
+    q: query,
+    pageSize: "1",
+    fields: "files(id,name,modifiedTime)"
+  });
+  const listResponse = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  if (!listResponse.ok) {
+    const text = await listResponse.text();
+    throw new Error(`approval queue list failed (${listResponse.status}): ${text.slice(0, 180)}`);
+  }
+  const listData = (await listResponse.json()) as DriveListResponse;
+  const file = listData.files?.[0];
+  if (!file?.id) {
+    return { state: createApprovalQueueState(), fileId: null };
+  }
+  const download = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!download.ok) {
+    const text = await download.text();
+    throw new Error(`approval queue download failed (${download.status}): ${text.slice(0, 180)}`);
+  }
+  const text = await download.text();
+  const parsed = parseJsonText<ApprovalQueueState>(text, "approval_queue_state");
+  return { state: normalizeApprovalQueueState(parsed), fileId: file.id };
+}
+
+async function saveApprovalQueueToDrive(
+  accessToken: string,
+  cfg: ApprovalQueueGateConfig,
+  state: ApprovalQueueState,
+  existingFileId: string | null
+): Promise<string | null> {
+  const folderId = (process.env.GDRIVE_ROOT_FOLDER_ID || "").trim();
+  if (!folderId) return existingFileId;
+  const normalizedState = normalizeApprovalQueueState({
+    queue: state.queue,
+    updatedAt: state.updatedAt
+  });
+  const metadata = existingFileId
+    ? { name: cfg.queueFileName, mimeType: "application/json" }
+    : { name: cfg.queueFileName, mimeType: "application/json", parents: [folderId] };
+  const boundary = `----ApprovalQueueBoundary${Date.now()}`;
+  const body = [
+    `--${boundary}`,
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    JSON.stringify(metadata),
+    `--${boundary}`,
+    "Content-Type: application/json",
+    "",
+    JSON.stringify(normalizedState, null, 2),
+    `--${boundary}--`
+  ].join("\r\n");
+  const url = existingFileId
+    ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFileId)}?uploadType=multipart`
+    : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
+  const method = existingFileId ? "PATCH" : "POST";
+  const upload = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`
+    },
+    body
+  });
+  if (!upload.ok) {
+    const text = await upload.text();
+    throw new Error(`approval queue upload failed (${upload.status}): ${text.slice(0, 180)}`);
+  }
+  const json = (await upload.json()) as { id?: string };
+  return json.id || existingFileId;
+}
+
+function isApprovalRecordForCurrentStage(record: ApprovalQueueRecord, stage6Hash: string): boolean {
+  const rowHash = String(record.stage6Hash ?? "")
+    .trim()
+    .toLowerCase();
+  return rowHash.length > 0 && rowHash === stage6Hash.toLowerCase();
+}
+
+function sortApprovalRecordsLatestFirst(records: ApprovalQueueRecord[]): ApprovalQueueRecord[] {
+  const next = [...records];
+  next.sort((a, b) => {
+    const aTs = Date.parse(a.resolvedAt || a.requestedAt || "");
+    const bTs = Date.parse(b.resolvedAt || b.requestedAt || "");
+    const aScore = Number.isFinite(aTs) ? aTs : 0;
+    const bScore = Number.isFinite(bTs) ? bTs : 0;
+    return bScore - aScore;
+  });
+  return next;
+}
+
+function computeApprovalQueueStatusCounts(state: ApprovalQueueState): Pick<
+  ApprovalQueueGateSummary,
+  "total" | "pending" | "approved" | "rejected" | "expired"
+> {
+  let pending = 0;
+  let approved = 0;
+  let rejected = 0;
+  let expired = 0;
+  for (const row of state.queue) {
+    if (row.status === "approved") approved += 1;
+    else if (row.status === "rejected") rejected += 1;
+    else if (row.status === "expired") expired += 1;
+    else pending += 1;
+  }
+  return { total: state.queue.length, pending, approved, rejected, expired };
+}
+
+async function applyApprovalQueueGate(
+  accessToken: string,
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult,
+  cfg: ReturnType<typeof loadRuntimeConfig>
+): Promise<{ dryExec: DryExecBuildResult; summary: ApprovalQueueGateSummary }> {
+  const gateCfg = buildApprovalQueueGateConfig();
+  const blockAllPayloads = (
+    reason: string,
+    detail: string,
+    summaryOverrides?: Partial<ApprovalQueueGateSummary>
+  ): { dryExec: DryExecBuildResult; summary: ApprovalQueueGateSummary } => {
+    const actionIntentCounts = { ...dryExec.actionIntent.counts };
+    const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((payload) => {
+      if (dryExec.actionIntent.enabled && payload.actionType && actionIntentCounts[payload.actionType] > 0) {
+        actionIntentCounts[payload.actionType] -= 1;
+      }
+      if (dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")) {
+        actionIntentCounts.HOLD_WAIT += 1;
+      }
+      return {
+        symbol: payload.symbol,
+        reason,
+        detail,
+        actionType: "HOLD_WAIT",
+        actionReason: reason
+      };
+    });
+    const nextDryExec: DryExecBuildResult = {
+      ...dryExec,
+      payloads: [],
+      skipped: [...dryExec.skipped, ...blockedSkips],
+      skipReasonCounts: buildSkipReasonCounts([...dryExec.skipped, ...blockedSkips]),
+      actionIntent: {
+        ...dryExec.actionIntent,
+        counts: actionIntentCounts
+      }
+    };
+    const summary = createApprovalQueueGateSummary(gateCfg, reason, {
+      enabled: true,
+      required: true,
+      enforced: true,
+      blocked: blockedSkips.length,
+      blockedSymbols: blockedSkips.map((row) => row.symbol),
+      ...(summaryOverrides || {})
+    });
+    return { dryExec: nextDryExec, summary };
+  };
+
+  if (!gateCfg.required) {
+    return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "disabled") };
+  }
+  if (dryExec.payloads.length === 0) {
+    return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "no_payload") };
+  }
+  if (preflight.blocking) {
+    return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "preflight_blocking") };
+  }
+  const enforceNow = cfg.execEnabled && (!cfg.positionLifecycle.previewOnly || gateCfg.enforceInPreview);
+  if (!enforceNow) {
+    return {
+      dryExec,
+      summary: createApprovalQueueGateSummary(gateCfg, "preview_bypass", {
+        previewBypassed: cfg.positionLifecycle.previewOnly
+      })
+    };
+  }
+
+  let queueResult: ApprovalQueueLoadResult;
+  let queueLoadError: string | null = null;
+  try {
+    queueResult = await loadApprovalQueueFromDrive(accessToken, gateCfg);
+  } catch (error) {
+    queueLoadError = error instanceof Error ? error.message : String(error);
+    return blockAllPayloads("approval_queue_error", `queue_load_error:${queueLoadError}`, {
+      queueLoaded: false,
+      queueLoadError
+    });
+  }
+
+  const state = queueResult.state;
+  let queueChanged = false;
+  const nowIso = new Date().toISOString();
+
+  for (const row of state.queue) {
+    if (row.status !== "pending") continue;
+    const ttlMinutes = row.ttlMinutes ?? gateCfg.requestTtlMinutes;
+    const requestedAtTs = Date.parse(row.requestedAt);
+    if (!Number.isFinite(requestedAtTs)) continue;
+    if (Date.now() - requestedAtTs > ttlMinutes * 60 * 1000) {
+      row.status = "expired";
+      row.resolvedAt = nowIso;
+      row.resolvedBy = "system_ttl";
+      queueChanged = true;
+    }
+  }
+
+  const recordsBySymbol = new Map<string, ApprovalQueueRecord[]>();
+  for (const row of state.queue) {
+    if (!row.symbol) continue;
+    if (!isApprovalRecordForCurrentStage(row, stage6.sha256)) continue;
+    const symbol = row.symbol.trim().toUpperCase();
+    if (!symbol) continue;
+    const rows = recordsBySymbol.get(symbol) || [];
+    rows.push(row);
+    recordsBySymbol.set(symbol, rows);
+  }
+  for (const [symbol, rows] of recordsBySymbol.entries()) {
+    recordsBySymbol.set(symbol, sortApprovalRecordsLatestFirst(rows));
+  }
+
+  const allowedPayloads: DryExecOrderPayload[] = [];
+  const blockedSkips: DryExecSkipReason[] = [];
+  const blockedSymbols: string[] = [];
+  let matchedApproved = 0;
+  let matchedPending = 0;
+  let createdPending = 0;
+
+  for (const payload of dryExec.payloads) {
+    const symbol = payload.symbol.trim().toUpperCase();
+    const rows = recordsBySymbol.get(symbol) || [];
+    const latest = rows[0];
+    if (latest?.status === "approved") {
+      matchedApproved += 1;
+      allowedPayloads.push(payload);
+      continue;
+    }
+    if (latest?.status === "pending") {
+      matchedPending += 1;
+      blockedSymbols.push(symbol);
+      blockedSkips.push({
+        symbol,
+        reason: "approval_pending",
+        detail: `request_id=${latest.id}`,
+        actionType: "HOLD_WAIT",
+        actionReason: "approval_pending"
+      });
+      continue;
+    }
+    if (latest?.status === "rejected") {
+      blockedSymbols.push(symbol);
+      blockedSkips.push({
+        symbol,
+        reason: "approval_rejected",
+        detail: `request_id=${latest.id}`,
+        actionType: "HOLD_WAIT",
+        actionReason: "approval_rejected"
+      });
+      continue;
+    }
+    if (latest?.status === "expired") {
+      blockedSymbols.push(symbol);
+      blockedSkips.push({
+        symbol,
+        reason: "approval_expired",
+        detail: `request_id=${latest.id}`,
+        actionType: "HOLD_WAIT",
+        actionReason: "approval_expired"
+      });
+      continue;
+    }
+
+    const requestId = `APR_${stage6.sha256.slice(0, 10)}_${symbol}`;
+    const pendingRecord: ApprovalQueueRecord = {
+      id: requestId,
+      type: "trade",
+      symbol,
+      side: payload.side,
+      notional: roundToCent(payload.notional),
+      limitPrice: roundToCent(payload.limit_price),
+      takeProfit: roundToCent(payload.take_profit.limit_price),
+      stopLoss: roundToCent(payload.stop_loss.stop_price),
+      detail: `awaiting_approval ${symbol} entry=${payload.limit_price.toFixed(2)} tp=${payload.take_profit.limit_price.toFixed(2)} sl=${payload.stop_loss.stop_price.toFixed(2)} notional=${payload.notional.toFixed(2)}`,
+      status: "pending",
+      requestedAt: nowIso,
+      stage6Hash: stage6.sha256.toLowerCase(),
+      ttlMinutes: gateCfg.requestTtlMinutes
+    };
+    state.queue.push(pendingRecord);
+    const nextRows = recordsBySymbol.get(symbol) || [];
+    nextRows.unshift(pendingRecord);
+    recordsBySymbol.set(symbol, nextRows);
+    queueChanged = true;
+    createdPending += 1;
+    blockedSymbols.push(symbol);
+    blockedSkips.push({
+      symbol,
+      reason: "approval_pending",
+      detail: `request_id=${requestId}`,
+      actionType: "HOLD_WAIT",
+      actionReason: "approval_pending"
+    });
+  }
+
+  if (queueChanged) {
+    state.updatedAt = nowIso;
+    try {
+      await saveApprovalQueueToDrive(accessToken, gateCfg, state, queueResult.fileId);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      return blockAllPayloads("approval_queue_error", `queue_save_error:${errorText}`, {
+        queueLoaded: true,
+        queueLoadError: errorText
+      });
+    }
+  }
+
+  const actionIntentCounts = { ...dryExec.actionIntent.counts };
+  if (dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")) {
+    for (const blocked of blockedSkips) {
+      const payload = dryExec.payloads.find((row) => row.symbol === blocked.symbol);
+      if (payload?.actionType && actionIntentCounts[payload.actionType] > 0) {
+        actionIntentCounts[payload.actionType] -= 1;
+      }
+      actionIntentCounts.HOLD_WAIT += 1;
+    }
+  }
+
+  const nextDryExec: DryExecBuildResult = {
+    ...dryExec,
+    payloads: allowedPayloads,
+    skipped: [...dryExec.skipped, ...blockedSkips],
+    skipReasonCounts: buildSkipReasonCounts([...dryExec.skipped, ...blockedSkips]),
+    actionIntent: {
+      ...dryExec.actionIntent,
+      counts: actionIntentCounts
+    }
+  };
+
+  const counts = computeApprovalQueueStatusCounts(state);
+  const summary = createApprovalQueueGateSummary(gateCfg, blockedSkips.length > 0 ? "approval_gate_blocked" : "pass", {
+    enforced: true,
+    queueLoaded: true,
+    queueLoadError,
+    ...counts,
+    matchedApproved,
+    matchedPending,
+    createdPending,
+    blocked: blockedSkips.length,
+    blockedSymbols
+  });
+  return { dryExec: nextDryExec, summary };
 }
 
 function extractCandidateSymbols(payload: unknown): string[] {
@@ -5354,6 +5902,7 @@ async function saveDryExecPreview(
   ledger: OrderLedgerUpdateResult,
   hfPayloadProbe: HfPayloadProbeSummary,
   guardControl: GuardControlGate,
+  approvalQueueGate: ApprovalQueueGateSummary,
   hfDrift?: HfDriftAlert,
   hfShadow?: HfShadowSummary,
   hfAlert?: HfAnomalyAlert,
@@ -5413,6 +5962,7 @@ async function saveDryExecPreview(
     orderLifecycle: ledger,
     preflight,
     guardControl,
+    approvalQueueGate,
     shadowDataBus,
     shadowDataParsing,
     mode: {
@@ -5433,6 +5983,9 @@ async function saveDryExecPreview(
     `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
   );
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
+  console.log(
+    `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
+  );
   console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
@@ -6338,6 +6891,7 @@ async function updateOrderLedger(
 function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardControlGate): string {
   const cfg = loadRuntimeConfig();
   const shadowDataBus = buildShadowDataBusSummary();
+  const approvalCfg = buildApprovalQueueGateConfig();
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
   const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
@@ -6380,6 +6934,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_PREVIEW_ONLY=${cfg.positionLifecycle.previewOnly}`,
     `POSITION_LIFECYCLE_ACTION_TYPES=${cfg.positionLifecycle.allowedActionTypes.join("/")}`,
     `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION=${cfg.positionLifecycle.scaleUpMinConviction}`,
+    `APPROVAL_REQUIRED=${approvalCfg.required}`,
+    `APPROVAL_ENFORCE_IN_PREVIEW=${approvalCfg.enforceInPreview}`,
+    `APPROVAL_REQUEST_TTL_MINUTES=${approvalCfg.requestTtlMinutes}`,
     `HF_SENTIMENT_SOFT_GATE_ENABLED=${readBoolEnv("HF_SENTIMENT_SOFT_GATE_ENABLED", false)}`,
     `HF_SENTIMENT_SCORE_FLOOR=${clamp(readNonNegativeNumberEnv("HF_SENTIMENT_SCORE_FLOOR", 0.55), 0.5, 0.95)}`,
     `HF_SENTIMENT_MIN_ARTICLE_COUNT=${Math.max(0, Math.round(readNonNegativeNumberEnv("HF_SENTIMENT_MIN_ARTICLE_COUNT", 2)))}`,
@@ -6558,6 +7115,7 @@ function printRunSummary(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
+  approvalQueueGate: ApprovalQueueGateSummary,
   hfPayloadProbe: HfPayloadProbeSummary,
   hfDrift?: HfDriftAlert,
   hfShadow?: HfShadowSummary,
@@ -6576,6 +7134,7 @@ function printRunSummary(
   const shadowDataBusSources = formatShadowDataBusSources(shadowDataBus);
   const shadowDataBusKeys = formatShadowDataBusKeyReadiness(shadowDataBus);
   const shadowDataBusSummary = `enabled:${shadowDataBus.enabled}|mode:${shadowDataBus.mode}|sources:${shadowDataBusSources}|keys:${shadowDataBusKeys}`;
+  const approvalQueueSummary = formatApprovalQueueGateSummary(approvalQueueGate);
   const shadowFieldParsing = buildShadowFieldParsingSummary(selectShadowParsingCandidates(stage6));
   const shadowFieldParsingSummary = formatShadowFieldParsingSummary(shadowFieldParsing);
   const actionIntentSummary = `enabled:${dryExec.actionIntent.enabled}|preview:${dryExec.actionIntent.previewOnly}|entry_new:${dryExec.actionIntent.counts.ENTRY_NEW}|hold_wait:${dryExec.actionIntent.counts.HOLD_WAIT}|scale_up:${dryExec.actionIntent.counts.SCALE_UP}|scale_down:${dryExec.actionIntent.counts.SCALE_DOWN}|exit_partial:${dryExec.actionIntent.counts.EXIT_PARTIAL}|exit_full:${dryExec.actionIntent.counts.EXIT_FULL}`;
@@ -6750,7 +7309,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -6869,6 +7428,10 @@ async function main() {
       unchanged: 0,
       pruned: 0
     };
+    const dedupeApprovalGate = createApprovalQueueGateSummary(
+      buildApprovalQueueGateConfig(),
+      "not_evaluated_dedupe"
+    );
     printRunSummary(
       "dedupe",
       stage6,
@@ -6876,6 +7439,7 @@ async function main() {
       dryExec,
       dedupePreflight,
       dedupeLedger,
+      dedupeApprovalGate,
       hfPayloadProbe,
       undefined,
       hfShadow,
@@ -6923,8 +7487,14 @@ async function main() {
     }
   }
   let finalDryExec = preflightDryExec;
+  let approvalQueueGate = createApprovalQueueGateSummary(
+    buildApprovalQueueGateConfig(),
+    preflight.blocking ? "preflight_blocking" : "not_evaluated"
+  );
   if (!preflight.blocking) {
-    finalDryExec = await applyOrderIdempotency(stage6, dryExec, {
+    const approvalResult = await applyApprovalQueueGate(accessToken, stage6, preflightDryExec, preflight, cfg);
+    approvalQueueGate = approvalResult.summary;
+    finalDryExec = await applyOrderIdempotency(stage6, approvalResult.dryExec, {
       persistNewEntries: true,
       phase: "final"
     });
@@ -6996,6 +7566,7 @@ async function main() {
     ledger,
     hfPayloadProbe,
     guardControl,
+    approvalQueueGate,
     hfDrift,
     hfShadow,
     hfAlert,
@@ -7039,6 +7610,7 @@ async function main() {
     postPreflightDryExec,
     preflight,
     ledger,
+    approvalQueueGate,
     hfPayloadProbe,
     hfDrift,
     hfShadow,
