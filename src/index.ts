@@ -6091,13 +6091,19 @@ function pruneOrderIdempotencyState(state: OrderIdempotencyState, ttlDays: numbe
 
 async function applyOrderIdempotency(
   stage6: Stage6LoadResult,
-  dryExec: DryExecBuildResult
+  dryExec: DryExecBuildResult,
+  options?: {
+    persistNewEntries?: boolean;
+    phase?: "preflight" | "final";
+  }
 ): Promise<DryExecBuildResult> {
   const cfg = loadRuntimeConfig();
   const enabled = readBoolEnv("ORDER_IDEMPOTENCY_ENABLED", true);
   const enforceDryRun = readBoolEnv("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN", false);
   const ttlDays = Math.max(1, readPositiveNumberEnv("ORDER_IDEMPOTENCY_TTL_DAYS", 30));
   const enforced = enabled && (cfg.execEnabled || enforceDryRun);
+  const persistNewEntries = options?.persistNewEntries ?? true;
+  const phase = options?.phase ?? "final";
 
   if (!enabled) {
     return {
@@ -6119,7 +6125,7 @@ async function applyOrderIdempotency(
   const skipped = [...dryExec.skipped];
   let duplicateCount = 0;
   let newCount = 0;
-  let changed = pruned > 0;
+  let changed = persistNewEntries && pruned > 0;
 
   for (const payload of dryExec.payloads) {
     const key = payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
@@ -6140,15 +6146,17 @@ async function applyOrderIdempotency(
 
     newCount += 1;
     payloads.push(payload);
-    state.orders[key] = {
-      symbol: payload.symbol,
-      side: payload.side,
-      stage6Hash: stage6.sha256,
-      stage6File: stage6.fileName,
-      firstSeenAt: now,
-      lastSeenAt: now
-    };
-    changed = true;
+    if (persistNewEntries) {
+      state.orders[key] = {
+        symbol: payload.symbol,
+        side: payload.side,
+        stage6Hash: stage6.sha256,
+        stage6File: stage6.fileName,
+        firstSeenAt: now,
+        lastSeenAt: now
+      };
+      changed = true;
+    }
   }
 
   if (changed) {
@@ -6156,7 +6164,7 @@ async function applyOrderIdempotency(
     await saveOrderIdempotencyState(state);
   }
   console.log(
-    `[ORDER_IDEMP] enabled=${enabled} enforce=${enforced} ttlDays=${ttlDays} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
+    `[ORDER_IDEMP] phase=${phase} enabled=${enabled} enforce=${enforced} persist=${persistNewEntries} ttlDays=${ttlDays} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
   );
 
   const nextDryExec: DryExecBuildResult = {
@@ -6880,8 +6888,11 @@ async function main() {
     );
     return;
   }
-  const finalDryExec = await applyOrderIdempotency(stage6, dryExec);
-  const preflight = await runPreflightGate(finalDryExec);
+  const preflightDryExec = await applyOrderIdempotency(stage6, dryExec, {
+    persistNewEntries: false,
+    phase: "preflight"
+  });
+  const preflight = await runPreflightGate(preflightDryExec);
   console.log(
     `[PREFLIGHT] status=${preflight.status.toUpperCase()} code=${preflight.code} enforced=${preflight.enforced} blocking=${preflight.blocking} wouldBlockLive=${preflight.wouldBlockLive} liveParity=${preflight.simulatedLiveParity} required=${preflight.requiredNotional.toFixed(2)} buyingPower=${preflight.buyingPower != null ? preflight.buyingPower.toFixed(2) : "N/A"}`
   );
@@ -6895,6 +6906,17 @@ async function main() {
   if (preflight.blocking && cfg.execEnabled && !preflightBlockingHardFail) {
     console.log(
       `[PREFLIGHT] blocking gate suppressed by PREFLIGHT_BLOCKING_HARD_FAIL=false code=${preflight.code}`
+    );
+  }
+  let finalDryExec = preflightDryExec;
+  if (!preflight.blocking) {
+    finalDryExec = await applyOrderIdempotency(stage6, dryExec, {
+      persistNewEntries: true,
+      phase: "final"
+    });
+  } else {
+    console.log(
+      `[ORDER_IDEMP] phase=final deferred=true reason=preflight_blocking code=${preflight.code}`
     );
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
