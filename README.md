@@ -152,6 +152,7 @@ Use `.env.example` as baseline.
 - `HF_EARNINGS_WINDOW_REDUCE_FACTOR` (default `0.3`; apply delta multiplier in reduce zone)
 - `HF_SENTIMENT_POSITIVE_RELIEF_MAX` (default `1.0`; max conviction floor relief)
 - `HF_SENTIMENT_NEGATIVE_TIGHTEN_MAX` (default `2.0`; max conviction floor tighten)
+- `HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS` (default `168`; carry verified payload path across stage hash refresh within TTL)
 - `SHADOW_DATA_BUS_ENABLED` (default `false`; enables read-only MCP shadow lane telemetry)
 - `SHADOW_SOURCE_ALPACA_ENABLED` (default `true`; includes Alpaca source in shadow lane)
 - `SHADOW_SOURCE_ALPHA_VANTAGE_ENABLED` (default `true`; includes Alpha Vantage source in shadow lane)
@@ -334,12 +335,13 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Live promotion checklist (suggestion-only):
     - `[HF_LIVE_PROMOTION] ...` emits `BLOCK/HOLD/PASS` with checklist pass ratio.
     - Summary marker: `[RUN_SUMMARY] ... hf_live_promotion=...`.
-    - Payload-path verification is sticky per Stage6 hash via `state/hf-live-promotion-state.json`.
+    - Payload-path verification sticky carry is TTL-based via `state/hf-live-promotion-state.json`.
     - Policy env (all default `true`):
       - `HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO`
       - `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN`
       - `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE`
       - `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED`
+      - `HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS` (default `168`)
 
 ### Entry Feasibility Gate (default OFF)
 - Purpose: consume Stage6 `entryFeasible*/entryDistancePct*/tradePlanStatus*` hints in dry-run selection.

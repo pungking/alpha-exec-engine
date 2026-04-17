@@ -1,4 +1,4 @@
-export type PerfGateStatus = "PENDING_SAMPLE" | "GO" | "NO_GO";
+export type PerfGateStatus = "PENDING_SAMPLE" | "GO" | "NO_GO" | "NO_DATA";
 export type HfFreezeStatus = "DISABLED" | "OBSERVE" | "CANDIDATE" | "FROZEN" | "UNFREEZE_REVIEW";
 export type HfPayloadProbeMode = "off" | "tighten" | "relief";
 export type HfLivePromotionStatus = "BLOCK" | "HOLD" | "PASS";
@@ -170,6 +170,9 @@ export function deriveHfLivePromotionSummaryCore(input: {
     status = "BLOCK";
     reason = `perf_gate_no_go(${input.perfGate.reason})`;
     recommendation = "improve_perf_loop_metrics";
+  } else if (input.policy.requirePerfGateGo && input.perfGate.status === "NO_DATA") {
+    reason = `perf_gate_no_data(${input.perfGate.reason})`;
+    recommendation = "collect_fill_exit_data";
   } else if (input.freeze.status === "UNFREEZE_REVIEW") {
     status = "BLOCK";
     reason = `freeze_unstable(${input.freeze.reason})`;
@@ -235,6 +238,10 @@ export function deriveHfTuningPhaseCore(input: {
     phase = "OBSERVE_ONLY";
     reason = `sample_insufficient(${observedTrades}/${requiredTrades})`;
     recommendation = "observe_and_accumulate";
+  } else if (input.perfGate.status === "NO_DATA") {
+    phase = "OBSERVE_ONLY";
+    reason = `kpi_unavailable(${input.perfGate.progress})`;
+    recommendation = "collect_fill_exit_data";
   } else if (alertTriggered) {
     phase = "REVIEW_ONLY";
     reason = `hf_alert_triggered(${input.alert?.reason ?? "unknown"})`;

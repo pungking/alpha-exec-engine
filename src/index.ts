@@ -534,7 +534,7 @@ type PerformanceLoopState = {
   notifiedMilestones: number[];
 };
 
-type PerformanceLoopGateStatus = "PENDING_SAMPLE" | "GO" | "NO_GO";
+type PerformanceLoopGateStatus = "PENDING_SAMPLE" | "GO" | "NO_GO" | "NO_DATA";
 
 type PerformanceLoopGate = {
   status: PerformanceLoopGateStatus;
@@ -1166,6 +1166,9 @@ function printStartupSummary() {
   console.log(`HF_PROMO_REQ_F  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`);
   console.log(`HF_PROMO_REQ_S  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`);
   console.log(`HF_PROMO_REQ_P  : ${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`);
+  console.log(
+    `HF_PROMO_STICKYH: ${clamp(readNonNegativeNumberEnv("HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS", 168), 0, 720)}`
+  );
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -4683,12 +4686,31 @@ async function resolvePayloadPathVerificationStatus(
   }
 ): Promise<HfPayloadPathVerificationStatus> {
   const now = new Date().toISOString();
+  const stickyHours = clamp(
+    readNonNegativeNumberEnv("HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS", 168),
+    0,
+    720
+  );
   const prior = await loadHfLivePromotionState();
   const priorStage6Hash = prior?.stage6Hash ?? null;
-  const sameStage = prior?.stage6Hash === stage6Hash;
-  const stickyEligible = Boolean(sameStage && prior?.payloadPathVerified);
-  const stickyReset = Boolean(!sameStage && prior?.payloadPathVerified);
-  const stickyResetReason = stickyReset ? "stage6_hash_changed" : "none";
+  const priorReferenceAt = prior?.payloadPathVerifiedAt || prior?.updatedAt || "";
+  const priorReferenceMs = Date.parse(priorReferenceAt);
+  const priorAgeHours =
+    Number.isFinite(priorReferenceMs) && priorReferenceMs > 0
+      ? (Date.now() - priorReferenceMs) / (1000 * 60 * 60)
+      : null;
+  const stickyWithinWindow =
+    stickyHours > 0 && priorAgeHours != null && priorAgeHours >= 0 && priorAgeHours <= stickyHours;
+  // Keep payload-path verification sticky across stage hash changes within TTL
+  // so daily stage refresh does not reset promotion progress.
+  const stickyEligible = Boolean(prior?.payloadPathVerified && stickyWithinWindow);
+  const stickyReset = Boolean(prior?.payloadPathVerified && !stickyEligible);
+  const stickyResetReason =
+    stickyReset && priorAgeHours != null && priorAgeHours > stickyHours
+      ? "sticky_expired"
+      : stickyReset && priorAgeHours == null
+        ? "sticky_age_unknown"
+        : "none";
   const stickyAuditBase = {
     priorStage6Hash,
     stage6HashChanged: Boolean(priorStage6Hash && priorStage6Hash !== stage6Hash),
@@ -6258,6 +6280,31 @@ function evaluatePerformanceLoopGate(
     };
   }
 
+  const snapshotTradeCount = Number(latestSnapshot?.tradeCount ?? 0);
+  const snapshotFilledCount = Number(latestSnapshot?.filledCount ?? 0);
+  const snapshotClosedCount = Number(latestSnapshot?.closedCount ?? 0);
+  const snapshotAvgR = Number(latestSnapshot?.avgR);
+  const hasFillTelemetry = Number.isFinite(snapshotFilledCount) && snapshotFilledCount > 0;
+  const hasClosedTelemetry = Number.isFinite(snapshotClosedCount) && snapshotClosedCount > 0;
+  const hasAvgRTelemetry = Number.isFinite(snapshotAvgR);
+  if (
+    !latestSnapshot ||
+    snapshotTradeCount <= 0 ||
+    !hasFillTelemetry ||
+    !hasClosedTelemetry ||
+    !hasAvgRTelemetry
+  ) {
+    return {
+      status: "NO_DATA",
+      reason: `kpi_unavailable(filled=${snapshotFilledCount}|closed=${snapshotClosedCount}|avgR=${hasAvgRTelemetry ? snapshotAvgR.toFixed(4) : "n/a"})`,
+      progress: `${requiredTrades}/${requiredTrades}`,
+      observedTrades,
+      requiredTrades,
+      remainingTrades: 0,
+      progressPct: 100
+    };
+  }
+
   const passFill = Number(latestSnapshot?.fillRatePct) >= 60;
   const passAvgR = Number(latestSnapshot?.avgR) > 0;
   const passDrift = Number(latestSnapshot?.noReasonDrift) === 0;
@@ -6973,6 +7020,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN", true)}`,
     `HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_SHADOW_STABLE", true)}`,
     `HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED=${readBoolEnv("HF_LIVE_PROMOTION_REQUIRE_PAYLOAD_PATH_VERIFIED", true)}`,
+    `HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS=${clamp(readNonNegativeNumberEnv("HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS", 168), 0, 720)}`,
     `SHADOW_DATA_BUS_ENABLED=${shadowDataBus.enabled}`,
     `SHADOW_DATA_BUS_MODE=${shadowDataBus.mode}`,
     `SHADOW_DATA_SOURCES=${formatShadowDataBusSources(shadowDataBus)}`,
