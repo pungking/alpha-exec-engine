@@ -211,6 +211,7 @@ type DryExecOrderPayload = {
   stop_loss: { stop_price: number };
   client_order_id: string;
   idempotencyKey: string;
+  conviction?: number;
   actionType?: LifecycleActionType;
   actionReason?: string;
 };
@@ -482,6 +483,7 @@ type OrderLedgerUpdateResult = {
 type BrokerSubmitOrderResult = {
   idempotencyKey: string;
   symbol: string;
+  actionType: LifecycleActionType | "N/A";
   attempted: boolean;
   submitted: boolean;
   brokerOrderId: string | null;
@@ -1999,6 +2001,10 @@ function validateAndNormalizePayload(payload: DryExecOrderPayload): { ok: true; 
   const takeProfit = roundToCent(payload.take_profit.limit_price);
   const stopLoss = roundToCent(payload.stop_loss.stop_price);
   const notional = roundToCent(payload.notional);
+  const conviction =
+    payload.conviction == null || !Number.isFinite(payload.conviction)
+      ? undefined
+      : Number(clamp(payload.conviction, 0, 100).toFixed(1));
 
   if (![limit, takeProfit, stopLoss, notional].every((n) => Number.isFinite(n))) {
     return { ok: false, reason: "payload_invalid_non_finite_number" };
@@ -2022,6 +2028,7 @@ function validateAndNormalizePayload(payload: DryExecOrderPayload): { ok: true; 
       ...payload,
       limit_price: limit,
       notional,
+      conviction,
       take_profit: { limit_price: takeProfit },
       stop_loss: { stop_price: stopLoss }
     }
@@ -3868,6 +3875,7 @@ function buildDryExecPayloads(
       order_class: "bracket",
       limit_price: entry,
       notional: effectiveNotional,
+      conviction: conviction ?? undefined,
       take_profit: { limit_price: target },
       stop_loss: { stop_price: stop },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
@@ -4168,6 +4176,19 @@ async function resolveCurrentPerfGateStatus(dryExec: DryExecBuildResult): Promis
   return evaluatePerformanceLoopGate(latestSnapshot, Object.keys(loopState.rows).length);
 }
 
+async function loadHeldPositionSymbolSet(): Promise<Set<string>> {
+  const raw = await fetchAlpacaJson("/v2/positions");
+  if (!Array.isArray(raw)) return new Set();
+  const symbols = raw
+    .map((row) => {
+      if (!row || typeof row !== "object") return "";
+      const symbol = (row as Record<string, unknown>).symbol;
+      return typeof symbol === "string" ? symbol.trim().toUpperCase() : "";
+    })
+    .filter((symbol) => symbol.length > 0);
+  return new Set(symbols);
+}
+
 async function submitOrdersToBroker(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult
@@ -4193,6 +4214,7 @@ async function submitOrdersToBroker(
     summary.orders[payload.idempotencyKey] = {
       idempotencyKey: payload.idempotencyKey,
       symbol: payload.symbol,
+      actionType: payload.actionType ?? "N/A",
       attempted: false,
       submitted: false,
       brokerOrderId: null,
@@ -4237,8 +4259,54 @@ async function submitOrdersToBroker(
   summary.reason = "submit_attempted";
   summary.skipped = 0;
 
+  let heldSymbols = new Set<string>();
+  if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
+    try {
+      heldSymbols = await loadHeldPositionSymbolSet();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      summary.reason = "position_fetch_failed";
+      summary.perfGateReason = `position_fetch_failed:${msg.slice(0, 120)}`;
+      return summary;
+    }
+  }
+
   for (const payload of dryExec.payloads) {
     const row = summary.orders[payload.idempotencyKey];
+    let effectiveActionType = payload.actionType;
+    if (
+      cfg.positionLifecycle.enabled &&
+      !cfg.positionLifecycle.previewOnly &&
+      payload.actionType === "ENTRY_NEW" &&
+      heldSymbols.has(payload.symbol)
+    ) {
+      if (!isActionTypeAllowed("SCALE_UP", cfg.positionLifecycle)) {
+        row.actionType = "HOLD_WAIT";
+        row.reason = "scale_up_not_allowed";
+        summary.skipped += 1;
+        continue;
+      }
+      const conviction = payload.conviction ?? 0;
+      if (conviction < cfg.positionLifecycle.scaleUpMinConviction) {
+        row.actionType = "HOLD_WAIT";
+        row.reason = `scale_up_conviction_below_min(${conviction.toFixed(1)}<${cfg.positionLifecycle.scaleUpMinConviction.toFixed(1)})`;
+        summary.skipped += 1;
+        continue;
+      }
+      effectiveActionType = "SCALE_UP";
+    }
+    if (
+      effectiveActionType &&
+      (effectiveActionType === "SCALE_DOWN" ||
+        effectiveActionType === "EXIT_PARTIAL" ||
+        effectiveActionType === "EXIT_FULL")
+    ) {
+      row.actionType = effectiveActionType;
+      row.reason = `action_not_implemented:${effectiveActionType}`;
+      summary.skipped += 1;
+      continue;
+    }
+    row.actionType = effectiveActionType ?? row.actionType;
     row.attempted = true;
     summary.attempted += 1;
     try {
@@ -4268,10 +4336,10 @@ async function submitOrdersToBroker(
       row.submitted = true;
       row.brokerOrderId = brokerOrderId;
       row.brokerStatus = brokerStatus;
-      row.reason = "submitted";
+      row.reason = `submitted:${row.actionType}`;
       summary.submitted += 1;
       console.log(
-        `[BROKER_SUBMIT] symbol=${payload.symbol} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
+        `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
       );
     } catch (error) {
       row.submitted = false;
@@ -4283,7 +4351,9 @@ async function submitOrdersToBroker(
     }
   }
 
-  if (summary.failed > 0 && summary.submitted === 0) {
+  if (summary.attempted === 0 && summary.skipped > 0) {
+    summary.reason = "submit_skipped_all";
+  } else if (summary.failed > 0 && summary.submitted === 0) {
     summary.reason = "submit_failed_all";
   } else if (summary.failed > 0) {
     summary.reason = "submit_partial";

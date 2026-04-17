@@ -16,7 +16,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Optional entry-feasibility gate (default OFF) can skip entries that are too far from market or marked infeasible in Stage6 shadow fields.
 - Stage6 contract gate (default ON) consumes `executionBucket/executionReason` and blocks `WATCHLIST` rows before payload build.
-- Position lifecycle scaffold (Phase A) adds `actionType/actionReason` intent tags (`ENTRY_NEW/HOLD_WAIT` baseline) without changing live order behavior.
+- Position lifecycle scaffold adds `actionType/actionReason` intent tags (`ENTRY_NEW/HOLD_WAIT` baseline).
+- Live submit lane now applies held-position guard: existing symbols require `SCALE_UP` allowed + conviction threshold.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -139,7 +140,7 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
 - `POSITION_LIFECYCLE_PREVIEW_ONLY` (default `true`; scaffold stays telemetry-only)
 - `POSITION_LIFECYCLE_ACTION_TYPES` (default `ENTRY_NEW,HOLD_WAIT`)
-- `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; reserved for future `SCALE_UP` policy)
+- `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; minimum conviction for live `SCALE_UP` on already-held symbols)
 - `APPROVAL_REQUIRED` (default `false`; when `true`, execution requires approval queue pass)
 - `APPROVAL_ENFORCE_IN_PREVIEW` (default `false`; keep preview lanes collecting payload unless explicitly enabled)
 - `APPROVAL_QUEUE_FILE_NAME` (default `APPROVAL_QUEUE.json`)
