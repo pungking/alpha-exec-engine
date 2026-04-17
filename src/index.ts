@@ -7860,6 +7860,7 @@ function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mod
 async function main() {
   printStartupSummary();
   const cfg = loadRuntimeConfig();
+  runLifecycleSelfTestIfEnabled(cfg);
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
