@@ -145,6 +145,7 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; minimum conviction for live `SCALE_UP` on already-held symbols)
 - `POSITION_LIFECYCLE_SCALE_DOWN_PCT` (default `0.35`; sell ratio applied for `SCALE_DOWN`)
 - `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT` (default `0.5`; sell ratio applied for `EXIT_PARTIAL`)
+- `LIFECYCLE_SELFTEST` (default `false`; emits deterministic logs for `scale_up_no_position` and multi-exit over-sell guard validation)
 - `APPROVAL_REQUIRED` (default `false`; when `true`, execution requires approval queue pass)
 - `APPROVAL_ENFORCE_IN_PREVIEW` (default `false`; keep preview lanes collecting payload unless explicitly enabled)
 - `APPROVAL_QUEUE_FILE_NAME` (default `APPROVAL_QUEUE.json`)

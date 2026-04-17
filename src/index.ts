@@ -1158,6 +1158,7 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_SCALEUP: ${cfg.positionLifecycle.scaleUpMinConviction}`);
   console.log(`LIFECYCLE_SCALEDN: ${cfg.positionLifecycle.scaleDownPct}`);
   console.log(`LIFECYCLE_EXPART : ${cfg.positionLifecycle.exitPartialPct}`);
+  console.log(`LIFECYCLE_SELFTS: ${readBoolEnv("LIFECYCLE_SELFTEST", false)}`);
   console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
   console.log(`APPROVAL_PREVIEW: ${approvalCfg.enforceInPreview}`);
   console.log(`APPROVAL_TTL_MIN: ${approvalCfg.requestTtlMinutes}`);
@@ -4293,6 +4294,37 @@ function updateHeldPositionAfterExitSubmit(
   const nextSigned = currentQty > 0 ? nextAbs : -nextAbs;
   heldQtyBySymbol.set(symbol, nextSigned);
   heldSymbols.add(symbol);
+}
+
+function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>) {
+  if (!readBoolEnv("LIFECYCLE_SELFTEST", false)) return;
+  const symbol = "SELFTEST";
+  const scaleUpWithoutPositionBlocked =
+    cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly;
+  console.log(
+    `[LIFECYCLE_SELFTEST] scale_up_no_position_expected=true observed=${scaleUpWithoutPositionBlocked}`
+  );
+
+  const heldQtyBySymbol = new Map<string, number>([[symbol, 10]]);
+  const heldSymbols = new Set<string>([symbol]);
+  const partialRatio = resolveLifecycleExitRatio("EXIT_PARTIAL", cfg.positionLifecycle);
+  const qtyBefore = Math.abs(heldQtyBySymbol.get(symbol) ?? 0);
+  const qtyPartial1 = qtyBefore * partialRatio;
+  updateHeldPositionAfterExitSubmit(heldQtyBySymbol, heldSymbols, symbol, qtyPartial1);
+  const qtyAfterPartial1 = Math.abs(heldQtyBySymbol.get(symbol) ?? 0);
+
+  const qtyPartial2 = qtyAfterPartial1 * partialRatio;
+  updateHeldPositionAfterExitSubmit(heldQtyBySymbol, heldSymbols, symbol, qtyPartial2);
+  const qtyAfterPartial2 = Math.abs(heldQtyBySymbol.get(symbol) ?? 0);
+
+  const qtyFull = qtyAfterPartial2;
+  updateHeldPositionAfterExitSubmit(heldQtyBySymbol, heldSymbols, symbol, qtyFull);
+  const qtyAfterFull = Math.abs(heldQtyBySymbol.get(symbol) ?? 0);
+  const overExitBlocked = !heldSymbols.has(symbol) && qtyAfterFull === 0;
+
+  console.log(
+    `[LIFECYCLE_SELFTEST] over_exit_guard=${overExitBlocked} partialPct=${partialRatio.toFixed(2)} qtyBefore=${qtyBefore.toFixed(4)} qtyAfterP1=${qtyAfterPartial1.toFixed(4)} qtyAfterP2=${qtyAfterPartial2.toFixed(4)} qtyAfterFull=${qtyAfterFull.toFixed(4)}`
+  );
 }
 
 async function submitOrdersToBroker(
@@ -7434,6 +7466,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION=${cfg.positionLifecycle.scaleUpMinConviction}`,
     `POSITION_LIFECYCLE_SCALE_DOWN_PCT=${cfg.positionLifecycle.scaleDownPct}`,
     `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT=${cfg.positionLifecycle.exitPartialPct}`,
+    `LIFECYCLE_SELFTEST=${readBoolEnv("LIFECYCLE_SELFTEST", false)}`,
     `APPROVAL_REQUIRED=${approvalCfg.required}`,
     `APPROVAL_ENFORCE_IN_PREVIEW=${approvalCfg.enforceInPreview}`,
     `APPROVAL_REQUEST_TTL_MINUTES=${approvalCfg.requestTtlMinutes}`,
