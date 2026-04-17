@@ -36,6 +36,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Persists local run state in `state/last-run.json` and skips duplicate sends for same hash/mode.
 - Optional Telegram send gate (`TELEGRAM_SEND_ENABLED=false`) disables Telegram delivery while keeping run telemetry.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
+- Optional watchdog workflow (`sidecar-dry-run-watchdog`) can trigger fallback dispatch when scheduled dry-run is stale/missed.
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
 - Adds MCP Shadow Data Bus telemetry (Phase-1): Alpaca(read-only), Alpha Vantage, SEC EDGAR, Perplexity, Supabase toggles are recorded in startup/run summary/preview without changing trade path.
@@ -192,6 +193,11 @@ Use `.env.example` as baseline.
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
 - `TELEGRAM_MAX_MESSAGE_LENGTH` (optional, default `3900`; auto-chunk guard for long messages)
+- `SIDECAR_WATCHDOG_ENABLED` (default `true`; enables stale-run fallback dispatcher workflow)
+- `SIDECAR_WATCHDOG_STALE_MINUTES` (default `30`; dispatch fallback when latest dry-run is older than this)
+- `SIDECAR_WATCHDOG_LOOKBACK_MINUTES` (default `180`; summary lookback window used in watchdog telemetry)
+- `SIDECAR_WATCHDOG_TARGET_WORKFLOW` (default `dry-run.yml`; workflow filename to dispatch)
+- `SIDECAR_WATCHDOG_BRANCH` (default `main`; branch used for fallback dispatch)
 - `VALIDATION_PACK_AUTO_TRIGGER_ENABLED` (default `false`; auto-dispatch one `validation_pack=true` run when gate reaches final `20/20`)
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)

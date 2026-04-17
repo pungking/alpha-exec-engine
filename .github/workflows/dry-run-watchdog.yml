@@ -1,0 +1,146 @@
+name: sidecar-dry-run-watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs a few minutes after the main sidecar schedule slots (UTC).
+    - cron: "8,23,38,53 13-21 * * 1-5"
+
+concurrency:
+  group: sidecar-dry-run-watchdog-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      WATCHDOG_ENABLED: ${{ vars.SIDECAR_WATCHDOG_ENABLED }}
+      WATCHDOG_STALE_MINUTES: ${{ vars.SIDECAR_WATCHDOG_STALE_MINUTES }}
+      WATCHDOG_LOOKBACK_MINUTES: ${{ vars.SIDECAR_WATCHDOG_LOOKBACK_MINUTES }}
+      WATCHDOG_TARGET_WORKFLOW: ${{ vars.SIDECAR_WATCHDOG_TARGET_WORKFLOW }}
+      WATCHDOG_TARGET_BRANCH: ${{ vars.SIDECAR_WATCHDOG_BRANCH }}
+    steps:
+      - name: Evaluate dry-run freshness
+        id: eval
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const parseBool = (raw, fallback) => {
+              if (!raw || !String(raw).trim()) return fallback;
+              const normalized = String(raw).trim().toLowerCase();
+              if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+              if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+              return fallback;
+            };
+            const parseNumber = (raw, fallback, min, max) => {
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return fallback;
+              return Math.max(min, Math.min(max, n));
+            };
+
+            const enabled = parseBool(process.env.WATCHDOG_ENABLED, true);
+            const staleMinutes = parseNumber(process.env.WATCHDOG_STALE_MINUTES, 30, 10, 240);
+            const lookbackMinutes = parseNumber(process.env.WATCHDOG_LOOKBACK_MINUTES, 180, 30, 1440);
+            const targetWorkflow = (process.env.WATCHDOG_TARGET_WORKFLOW || "dry-run.yml").trim();
+            const refBranch =
+              (process.env.WATCHDOG_TARGET_BRANCH || "").trim() ||
+              context.ref.replace("refs/heads/", "") ||
+              "main";
+
+            core.setOutput("target_workflow", targetWorkflow);
+            core.setOutput("target_branch", refBranch);
+
+            if (!enabled) {
+              core.setOutput("dispatch", "false");
+              core.setOutput("reason", "watchdog_disabled");
+              core.notice("Watchdog is disabled (SIDECAR_WATCHDOG_ENABLED=false).");
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const allRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: targetWorkflow,
+              branch: refBranch,
+              per_page: 100
+            });
+
+            const eligible = allRuns.filter((run) =>
+              ["schedule", "workflow_dispatch", "repository_dispatch"].includes(run.event)
+            );
+            const latest = eligible[0] || null;
+
+            if (!latest) {
+              core.setOutput("dispatch", "true");
+              core.setOutput("reason", "no_eligible_runs_found");
+              core.warning(`No eligible runs found for ${targetWorkflow} on branch ${refBranch}.`);
+              return;
+            }
+
+            const nowMs = Date.now();
+            const latestCreatedMs = Date.parse(latest.created_at);
+            const ageMinutes = Number(((nowMs - latestCreatedMs) / (1000 * 60)).toFixed(1));
+            const activeStatuses = new Set(["queued", "in_progress", "waiting", "pending", "requested"]);
+            const latestStatus = String(latest.status || "").trim().toLowerCase();
+            const latestEvent = String(latest.event || "").trim();
+            const latestConclusion = String(latest.conclusion || "").trim() || "n/a";
+
+            core.setOutput("latest_run_id", String(latest.id));
+            core.setOutput("latest_age_minutes", String(ageMinutes));
+            core.setOutput("latest_status", latestStatus);
+            core.setOutput("latest_event", latestEvent);
+            core.setOutput("latest_conclusion", latestConclusion);
+
+            let dispatch = false;
+            let reason = "healthy_recent_run";
+            if (activeStatuses.has(latestStatus)) {
+              dispatch = false;
+              reason = "latest_run_active";
+            } else if (ageMinutes > staleMinutes) {
+              dispatch = true;
+              reason = "latest_run_stale";
+            }
+
+            const lookbackMs = lookbackMinutes * 60 * 1000;
+            const lookbackCount = eligible.filter((run) => {
+              const createdMs = Date.parse(run.created_at);
+              return Number.isFinite(createdMs) && nowMs - createdMs <= lookbackMs;
+            }).length;
+            core.setOutput("lookback_count", String(lookbackCount));
+
+            core.setOutput("dispatch", dispatch ? "true" : "false");
+            core.setOutput("reason", reason);
+            core.notice(
+              `[WATCHDOG] workflow=${targetWorkflow} branch=${refBranch} latestRunId=${latest.id} ageMin=${ageMinutes} staleThresholdMin=${staleMinutes} status=${latestStatus} event=${latestEvent} conclusion=${latestConclusion} dispatch=${dispatch} reason=${reason} lookbackCount=${lookbackCount}`
+            );
+
+      - name: Trigger fallback dry-run
+        if: ${{ steps.eval.outputs.dispatch == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_WORKFLOW: ${{ steps.eval.outputs.target_workflow }}
+          TARGET_BRANCH: ${{ steps.eval.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          echo "[WATCHDOG] triggering fallback workflow=${TARGET_WORKFLOW} branch=${TARGET_BRANCH}"
+          gh workflow run "${TARGET_WORKFLOW}" \
+            -R "${GITHUB_REPOSITORY}" \
+            --ref "${TARGET_BRANCH}" \
+            -f run_force_send_once=false \
+            -f run_allow_entry_outside_rth=false \
+            -f run_actionable_include_speculative_buy=false \
+            -f run_position_lifecycle_enabled=false \
+            -f run_position_lifecycle_preview_only=true \
+            -f run_position_lifecycle_action_preset=ENTRY_AND_HOLD \
+            -f validation_pack=false \
+            -f payload_probe=false
+
+      - name: Watchdog summary
+        run: |
+          echo "[WATCHDOG] dispatch=${{ steps.eval.outputs.dispatch }} reason=${{ steps.eval.outputs.reason }} latest_run_id=${{ steps.eval.outputs.latest_run_id || 'n/a' }} age_min=${{ steps.eval.outputs.latest_age_minutes || 'n/a' }} status=${{ steps.eval.outputs.latest_status || 'n/a' }} event=${{ steps.eval.outputs.latest_event || 'n/a' }} conclusion=${{ steps.eval.outputs.latest_conclusion || 'n/a' }}"
