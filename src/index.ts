@@ -4243,7 +4243,11 @@ async function submitLifecycleExitOrder(
   actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL",
   positionQty: number,
   lifecycleCfg: PositionLifecycleConfig
-): Promise<{ brokerOrderId: string | null; brokerStatus: OrderLifecycleStatus }> {
+): Promise<{
+  brokerOrderId: string | null;
+  brokerStatus: OrderLifecycleStatus;
+  submittedQty: number;
+}> {
   const absQty = Math.abs(positionQty);
   const ratio = resolveLifecycleExitRatio(actionType, lifecycleCfg);
   const rawQty = actionType === "EXIT_FULL" ? absQty : absQty * ratio;
@@ -4268,7 +4272,27 @@ async function submitLifecycleExitOrder(
   const brokerOrderId =
     typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
   const brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
-  return { brokerOrderId, brokerStatus };
+  const submittedQty = clamp(Number(qty), 0, absQty);
+  return { brokerOrderId, brokerStatus, submittedQty };
+}
+
+function updateHeldPositionAfterExitSubmit(
+  heldQtyBySymbol: Map<string, number>,
+  heldSymbols: Set<string>,
+  symbol: string,
+  submittedQty: number
+) {
+  const currentQty = heldQtyBySymbol.get(symbol) ?? 0;
+  if (!Number.isFinite(currentQty) || currentQty === 0) return;
+  const nextAbs = Math.max(0, Math.abs(currentQty) - Math.max(0, submittedQty));
+  if (nextAbs <= 0) {
+    heldQtyBySymbol.delete(symbol);
+    heldSymbols.delete(symbol);
+    return;
+  }
+  const nextSigned = currentQty > 0 ? nextAbs : -nextAbs;
+  heldQtyBySymbol.set(symbol, nextSigned);
+  heldSymbols.add(symbol);
 }
 
 async function submitOrdersToBroker(
@@ -4402,6 +4426,17 @@ async function submitOrdersToBroker(
       effectiveActionType = "SCALE_UP";
     }
     if (
+      cfg.positionLifecycle.enabled &&
+      !cfg.positionLifecycle.previewOnly &&
+      effectiveActionType === "SCALE_UP" &&
+      !heldSymbols.has(payload.symbol)
+    ) {
+      row.actionType = "HOLD_WAIT";
+      row.reason = "scale_up_no_position";
+      summary.skipped += 1;
+      continue;
+    }
+    if (
       effectiveActionType &&
       !isActionTypeAllowed(effectiveActionType, cfg.positionLifecycle) &&
       effectiveActionType !== "HOLD_WAIT"
@@ -4436,6 +4471,12 @@ async function submitOrdersToBroker(
         );
         brokerOrderId = exitSubmit.brokerOrderId;
         brokerStatus = exitSubmit.brokerStatus;
+        updateHeldPositionAfterExitSubmit(
+          heldQtyBySymbol,
+          heldSymbols,
+          payload.symbol,
+          exitSubmit.submittedQty
+        );
       } else {
         const orderBody = {
           symbol: payload.symbol,

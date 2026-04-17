@@ -19,6 +19,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Position lifecycle scaffold adds `actionType/actionReason` intent tags (`ENTRY_NEW/HOLD_WAIT` baseline).
 - Live submit lane now applies held-position guard: existing symbols require `SCALE_UP` allowed + conviction threshold.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
+- Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
