@@ -479,6 +479,30 @@ type OrderLedgerUpdateResult = {
   pruned: number;
 };
 
+type BrokerSubmitOrderResult = {
+  idempotencyKey: string;
+  symbol: string;
+  attempted: boolean;
+  submitted: boolean;
+  brokerOrderId: string | null;
+  brokerStatus: OrderLifecycleStatus | null;
+  reason: string;
+};
+
+type BrokerSubmitSummary = {
+  enabled: boolean;
+  active: boolean;
+  reason: string;
+  requirePerfGateGo: boolean;
+  perfGateStatus: PerformanceLoopGateStatus | "N/A";
+  perfGateReason: string;
+  attempted: number;
+  submitted: number;
+  failed: number;
+  skipped: number;
+  orders: Record<string, BrokerSubmitOrderResult>;
+};
+
 type SidecarRunState = {
   lastStage6Sha256: string;
   lastStage6FileId: string;
@@ -1169,6 +1193,8 @@ function printStartupSummary() {
   console.log(
     `HF_PROMO_STICKYH: ${clamp(readNonNegativeNumberEnv("HF_LIVE_PROMOTION_PAYLOAD_PATH_STICKY_HOURS", 168), 0, 720)}`
   );
+  console.log(`LIVE_SUBMIT_EN  : ${readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false)}`);
+  console.log(`LIVE_SUBMIT_REQG: ${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true)}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -3954,7 +3980,14 @@ function buildDryExecPayloads(
   };
 }
 
-async function fetchAlpacaJson(path: string): Promise<unknown> {
+async function fetchAlpacaJson(
+  path: string,
+  init: {
+    method?: "GET" | "POST";
+    body?: Record<string, unknown>;
+    expectedStatuses?: number[];
+  } = {}
+): Promise<unknown> {
   const baseUrl = (process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
   const keyId = (process.env.ALPACA_KEY_ID || "").trim();
   const secret = (process.env.ALPACA_SECRET_KEY || "").trim();
@@ -3962,17 +3995,28 @@ async function fetchAlpacaJson(path: string): Promise<unknown> {
   if (!baseUrl) throw new Error("ALPACA_BASE_URL missing");
   if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
 
+  const headers: Record<string, string> = {
+    "APCA-API-KEY-ID": keyId,
+    "APCA-API-SECRET-KEY": secret
+  };
+  if (init.body) headers["Content-Type"] = "application/json";
+
   const response = await fetch(`${baseUrl}${path}`, {
-    headers: {
-      "APCA-API-KEY-ID": keyId,
-      "APCA-API-SECRET-KEY": secret
-    }
+    method: init.method || "GET",
+    headers,
+    body: init.body ? JSON.stringify(init.body) : undefined
   });
-  if (!response.ok) {
-    const text = await response.text();
+  const text = await response.text();
+  const expectedStatuses = init.expectedStatuses || [200];
+  if (!expectedStatuses.includes(response.status)) {
     throw new Error(`alpaca ${path} failed (${response.status}): ${text.slice(0, 160)}`);
   }
-  return response.json();
+  if (!text) return null;
+  try {
+    return parseJsonText<unknown>(text, `alpaca_response(${path})`);
+  } catch {
+    return text;
+  }
 }
 
 async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightResult> {
@@ -4103,6 +4147,152 @@ async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightR
   });
 }
 
+function mapAlpacaOrderStatusToLifecycleStatus(rawStatus: unknown): OrderLifecycleStatus {
+  const normalized = String(rawStatus ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "accepted") return "accepted";
+  if (normalized === "partially_filled") return "partially_filled";
+  if (normalized === "filled") return "filled";
+  if (normalized === "canceled" || normalized === "cancelled") return "canceled";
+  if (normalized === "rejected") return "rejected";
+  if (normalized === "expired") return "expired";
+  return "submitted";
+}
+
+async function resolveCurrentPerfGateStatus(dryExec: DryExecBuildResult): Promise<PerformanceLoopGate> {
+  const policyFingerprint = buildPerformancePolicyFingerprint(dryExec);
+  const loopState = await loadPerformanceLoopState(policyFingerprint);
+  const latestSnapshot =
+    loopState.snapshots.length > 0 ? loopState.snapshots[loopState.snapshots.length - 1] : null;
+  return evaluatePerformanceLoopGate(latestSnapshot, Object.keys(loopState.rows).length);
+}
+
+async function submitOrdersToBroker(
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult
+): Promise<BrokerSubmitSummary> {
+  const cfg = loadRuntimeConfig();
+  const enabled = readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false);
+  const requirePerfGateGo = readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true);
+  const summary: BrokerSubmitSummary = {
+    enabled,
+    active: false,
+    reason: "disabled",
+    requirePerfGateGo,
+    perfGateStatus: "N/A",
+    perfGateReason: "not_checked",
+    attempted: 0,
+    submitted: 0,
+    failed: 0,
+    skipped: dryExec.payloads.length,
+    orders: {}
+  };
+
+  for (const payload of dryExec.payloads) {
+    summary.orders[payload.idempotencyKey] = {
+      idempotencyKey: payload.idempotencyKey,
+      symbol: payload.symbol,
+      attempted: false,
+      submitted: false,
+      brokerOrderId: null,
+      brokerStatus: null,
+      reason: "submit_not_attempted"
+    };
+  }
+
+  if (!enabled) {
+    summary.reason = "submit_disabled";
+    return summary;
+  }
+  if (!cfg.execEnabled) {
+    summary.reason = "exec_disabled";
+    return summary;
+  }
+  if (cfg.readOnly) {
+    summary.reason = "read_only";
+    return summary;
+  }
+  if (preflight.blocking) {
+    summary.reason = `preflight_blocked:${preflight.code}`;
+    return summary;
+  }
+  if (dryExec.payloads.length === 0) {
+    summary.reason = "no_payload";
+    summary.skipped = 0;
+    return summary;
+  }
+
+  if (requirePerfGateGo) {
+    const perfGate = await resolveCurrentPerfGateStatus(dryExec);
+    summary.perfGateStatus = perfGate.status;
+    summary.perfGateReason = perfGate.reason;
+    if (perfGate.status !== "GO") {
+      summary.reason = `perf_gate_blocked:${perfGate.status.toLowerCase()}`;
+      return summary;
+    }
+  }
+
+  summary.active = true;
+  summary.reason = "submit_attempted";
+  summary.skipped = 0;
+
+  for (const payload of dryExec.payloads) {
+    const row = summary.orders[payload.idempotencyKey];
+    row.attempted = true;
+    summary.attempted += 1;
+    try {
+      const orderBody = {
+        symbol: payload.symbol,
+        side: payload.side,
+        type: payload.type,
+        time_in_force: payload.time_in_force,
+        order_class: payload.order_class,
+        limit_price: payload.limit_price,
+        notional: payload.notional,
+        take_profit: payload.take_profit,
+        stop_loss: payload.stop_loss,
+        client_order_id: payload.client_order_id
+      };
+      const rawResponse = await fetchAlpacaJson("/v2/orders", {
+        method: "POST",
+        body: orderBody,
+        expectedStatuses: [200, 201]
+      });
+      const responseRecord =
+        rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
+      const brokerOrderIdRaw = responseRecord.id;
+      const brokerOrderId =
+        typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
+      const brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
+      row.submitted = true;
+      row.brokerOrderId = brokerOrderId;
+      row.brokerStatus = brokerStatus;
+      row.reason = "submitted";
+      summary.submitted += 1;
+      console.log(
+        `[BROKER_SUBMIT] symbol=${payload.symbol} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
+      );
+    } catch (error) {
+      row.submitted = false;
+      row.brokerOrderId = null;
+      row.brokerStatus = null;
+      row.reason = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
+      summary.failed += 1;
+      console.warn(`[BROKER_SUBMIT] symbol=${payload.symbol} failed reason=${row.reason}`);
+    }
+  }
+
+  if (summary.failed > 0 && summary.submitted === 0) {
+    summary.reason = "submit_failed_all";
+  } else if (summary.failed > 0) {
+    summary.reason = "submit_partial";
+  } else {
+    summary.reason = "submit_ok";
+  }
+  return summary;
+}
+
 function buildSimulationMessage(
   result: Stage6LoadResult,
   actionable: Stage6CandidateSummary[],
@@ -4110,6 +4300,7 @@ function buildSimulationMessage(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
+  brokerSubmit: BrokerSubmitSummary,
   guardControl: GuardControlGate,
   hfLivePromotion?: HfLivePromotionSummary | null,
   hfPayloadProbe?: HfPayloadProbeSummary,
@@ -4253,6 +4444,9 @@ function buildSimulationMessage(
   lines.push(
     `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
   );
+  lines.push(
+    `Broker Submit: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
+  );
   lines.push("");
   lines.push("Preflight Gate");
   lines.push(
@@ -4281,6 +4475,7 @@ async function sendSimulationTelegram(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
+  brokerSubmit: BrokerSubmitSummary,
   guardControl: GuardControlGate,
   hfLivePromotion?: HfLivePromotionSummary | null,
   hfPayloadProbe?: HfPayloadProbeSummary,
@@ -4295,6 +4490,7 @@ async function sendSimulationTelegram(
     dryExec,
     preflight,
     ledger,
+    brokerSubmit,
     guardControl,
     hfLivePromotion,
     hfPayloadProbe,
@@ -5922,6 +6118,7 @@ async function saveDryExecPreview(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
+  brokerSubmit: BrokerSubmitSummary,
   hfPayloadProbe: HfPayloadProbeSummary,
   guardControl: GuardControlGate,
   approvalQueueGate: ApprovalQueueGateSummary,
@@ -5982,6 +6179,7 @@ async function saveDryExecPreview(
     stage6SkipHintCountsPrimary,
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
+    brokerSubmission: brokerSubmit,
     preflight,
     guardControl,
     approvalQueueGate,
@@ -6007,6 +6205,9 @@ async function saveDryExecPreview(
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
   console.log(
     `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
+  );
+  console.log(
+    `[BROKER_SUBMIT] enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
   );
   console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
   console.log(
@@ -6827,14 +7028,13 @@ async function updateOrderLedger(
   stage6: Stage6LoadResult,
   mode: string,
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  brokerSubmit: BrokerSubmitSummary
 ): Promise<OrderLedgerUpdateResult> {
-  const cfg = loadRuntimeConfig();
   const enabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
   const ttlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
-  const targetStatus: OrderLifecycleStatus = cfg.execEnabled ? "submitted" : "planned";
-  const source = cfg.execEnabled ? "execution_pipeline" : "dry_run_pipeline";
-  const reason = cfg.execEnabled ? "order_submitted_to_broker" : "dry_run_payload_prepared";
+  const hasSubmitted = brokerSubmit.submitted > 0;
+  const targetStatus: OrderLifecycleStatus = hasSubmitted ? "submitted" : "planned";
 
   if (!enabled) {
     return { enabled, targetStatus: "none", upserted: 0, transitioned: 0, unchanged: 0, pruned: 0 };
@@ -6851,6 +7051,17 @@ async function updateOrderLedger(
   for (const payload of dryExec.payloads) {
     const key = payload.idempotencyKey;
     const existing = state.orders[key];
+    const brokerRow = brokerSubmit.orders[key];
+    const rowStatus = brokerRow?.submitted
+      ? (brokerRow.brokerStatus ?? "submitted")
+      : ("planned" as OrderLifecycleStatus);
+    const rowReason = brokerRow?.submitted
+      ? "order_submitted_to_broker"
+      : brokerSubmit.active && brokerRow?.attempted
+        ? `order_submit_failed:${brokerRow.reason}`
+        : `order_submit_skipped:${brokerSubmit.reason}`;
+    const rowSource = brokerRow?.submitted ? "execution_pipeline" : "dry_run_pipeline";
+    const brokerOrderId = brokerRow?.submitted ? brokerRow.brokerOrderId : null;
     if (!existing) {
       upserted += 1;
       changed = true;
@@ -6862,32 +7073,32 @@ async function updateOrderLedger(
         stage6File: stage6.fileName,
         mode,
         clientOrderId: payload.client_order_id,
-        status: targetStatus,
-        statusReason: reason,
+        status: rowStatus,
+        statusReason: rowReason,
         preflightCode: preflight.code,
         regimeProfile: dryExec.regime.profile,
         notional: payload.notional,
         limitPrice: payload.limit_price,
         takeProfitPrice: payload.take_profit.limit_price,
         stopLossPrice: payload.stop_loss.stop_price,
-        brokerOrderId: null,
+        brokerOrderId,
         createdAt: now,
         updatedAt: now,
         history: [
           {
             at: now,
             from: null,
-            to: targetStatus,
-            reason,
-            source
+            to: rowStatus,
+            reason: rowReason,
+            source: rowSource
           }
         ]
       };
       continue;
     }
 
-    const canTransition = isTransitionAllowed(existing.status, targetStatus);
-    const shouldTransition = canTransition && existing.status !== targetStatus;
+    const canTransition = isTransitionAllowed(existing.status, rowStatus);
+    const shouldTransition = canTransition && existing.status !== rowStatus;
 
     if (shouldTransition) {
       transitioned += 1;
@@ -6895,17 +7106,17 @@ async function updateOrderLedger(
       existing.history.push({
         at: now,
         from: existing.status,
-        to: targetStatus,
-        reason,
-        source
+        to: rowStatus,
+        reason: rowReason,
+        source: rowSource
       });
-      existing.status = targetStatus;
-      existing.statusReason = reason;
+      existing.status = rowStatus;
+      existing.statusReason = rowReason;
     } else {
       unchanged += 1;
       if (!canTransition) {
         console.warn(
-          `[ORDER_LEDGER] invalid transition key=${key} from=${existing.status} to=${targetStatus} (ignored)`
+          `[ORDER_LEDGER] invalid transition key=${key} from=${existing.status} to=${rowStatus} (ignored)`
         );
       }
     }
@@ -6920,6 +7131,7 @@ async function updateOrderLedger(
     existing.limitPrice = payload.limit_price;
     existing.takeProfitPrice = payload.take_profit.limit_price;
     existing.stopLossPrice = payload.stop_loss.stop_price;
+    existing.brokerOrderId = brokerOrderId;
     existing.updatedAt = now;
   }
 
@@ -7032,6 +7244,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ORDER_IDEMP_TTL_DAYS=${idempotencyTtlDays}`,
     `PREFLIGHT_ENABLED=${preflightEnabled}`,
     `PREFLIGHT_SOFT_CODES=${String(process.env.PREFLIGHT_SOFT_CODES || "PREFLIGHT_MARKET_CLOSED")}`,
+    `LIVE_ORDER_SUBMIT_ENABLED=${readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false)}`,
+    `LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO=${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true)}`,
     `ALLOW_ENTRY_OUTSIDE_RTH=${allowEntryOutsideRth}`,
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
@@ -7163,6 +7377,7 @@ function printRunSummary(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
   ledger: OrderLedgerUpdateResult,
+  brokerSubmit: BrokerSubmitSummary,
   approvalQueueGate: ApprovalQueueGateSummary,
   hfPayloadProbe: HfPayloadProbeSummary,
   hfDrift?: HfDriftAlert,
@@ -7204,6 +7419,7 @@ function printRunSummary(
   const hfDailyVerdictSummary = buildHfDailyVerdictSummaryForRun(hfDailyVerdict ?? null);
   const hfPayloadPathStickySummary = buildHfPayloadPathStickySummaryForRun(hfPayloadPathSticky ?? null);
   const hfEvidenceSummaryForRun = buildHfEvidenceSummaryForRun(hfEvidenceSummary ?? null);
+  const brokerSubmitSummary = `enabled:${brokerSubmit.enabled}|active:${brokerSubmit.active}|reason:${brokerSubmit.reason}|requirePerfGateGo:${brokerSubmit.requirePerfGateGo}|perfGate:${brokerSubmit.perfGateStatus}|perfReason:${brokerSubmit.perfGateReason}|attempted:${brokerSubmit.attempted}|submitted:${brokerSubmit.submitted}|failed:${brokerSubmit.failed}|skipped:${brokerSubmit.skipped}`;
   const stage6ContractReasonCountsPrimary = stage6.contractContext?.decisionReasonCountsPrimary ?? {};
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
     stage6ContractReasonCountsPrimary
@@ -7357,7 +7573,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -7476,6 +7692,19 @@ async function main() {
       unchanged: 0,
       pruned: 0
     };
+    const dedupeBrokerSubmit: BrokerSubmitSummary = {
+      enabled: readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false),
+      active: false,
+      reason: "dedupe_skip",
+      requirePerfGateGo: readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true),
+      perfGateStatus: "N/A",
+      perfGateReason: "not_checked",
+      attempted: 0,
+      submitted: 0,
+      failed: 0,
+      skipped: 0,
+      orders: {}
+    };
     const dedupeApprovalGate = createApprovalQueueGateSummary(
       buildApprovalQueueGateConfig(),
       "not_evaluated_dedupe"
@@ -7487,6 +7716,7 @@ async function main() {
       dryExec,
       dedupePreflight,
       dedupeLedger,
+      dedupeBrokerSubmit,
       dedupeApprovalGate,
       hfPayloadProbe,
       undefined,
@@ -7552,10 +7782,11 @@ async function main() {
     );
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
+  const brokerSubmit = await submitOrdersToBroker(postPreflightDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
   const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);
 
-  const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight);
+  const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight, brokerSubmit);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   const hfShadowHistoryRecord = buildHfShadowHistoryRecord(
     stage6,
@@ -7612,6 +7843,7 @@ async function main() {
     postPreflightDryExec,
     preflight,
     ledger,
+    brokerSubmit,
     hfPayloadProbe,
     guardControl,
     approvalQueueGate,
@@ -7635,6 +7867,7 @@ async function main() {
     postPreflightDryExec,
     preflight,
     ledger,
+    brokerSubmit,
     guardControl,
     hfLivePromotion,
     hfPayloadProbe,
@@ -7658,6 +7891,7 @@ async function main() {
     postPreflightDryExec,
     preflight,
     ledger,
+    brokerSubmit,
     approvalQueueGate,
     hfPayloadProbe,
     hfDrift,

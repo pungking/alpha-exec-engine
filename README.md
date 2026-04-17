@@ -11,7 +11,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Loads the latest `STAGE6_ALPHA_FINAL_*.json` from `GDRIVE_STAGE6_FOLDER`.
 - Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
 - Applies policy gate for action candidates (`BUY`, `STRONG_BUY` only).
-- Builds Alpaca order payload previews only (no live order send in dry-run).
+- Builds Alpaca order payload previews by default (`LIVE_ORDER_SUBMIT_ENABLED=false`).
+- Optional live submit lane can POST Alpaca `/v2/orders` when all safety gates pass.
 - Payload gate includes conviction floor + stop-distance sanity range.
 - Optional entry-feasibility gate (default OFF) can skip entries that are too far from market or marked infeasible in Stage6 shadow fields.
 - Stage6 contract gate (default ON) consumes `executionBucket/executionReason` and blocks `WATCHLIST` rows before payload build.
@@ -185,6 +186,8 @@ Use `.env.example` as baseline.
 - `PREFLIGHT_SOFT_CODES` (comma-separated blocking codes to keep green even when hard-fail is enabled; default `PREFLIGHT_MARKET_CLOSED`)
 - `ORDER_LIFECYCLE_ENABLED`
 - `ORDER_LEDGER_TTL_DAYS`
+- `LIVE_ORDER_SUBMIT_ENABLED` (default `false`; when `true`, submits payloads to Alpaca in exec mode after preflight pass)
+- `LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO` (default `true`; blocks live submit unless current perf gate is `GO`)
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
