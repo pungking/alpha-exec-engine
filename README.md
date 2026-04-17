@@ -193,6 +193,7 @@ Use `.env.example` as baseline.
 - `ORDER_LEDGER_TTL_DAYS`
 - `LIVE_ORDER_SUBMIT_ENABLED` (default `false`; when `true`, submits payloads to Alpaca in exec mode after preflight pass)
 - `LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO` (default `true`; blocks live submit unless current perf gate is `GO`)
+- `LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS` (default `true`; blocks live submit unless current HF live promotion status is `PASS`)
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`

@@ -496,8 +496,11 @@ type BrokerSubmitSummary = {
   active: boolean;
   reason: string;
   requirePerfGateGo: boolean;
+  requireHfLivePromotionPass: boolean;
   perfGateStatus: PerformanceLoopGateStatus | "N/A";
   perfGateReason: string;
+  hfLivePromotionStatus: HfLivePromotionStatus | "N/A";
+  hfLivePromotionReason: string;
   attempted: number;
   submitted: number;
   failed: number;
@@ -1199,6 +1202,9 @@ function printStartupSummary() {
   );
   console.log(`LIVE_SUBMIT_EN  : ${readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false)}`);
   console.log(`LIVE_SUBMIT_REQG: ${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true)}`);
+  console.log(
+    `LIVE_SUBMIT_REQH: ${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS", true)}`
+  );
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -4267,18 +4273,26 @@ async function submitLifecycleExitOrder(
 
 async function submitOrdersToBroker(
   dryExec: DryExecBuildResult,
-  preflight: PreflightResult
+  preflight: PreflightResult,
+  hfLivePromotion?: HfLivePromotionSummary | null
 ): Promise<BrokerSubmitSummary> {
   const cfg = loadRuntimeConfig();
   const enabled = readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false);
   const requirePerfGateGo = readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true);
+  const requireHfLivePromotionPass = readBoolEnv(
+    "LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS",
+    true
+  );
   const summary: BrokerSubmitSummary = {
     enabled,
     active: false,
     reason: "disabled",
     requirePerfGateGo,
+    requireHfLivePromotionPass,
     perfGateStatus: "N/A",
     perfGateReason: "not_checked",
+    hfLivePromotionStatus: "N/A",
+    hfLivePromotionReason: "not_checked",
     attempted: 0,
     submitted: 0,
     failed: 0,
@@ -4327,6 +4341,20 @@ async function submitOrdersToBroker(
     summary.perfGateReason = perfGate.reason;
     if (perfGate.status !== "GO") {
       summary.reason = `perf_gate_blocked:${perfGate.status.toLowerCase()}`;
+      return summary;
+    }
+  }
+  if (requireHfLivePromotionPass) {
+    if (!hfLivePromotion) {
+      summary.hfLivePromotionStatus = "N/A";
+      summary.hfLivePromotionReason = "missing";
+      summary.reason = "hf_live_promotion_missing";
+      return summary;
+    }
+    summary.hfLivePromotionStatus = hfLivePromotion.status;
+    summary.hfLivePromotionReason = hfLivePromotion.reason;
+    if (hfLivePromotion.status !== "PASS") {
+      summary.reason = `hf_live_promotion_blocked:${hfLivePromotion.status.toLowerCase()}`;
       return summary;
     }
   }
@@ -4615,7 +4643,7 @@ function buildSimulationMessage(
     `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
   );
   lines.push(
-    `Broker Submit: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
+    `Broker Submit: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} requireHfPass=${brokerSubmit.requireHfLivePromotionPass} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} hfLive=${brokerSubmit.hfLivePromotionStatus} hfReason=${brokerSubmit.hfLivePromotionReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
   );
   lines.push("");
   lines.push("Preflight Gate");
@@ -6377,7 +6405,7 @@ async function saveDryExecPreview(
     `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
   );
   console.log(
-    `[BROKER_SUBMIT] enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
+    `[BROKER_SUBMIT] enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} requireHfPass=${brokerSubmit.requireHfLivePromotionPass} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} hfLive=${brokerSubmit.hfLivePromotionStatus} hfReason=${brokerSubmit.hfLivePromotionReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
   );
   console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
   console.log(
@@ -7418,6 +7446,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `PREFLIGHT_SOFT_CODES=${String(process.env.PREFLIGHT_SOFT_CODES || "PREFLIGHT_MARKET_CLOSED")}`,
     `LIVE_ORDER_SUBMIT_ENABLED=${readBoolEnv("LIVE_ORDER_SUBMIT_ENABLED", false)}`,
     `LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO=${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true)}`,
+    `LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS=${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS", true)}`,
     `ALLOW_ENTRY_OUTSIDE_RTH=${allowEntryOutsideRth}`,
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
@@ -7591,7 +7620,7 @@ function printRunSummary(
   const hfDailyVerdictSummary = buildHfDailyVerdictSummaryForRun(hfDailyVerdict ?? null);
   const hfPayloadPathStickySummary = buildHfPayloadPathStickySummaryForRun(hfPayloadPathSticky ?? null);
   const hfEvidenceSummaryForRun = buildHfEvidenceSummaryForRun(hfEvidenceSummary ?? null);
-  const brokerSubmitSummary = `enabled:${brokerSubmit.enabled}|active:${brokerSubmit.active}|reason:${brokerSubmit.reason}|requirePerfGateGo:${brokerSubmit.requirePerfGateGo}|perfGate:${brokerSubmit.perfGateStatus}|perfReason:${brokerSubmit.perfGateReason}|attempted:${brokerSubmit.attempted}|submitted:${brokerSubmit.submitted}|failed:${brokerSubmit.failed}|skipped:${brokerSubmit.skipped}`;
+  const brokerSubmitSummary = `enabled:${brokerSubmit.enabled}|active:${brokerSubmit.active}|reason:${brokerSubmit.reason}|requirePerfGateGo:${brokerSubmit.requirePerfGateGo}|requireHfPass:${brokerSubmit.requireHfLivePromotionPass}|perfGate:${brokerSubmit.perfGateStatus}|perfReason:${brokerSubmit.perfGateReason}|hfLive:${brokerSubmit.hfLivePromotionStatus}|hfReason:${brokerSubmit.hfLivePromotionReason}|attempted:${brokerSubmit.attempted}|submitted:${brokerSubmit.submitted}|failed:${brokerSubmit.failed}|skipped:${brokerSubmit.skipped}`;
   const stage6ContractReasonCountsPrimary = stage6.contractContext?.decisionReasonCountsPrimary ?? {};
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
     stage6ContractReasonCountsPrimary
@@ -7869,8 +7898,14 @@ async function main() {
       active: false,
       reason: "dedupe_skip",
       requirePerfGateGo: readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO", true),
+      requireHfLivePromotionPass: readBoolEnv(
+        "LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS",
+        true
+      ),
       perfGateStatus: "N/A",
       perfGateReason: "not_checked",
+      hfLivePromotionStatus: "N/A",
+      hfLivePromotionReason: "not_checked",
       attempted: 0,
       submitted: 0,
       failed: 0,
@@ -7954,11 +7989,8 @@ async function main() {
     );
   }
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
-  const brokerSubmit = await submitOrdersToBroker(postPreflightDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
   const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);
-
-  const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight, brokerSubmit);
   const perfLoop = await updatePerformanceLoop(stage6, actionable, postPreflightDryExec, preflight);
   const hfShadowHistoryRecord = buildHfShadowHistoryRecord(
     stage6,
@@ -7987,6 +8019,8 @@ async function main() {
     hfPayloadProbe,
     payloadPathVerification
   );
+  const brokerSubmit = await submitOrdersToBroker(postPreflightDryExec, preflight, hfLivePromotion);
+  const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight, brokerSubmit);
   const hfNextAction = deriveHfNextActionSummary(
     hfLivePromotion,
     hfTuningPhase,
