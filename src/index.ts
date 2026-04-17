@@ -1153,6 +1153,8 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_PREVIEW: ${cfg.positionLifecycle.previewOnly}`);
   console.log(`LIFECYCLE_ACTIONS: ${cfg.positionLifecycle.allowedActionTypes.join("/")}`);
   console.log(`LIFECYCLE_SCALEUP: ${cfg.positionLifecycle.scaleUpMinConviction}`);
+  console.log(`LIFECYCLE_SCALEDN: ${cfg.positionLifecycle.scaleDownPct}`);
+  console.log(`LIFECYCLE_EXPART : ${cfg.positionLifecycle.exitPartialPct}`);
   console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
   console.log(`APPROVAL_PREVIEW: ${approvalCfg.enforceInPreview}`);
   console.log(`APPROVAL_TTL_MIN: ${approvalCfg.requestTtlMinutes}`);
@@ -4176,17 +4178,91 @@ async function resolveCurrentPerfGateStatus(dryExec: DryExecBuildResult): Promis
   return evaluatePerformanceLoopGate(latestSnapshot, Object.keys(loopState.rows).length);
 }
 
-async function loadHeldPositionSymbolSet(): Promise<Set<string>> {
+async function loadHeldPositionMap(): Promise<Map<string, number>> {
   const raw = await fetchAlpacaJson("/v2/positions");
-  if (!Array.isArray(raw)) return new Set();
-  const symbols = raw
-    .map((row) => {
-      if (!row || typeof row !== "object") return "";
-      const symbol = (row as Record<string, unknown>).symbol;
-      return typeof symbol === "string" ? symbol.trim().toUpperCase() : "";
-    })
-    .filter((symbol) => symbol.length > 0);
-  return new Set(symbols);
+  if (!Array.isArray(raw)) return new Map();
+  const out = new Map<string, number>();
+  raw.forEach((row) => {
+    if (!row || typeof row !== "object") return;
+    const node = row as Record<string, unknown>;
+    const symbolRaw = node.symbol;
+    const symbol = typeof symbolRaw === "string" ? symbolRaw.trim().toUpperCase() : "";
+    if (!symbol) return;
+    const qtyRaw = node.qty;
+    const qty =
+      typeof qtyRaw === "number"
+        ? qtyRaw
+        : typeof qtyRaw === "string"
+          ? Number(qtyRaw)
+          : NaN;
+    if (!Number.isFinite(qty) || qty === 0) return;
+    out.set(symbol, qty);
+  });
+  return out;
+}
+
+function toBrokerQtyString(value: number): string | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const normalized = Number(value.toFixed(6));
+  if (!Number.isFinite(normalized) || normalized <= 0) return null;
+  const trimmed = normalized.toFixed(6).replace(/\.?0+$/, "");
+  return trimmed || null;
+}
+
+function makeActionClientOrderId(baseClientOrderId: string, actionType: LifecycleActionType): string {
+  const normalizedBase = baseClientOrderId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 36);
+  const actionSuffix = actionType.toLowerCase().replace(/[^A-Za-z0-9_-]/g, "");
+  const out = `${normalizedBase}_${actionSuffix}`.slice(0, 48);
+  return out || `act_${Date.now().toString(36).slice(-8)}`;
+}
+
+function resolveLifecycleExitRatio(
+  actionType: LifecycleActionType,
+  lifecycleCfg: PositionLifecycleConfig
+): number {
+  if (actionType === "EXIT_FULL") return 1;
+  if (actionType === "EXIT_PARTIAL") return clamp(lifecycleCfg.exitPartialPct, 0.01, 1);
+  if (actionType === "SCALE_DOWN") return clamp(lifecycleCfg.scaleDownPct, 0.01, 1);
+  return 1;
+}
+
+function isLifecycleExitAction(
+  actionType: LifecycleActionType | undefined
+): actionType is "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" {
+  return actionType === "SCALE_DOWN" || actionType === "EXIT_PARTIAL" || actionType === "EXIT_FULL";
+}
+
+async function submitLifecycleExitOrder(
+  payload: DryExecOrderPayload,
+  actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL",
+  positionQty: number,
+  lifecycleCfg: PositionLifecycleConfig
+): Promise<{ brokerOrderId: string | null; brokerStatus: OrderLifecycleStatus }> {
+  const absQty = Math.abs(positionQty);
+  const ratio = resolveLifecycleExitRatio(actionType, lifecycleCfg);
+  const rawQty = actionType === "EXIT_FULL" ? absQty : absQty * ratio;
+  const qty = toBrokerQtyString(rawQty);
+  if (!qty) throw new Error(`invalid_exit_qty:${rawQty}`);
+  const side: "buy" | "sell" = positionQty > 0 ? "sell" : "buy";
+  const rawResponse = await fetchAlpacaJson("/v2/orders", {
+    method: "POST",
+    body: {
+      symbol: payload.symbol,
+      side,
+      type: "market",
+      qty,
+      time_in_force: "day",
+      client_order_id: makeActionClientOrderId(payload.client_order_id, actionType)
+    },
+    expectedStatuses: [200, 201]
+  });
+  const responseRecord =
+    rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
+  const brokerOrderIdRaw = responseRecord.id;
+  const brokerOrderId =
+    typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
+  const brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
+  return { brokerOrderId, brokerStatus };
 }
 
 async function submitOrdersToBroker(
@@ -4260,9 +4336,11 @@ async function submitOrdersToBroker(
   summary.skipped = 0;
 
   let heldSymbols = new Set<string>();
+  let heldQtyBySymbol = new Map<string, number>();
   if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
     try {
-      heldSymbols = await loadHeldPositionSymbolSet();
+      heldQtyBySymbol = await loadHeldPositionMap();
+      heldSymbols = new Set([...heldQtyBySymbol.keys()]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       summary.reason = "position_fetch_failed";
@@ -4297,42 +4375,64 @@ async function submitOrdersToBroker(
     }
     if (
       effectiveActionType &&
-      (effectiveActionType === "SCALE_DOWN" ||
-        effectiveActionType === "EXIT_PARTIAL" ||
-        effectiveActionType === "EXIT_FULL")
+      !isActionTypeAllowed(effectiveActionType, cfg.positionLifecycle) &&
+      effectiveActionType !== "HOLD_WAIT"
     ) {
       row.actionType = effectiveActionType;
-      row.reason = `action_not_implemented:${effectiveActionType}`;
+      row.reason = `action_not_allowed:${effectiveActionType}`;
       summary.skipped += 1;
       continue;
+    }
+    if (isLifecycleExitAction(effectiveActionType)) {
+      const heldQty = heldQtyBySymbol.get(payload.symbol) ?? 0;
+      if (!Number.isFinite(heldQty) || heldQty === 0) {
+        row.actionType = effectiveActionType;
+        row.reason = `exit_no_position:${effectiveActionType}`;
+        summary.skipped += 1;
+        continue;
+      }
     }
     row.actionType = effectiveActionType ?? row.actionType;
     row.attempted = true;
     summary.attempted += 1;
     try {
-      const orderBody = {
-        symbol: payload.symbol,
-        side: payload.side,
-        type: payload.type,
-        time_in_force: payload.time_in_force,
-        order_class: payload.order_class,
-        limit_price: payload.limit_price,
-        notional: payload.notional,
-        take_profit: payload.take_profit,
-        stop_loss: payload.stop_loss,
-        client_order_id: payload.client_order_id
-      };
-      const rawResponse = await fetchAlpacaJson("/v2/orders", {
-        method: "POST",
-        body: orderBody,
-        expectedStatuses: [200, 201]
-      });
-      const responseRecord =
-        rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
-      const brokerOrderIdRaw = responseRecord.id;
-      const brokerOrderId =
-        typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
-      const brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
+      let brokerOrderId: string | null = null;
+      let brokerStatus: OrderLifecycleStatus = "submitted";
+      if (isLifecycleExitAction(effectiveActionType)) {
+        const heldQty = heldQtyBySymbol.get(payload.symbol) ?? 0;
+        const exitSubmit = await submitLifecycleExitOrder(
+          payload,
+          effectiveActionType,
+          heldQty,
+          cfg.positionLifecycle
+        );
+        brokerOrderId = exitSubmit.brokerOrderId;
+        brokerStatus = exitSubmit.brokerStatus;
+      } else {
+        const orderBody = {
+          symbol: payload.symbol,
+          side: payload.side,
+          type: payload.type,
+          time_in_force: payload.time_in_force,
+          order_class: payload.order_class,
+          limit_price: payload.limit_price,
+          notional: payload.notional,
+          take_profit: payload.take_profit,
+          stop_loss: payload.stop_loss,
+          client_order_id: payload.client_order_id
+        };
+        const rawResponse = await fetchAlpacaJson("/v2/orders", {
+          method: "POST",
+          body: orderBody,
+          expectedStatuses: [200, 201]
+        });
+        const responseRecord =
+          rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
+        const brokerOrderIdRaw = responseRecord.id;
+        brokerOrderId =
+          typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
+        brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
+      }
       row.submitted = true;
       row.brokerOrderId = brokerOrderId;
       row.brokerStatus = brokerStatus;
@@ -7263,6 +7363,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_PREVIEW_ONLY=${cfg.positionLifecycle.previewOnly}`,
     `POSITION_LIFECYCLE_ACTION_TYPES=${cfg.positionLifecycle.allowedActionTypes.join("/")}`,
     `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION=${cfg.positionLifecycle.scaleUpMinConviction}`,
+    `POSITION_LIFECYCLE_SCALE_DOWN_PCT=${cfg.positionLifecycle.scaleDownPct}`,
+    `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT=${cfg.positionLifecycle.exitPartialPct}`,
     `APPROVAL_REQUIRED=${approvalCfg.required}`,
     `APPROVAL_ENFORCE_IN_PREVIEW=${approvalCfg.enforceInPreview}`,
     `APPROVAL_REQUEST_TTL_MINUTES=${approvalCfg.requestTtlMinutes}`,

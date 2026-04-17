@@ -14,6 +14,8 @@ export type PositionLifecycleConfig = {
   allowedActionTypes: LifecycleActionType[];
   priorities: Record<LifecycleActionType, number>;
   scaleUpMinConviction: number;
+  scaleDownPct: number;
+  exitPartialPct: number;
 };
 
 export type SidecarRuntimeConfig = {
@@ -76,6 +78,14 @@ export function loadRuntimeConfig(): SidecarRuntimeConfig {
     0,
     Math.min(100, envNumber(process.env.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION, 82))
   );
+  const scaleDownPct = Math.max(
+    0.01,
+    Math.min(1, envNumber(process.env.POSITION_LIFECYCLE_SCALE_DOWN_PCT, 0.35))
+  );
+  const exitPartialPct = Math.max(
+    0.01,
+    Math.min(1, envNumber(process.env.POSITION_LIFECYCLE_EXIT_PARTIAL_PCT, 0.5))
+  );
   const lifecycleFallbackActions: LifecycleActionType[] = ["ENTRY_NEW", "HOLD_WAIT"];
   const lifecycleActions = parseLifecycleActionTypes(
     process.env.POSITION_LIFECYCLE_ACTION_TYPES,
@@ -93,7 +103,9 @@ export function loadRuntimeConfig(): SidecarRuntimeConfig {
       previewOnly: envBool(process.env.POSITION_LIFECYCLE_PREVIEW_ONLY, true),
       allowedActionTypes: lifecycleActions,
       priorities: { ...DEFAULT_ACTION_PRIORITIES },
-      scaleUpMinConviction
+      scaleUpMinConviction,
+      scaleDownPct,
+      exitPartialPct
     }
   };
 }
