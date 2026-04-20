@@ -409,8 +409,17 @@ jobs:
           : > state/last-run-output.log
           PROBE_MIN_CONV="${{ inputs.payload_probe_min_conviction }}"
           PROBE_MODE="${{ inputs.payload_probe_mode }}"
-          echo "[PROBE] payload path with DRY_RISK_OFF_MIN_CONVICTION=${PROBE_MIN_CONV} HF_PAYLOAD_PROBE_MODE=${PROBE_MODE}"
-          HF_PAYLOAD_PROBE_MODE="${PROBE_MODE}" DRY_RISK_OFF_MIN_CONVICTION="${PROBE_MIN_CONV}" FORCE_SEND_ONCE=true node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
+          echo "[PROBE] payload path with DRY_RISK_OFF_MIN_CONVICTION=${PROBE_MIN_CONV} HF_PAYLOAD_PROBE_MODE=${PROBE_MODE} (forced dry-safe lane)"
+          # Keep probe execution in a dry-safe lane so payload-path verification can be written without live-submit risk.
+          READ_ONLY=true \
+          EXEC_ENABLED=false \
+          SIMULATION_LIVE_PARITY=false \
+          LIVE_ORDER_SUBMIT_ENABLED=false \
+          TELEGRAM_SEND_ENABLED=false \
+          HF_PAYLOAD_PROBE_MODE="${PROBE_MODE}" \
+          DRY_RISK_OFF_MIN_CONVICTION="${PROBE_MIN_CONV}" \
+          FORCE_SEND_ONCE=true \
+          node dist/src/index.js 2>&1 | tee -a state/last-run-output.log
           cp state/last-run.json state/payload-probe/last-run.json
           cp state/last-dry-exec-preview.json state/payload-probe/last-dry-exec-preview.json
 

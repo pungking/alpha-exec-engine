@@ -437,6 +437,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
       - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
+      - Probe step is executed with temporary dry-safe overrides (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`) to allow probe mutation without live-submit risk.
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
   - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
   - Optional auto-dispatch (`VALIDATION_PACK_AUTO_TRIGGER_ENABLED=true`):
