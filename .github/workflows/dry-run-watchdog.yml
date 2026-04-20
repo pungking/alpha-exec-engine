@@ -128,18 +128,11 @@ jobs:
           TARGET_BRANCH: ${{ steps.eval.outputs.target_branch }}
         run: |
           set -euo pipefail
-          echo "[WATCHDOG] triggering fallback workflow=${TARGET_WORKFLOW} branch=${TARGET_BRANCH}"
+          echo "[WATCHDOG] triggering fallback workflow=${TARGET_WORKFLOW} branch=${TARGET_BRANCH} mode=parity_defaults"
+          # Keep fallback parity with schedule runs by not overriding workflow_dispatch inputs.
           gh workflow run "${TARGET_WORKFLOW}" \
             -R "${GITHUB_REPOSITORY}" \
-            --ref "${TARGET_BRANCH}" \
-            -f run_force_send_once=false \
-            -f run_allow_entry_outside_rth=false \
-            -f run_actionable_include_speculative_buy=false \
-            -f run_position_lifecycle_enabled=false \
-            -f run_position_lifecycle_preview_only=true \
-            -f run_position_lifecycle_action_preset=ENTRY_AND_HOLD \
-            -f validation_pack=false \
-            -f payload_probe=false
+            --ref "${TARGET_BRANCH}"
 
       - name: Watchdog summary
         run: |
