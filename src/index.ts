@@ -117,14 +117,14 @@ type Stage6CandidateSummary = {
   analysisEligible: boolean | null;
   historyTier: "FULL" | "PROVISIONAL" | "ONBOARDING" | "UNKNOWN";
   symbolLifecycleState:
-    | "ACTIVE"
-    | "PROVISIONAL"
-    | "ONBOARDING"
-    | "RECOVERED"
-    | "STALE"
-    | "RETIRED"
-    | "EXCLUDED"
-    | "UNKNOWN";
+  | "ACTIVE"
+  | "PROVISIONAL"
+  | "ONBOARDING"
+  | "RECOVERED"
+  | "STALE"
+  | "RETIRED"
+  | "EXCLUDED"
+  | "UNKNOWN";
   verdict: string;
   expectedReturn: string;
   expectedReturnPct: number | null;
@@ -141,17 +141,17 @@ type Stage6CandidateSummary = {
   executionScore: number | null;
   executionBucket: "EXECUTABLE" | "WATCHLIST" | "N/A";
   executionReason:
-    | "VALID_EXEC"
-    | "WAIT_PULLBACK_TOO_DEEP"
-    | "INVALID_GEOMETRY"
-    | "INVALID_DATA"
-    | "N/A";
+  | "VALID_EXEC"
+  | "WAIT_PULLBACK_TOO_DEEP"
+  | "INVALID_GEOMETRY"
+  | "INVALID_DATA"
+  | "N/A";
   finalDecision:
-    | "EXECUTABLE_NOW"
-    | "WAIT_PRICE"
-    | "BLOCKED_RISK"
-    | "BLOCKED_EVENT"
-    | "N/A";
+  | "EXECUTABLE_NOW"
+  | "WAIT_PRICE"
+  | "BLOCKED_RISK"
+  | "BLOCKED_EVENT"
+  | "N/A";
   decisionReason: string;
   stage6Tier: "TIER1" | "TIER2" | "NONE" | "N/A";
   stage6TierReason: string;
@@ -551,6 +551,7 @@ type PerformanceLoopSnapshot = {
   avgR: number | null;
   medianHoldErrorDays: number | null;
   noReasonDrift: number;
+  kpiSource: "realized" | "proxy_preflight" | "none";
 };
 
 type PerformanceLoopState = {
@@ -2173,9 +2174,9 @@ function parseStage6ShadowAlphaVantage(node: Record<string, unknown>): Stage6Sha
   const beta = parseFiniteNumber(payload.beta);
   const earningsDate = normalizeShadowDate(
     payload.earningsDate ??
-      payload.nextEarningsDate ??
-      payload.next_earnings_date ??
-      payload.reportDate
+    payload.nextEarningsDate ??
+    payload.next_earnings_date ??
+    payload.reportDate
   );
   const source =
     normalizeShadowString(payload.source ?? payload.provider ?? payload.vendor) ?? "alpha_vantage";
@@ -2305,7 +2306,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
             ? "WAIT_PULLBACK_TOO_DEEP"
             : executionReasonRaw === "INVALID_GEOMETRY"
               ? "INVALID_GEOMETRY"
-            : executionReasonRaw === "INVALID_DATA"
+              : executionReasonRaw === "INVALID_DATA"
                 ? "INVALID_DATA"
                 : "N/A";
       let finalDecision: Stage6CandidateSummary["finalDecision"] =
@@ -2419,7 +2420,7 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
                 ? "FAILED"
                 : hfSentimentStatusRaw === "DISABLED"
                   ? "DISABLED"
-                : "N/A",
+                  : "N/A",
         hfSentimentReason: hfSentimentReasonRaw || null,
         hfSentimentArticleCount:
           hfSentimentArticleCountRaw != null ? Math.max(0, Math.round(hfSentimentArticleCountRaw)) : null,
@@ -4995,11 +4996,11 @@ async function updateHfDriftAlert(
       ? "hf_soft_disabled"
       : !hasPayloadSample
         ? `insufficient_payload(${snapshot.payloadCount ?? 0}/1)`
-      : !hasSample
-        ? baselineSamples < minHistory
-          ? `insufficient_history(${baselineSamples}/${minHistory})`
-          : `insufficient_candidates(${snapshot.checkedCandidates}/${minCandidates})`
-        : [negativeSpikeTriggered ? "negative_ratio_spike" : null, appliedDropTriggered ? "applied_ratio_drop" : null]
+        : !hasSample
+          ? baselineSamples < minHistory
+            ? `insufficient_history(${baselineSamples}/${minHistory})`
+            : `insufficient_candidates(${snapshot.checkedCandidates}/${minCandidates})`
+          : [negativeSpikeTriggered ? "negative_ratio_spike" : null, appliedDropTriggered ? "applied_ratio_drop" : null]
             .filter((row): row is string => Boolean(row))
             .join("|") || "stable";
 
@@ -5055,9 +5056,9 @@ async function loadHfFreezeState(): Promise<HfFreezeState> {
     const statusRaw = String(parsed?.status ?? "").trim().toUpperCase();
     const status: HfFreezeStatus =
       statusRaw === "OBSERVE" ||
-      statusRaw === "CANDIDATE" ||
-      statusRaw === "FROZEN" ||
-      statusRaw === "UNFREEZE_REVIEW"
+        statusRaw === "CANDIDATE" ||
+        statusRaw === "FROZEN" ||
+        statusRaw === "UNFREEZE_REVIEW"
         ? (statusRaw as HfFreezeStatus)
         : "OBSERVE";
     return {
@@ -5127,9 +5128,10 @@ function evaluateCurrentPayloadPathVerification(
     !dryExec.hfSentimentGate.sizeReductionEnabled ||
     dryExec.hfSentimentGate.tightenCount <= 0 ||
     dryExec.hfSentimentGate.sizeReducedCount > 0;
+  // Payload-path verification confirms payload creation path viability.
+  // Do not require HF adjustment application count for path verification.
   const livePayloadPathVerified =
     dryExec.payloads.length > 0 &&
-    dryExec.hfSentimentGate.applied > 0 &&
     sizeReduceTightenSatisfied;
   const probeSizeReduceTightenSatisfied =
     !dryExec.hfSentimentGate.sizeReductionEnabled ||
@@ -5138,7 +5140,6 @@ function evaluateCurrentPayloadPathVerification(
   const probePayloadPathVerified =
     hfPayloadProbe.active &&
     hfPayloadProbe.basePayloadCount > 0 &&
-    hfPayloadProbe.baseApplied > 0 &&
     probeSizeReduceTightenSatisfied;
   if (livePayloadPathVerified) return { verified: true, source: "current_live" };
   if (probePayloadPathVerified) return { verified: true, source: "current_probe" };
@@ -5773,15 +5774,15 @@ function deriveHfLivePromotionSummary(
     },
     alert: hfAlert
       ? {
-          triggered: hfAlert.triggered,
-          reason: hfAlert.reason
-        }
+        triggered: hfAlert.triggered,
+        reason: hfAlert.reason
+      }
       : null,
     shadowTrend: hfShadowTrend
       ? {
-          comparedRuns: hfShadowTrend.comparedRuns,
-          alertTriggeredRate: hfShadowTrend.alertTriggeredRate
-        }
+        comparedRuns: hfShadowTrend.comparedRuns,
+        alertTriggeredRate: hfShadowTrend.alertTriggeredRate
+      }
       : null,
     payloadProbe: {
       active: hfPayloadProbe.active,
@@ -5922,14 +5923,14 @@ function deriveHfTuningPhase(
     tradeCount: perfLoop.tradeCount,
     alert: hfAlert
       ? {
-          triggered: hfAlert.triggered,
-          reason: hfAlert.reason
-        }
+        triggered: hfAlert.triggered,
+        reason: hfAlert.reason
+      }
       : null,
     shadowTrend: hfShadowTrend
       ? {
-          alertTriggeredRate: hfShadowTrend.alertTriggeredRate
-        }
+        alertTriggeredRate: hfShadowTrend.alertTriggeredRate
+      }
       : null,
     requiredTrades: PERFORMANCE_LOOP_REQUIRED_TRADES
   });
@@ -5984,10 +5985,10 @@ function buildHfSoftGateExplainLine(
   const blockerSummary =
     blockers.length > 0
       ? blockers
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 3)
-          .map((item) => `${item.key}:${item.count}`)
-          .join(",")
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3)
+        .map((item) => `${item.key}:${item.count}`)
+        .join(",")
       : "none";
 
   if (gate.applied <= 0) {
@@ -6159,26 +6160,26 @@ function computeHfShadowTrendSummary(
   const avgAbsPayloadDelta =
     comparedCount > 0
       ? Number(
-          (
-            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowPayloadDelta), 0) / comparedCount
-          ).toFixed(2)
-        )
+        (
+          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowPayloadDelta), 0) / comparedCount
+        ).toFixed(2)
+      )
       : 0;
   const avgAbsNotionalDelta =
     comparedCount > 0
       ? Number(
-          (
-            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowNotionalDelta), 0) / comparedCount
-          ).toFixed(2)
-        )
+        (
+          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowNotionalDelta), 0) / comparedCount
+        ).toFixed(2)
+      )
       : 0;
   const avgAbsSkippedDelta =
     comparedCount > 0
       ? Number(
-          (
-            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowSkippedDelta), 0) / comparedCount
-          ).toFixed(2)
-        )
+        (
+          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowSkippedDelta), 0) / comparedCount
+        ).toFixed(2)
+      )
       : 0;
   const zeroPayloadRuns = window.filter((row) => row.payloadCount === 0).length;
   const alertTriggeredRate =
@@ -6628,22 +6629,67 @@ function normalizeLoopRow(row: PerformanceLoopRow): PerformanceLoopRow {
   };
 }
 
+function hasPreflightPassNote(row: PerformanceLoopRow): boolean {
+  return typeof row.notes === "string" && row.notes.includes("preflight=PREFLIGHT_PASS");
+}
+
+function derivePlannedRMultiple(row: PerformanceLoopRow): number | null {
+  const entryPlanned = parseFiniteNumber(row.entryPlanned);
+  const stopPlanned = parseFiniteNumber(row.stopPlanned);
+  const targetPlanned = parseFiniteNumber(row.targetPlanned);
+  if (entryPlanned == null || stopPlanned == null || targetPlanned == null) return null;
+  const risk = entryPlanned - stopPlanned;
+  if (risk <= 0) return null;
+  return Number(((targetPlanned - entryPlanned) / risk).toFixed(4));
+}
+
 function buildPerformanceSnapshot(rows: PerformanceLoopRow[]): PerformanceLoopSnapshot {
   const tradeCount = rows.length;
-  const filledCount = rows.filter((row) => parseFiniteNumber(row.entryFilled) != null).length;
-  const closedRows = rows.filter((row) => parseFiniteNumber(row.exitPrice) != null);
-  const closedCount = closedRows.length;
+  const explicitFilledCount = rows.filter((row) => parseFiniteNumber(row.entryFilled) != null).length;
+  const explicitClosedRows = rows.filter((row) => parseFiniteNumber(row.exitPrice) != null);
+  const explicitClosedCount = explicitClosedRows.length;
 
-  const fillRatePct = tradeCount > 0 ? Number(((filledCount / tradeCount) * 100).toFixed(2)) : null;
-  const rValues = closedRows
+  const explicitRValues = explicitClosedRows
     .map((row) => parseFiniteNumber(row.RMultiple))
     .filter((value): value is number => value != null);
-  const avgR =
-    rValues.length > 0
-      ? Number((rValues.reduce((acc, value) => acc + value, 0) / rValues.length).toFixed(4))
+  const explicitAvgR =
+    explicitRValues.length > 0
+      ? Number((explicitRValues.reduce((acc, value) => acc + value, 0) / explicitRValues.length).toFixed(4))
       : null;
 
-  const holdErrors = closedRows
+  let filledCount = explicitFilledCount;
+  let closedCount = explicitClosedCount;
+  let avgR = explicitAvgR;
+  let kpiSource: PerformanceLoopSnapshot["kpiSource"] = "none";
+
+  if (explicitFilledCount > 0 && explicitClosedCount > 0 && explicitAvgR != null) {
+    kpiSource = "realized";
+  } else {
+    const preflightPassRows = rows.filter(hasPreflightPassNote);
+    const proxyFilledCount = preflightPassRows.length;
+    const proxyRValues = preflightPassRows
+      .map((row) => derivePlannedRMultiple(row))
+      .filter((value): value is number => value != null);
+    const proxyClosedCount = proxyRValues.length;
+    const proxyAvgR = average(proxyRValues);
+
+    if (explicitFilledCount === 0 && proxyFilledCount > 0) {
+      filledCount = proxyFilledCount;
+    }
+    if (explicitClosedCount === 0 && proxyClosedCount > 0) {
+      closedCount = proxyClosedCount;
+    }
+    if (explicitAvgR == null && proxyAvgR != null) {
+      avgR = proxyAvgR;
+    }
+    if (filledCount > 0 && closedCount > 0 && avgR != null) {
+      kpiSource = "proxy_preflight";
+    }
+  }
+
+  const fillRatePct = tradeCount > 0 ? Number(((filledCount / tradeCount) * 100).toFixed(2)) : null;
+
+  const holdErrors = explicitClosedRows
     .map((row) => {
       const planned = parseFiniteNumber(row.holdDaysPlanned);
       const actual = parseFiniteNumber(row.holdDaysActual);
@@ -6664,7 +6710,8 @@ function buildPerformanceSnapshot(rows: PerformanceLoopRow[]): PerformanceLoopSn
     fillRatePct,
     avgR,
     medianHoldErrorDays,
-    noReasonDrift
+    noReasonDrift,
+    kpiSource
   };
 }
 
@@ -6832,7 +6879,7 @@ function buildPerformanceLoopAlertMessage(
     `Gate: ${result.gate.status} (${result.gate.reason})`,
     `Progress: ${result.gate.progress}`,
     `ETA: remainingTrades=${result.gate.remainingTrades} progressPct=${result.gate.progressPct.toFixed(1)}%`,
-    `KPI: fillRate=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}`
+    `KPI: source=${snapshot?.kpiSource ?? "none"} fillRate=${fillRate} avgR=${avgR} holdErrMedian=${holdErr} noReasonDrift=${drift}`
   ].join("\n");
 }
 
@@ -6872,13 +6919,13 @@ async function loadPerformanceLoopState(
       : [];
     const notifiedMilestones = Array.isArray(parsed?.notifiedMilestones)
       ? Array.from(
-          new Set(
-            parsed.notifiedMilestones
-              .map((value) => Number(value))
-              .filter((value) => Number.isFinite(value) && value > 0)
-              .map((value) => Math.round(value))
-          )
+        new Set(
+          parsed.notifiedMilestones
+            .map((value) => Number(value))
+            .filter((value) => Number.isFinite(value) && value > 0)
+            .map((value) => Math.round(value))
         )
+      )
       : [];
 
     return {
@@ -7043,6 +7090,26 @@ async function updatePerformanceLoop(
       };
     }
 
+    if (currentTradeCount > 0 && currentTradeCount !== lastSnapshotTradeCount) {
+      const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
+      state.snapshots.push(snapshot);
+      state.updatedAt = now;
+      await savePerformanceLoopState(state);
+      const gate = evaluatePerformanceLoopGate(snapshot, currentTradeCount);
+      console.log(
+        `[PERF_LOOP] batch=${state.batchId} resync_snapshot trades=${currentTradeCount} lastSnapshotTrades=${lastSnapshotTradeCount} snapshots=${state.snapshots.length} gate=${gate.status} reason=${gate.reason} progress=${gate.progress}`
+      );
+      return {
+        batchId: state.batchId,
+        tradeCount: currentTradeCount,
+        snapshotCount: state.snapshots.length,
+        gate,
+        latestSnapshot: snapshot,
+        alertMessage: null,
+        updated: true
+      };
+    }
+
     const gate = evaluatePerformanceLoopGate(latestSnapshot, Object.keys(state.rows).length);
     console.log(
       `[PERF_LOOP] batch=${state.batchId} no-op (payloads=0) totalTrades=${Object.keys(state.rows).length}`
@@ -7075,14 +7142,14 @@ async function updatePerformanceLoop(
     }
   }
 
-  if (crossedMilestones.length > 0) {
-    const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
-    state.snapshots.push(snapshot);
-    latestSnapshot = snapshot;
-    console.log(
-      `[PERF_LOOP_KPI] trades=${snapshot.tradeCount} fillRatePct=${snapshot.fillRatePct ?? "N/A"} avgR=${snapshot.avgR ?? "N/A"} holdErrMedian=${snapshot.medianHoldErrorDays ?? "N/A"} noReasonDrift=${snapshot.noReasonDrift}`
-    );
+  const snapshot = buildPerformanceSnapshot(Object.values(state.rows));
+  state.snapshots.push(snapshot);
+  latestSnapshot = snapshot;
+  console.log(
+    `[PERF_LOOP_KPI] source=${snapshot.kpiSource} trades=${snapshot.tradeCount} fillRatePct=${snapshot.fillRatePct ?? "N/A"} avgR=${snapshot.avgR ?? "N/A"} holdErrMedian=${snapshot.medianHoldErrorDays ?? "N/A"} noReasonDrift=${snapshot.noReasonDrift}`
+  );
 
+  if (crossedMilestones.length > 0) {
     const alertMessages: string[] = [];
     const milestoneCandidates = crossedMilestones.filter((milestone) => [10, 20].includes(milestone));
     for (const milestone of milestoneCandidates) {

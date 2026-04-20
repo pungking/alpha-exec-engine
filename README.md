@@ -351,7 +351,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Live promotion checklist (suggestion-only):
     - `[HF_LIVE_PROMOTION] ...` emits `BLOCK/HOLD/PASS` with checklist pass ratio.
     - Summary marker: `[RUN_SUMMARY] ... hf_live_promotion=...`.
-    - Payload-path verification sticky carry is TTL-based via `state/hf-live-promotion-state.json`.
+    - Payload-path verification checks payload-path viability (`payloads > 0` with tighten/size-reduce integrity), not whether HF adjustment was applied.
+    - Sticky carry is TTL-based via `state/hf-live-promotion-state.json`.
     - Policy env (all default `true`):
       - `HF_LIVE_PROMOTION_REQUIRE_PERF_GATE_GO`
       - `HF_LIVE_PROMOTION_REQUIRE_FREEZE_FROZEN`
@@ -487,7 +488,12 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
-  - `Sim Rows` = cumulative loop rows (history total), `latest snapshot tradeCount` = latest KPI snapshot count (can lag by design)
+  - `Sim Rows` = cumulative loop rows (history total), `latest snapshot tradeCount` = latest KPI snapshot count.
+  - Snapshot is refreshed on every touched run and auto-resynced when row/snapshot counts drift.
+  - KPI source marker (`kpiSource`) is included in snapshots:
+    - `realized` = filled/closed telemetry available
+    - `proxy_preflight` = fallback proxy from `preflight=PREFLIGHT_PASS` rows when realized telemetry is missing
+    - `none` = insufficient KPI telemetry
 - Live source (optional, auto-detected):
   - Alpaca `/v2/account`, `/v2/positions`, `/v2/orders?status=open`
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
