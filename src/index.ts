@@ -97,8 +97,22 @@ type Stage6LoadResult = {
   sha256: string;
   candidateSymbols: string[];
   candidates: Stage6CandidateSummary[];
+  allCandidates: Stage6CandidateSummary[];
   modelTopCandidates: Stage6CandidateSummary[];
   contractContext: Stage6ContractContext | null;
+};
+
+type HeldPositionSnapshot = {
+  symbol: string;
+  qty: number;
+  side: "long" | "short";
+  marketValue: number | null;
+  costBasis: number | null;
+  avgEntryPrice: number | null;
+  currentPrice: number | null;
+  unrealizedPnlPct: number | null;
+  intradayPnlPct: number | null;
+  ageDays: number | null;
 };
 
 type Stage6ContractContext = {
@@ -1157,6 +1171,36 @@ function printStartupSummary() {
   const shadowDataBus = buildShadowDataBusSummary();
   const approvalCfg = buildApprovalQueueGateConfig();
   const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
+  const lifecycleExitFullMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
+    0.01,
+    0.5
+  );
+  const lifecycleExitPartialMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_LOSS_PCT", 0.05),
+    0.01,
+    0.5
+  );
+  const lifecycleScaleDownMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT", 0.03),
+    0.005,
+    0.5
+  );
+  const lifecycleRiskOffIntradayShockPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT", 0.025),
+    0.005,
+    0.3
+  );
+  const lifecycleTakeProfitPartialPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT", 0.18),
+    0.02,
+    2
+  );
+  const lifecycleStaleHoldDays = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
+    1,
+    365
+  );
 
   console.log("=== alpha-exec-engine bootstrap ===");
   console.log(`timestamp        : ${now}`);
@@ -1176,6 +1220,12 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_EFMAXC: ${lifecycleThresholds.exitFullMax}`);
   console.log(`LIFECYCLE_EXIT_WL: ${lifecycleThresholds.exitOnWatchlist}`);
   console.log(`LIFECYCLE_EXIT_BL: ${lifecycleThresholds.exitOnBlocked}`);
+  console.log(`LIFECYCLE_EXFLOSS: ${lifecycleExitFullMaxLossPct}`);
+  console.log(`LIFECYCLE_EXPLOSS: ${lifecycleExitPartialMaxLossPct}`);
+  console.log(`LIFECYCLE_SDNLOSS: ${lifecycleScaleDownMaxLossPct}`);
+  console.log(`LIFECYCLE_RISKSHK: ${lifecycleRiskOffIntradayShockPct}`);
+  console.log(`LIFECYCLE_TPPRTL: ${lifecycleTakeProfitPartialPct}`);
+  console.log(`LIFECYCLE_STALE_D: ${lifecycleStaleHoldDays}`);
   console.log(`LIFECYCLE_SELFTS: ${readBoolEnv("LIFECYCLE_SELFTEST", false)}`);
   console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
   console.log(`APPROVAL_PREVIEW: ${approvalCfg.enforceInPreview}`);
@@ -2006,7 +2056,9 @@ function isActionTypeAllowed(
   return lifecycleConfig.allowedActionTypes.includes(actionType);
 }
 
-function isLifecycleExitActionType(actionType: LifecycleActionType | undefined): boolean {
+function isLifecycleExitActionType(
+  actionType: LifecycleActionType | undefined
+): actionType is "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" {
   return actionType === "SCALE_DOWN" || actionType === "EXIT_PARTIAL" || actionType === "EXIT_FULL";
 }
 
@@ -2051,8 +2103,17 @@ function isTransitionAllowed(from: OrderLifecycleStatus, to: OrderLifecycleStatu
   return ORDER_TRANSITIONS[from].has(to);
 }
 
-function buildOrderIdempotencyKey(stage6Hash: string, symbol: string, side: "buy"): string {
-  return `${stage6Hash}:${symbol}:${side}`;
+function buildOrderIdempotencyKey(
+  stage6Hash: string,
+  symbol: string,
+  side: "buy",
+  actionType?: LifecycleActionType
+): string {
+  const base = `${stage6Hash}:${symbol}:${side}`;
+  if (isLifecycleExitActionType(actionType)) {
+    return `${base}:${actionType.toLowerCase()}`;
+  }
+  return base;
 }
 
 function roundToCent(value: number): number {
@@ -2159,7 +2220,13 @@ function extractVixFromMarketSnapshot(payload: unknown): number | null {
 function parseCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
   if (!payload || typeof payload !== "object") return [];
   const root = payload as Record<string, unknown>;
-  return parseCandidateSummariesFromRaw(root.alpha_candidates);
+  return parseCandidateSummariesFromRaw(root.alpha_candidates, 6);
+}
+
+function parseAllCandidateSummaries(payload: unknown): Stage6CandidateSummary[] {
+  if (!payload || typeof payload !== "object") return [];
+  const root = payload as Record<string, unknown>;
+  return parseCandidateSummariesFromRaw(root.alpha_candidates, null);
 }
 
 function normalizeStage6InstrumentType(value: unknown): Stage6CandidateSummary["instrumentType"] {
@@ -2285,11 +2352,11 @@ function parseStage6ShadowIntel(node: Record<string, unknown>): Stage6ShadowInte
   };
 }
 
-function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] {
+function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 6): Stage6CandidateSummary[] {
   if (!Array.isArray(raw)) return [];
   const actionableVerdicts = resolveActionableVerdicts();
 
-  return raw
+  const summaries = raw
     .map((item) => {
       if (!item || typeof item !== "object") return null;
       const node = item as Record<string, unknown>;
@@ -2484,8 +2551,11 @@ function parseCandidateSummariesFromRaw(raw: unknown): Stage6CandidateSummary[] 
         shadowIntel
       };
     })
-    .filter((row): row is Stage6CandidateSummary => row !== null)
-    .slice(0, 6);
+    .filter((row): row is Stage6CandidateSummary => row !== null);
+  if (maxItems == null) return summaries;
+  const limit = Math.max(0, Math.floor(maxItems));
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+  return summaries.slice(0, limit);
 }
 
 function parseStage6DecisionCounts(raw: unknown): Record<string, number> {
@@ -3271,6 +3341,7 @@ async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6Loa
   const jsonText = await downloadStage6Json(accessToken, meta.id);
   const parsed = parseJsonText<unknown>(jsonText, `stage6(${meta.name})`);
   const contractContext = parseStage6ContractContext(parsed);
+  const allCandidates = parseAllCandidateSummaries(parsed);
   const fallbackCandidates = parseCandidateSummaries(parsed);
   const candidates =
     contractContext && contractContext.executablePicks.length > 0
@@ -3291,6 +3362,7 @@ async function loadLatestStage6FromDrive(accessToken: string): Promise<Stage6Loa
     sha256,
     candidateSymbols: symbols,
     candidates,
+    allCandidates,
     modelTopCandidates,
     contractContext
   };
@@ -3302,6 +3374,7 @@ function printStage6Lock(result: Stage6LoadResult) {
     `[STAGE6_LOCK] ${result.fileName} | fileId=${result.fileId} | modified=${result.modifiedTime} | md5=${result.md5Checksum} | sha256=${result.sha256.slice(0, 12)}`
   );
   console.log(`[STAGE6_CANDIDATES] count=${result.candidateSymbols.length} | symbols=${symbolLog}`);
+  console.log(`[STAGE6_ALL_CANDIDATES] count=${result.allCandidates.length}`);
 }
 
 function isSha256Hex(value: string): boolean {
@@ -3368,7 +3441,7 @@ function mergeLifecycleHeldCandidates(
   baseCandidates.forEach((row) => {
     if (row?.symbol) merged.set(row.symbol, row);
   });
-  [...stage6.modelTopCandidates, ...stage6.candidates].forEach((row) => {
+  stage6.allCandidates.forEach((row) => {
     if (!row?.symbol) return;
     if (!heldSymbols.has(row.symbol)) return;
     if (merged.has(row.symbol)) return;
@@ -3647,7 +3720,9 @@ function resolveHeldLifecycleAction(
   effectiveExecutable: boolean,
   effectiveWatchlist: boolean,
   lifecycle: PositionLifecycleConfig,
-  thresholds: LifecycleHeldConvictionThresholds
+  thresholds: LifecycleHeldConvictionThresholds,
+  heldPosition: HeldPositionSnapshot | null,
+  regime: RegimeSelection
 ): LifecycleHeldActionDecision {
   const convictionToken = conviction == null ? "n/a" : conviction.toFixed(1);
   const decisionReasonKey = String(row.decisionReason || "")
@@ -3659,6 +3734,53 @@ function resolveHeldLifecycleAction(
     row.symbolLifecycleState === "STALE" ||
     row.symbolLifecycleState === "RETIRED" ||
     row.symbolLifecycleState === "EXCLUDED";
+  const unrealizedPnlPct = heldPosition?.unrealizedPnlPct ?? null;
+  const intradayPnlPct = heldPosition?.intradayPnlPct ?? null;
+  const holdAgeDays = heldPosition?.ageDays ?? null;
+  const unrealizedToken = unrealizedPnlPct == null ? "n/a" : unrealizedPnlPct.toFixed(4);
+  const intradayToken = intradayPnlPct == null ? "n/a" : intradayPnlPct.toFixed(4);
+  const holdAgeToken = holdAgeDays == null ? "n/a" : holdAgeDays.toFixed(2);
+
+  const regimeRiskOff = regime.profile === "risk_off";
+  const exitFullLossPct = -clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT",
+      regimeRiskOff ? 0.06 : 0.08
+    ),
+    0.01,
+    0.5
+  );
+  const exitPartialLossPct = -clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_LOSS_PCT",
+      regimeRiskOff ? 0.04 : 0.05
+    ),
+    0.01,
+    0.5
+  );
+  const scaleDownLossPct = -clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT",
+      regimeRiskOff ? 0.02 : 0.03
+    ),
+    0.005,
+    0.5
+  );
+  const intradayShockPct = -clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT", 0.025),
+    0.005,
+    0.3
+  );
+  const takeProfitPartialPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT", 0.18),
+    0.02,
+    2
+  );
+  const staleHoldDays = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
+    1,
+    365
+  );
 
   if (effectiveExecutable && conviction != null && conviction >= lifecycle.scaleUpMinConviction) {
     const actionType = resolveHeldPreferredAction("SCALE_UP", lifecycle);
@@ -3695,6 +3817,18 @@ function resolveHeldLifecycleAction(
     }
   }
 
+  if (unrealizedPnlPct != null && unrealizedPnlPct <= exitFullLossPct) {
+    const actionType = resolveHeldPreferredAction("EXIT_FULL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "loss_exit_full",
+        skipReason: null,
+        detail: `upl=${unrealizedToken}|threshold=${exitFullLossPct.toFixed(4)}|profile=${regime.profile}`
+      };
+    }
+  }
+
   if (row.verdict === "PARTIAL_EXIT") {
     const actionType = resolveHeldPreferredAction("EXIT_PARTIAL", lifecycle);
     if (actionType) {
@@ -3703,6 +3837,24 @@ function resolveHeldLifecycleAction(
         actionReason: "stage6_partial_exit_verdict",
         skipReason: null,
         detail: `verdict=${row.verdict}|decision=${finalDecision}|conv=${convictionToken}`
+      };
+    }
+  }
+
+  const riskOffDeRiskSignal =
+    regimeRiskOff &&
+    ((unrealizedPnlPct != null && unrealizedPnlPct <= exitPartialLossPct) ||
+      (unrealizedPnlPct != null && unrealizedPnlPct <= scaleDownLossPct && effectiveWatchlist) ||
+      (intradayPnlPct != null && intradayPnlPct <= intradayShockPct) ||
+      regime.quality.forceRiskOff);
+  if (riskOffDeRiskSignal) {
+    const actionType = resolveHeldPreferredAction("EXIT_PARTIAL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "risk_off_de_risk",
+        skipReason: null,
+        detail: `profile=${regime.profile}|upl=${unrealizedToken}|intraday=${intradayToken}|qualityForce=${regime.quality.forceRiskOff}`
       };
     }
   }
@@ -3732,6 +3884,38 @@ function resolveHeldLifecycleAction(
   }
 
   if (
+    holdAgeDays != null &&
+    holdAgeDays >= staleHoldDays &&
+    (effectiveWatchlist || (conviction != null && conviction <= thresholds.scaleDownMax))
+  ) {
+    const actionType = resolveHeldPreferredAction("SCALE_DOWN", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "stale_hold_scale_down",
+        skipReason: null,
+        detail: `holdAgeDays=${holdAgeToken}|staleDays=${staleHoldDays.toFixed(1)}|decision=${finalDecision}`
+      };
+    }
+  }
+
+  if (
+    unrealizedPnlPct != null &&
+    unrealizedPnlPct >= takeProfitPartialPct &&
+    (effectiveWatchlist || conviction == null || conviction <= thresholds.scaleDownMax)
+  ) {
+    const actionType = resolveHeldPreferredAction("EXIT_PARTIAL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "take_profit_partial",
+        skipReason: null,
+        detail: `upl=${unrealizedToken}|threshold=${takeProfitPartialPct.toFixed(4)}|decision=${finalDecision}`
+      };
+    }
+  }
+
+  if (
     conviction != null &&
     conviction <= thresholds.scaleDownMax &&
     (thresholds.exitOnWatchlist ? effectiveWatchlist || finalDecision === "WAIT_PRICE" : true)
@@ -3754,7 +3938,7 @@ function resolveHeldLifecycleAction(
     actionType: null,
     actionReason: "held_position_hold_wait",
     skipReason: "held_position_hold_wait",
-    detail: `conv=${convictionToken}|decision=${finalDecision}|reason=${decisionReasonKey || "n/a"}|scaleDownMax=${thresholds.scaleDownMax.toFixed(1)}`
+    detail: `conv=${convictionToken}|decision=${finalDecision}|reason=${decisionReasonKey || "n/a"}|upl=${unrealizedToken}|intraday=${intradayToken}|holdAge=${holdAgeToken}|scaleDownMax=${thresholds.scaleDownMax.toFixed(1)}`
   };
 }
 
@@ -3784,6 +3968,7 @@ function buildDryExecPayloads(
     hfSoftGateEnabled?: boolean;
     hfNegativeSizeReductionEnabled?: boolean;
     lifecycleHeldSymbols?: Set<string>;
+    lifecycleHeldContext?: Map<string, HeldPositionSnapshot>;
   }
 ): DryExecBuildResult {
   const runtimeCfg = loadRuntimeConfig();
@@ -3938,6 +4123,7 @@ function buildDryExecPayloads(
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
+  const lifecycleHeldContext = overrides?.lifecycleHeldContext;
   const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
@@ -4115,7 +4301,9 @@ function buildDryExecPayloads(
           effectiveExecutable,
           effectiveWatchlist,
           lifecycle,
-          lifecycleHeldThresholds
+          lifecycleHeldThresholds,
+          lifecycleHeldContext?.get(row.symbol) || null,
+          regime
         );
         if (!heldDecision.actionType) {
           pushSkip(
@@ -4230,7 +4418,7 @@ function buildDryExecPayloads(
       take_profit: { limit_price: Number(target) },
       stop_loss: { stop_price: Number(stop) },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
-      idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy"),
+      idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy", actionType),
       actionType,
       actionReason
     };
@@ -4530,9 +4718,31 @@ async function resolveCurrentPerfGateStatus(dryExec: DryExecBuildResult): Promis
 }
 
 async function loadHeldPositionMap(): Promise<Map<string, number>> {
+  const snapshots = await loadHeldPositionSnapshots();
+  const out = new Map<string, number>();
+  snapshots.forEach((snapshot) => out.set(snapshot.symbol, snapshot.qty));
+  return out;
+}
+
+function deriveHeldAgeDaysFromLedger(
+  symbol: string,
+  ledgerState: OrderLedgerState
+): number | null {
+  let oldestTs = Number.POSITIVE_INFINITY;
+  Object.values(ledgerState.orders).forEach((row) => {
+    if (!row || row.symbol !== symbol) return;
+    const createdTs = Date.parse(row.createdAt);
+    if (!Number.isFinite(createdTs)) return;
+    if (createdTs < oldestTs) oldestTs = createdTs;
+  });
+  if (!Number.isFinite(oldestTs)) return null;
+  return Number((((Date.now() - oldestTs) / (1000 * 60 * 60 * 24))).toFixed(2));
+}
+
+async function loadHeldPositionSnapshots(): Promise<Map<string, HeldPositionSnapshot>> {
   const raw = await fetchAlpacaJson("/v2/positions");
   if (!Array.isArray(raw)) return new Map();
-  const out = new Map<string, number>();
+  const out = new Map<string, HeldPositionSnapshot>();
   raw.forEach((row) => {
     if (!row || typeof row !== "object") return;
     const node = row as Record<string, unknown>;
@@ -4547,7 +4757,34 @@ async function loadHeldPositionMap(): Promise<Map<string, number>> {
           ? Number(qtyRaw)
           : NaN;
     if (!Number.isFinite(qty) || qty === 0) return;
-    out.set(symbol, qty);
+    const side: "long" | "short" = qty > 0 ? "long" : "short";
+    const unrealizedPnlPct = parseFiniteNumber(
+      node.unrealized_plpc ?? node.unrealizedPlpc ?? node.unrealizedPnlPct
+    );
+    const intradayPnlPct = parseFiniteNumber(
+      node.unrealized_intraday_plpc ?? node.unrealizedIntradayPlpc ?? node.intradayPnlPct
+    );
+    out.set(symbol, {
+      symbol,
+      qty,
+      side,
+      marketValue: parseFiniteNumber(node.market_value ?? node.marketValue),
+      costBasis: parseFiniteNumber(node.cost_basis ?? node.costBasis),
+      avgEntryPrice: parseFiniteNumber(node.avg_entry_price ?? node.avgEntryPrice),
+      currentPrice: parseFiniteNumber(node.current_price ?? node.currentPrice),
+      unrealizedPnlPct:
+        unrealizedPnlPct != null ? Number(clamp(unrealizedPnlPct, -10, 10).toFixed(4)) : null,
+      intradayPnlPct:
+        intradayPnlPct != null ? Number(clamp(intradayPnlPct, -10, 10).toFixed(4)) : null,
+      ageDays: null
+    });
+  });
+  const ledgerState = await loadOrderLedgerState();
+  out.forEach((snapshot, symbol) => {
+    out.set(symbol, {
+      ...snapshot,
+      ageDays: deriveHeldAgeDaysFromLedger(symbol, ledgerState)
+    });
   });
   return out;
 }
@@ -4668,6 +4905,171 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
 
   console.log(
     `[LIFECYCLE_SELFTEST] over_exit_guard=${overExitBlocked} partialPct=${partialRatio.toFixed(2)} qtyBefore=${qtyBefore.toFixed(4)} qtyAfterP1=${qtyAfterPartial1.toFixed(4)} qtyAfterP2=${qtyAfterPartial2.toFixed(4)} qtyAfterFull=${qtyAfterFull.toFixed(4)}`
+  );
+
+  const thresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
+  const baseRow: Stage6CandidateSummary = {
+    symbol,
+    instrumentType: "common",
+    analysisEligible: true,
+    historyTier: "FULL",
+    symbolLifecycleState: "ACTIVE",
+    verdict: "BUY",
+    expectedReturn: "N/A",
+    expectedReturnPct: null,
+    entry: "100",
+    entryValue: 100,
+    target: "112",
+    targetValue: 112,
+    stop: "95",
+    stopValue: 95,
+    conviction: "70",
+    qualityScore: 70,
+    modelRank: 1,
+    executionRank: 1,
+    executionScore: 80,
+    executionBucket: "EXECUTABLE",
+    executionReason: "VALID_EXEC",
+    finalDecision: "EXECUTABLE_NOW",
+    decisionReason: "executable_pullback",
+    stage6Tier: "TIER1",
+    stage6TierReason: "selftest",
+    stage6TierMultiplier: 1,
+    displacement: 0,
+    ictPos: 0,
+    trendAlignment: "UP",
+    entryDistancePct: 0,
+    entryFeasible: true,
+    tradePlanStatus: "VALID_EXEC",
+    hfSentimentLabel: null,
+    hfSentimentScore: null,
+    hfSentimentStatus: "N/A",
+    hfSentimentReason: null,
+    hfSentimentArticleCount: null,
+    hfSentimentNewestAgeHours: null,
+    earningsDaysToEvent: null,
+    shadowIntel: null
+  };
+  const regimeDefault: RegimeSelection = {
+    profile: "default",
+    baseProfile: "default",
+    source: "env_fallback",
+    vix: null,
+    sourcePriority: "realtime_first",
+    snapshotVix: null,
+    snapshotAgeMin: null,
+    riskOnThreshold: 22,
+    riskOffThreshold: 25,
+    diagnostics: [],
+    quality: {
+      enabled: true,
+      score: 100,
+      minScore: 60,
+      status: "high",
+      forceRiskOff: false,
+      reasons: []
+    },
+    hysteresis: {
+      enabled: true,
+      minHoldMin: 30,
+      previousProfile: null,
+      desiredProfile: "default",
+      appliedProfile: "default",
+      holdRemainingMin: 0,
+      reason: "selftest"
+    },
+    entryGuard: {
+      blocked: false,
+      reason: "none"
+    }
+  };
+  const regimeRiskOff: RegimeSelection = {
+    ...regimeDefault,
+    profile: "risk_off",
+    baseProfile: "risk_off",
+    quality: {
+      ...regimeDefault.quality,
+      forceRiskOff: true
+    },
+    hysteresis: {
+      ...regimeDefault.hysteresis,
+      desiredProfile: "risk_off",
+      appliedProfile: "risk_off"
+    }
+  };
+  const heldForScaleDown: HeldPositionSnapshot = {
+    symbol,
+    qty: 10,
+    side: "long",
+    marketValue: 1000,
+    costBasis: 1000,
+    avgEntryPrice: 100,
+    currentPrice: 100,
+    unrealizedPnlPct: -0.01,
+    intradayPnlPct: -0.005,
+    ageDays: 20
+  };
+  const heldForExitPartial: HeldPositionSnapshot = {
+    symbol,
+    qty: 10,
+    side: "long",
+    marketValue: 920,
+    costBasis: 1000,
+    avgEntryPrice: 100,
+    currentPrice: 92,
+    unrealizedPnlPct: -0.08,
+    intradayPnlPct: -0.03,
+    ageDays: 5
+  };
+  const heldForExitFull: HeldPositionSnapshot = {
+    symbol,
+    qty: 10,
+    side: "long",
+    marketValue: 900,
+    costBasis: 1000,
+    avgEntryPrice: 100,
+    currentPrice: 90,
+    unrealizedPnlPct: -0.12,
+    intradayPnlPct: -0.04,
+    ageDays: 10
+  };
+  const actionScaleDown = resolveHeldLifecycleAction(
+    { ...baseRow, executionBucket: "WATCHLIST", finalDecision: "WAIT_PRICE", decisionReason: "wait_pullback_not_reached" },
+    thresholds.scaleDownMax - 1,
+    false,
+    true,
+    cfg.positionLifecycle,
+    thresholds,
+    heldForScaleDown,
+    regimeDefault
+  );
+  const actionExitPartial = resolveHeldLifecycleAction(
+    { ...baseRow, executionBucket: "WATCHLIST", finalDecision: "WAIT_PRICE", decisionReason: "wait_pullback_not_reached" },
+    thresholds.exitPartialMax - 1,
+    false,
+    true,
+    cfg.positionLifecycle,
+    thresholds,
+    heldForExitPartial,
+    regimeRiskOff
+  );
+  const actionExitFull = resolveHeldLifecycleAction(
+    {
+      ...baseRow,
+      executionBucket: "WATCHLIST",
+      finalDecision: "BLOCKED_RISK",
+      decisionReason: "blocked_rr_below_min"
+    },
+    thresholds.exitFullMax - 1,
+    false,
+    true,
+    cfg.positionLifecycle,
+    thresholds,
+    heldForExitFull,
+    regimeRiskOff
+  );
+  console.log(
+    `[LIFECYCLE_SELFTEST] held_rules scaleDown=${actionScaleDown.actionType ?? "HOLD_WAIT"} partial=${actionExitPartial.actionType ?? "HOLD_WAIT"} full=${actionExitFull.actionType ?? "HOLD_WAIT"}`
   );
 }
 
@@ -7853,6 +8255,36 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const regimeHysteresisEnabled = readBoolEnv("REGIME_HYSTERESIS_ENABLED", true);
   const regimeMinHoldMin = Math.max(0, readNonNegativeNumberEnv("REGIME_MIN_HOLD_MIN", 30));
   const regimeVixMismatchPct = readPositiveNumberEnv("REGIME_VIX_MISMATCH_PCT", 8);
+  const lifecycleExitFullMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
+    0.01,
+    0.5
+  );
+  const lifecycleExitPartialMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_LOSS_PCT", 0.05),
+    0.01,
+    0.5
+  );
+  const lifecycleScaleDownMaxLossPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT", 0.03),
+    0.005,
+    0.5
+  );
+  const lifecycleRiskOffIntradayShockPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT", 0.025),
+    0.005,
+    0.3
+  );
+  const lifecycleTakeProfitPartialPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT", 0.18),
+    0.02,
+    2
+  );
+  const lifecycleStaleHoldDays = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
+    1,
+    365
+  );
   return [
     `READ_ONLY=${cfg.readOnly}`,
     `EXEC_ENABLED=${cfg.execEnabled}`,
@@ -7883,6 +8315,12 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION=${lifecycleThresholds.exitFullMax}`,
     `POSITION_LIFECYCLE_EXIT_ON_WATCHLIST=${lifecycleThresholds.exitOnWatchlist}`,
     `POSITION_LIFECYCLE_EXIT_ON_BLOCKED=${lifecycleThresholds.exitOnBlocked}`,
+    `POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT=${lifecycleExitFullMaxLossPct}`,
+    `POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_LOSS_PCT=${lifecycleExitPartialMaxLossPct}`,
+    `POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT=${lifecycleScaleDownMaxLossPct}`,
+    `POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT=${lifecycleRiskOffIntradayShockPct}`,
+    `POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT=${lifecycleTakeProfitPartialPct}`,
+    `POSITION_LIFECYCLE_STALE_HOLD_DAYS=${lifecycleStaleHoldDays}`,
     `LIFECYCLE_SELFTEST=${readBoolEnv("LIFECYCLE_SELFTEST", false)}`,
     `APPROVAL_REQUIRED=${approvalCfg.required}`,
     `APPROVAL_ENFORCE_IN_PREVIEW=${approvalCfg.enforceInPreview}`,
@@ -8318,10 +8756,11 @@ async function main() {
   const hfPayloadProbeApplied = applyHfPayloadProbe(actionableRaw, cfg);
   const actionable = hfPayloadProbeApplied.actionable;
   let lifecycleHeldSymbols: Set<string> | undefined;
+  let lifecycleHeldContext: Map<string, HeldPositionSnapshot> | undefined;
   if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
     try {
-      const heldQtyBySymbol = await loadHeldPositionMap();
-      lifecycleHeldSymbols = new Set([...heldQtyBySymbol.keys()]);
+      lifecycleHeldContext = await loadHeldPositionSnapshots();
+      lifecycleHeldSymbols = new Set([...lifecycleHeldContext.keys()]);
       console.log(
         `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
         }`
@@ -8343,7 +8782,8 @@ async function main() {
     );
   }
   const dryExecBaseRaw = buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
-    lifecycleHeldSymbols
+    lifecycleHeldSymbols,
+    lifecycleHeldContext
   });
   const hfPayloadProbe = finalizeHfPayloadProbeSummary(hfPayloadProbeApplied.summary, dryExecBaseRaw);
   const dryExecBase = dryExecBaseRaw;

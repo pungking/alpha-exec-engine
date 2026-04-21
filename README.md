@@ -21,6 +21,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
+- Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
 - Approval queue gate targets entry-expansion intents (`ENTRY_NEW`, `SCALE_UP`) and does not block de-risk sell intents.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
@@ -152,6 +153,12 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION` (default `exit_partial_max-12`; held-symbol auto `EXIT_FULL` conviction trigger upper bound)
 - `POSITION_LIFECYCLE_EXIT_ON_WATCHLIST` (default `true`; allow held-symbol de-risking when Stage6 is watchlist/WAIT)
 - `POSITION_LIFECYCLE_EXIT_ON_BLOCKED` (default `true`; allow held-symbol forced de-risking on Stage6 BLOCKED/HARD-RISK decisions)
+- `POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT` (default `0.08`; hard full-exit loss trigger for held symbols, tighter in risk-off profile)
+- `POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_LOSS_PCT` (default `0.05`; partial-exit loss trigger for held symbols, tighter in risk-off profile)
+- `POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT` (default `0.03`; scale-down loss trigger for held symbols, tighter in risk-off profile)
+- `POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT` (default `0.025`; risk-off intraday shock threshold for forced de-risk)
+- `POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT` (default `0.18`; held-symbol partial take-profit threshold)
+- `POSITION_LIFECYCLE_STALE_HOLD_DAYS` (default `15`; stale holding-period threshold for scale-down when signal quality weakens)
 - `LIFECYCLE_SELFTEST` (default `false`; emits deterministic logs for `scale_up_no_position` and multi-exit over-sell guard validation)
 - `APPROVAL_REQUIRED` (default `false`; when `true`, execution requires approval queue pass)
 - `APPROVAL_ENFORCE_IN_PREVIEW` (default `false`; keep preview lanes collecting payload unless explicitly enabled)
