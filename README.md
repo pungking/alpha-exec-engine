@@ -442,7 +442,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Execution owner (real sidecar runs): `pungking/alpha-exec-engine/.github/workflows/dry-run.yml`.
   - Watchdog owner (real sidecar freshness checks): `pungking/alpha-exec-engine/.github/workflows/dry-run-watchdog.yml`.
   - Template mirror path in this repository: `/sidecar-template/alpha-exec-engine/.github/workflows/*.yml`.
-  - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml` (manual dispatch bridge only).
+  - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml` (manual dispatch bridge only). `schedule.yml` also kicks watchdog cadence slots.
   - These files are intentionally separated; execution logic stays in sidecar repo, bridge logic stays in webapp repo.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
