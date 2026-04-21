@@ -1,3 +1,7 @@
+# REFERENCE WORKFLOW (sidecar template)
+# - This file is a template/reference copy and is not executed from US_Alpha_Seeker root.
+# - Active runner entrypoint in US_Alpha_Seeker is /.github/workflows/dry-run.yml.
+# - Keep selective sync with root workflow when behavior changes.
 name: sidecar-dry-run
 
 on:

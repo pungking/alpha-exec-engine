@@ -438,6 +438,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `docs/OPS_RUNBOOK_20TRADE_GATE.md`
 
 ## Workflow
+- Workflow ownership (avoid path confusion):
+  - Active execution path in this repository: `/.github/workflows/dry-run.yml`.
+  - Reference/template path: `/sidecar-template/alpha-exec-engine/.github/workflows/dry-run.yml`.
+  - These files are intentionally separated; sync selectively when behavior changes.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
