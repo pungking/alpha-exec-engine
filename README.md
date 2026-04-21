@@ -219,6 +219,10 @@ Use `.env.example` as baseline.
 - `SIDECAR_WATCHDOG_LOOKBACK_MINUTES` (default `180`; summary lookback window used in watchdog telemetry)
 - `SIDECAR_WATCHDOG_TARGET_WORKFLOW` (default `dry-run.yml`; workflow filename to dispatch)
 - `SIDECAR_WATCHDOG_BRANCH` (default `main`; branch used for fallback dispatch)
+- `SIDECAR_BRIDGE_STALE_MINUTES` (optional bridge override for watchdog stale threshold; falls back to `SIDECAR_WATCHDOG_STALE_MINUTES`)
+- `SIDECAR_BRIDGE_LOOP_ENABLED` (optional, default `false`; enables watchdog self-healing requeue loop mode)
+- `SIDECAR_BRIDGE_LOOP_INTERVAL_MIN` (optional, default `15`; self-healing loop interval in minutes)
+- `SIDECAR_BRIDGE_LOOP_MAX_RUNS` (optional, default `48`; maximum chained watchdog runs before automatic stop)
 - `VALIDATION_PACK_AUTO_TRIGGER_ENABLED` (default `false`; auto-dispatch one `validation_pack=true` run when gate reaches final `20/20`)
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
@@ -443,6 +447,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Watchdog owner (real sidecar freshness checks): `pungking/alpha-exec-engine/.github/workflows/dry-run-watchdog.yml`.
   - Template mirror path in this repository: `/sidecar-template/alpha-exec-engine/.github/workflows/*.yml`.
   - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml` (manual dispatch bridge only). `schedule.yml` also kicks watchdog cadence slots.
+  - Emergency self-healing mode: run `Sidecar Dispatch Watchdog` with `loop_enabled=true` to keep requeueing watchdog checks at a fixed interval even when GitHub cron slots are missed.
   - These files are intentionally separated; execution logic stays in sidecar repo, bridge logic stays in webapp repo.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
