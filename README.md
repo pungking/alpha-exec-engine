@@ -7,6 +7,11 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Sends execution/simulation Telegram events.
 - Does **not** modify the analysis engine logic.
 
+## Paper Trading Rollout Status
+- "Simulation" in this sidecar context means **paper trading** on Alpaca paper endpoint.
+- Current operational status, run evidence, and next steps are tracked in:
+  - `docs/PAPER_TRADING_ROLLOUT_STATUS.md`
+
 ## Current Dry-Run Behavior
 - Loads the latest `STAGE6_ALPHA_FINAL_*.json` from `GDRIVE_STAGE6_FOLDER`.
 - Prints source lock metadata (`fileId`, `md5`, `sha256`, candidates).
