@@ -1340,6 +1340,7 @@ async function fetchLatestStage6Metadata(accessToken: string) {
   const query = [
     `'${folderId}' in parents`,
     "trashed=false",
+    "mimeType='application/json'",
     "name contains 'STAGE6_ALPHA_FINAL_'"
   ].join(" and ");
 
