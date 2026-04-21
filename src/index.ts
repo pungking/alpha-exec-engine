@@ -968,6 +968,17 @@ const HF_EVIDENCE_HISTORY_MAX_ROWS = 300;
 const PERFORMANCE_LOOP_REQUIRED_TRADES = 20;
 const BASE_ACTIONABLE_VERDICTS = new Set(["BUY", "STRONG_BUY"]);
 const NON_EXECUTABLE_DECISIONS = new Set(["WAIT_PRICE", "BLOCKED_RISK", "BLOCKED_EVENT"]);
+const LIFECYCLE_HARD_EXIT_DECISION_REASONS = new Set([
+  "blocked_symbol_stale",
+  "blocked_invalid_geometry",
+  "blocked_missing_trade_box",
+  "blocked_state_verdict_conflict",
+  "blocked_verdict_risk_off",
+  "blocked_rr_below_min",
+  "blocked_ev_non_positive",
+  "blocked_earnings_window",
+  "blocked_earnings_data_missing"
+]);
 
 function resolveActionableVerdicts(): Set<string> {
   const includeSpeculative = readBoolEnv("ACTIONABLE_INCLUDE_SPECULATIVE_BUY", false);
@@ -1145,6 +1156,7 @@ function printStartupSummary() {
   const check = runEnvGuard();
   const shadowDataBus = buildShadowDataBusSummary();
   const approvalCfg = buildApprovalQueueGateConfig();
+  const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
 
   console.log("=== alpha-exec-engine bootstrap ===");
   console.log(`timestamp        : ${now}`);
@@ -1159,6 +1171,11 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_SCALEUP: ${cfg.positionLifecycle.scaleUpMinConviction}`);
   console.log(`LIFECYCLE_SCALEDN: ${cfg.positionLifecycle.scaleDownPct}`);
   console.log(`LIFECYCLE_EXPART : ${cfg.positionLifecycle.exitPartialPct}`);
+  console.log(`LIFECYCLE_SDMAXC: ${lifecycleThresholds.scaleDownMax}`);
+  console.log(`LIFECYCLE_EPMAXC: ${lifecycleThresholds.exitPartialMax}`);
+  console.log(`LIFECYCLE_EFMAXC: ${lifecycleThresholds.exitFullMax}`);
+  console.log(`LIFECYCLE_EXIT_WL: ${lifecycleThresholds.exitOnWatchlist}`);
+  console.log(`LIFECYCLE_EXIT_BL: ${lifecycleThresholds.exitOnBlocked}`);
   console.log(`LIFECYCLE_SELFTS: ${readBoolEnv("LIFECYCLE_SELFTEST", false)}`);
   console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
   console.log(`APPROVAL_PREVIEW: ${approvalCfg.enforceInPreview}`);
@@ -1500,24 +1517,30 @@ async function applyApprovalQueueGate(
     summaryOverrides?: Partial<ApprovalQueueGateSummary>
   ): { dryExec: DryExecBuildResult; summary: ApprovalQueueGateSummary } => {
     const actionIntentCounts = { ...dryExec.actionIntent.counts };
-    const blockedSkips: DryExecSkipReason[] = dryExec.payloads.map((payload) => {
+    const blockedSkips: DryExecSkipReason[] = [];
+    const passthroughPayloads: DryExecOrderPayload[] = [];
+    for (const payload of dryExec.payloads) {
+      if (!isApprovalRequiredForPayloadAction(payload.actionType)) {
+        passthroughPayloads.push(payload);
+        continue;
+      }
       if (dryExec.actionIntent.enabled && payload.actionType && actionIntentCounts[payload.actionType] > 0) {
         actionIntentCounts[payload.actionType] -= 1;
       }
       if (dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")) {
         actionIntentCounts.HOLD_WAIT += 1;
       }
-      return {
+      blockedSkips.push({
         symbol: payload.symbol,
         reason,
         detail,
         actionType: "HOLD_WAIT",
         actionReason: reason
-      };
-    });
+      });
+    }
     const nextDryExec: DryExecBuildResult = {
       ...dryExec,
-      payloads: [],
+      payloads: passthroughPayloads,
       skipped: [...dryExec.skipped, ...blockedSkips],
       skipReasonCounts: buildSkipReasonCounts([...dryExec.skipped, ...blockedSkips]),
       actionIntent: {
@@ -1541,6 +1564,12 @@ async function applyApprovalQueueGate(
   }
   if (dryExec.payloads.length === 0) {
     return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "no_payload") };
+  }
+  const approvalTargetCount = dryExec.payloads.filter((row) =>
+    isApprovalRequiredForPayloadAction(row.actionType)
+  ).length;
+  if (approvalTargetCount === 0) {
+    return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "no_approval_target_payload") };
   }
   if (preflight.blocking) {
     return { dryExec, summary: createApprovalQueueGateSummary(gateCfg, "preflight_blocking") };
@@ -1599,6 +1628,7 @@ async function applyApprovalQueueGate(
   }
 
   const allowedPayloads: DryExecOrderPayload[] = [];
+  const blockedPayloads: DryExecOrderPayload[] = [];
   const blockedSkips: DryExecSkipReason[] = [];
   const blockedSymbols: string[] = [];
   let matchedApproved = 0;
@@ -1606,6 +1636,10 @@ async function applyApprovalQueueGate(
   let createdPending = 0;
 
   for (const payload of dryExec.payloads) {
+    if (!isApprovalRequiredForPayloadAction(payload.actionType)) {
+      allowedPayloads.push(payload);
+      continue;
+    }
     const symbol = payload.symbol.trim().toUpperCase();
     const rows = recordsBySymbol.get(symbol) || [];
     const latest = rows[0];
@@ -1624,6 +1658,7 @@ async function applyApprovalQueueGate(
         actionType: "HOLD_WAIT",
         actionReason: "approval_pending"
       });
+      blockedPayloads.push(payload);
       continue;
     }
     if (latest?.status === "rejected") {
@@ -1635,6 +1670,7 @@ async function applyApprovalQueueGate(
         actionType: "HOLD_WAIT",
         actionReason: "approval_rejected"
       });
+      blockedPayloads.push(payload);
       continue;
     }
     if (latest?.status === "expired") {
@@ -1646,6 +1682,7 @@ async function applyApprovalQueueGate(
         actionType: "HOLD_WAIT",
         actionReason: "approval_expired"
       });
+      blockedPayloads.push(payload);
       continue;
     }
 
@@ -1679,6 +1716,7 @@ async function applyApprovalQueueGate(
       actionType: "HOLD_WAIT",
       actionReason: "approval_pending"
     });
+    blockedPayloads.push(payload);
   }
 
   if (queueChanged) {
@@ -1696,10 +1734,9 @@ async function applyApprovalQueueGate(
 
   const actionIntentCounts = { ...dryExec.actionIntent.counts };
   if (dryExec.actionIntent.enabled && dryExec.actionIntent.allowedActionTypes.includes("HOLD_WAIT")) {
-    for (const blocked of blockedSkips) {
-      const payload = dryExec.payloads.find((row) => row.symbol === blocked.symbol);
-      if (payload?.actionType && actionIntentCounts[payload.actionType] > 0) {
-        actionIntentCounts[payload.actionType] -= 1;
+    for (const blockedPayload of blockedPayloads) {
+      if (blockedPayload.actionType && actionIntentCounts[blockedPayload.actionType] > 0) {
+        actionIntentCounts[blockedPayload.actionType] -= 1;
       }
       actionIntentCounts.HOLD_WAIT += 1;
     }
@@ -1969,6 +2006,15 @@ function isActionTypeAllowed(
   return lifecycleConfig.allowedActionTypes.includes(actionType);
 }
 
+function isLifecycleExitActionType(actionType: LifecycleActionType | undefined): boolean {
+  return actionType === "SCALE_DOWN" || actionType === "EXIT_PARTIAL" || actionType === "EXIT_FULL";
+}
+
+function isApprovalRequiredForPayloadAction(actionType: LifecycleActionType | undefined): boolean {
+  if (!actionType) return true;
+  return actionType === "ENTRY_NEW" || actionType === "SCALE_UP";
+}
+
 function rebuildActionIntentSummary(dryExec: DryExecBuildResult): DryExecBuildResult["actionIntent"] {
   if (!dryExec.actionIntent.enabled) {
     return {
@@ -1989,8 +2035,15 @@ function rebuildActionIntentSummary(dryExec: DryExecBuildResult): DryExecBuildRe
   };
 }
 
-function sumNotional(payloads: DryExecOrderPayload[]): number {
-  return payloads.reduce((acc, row) => acc + row.notional, 0);
+function sumNotional(
+  payloads: DryExecOrderPayload[],
+  options?: { includeExitActions?: boolean }
+): number {
+  const includeExitActions = options?.includeExitActions ?? false;
+  return payloads.reduce((acc, row) => {
+    if (!includeExitActions && isLifecycleExitActionType(row.actionType)) return acc;
+    return acc + row.notional;
+  }, 0);
 }
 
 function isTransitionAllowed(from: OrderLifecycleStatus, to: OrderLifecycleStatus): boolean {
@@ -3305,6 +3358,25 @@ function getActionableCandidates(
   );
 }
 
+function mergeLifecycleHeldCandidates(
+  baseCandidates: Stage6CandidateSummary[],
+  stage6: Stage6LoadResult,
+  heldSymbols: Set<string> | undefined
+): Stage6CandidateSummary[] {
+  if (!heldSymbols || heldSymbols.size === 0) return baseCandidates;
+  const merged = new Map<string, Stage6CandidateSummary>();
+  baseCandidates.forEach((row) => {
+    if (row?.symbol) merged.set(row.symbol, row);
+  });
+  [...stage6.modelTopCandidates, ...stage6.candidates].forEach((row) => {
+    if (!row?.symbol) return;
+    if (!heldSymbols.has(row.symbol)) return;
+    if (merged.has(row.symbol)) return;
+    merged.set(row.symbol, row);
+  });
+  return Array.from(merged.values());
+}
+
 function parseHfPayloadProbeMode(raw: unknown): HfPayloadProbeMode {
   const normalized = String(raw ?? "")
     .trim()
@@ -3495,6 +3567,215 @@ function computeHfSoftGateAdjustment(
     : { applied: false, delta: 0, mode: "none", earningsWindow: earningsReduce ? "reduced" : "none" };
 }
 
+type LifecycleHeldConvictionThresholds = {
+  scaleDownMax: number;
+  exitPartialMax: number;
+  exitFullMax: number;
+  exitOnWatchlist: boolean;
+  exitOnBlocked: boolean;
+};
+
+type LifecycleHeldActionDecision = {
+  actionType: LifecycleActionType | null;
+  actionReason: string;
+  skipReason: string | null;
+  detail: string;
+};
+
+function resolveLifecycleHeldConvictionThresholds(
+  lifecycle: PositionLifecycleConfig
+): LifecycleHeldConvictionThresholds {
+  const rawScaleDown = clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION",
+      Math.max(0, lifecycle.scaleUpMinConviction - 8)
+    ),
+    0,
+    100
+  );
+  const rawExitPartial = clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_CONVICTION",
+      Math.max(0, rawScaleDown - 12)
+    ),
+    0,
+    100
+  );
+  const rawExitFull = clamp(
+    readNonNegativeNumberEnv(
+      "POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION",
+      Math.max(0, rawExitPartial - 12)
+    ),
+    0,
+    100
+  );
+
+  const scaleDownMax = Number(rawScaleDown.toFixed(1));
+  const exitPartialMax = Number(Math.min(rawExitPartial, scaleDownMax).toFixed(1));
+  const exitFullMax = Number(Math.min(rawExitFull, exitPartialMax).toFixed(1));
+
+  return {
+    scaleDownMax,
+    exitPartialMax,
+    exitFullMax,
+    exitOnWatchlist: readBoolEnv("POSITION_LIFECYCLE_EXIT_ON_WATCHLIST", true),
+    exitOnBlocked: readBoolEnv("POSITION_LIFECYCLE_EXIT_ON_BLOCKED", true)
+  };
+}
+
+function resolveHeldPreferredAction(
+  preferred: "SCALE_UP" | "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL",
+  lifecycle: PositionLifecycleConfig
+): LifecycleActionType | null {
+  const chain: LifecycleActionType[] =
+    preferred === "SCALE_UP"
+      ? ["SCALE_UP"]
+      : preferred === "SCALE_DOWN"
+        ? ["SCALE_DOWN"]
+        : preferred === "EXIT_PARTIAL"
+          ? ["EXIT_PARTIAL", "SCALE_DOWN"]
+          : ["EXIT_FULL", "EXIT_PARTIAL", "SCALE_DOWN"];
+  for (const candidate of chain) {
+    if (isActionTypeAllowed(candidate, lifecycle)) return candidate;
+  }
+  return null;
+}
+
+function resolveHeldLifecycleAction(
+  row: Stage6CandidateSummary,
+  conviction: number | null,
+  effectiveExecutable: boolean,
+  effectiveWatchlist: boolean,
+  lifecycle: PositionLifecycleConfig,
+  thresholds: LifecycleHeldConvictionThresholds
+): LifecycleHeldActionDecision {
+  const convictionToken = conviction == null ? "n/a" : conviction.toFixed(1);
+  const decisionReasonKey = String(row.decisionReason || "")
+    .trim()
+    .toLowerCase();
+  const finalDecision = row.finalDecision;
+  const blockedDecision = finalDecision === "BLOCKED_RISK" || finalDecision === "BLOCKED_EVENT";
+  const symbolStateHardExit =
+    row.symbolLifecycleState === "STALE" ||
+    row.symbolLifecycleState === "RETIRED" ||
+    row.symbolLifecycleState === "EXCLUDED";
+
+  if (effectiveExecutable && conviction != null && conviction >= lifecycle.scaleUpMinConviction) {
+    const actionType = resolveHeldPreferredAction("SCALE_UP", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "existing_position_scale_up",
+        skipReason: null,
+        detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}`
+      };
+    }
+    return {
+      actionType: null,
+      actionReason: "scale_up_not_allowed",
+      skipReason: "scale_up_not_allowed",
+      detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}`
+    };
+  }
+
+  if (
+    thresholds.exitOnBlocked &&
+    (symbolStateHardExit ||
+      blockedDecision ||
+      LIFECYCLE_HARD_EXIT_DECISION_REASONS.has(decisionReasonKey))
+  ) {
+    const actionType = resolveHeldPreferredAction("EXIT_FULL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: symbolStateHardExit ? "held_state_hard_exit" : "held_blocked_hard_exit",
+        skipReason: null,
+        detail: `decision=${finalDecision}|reason=${decisionReasonKey || "n/a"}|conv=${convictionToken}`
+      };
+    }
+  }
+
+  if (row.verdict === "PARTIAL_EXIT") {
+    const actionType = resolveHeldPreferredAction("EXIT_PARTIAL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "stage6_partial_exit_verdict",
+        skipReason: null,
+        detail: `verdict=${row.verdict}|decision=${finalDecision}|conv=${convictionToken}`
+      };
+    }
+  }
+
+  if (conviction != null && conviction <= thresholds.exitFullMax) {
+    const actionType = resolveHeldPreferredAction("EXIT_FULL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "conviction_exit_full_threshold",
+        skipReason: null,
+        detail: `conv=${convictionToken}|threshold=${thresholds.exitFullMax.toFixed(1)}`
+      };
+    }
+  }
+
+  if (conviction != null && conviction <= thresholds.exitPartialMax) {
+    const actionType = resolveHeldPreferredAction("EXIT_PARTIAL", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason: "conviction_exit_partial_threshold",
+        skipReason: null,
+        detail: `conv=${convictionToken}|threshold=${thresholds.exitPartialMax.toFixed(1)}`
+      };
+    }
+  }
+
+  if (
+    conviction != null &&
+    conviction <= thresholds.scaleDownMax &&
+    (thresholds.exitOnWatchlist ? effectiveWatchlist || finalDecision === "WAIT_PRICE" : true)
+  ) {
+    const actionType = resolveHeldPreferredAction("SCALE_DOWN", lifecycle);
+    if (actionType) {
+      return {
+        actionType,
+        actionReason:
+          effectiveWatchlist || finalDecision === "WAIT_PRICE"
+            ? "watchlist_scale_down"
+            : "conviction_scale_down_threshold",
+        skipReason: null,
+        detail: `conv=${convictionToken}|threshold=${thresholds.scaleDownMax.toFixed(1)}|decision=${finalDecision}`
+      };
+    }
+  }
+
+  return {
+    actionType: null,
+    actionReason: "held_position_hold_wait",
+    skipReason: "held_position_hold_wait",
+    detail: `conv=${convictionToken}|decision=${finalDecision}|reason=${decisionReasonKey || "n/a"}|scaleDownMax=${thresholds.scaleDownMax.toFixed(1)}`
+  };
+}
+
+function buildLifecycleExitPriceScaffold(
+  entry: number | null,
+  target: number | null,
+  stop: number | null
+): { entry: number; target: number; stop: number } {
+  const basisRaw = entry ?? target ?? stop ?? 1;
+  const basis = Number.isFinite(basisRaw) && basisRaw > 0 ? basisRaw : 1;
+  const safeEntry = roundToCent(Math.max(basis, 0.01));
+  const safeTarget = roundToCent(Math.max(target ?? safeEntry * 1.01, safeEntry + 0.01));
+  let safeStop = roundToCent(Math.max(0.01, Math.min(stop ?? safeEntry * 0.99, safeEntry - 0.01)));
+  if (safeStop >= safeEntry) safeStop = roundToCent(Math.max(0.01, safeEntry - 0.01));
+  return {
+    entry: safeEntry,
+    target: safeTarget,
+    stop: safeStop
+  };
+}
+
 function buildDryExecPayloads(
   actionable: Stage6CandidateSummary[],
   stage6Hash: string,
@@ -3502,6 +3783,7 @@ function buildDryExecPayloads(
   overrides?: {
     hfSoftGateEnabled?: boolean;
     hfNegativeSizeReductionEnabled?: boolean;
+    lifecycleHeldSymbols?: Set<string>;
   }
 ): DryExecBuildResult {
   const runtimeCfg = loadRuntimeConfig();
@@ -3655,6 +3937,8 @@ function buildDryExecPayloads(
   const entryFeasibilityEnforce = readBoolEnv("ENTRY_FEASIBILITY_ENFORCE", false);
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
+  const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
+  const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
   let allocatedNotional = 0;
@@ -3695,6 +3979,11 @@ function buildDryExecPayloads(
       row.finalDecision === "WAIT_PRICE" ||
       row.finalDecision === "BLOCKED_RISK" ||
       row.finalDecision === "BLOCKED_EVENT";
+    const hasHeldPosition =
+      lifecycle.enabled &&
+      !lifecycle.previewOnly &&
+      lifecycleHeldSymbols != null &&
+      lifecycleHeldSymbols.has(row.symbol);
 
     if (hasBucketSignal || hasDecisionSignal) {
       stage6ContractChecked += 1;
@@ -3719,7 +4008,7 @@ function buildDryExecPayloads(
       return;
     }
 
-    if (stage6ExecutionBucketEnforce && effectiveWatchlist) {
+    if (stage6ExecutionBucketEnforce && effectiveWatchlist && !hasHeldPosition) {
       pushSkip(
         row.symbol,
         row.decisionReason && !isMissingContractToken(row.decisionReason)
@@ -3736,7 +4025,8 @@ function buildDryExecPayloads(
       stage6ExecutionBucketEnforce &&
       effectiveExecutable &&
       !isMissingContractToken(row.executionReason) &&
-      row.executionReason !== "VALID_EXEC"
+      row.executionReason !== "VALID_EXEC" &&
+      !hasHeldPosition
     ) {
       pushSkip(
         row.symbol,
@@ -3797,7 +4087,8 @@ function buildDryExecPayloads(
       if (hfAdjustment.mode === "relief") hfSoftReliefCount += 1;
       if (hfAdjustment.mode === "tighten") hfSoftTightenCount += 1;
     }
-    if (conviction == null || conviction < convictionFloorWithHf) {
+    const convictionBelowEntryFloor = conviction == null || conviction < convictionFloorWithHf;
+    if (convictionBelowEntryFloor && !hasHeldPosition) {
       const skipReason =
         hfAdjustment.mode === "tighten" ? "conviction_below_floor_hf_negative" : "conviction_below_floor";
       if (hfAdjustment.mode === "tighten") hfSoftBlockedNegative += 1;
@@ -3810,61 +4101,114 @@ function buildDryExecPayloads(
       return;
     }
 
-    const entry = row.entryValue ?? parseNumericPrice(row.entry);
-    const target = row.targetValue ?? parseNumericPrice(row.target);
-    const stop = row.stopValue ?? parseNumericPrice(row.stop);
+    const entryRaw = row.entryValue ?? parseNumericPrice(row.entry);
+    const targetRaw = row.targetValue ?? parseNumericPrice(row.target);
+    const stopRaw = row.stopValue ?? parseNumericPrice(row.stop);
 
-    if (!entry || !target || !stop) {
-      pushSkip(row.symbol, "missing_or_invalid_price");
-      return;
-    }
-    if (!(target > entry && stop < entry)) {
-      pushSkip(row.symbol, "invalid_price_geometry");
-      return;
-    }
-    const stopDistancePct = ((entry - stop) / entry) * 100;
-    if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
-      pushSkip(row.symbol, "stop_distance_out_of_range");
-      return;
-    }
-    if (entryFeasibilityEnforce) {
-      entryFeasibilityChecked += 1;
-      if (row.tradePlanStatus === "INVALID_DATA") {
-        pushSkip(row.symbol, "entry_data_missing", "HOLD_WAIT", "entry_data_not_ready");
-        entryFeasibilityBlocked += 1;
-        return;
-      }
-      if (row.tradePlanStatus === "INVALID_GEOMETRY") {
-        pushSkip(row.symbol, "entry_invalid_geometry", "HOLD_WAIT", "entry_geometry_not_ready");
-        entryFeasibilityBlocked += 1;
-        return;
-      }
-      if (row.entryFeasible === false) {
-        const reason = row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP" ? "entry_too_far_from_market" : "entry_feasibility_false";
-        pushSkip(row.symbol, reason, "HOLD_WAIT", "entry_feasibility_not_ready");
-        entryFeasibilityBlocked += 1;
-        return;
-      }
-      if (row.entryDistancePct != null && row.entryDistancePct > entryMaxDistancePct) {
-        pushSkip(row.symbol, "entry_too_far_from_market", "HOLD_WAIT", "entry_distance_over_limit");
-        entryFeasibilityBlocked += 1;
-        return;
+    let actionType: LifecycleActionType | undefined;
+    let actionReason: string | undefined;
+    if (lifecycle.enabled) {
+      if (hasHeldPosition) {
+        const heldDecision = resolveHeldLifecycleAction(
+          row,
+          conviction,
+          effectiveExecutable,
+          effectiveWatchlist,
+          lifecycle,
+          lifecycleHeldThresholds
+        );
+        if (!heldDecision.actionType) {
+          pushSkip(
+            row.symbol,
+            heldDecision.skipReason || "held_position_hold_wait",
+            "HOLD_WAIT",
+            heldDecision.actionReason,
+            heldDecision.detail
+          );
+          return;
+        }
+        actionType = heldDecision.actionType;
+        actionReason = heldDecision.actionReason;
+      } else if (isActionTypeAllowed("ENTRY_NEW", lifecycle)) {
+        actionType = "ENTRY_NEW";
+        actionReason = "stage6_executable_now";
       }
     }
 
-    // Capacity / exposure gate after quality checks.
-    if (payloads.length >= maxOrders) {
+    const isExitAction = isLifecycleExitActionType(actionType);
+    let entry = entryRaw;
+    let target = targetRaw;
+    let stop = stopRaw;
+
+    if (!isExitAction) {
+      if (!entry || !target || !stop) {
+        pushSkip(row.symbol, "missing_or_invalid_price");
+        return;
+      }
+      if (!(target > entry && stop < entry)) {
+        pushSkip(row.symbol, "invalid_price_geometry");
+        return;
+      }
+      const stopDistancePct = ((entry - stop) / entry) * 100;
+      if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
+        pushSkip(row.symbol, "stop_distance_out_of_range");
+        return;
+      }
+      if (entryFeasibilityEnforce) {
+        entryFeasibilityChecked += 1;
+        if (row.tradePlanStatus === "INVALID_DATA") {
+          pushSkip(row.symbol, "entry_data_missing", "HOLD_WAIT", "entry_data_not_ready");
+          entryFeasibilityBlocked += 1;
+          return;
+        }
+        if (row.tradePlanStatus === "INVALID_GEOMETRY") {
+          pushSkip(row.symbol, "entry_invalid_geometry", "HOLD_WAIT", "entry_geometry_not_ready");
+          entryFeasibilityBlocked += 1;
+          return;
+        }
+        if (row.entryFeasible === false) {
+          const reason =
+            row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP"
+              ? "entry_too_far_from_market"
+              : "entry_feasibility_false";
+          pushSkip(row.symbol, reason, "HOLD_WAIT", "entry_feasibility_not_ready");
+          entryFeasibilityBlocked += 1;
+          return;
+        }
+        if (row.entryDistancePct != null && row.entryDistancePct > entryMaxDistancePct) {
+          pushSkip(row.symbol, "entry_too_far_from_market", "HOLD_WAIT", "entry_distance_over_limit");
+          entryFeasibilityBlocked += 1;
+          return;
+        }
+      }
+    } else {
+      const scaffold = buildLifecycleExitPriceScaffold(entryRaw, targetRaw, stopRaw);
+      entry = scaffold.entry;
+      target = scaffold.target;
+      stop = scaffold.stop;
+    }
+
+    // Capacity / exposure gate only applies to entry/scale-up paths.
+    if (!isExitAction && payloads.length >= maxOrders) {
       pushSkip(row.symbol, "max_orders_reached");
       return;
     }
-    if (allocatedNotional + notionalPerOrder > maxTotalNotional) {
+    if (!isExitAction && allocatedNotional + notionalPerOrder > maxTotalNotional) {
       pushSkip(row.symbol, "max_total_notional_reached");
       return;
     }
 
     let effectiveNotional = notionalPerOrder;
-    if (hfNegativeSizeReductionPolicy.enabled && hfAdjustment.applied && hfAdjustment.mode === "tighten") {
-      const reducedNotional = Math.max(1, roundToCent(notionalPerOrder * (1 - hfNegativeSizeReductionPolicy.reductionPct)));
+    if (
+      !isExitAction &&
+      hfNegativeSizeReductionPolicy.enabled &&
+      hfAdjustment.applied &&
+      hfAdjustment.mode === "tighten"
+    ) {
+      const reducedNotional = Math.max(
+        1,
+        roundToCent(notionalPerOrder * (1 - hfNegativeSizeReductionPolicy.reductionPct))
+      );
       if (reducedNotional < notionalPerOrder) {
         hfSoftSizeReducedCount += 1;
         hfSoftSizeReductionNotionalTotal = roundToCent(
@@ -3874,24 +4218,21 @@ function buildDryExecPayloads(
       effectiveNotional = reducedNotional;
     }
 
-    const actionType =
-      lifecycle.enabled && isActionTypeAllowed("ENTRY_NEW", lifecycle) ? "ENTRY_NEW" : undefined;
-
     const candidatePayload: DryExecOrderPayload = {
       symbol: row.symbol,
       side: "buy",
       type: "limit",
       time_in_force: "day",
       order_class: "bracket",
-      limit_price: entry,
+      limit_price: Number(entry),
       notional: effectiveNotional,
       conviction: conviction ?? undefined,
-      take_profit: { limit_price: target },
-      stop_loss: { stop_price: stop },
+      take_profit: { limit_price: Number(target) },
+      stop_loss: { stop_price: Number(stop) },
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
       idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy"),
       actionType,
-      actionReason: actionType ? "stage6_executable_now" : undefined
+      actionReason
     };
     const normalized = validateAndNormalizePayload(candidatePayload);
     if (!normalized.ok) {
@@ -3902,7 +4243,9 @@ function buildDryExecPayloads(
     if (actionType) {
       actionIntentCounts[actionType] += 1;
     }
-    allocatedNotional += notionalPerOrder;
+    if (!isExitAction) {
+      allocatedNotional += notionalPerOrder;
+    }
   });
 
   return {
@@ -4237,7 +4580,7 @@ function resolveLifecycleExitRatio(
 function isLifecycleExitAction(
   actionType: LifecycleActionType | undefined
 ): actionType is "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" {
-  return actionType === "SCALE_DOWN" || actionType === "EXIT_PARTIAL" || actionType === "EXIT_FULL";
+  return isLifecycleExitActionType(actionType);
 }
 
 async function submitLifecycleExitOrder(
@@ -6980,6 +7323,7 @@ async function updatePerformanceLoop(
   let alertMessage: string | null = null;
 
   for (const payload of dryExec.payloads) {
+    if (isLifecycleExitActionType(payload.actionType)) continue;
     const rowId =
       payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
     const stage6Row = candidateMap.get(payload.symbol);
@@ -7489,6 +7833,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const cfg = loadRuntimeConfig();
   const shadowDataBus = buildShadowDataBusSummary();
   const approvalCfg = buildApprovalQueueGateConfig();
+  const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const heartbeatOnDedupe = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   const sourcePriorityRaw = (process.env.REGIME_VIX_SOURCE_PRIORITY || "realtime_first").trim().toLowerCase();
   const sourcePriority = sourcePriorityRaw === "snapshot_first" ? "snapshot_first" : "realtime_first";
@@ -7533,6 +7878,11 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION=${cfg.positionLifecycle.scaleUpMinConviction}`,
     `POSITION_LIFECYCLE_SCALE_DOWN_PCT=${cfg.positionLifecycle.scaleDownPct}`,
     `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT=${cfg.positionLifecycle.exitPartialPct}`,
+    `POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION=${lifecycleThresholds.scaleDownMax}`,
+    `POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_CONVICTION=${lifecycleThresholds.exitPartialMax}`,
+    `POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION=${lifecycleThresholds.exitFullMax}`,
+    `POSITION_LIFECYCLE_EXIT_ON_WATCHLIST=${lifecycleThresholds.exitOnWatchlist}`,
+    `POSITION_LIFECYCLE_EXIT_ON_BLOCKED=${lifecycleThresholds.exitOnBlocked}`,
     `LIFECYCLE_SELFTEST=${readBoolEnv("LIFECYCLE_SELFTEST", false)}`,
     `APPROVAL_REQUIRED=${approvalCfg.required}`,
     `APPROVAL_ENFORCE_IN_PREVIEW=${approvalCfg.enforceInPreview}`,
@@ -7967,12 +8317,34 @@ async function main() {
   const actionableRaw = getActionableCandidates(stage6.candidates, actionableVerdicts);
   const hfPayloadProbeApplied = applyHfPayloadProbe(actionableRaw, cfg);
   const actionable = hfPayloadProbeApplied.actionable;
+  let lifecycleHeldSymbols: Set<string> | undefined;
+  if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
+    try {
+      const heldQtyBySymbol = await loadHeldPositionMap();
+      lifecycleHeldSymbols = new Set([...heldQtyBySymbol.keys()]);
+      console.log(
+        `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
+        }`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[LIFECYCLE_PLAN] held_position_fetch_failed=${message.slice(0, 180)}`);
+    }
+  }
   if (hfPayloadProbeApplied.summary.requestedMode !== "off") {
     console.warn(
       `[HF_PAYLOAD_PROBE] mode=${hfPayloadProbeApplied.summary.requestedMode} active=${hfPayloadProbeApplied.summary.active} reason=${hfPayloadProbeApplied.summary.reason} symbol=${hfPayloadProbeApplied.summary.symbol ?? "none"}`
     );
   }
-  const dryExecBaseRaw = buildDryExecPayloads(actionable, stage6.sha256, regime);
+  const lifecycleCandidateInputs = mergeLifecycleHeldCandidates(actionable, stage6, lifecycleHeldSymbols);
+  if (lifecycleCandidateInputs.length !== actionable.length) {
+    console.log(
+      `[LIFECYCLE_PLAN] merged_candidates base=${actionable.length} merged=${lifecycleCandidateInputs.length} heldMatched=${lifecycleCandidateInputs.length - actionable.length}`
+    );
+  }
+  const dryExecBaseRaw = buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
+    lifecycleHeldSymbols
+  });
   const hfPayloadProbe = finalizeHfPayloadProbeSummary(hfPayloadProbeApplied.summary, dryExecBaseRaw);
   const dryExecBase = dryExecBaseRaw;
   console.log(

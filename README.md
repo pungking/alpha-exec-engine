@@ -20,6 +20,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane now applies held-position guard: existing symbols require `SCALE_UP` allowed + conviction threshold.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
+- Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
+- Approval queue gate targets entry-expansion intents (`ENTRY_NEW`, `SCALE_UP`) and does not block de-risk sell intents.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -145,6 +147,11 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; minimum conviction for live `SCALE_UP` on already-held symbols)
 - `POSITION_LIFECYCLE_SCALE_DOWN_PCT` (default `0.35`; sell ratio applied for `SCALE_DOWN`)
 - `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT` (default `0.5`; sell ratio applied for `EXIT_PARTIAL`)
+- `POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION` (default `scale_up_min-8`; held-symbol auto `SCALE_DOWN` conviction trigger upper bound)
+- `POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_CONVICTION` (default `scale_down_max-12`; held-symbol auto `EXIT_PARTIAL` conviction trigger upper bound)
+- `POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION` (default `exit_partial_max-12`; held-symbol auto `EXIT_FULL` conviction trigger upper bound)
+- `POSITION_LIFECYCLE_EXIT_ON_WATCHLIST` (default `true`; allow held-symbol de-risking when Stage6 is watchlist/WAIT)
+- `POSITION_LIFECYCLE_EXIT_ON_BLOCKED` (default `true`; allow held-symbol forced de-risking on Stage6 BLOCKED/HARD-RISK decisions)
 - `LIFECYCLE_SELFTEST` (default `false`; emits deterministic logs for `scale_up_no_position` and multi-exit over-sell guard validation)
 - `APPROVAL_REQUIRED` (default `false`; when `true`, execution requires approval queue pass)
 - `APPROVAL_ENFORCE_IN_PREVIEW` (default `false`; keep preview lanes collecting payload unless explicitly enabled)
@@ -439,6 +446,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
       - Probe step is executed with temporary dry-safe overrides (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`) to allow probe mutation without live-submit risk.
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
+    - `run_disable_order_idempotency=true`: disable idempotency gate for one manual validation run.
+    - `run_dry_max_orders_override=<int>`: override `DRY_MAX_ORDERS` for one manual run.
+    - `run_dry_max_total_notional_override=<number>`: override `DRY_MAX_TOTAL_NOTIONAL` for one manual run.
   - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
   - Optional auto-dispatch (`VALIDATION_PACK_AUTO_TRIGGER_ENABLED=true`):
     - when `hf_tuning_phase.gateProgress` reaches `20/20` with final gate status (`GO` or `NO_GO`), dispatches a one-shot `validation_pack=true`.

@@ -66,6 +66,24 @@ on:
         options:
           - "false"
           - "true"
+      run_disable_order_idempotency:
+        description: "Disable idempotency gate for this manual run only (validation)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_dry_max_orders_override:
+        description: "Override DRY_MAX_ORDERS for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
+      run_dry_max_total_notional_override:
+        description: "Override DRY_MAX_TOTAL_NOTIONAL for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
       validation_pack:
         description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
         required: false
@@ -156,6 +174,11 @@ jobs:
       POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION }}
       POSITION_LIFECYCLE_SCALE_DOWN_PCT: ${{ vars.POSITION_LIFECYCLE_SCALE_DOWN_PCT }}
       POSITION_LIFECYCLE_EXIT_PARTIAL_PCT: ${{ vars.POSITION_LIFECYCLE_EXIT_PARTIAL_PCT }}
+      POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION: ${{ vars.POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION }}
+      POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_CONVICTION: ${{ vars.POSITION_LIFECYCLE_EXIT_PARTIAL_MAX_CONVICTION }}
+      POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION: ${{ vars.POSITION_LIFECYCLE_EXIT_FULL_MAX_CONVICTION }}
+      POSITION_LIFECYCLE_EXIT_ON_WATCHLIST: ${{ vars.POSITION_LIFECYCLE_EXIT_ON_WATCHLIST }}
+      POSITION_LIFECYCLE_EXIT_ON_BLOCKED: ${{ vars.POSITION_LIFECYCLE_EXIT_ON_BLOCKED }}
       LIFECYCLE_SELFTEST: ${{ github.event_name == 'workflow_dispatch' && inputs.run_lifecycle_selftest || vars.LIFECYCLE_SELFTEST }}
       APPROVAL_REQUIRED: ${{ vars.APPROVAL_REQUIRED }}
       APPROVAL_ENFORCE_IN_PREVIEW: ${{ vars.APPROVAL_ENFORCE_IN_PREVIEW }}
@@ -369,6 +392,65 @@ jobs:
               sys.exit(1)
           with open(github_env, "a", encoding="utf-8") as f:
               f.write(f"POSITION_LIFECYCLE_ACTION_TYPES={resolved}\n")
+          PY
+
+      - name: Resolve manual validation overrides
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RUN_DISABLE_ORDER_IDEMPOTENCY: ${{ inputs.run_disable_order_idempotency }}
+          RUN_DRY_MAX_ORDERS_OVERRIDE: ${{ inputs.run_dry_max_orders_override }}
+          RUN_DRY_MAX_TOTAL_NOTIONAL_OVERRIDE: ${{ inputs.run_dry_max_total_notional_override }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+
+          disable_idemp = (os.getenv("RUN_DISABLE_ORDER_IDEMPOTENCY") or "false").strip().lower() == "true"
+          max_orders_raw = (os.getenv("RUN_DRY_MAX_ORDERS_OVERRIDE") or "").strip()
+          max_total_notional_raw = (os.getenv("RUN_DRY_MAX_TOTAL_NOTIONAL_OVERRIDE") or "").strip()
+          github_env = os.getenv("GITHUB_ENV")
+          if not github_env:
+            print("::error::GITHUB_ENV not found.")
+            sys.exit(1)
+
+          lines = []
+          if disable_idemp:
+            lines.append("ORDER_IDEMPOTENCY_ENABLED=false")
+            lines.append("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=false")
+
+          if max_orders_raw:
+            try:
+              max_orders = int(max_orders_raw)
+            except ValueError:
+              print(f"::error::run_dry_max_orders_override must be integer, got={max_orders_raw!r}")
+              sys.exit(1)
+            if max_orders <= 0:
+              print(f"::error::run_dry_max_orders_override must be > 0, got={max_orders}")
+              sys.exit(1)
+            lines.append(f"DRY_MAX_ORDERS={max_orders}")
+
+          if max_total_notional_raw:
+            try:
+              max_total_notional = float(max_total_notional_raw)
+            except ValueError:
+              print(
+                f"::error::run_dry_max_total_notional_override must be number, got={max_total_notional_raw!r}"
+              )
+              sys.exit(1)
+            if max_total_notional <= 0:
+              print(
+                f"::error::run_dry_max_total_notional_override must be > 0, got={max_total_notional}"
+              )
+              sys.exit(1)
+            lines.append(f"DRY_MAX_TOTAL_NOTIONAL={max_total_notional}")
+
+          if lines:
+            print(f"[MANUAL_OVERRIDES] {' '.join(lines)}")
+            with open(github_env, "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          else:
+            print("[MANUAL_OVERRIDES] none")
           PY
 
       - name: Run dry-run bootstrap
