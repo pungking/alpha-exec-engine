@@ -1,3 +1,6 @@
+# REFERENCE WATCHDOG (sidecar template mirror)
+# - This file mirrors pungking/alpha-exec-engine/.github/workflows/dry-run-watchdog.yml.
+# - It is not executed inside US_Alpha_Seeker.
 name: sidecar-dry-run-watchdog
 
 on:

@@ -1,7 +1,7 @@
-# REFERENCE WORKFLOW (sidecar template)
-# - This file is a template/reference copy and is not executed from US_Alpha_Seeker root.
-# - Active runner entrypoint in US_Alpha_Seeker is /.github/workflows/dry-run.yml.
-# - Keep selective sync with root workflow when behavior changes.
+# REFERENCE WORKFLOW (sidecar template mirror)
+# - This file mirrors pungking/alpha-exec-engine/.github/workflows/dry-run.yml.
+# - It is not executed inside US_Alpha_Seeker.
+# - US_Alpha_Seeker uses schedule/bridge workflows only for dispatch + failover.
 name: sidecar-dry-run
 
 on:
