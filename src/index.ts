@@ -131,14 +131,14 @@ type Stage6CandidateSummary = {
   analysisEligible: boolean | null;
   historyTier: "FULL" | "PROVISIONAL" | "ONBOARDING" | "UNKNOWN";
   symbolLifecycleState:
-  | "ACTIVE"
-  | "PROVISIONAL"
-  | "ONBOARDING"
-  | "RECOVERED"
-  | "STALE"
-  | "RETIRED"
-  | "EXCLUDED"
-  | "UNKNOWN";
+    | "ACTIVE"
+    | "PROVISIONAL"
+    | "ONBOARDING"
+    | "RECOVERED"
+    | "STALE"
+    | "RETIRED"
+    | "EXCLUDED"
+    | "UNKNOWN";
   verdict: string;
   expectedReturn: string;
   expectedReturnPct: number | null;
@@ -155,17 +155,17 @@ type Stage6CandidateSummary = {
   executionScore: number | null;
   executionBucket: "EXECUTABLE" | "WATCHLIST" | "N/A";
   executionReason:
-  | "VALID_EXEC"
-  | "WAIT_PULLBACK_TOO_DEEP"
-  | "INVALID_GEOMETRY"
-  | "INVALID_DATA"
-  | "N/A";
+    | "VALID_EXEC"
+    | "WAIT_PULLBACK_TOO_DEEP"
+    | "INVALID_GEOMETRY"
+    | "INVALID_DATA"
+    | "N/A";
   finalDecision:
-  | "EXECUTABLE_NOW"
-  | "WAIT_PRICE"
-  | "BLOCKED_RISK"
-  | "BLOCKED_EVENT"
-  | "N/A";
+    | "EXECUTABLE_NOW"
+    | "WAIT_PRICE"
+    | "BLOCKED_RISK"
+    | "BLOCKED_EVENT"
+    | "N/A";
   decisionReason: string;
   stage6Tier: "TIER1" | "TIER2" | "NONE" | "N/A";
   stage6TierReason: string;
@@ -2295,9 +2295,9 @@ function parseStage6ShadowAlphaVantage(node: Record<string, unknown>): Stage6Sha
   const beta = parseFiniteNumber(payload.beta);
   const earningsDate = normalizeShadowDate(
     payload.earningsDate ??
-    payload.nextEarningsDate ??
-    payload.next_earnings_date ??
-    payload.reportDate
+      payload.nextEarningsDate ??
+      payload.next_earnings_date ??
+      payload.reportDate
   );
   const source =
     normalizeShadowString(payload.source ?? payload.provider ?? payload.vendor) ?? "alpha_vantage";
@@ -2427,7 +2427,7 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
             ? "WAIT_PULLBACK_TOO_DEEP"
             : executionReasonRaw === "INVALID_GEOMETRY"
               ? "INVALID_GEOMETRY"
-              : executionReasonRaw === "INVALID_DATA"
+            : executionReasonRaw === "INVALID_DATA"
                 ? "INVALID_DATA"
                 : "N/A";
       let finalDecision: Stage6CandidateSummary["finalDecision"] =
@@ -2541,7 +2541,7 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
                 ? "FAILED"
                 : hfSentimentStatusRaw === "DISABLED"
                   ? "DISABLED"
-                  : "N/A",
+                : "N/A",
         hfSentimentReason: hfSentimentReasonRaw || null,
         hfSentimentArticleCount:
           hfSentimentArticleCountRaw != null ? Math.max(0, Math.round(hfSentimentArticleCountRaw)) : null,
@@ -4798,6 +4798,14 @@ function toBrokerQtyString(value: number): string | null {
   return trimmed || null;
 }
 
+function toWholeShareQtyFromNotional(notional: number, limitPrice: number): string | null {
+  if (!Number.isFinite(notional) || !Number.isFinite(limitPrice)) return null;
+  if (notional <= 0 || limitPrice <= 0) return null;
+  const wholeQty = Math.floor(notional / limitPrice);
+  if (!Number.isFinite(wholeQty) || wholeQty < 1) return null;
+  return String(wholeQty);
+}
+
 function makeActionClientOrderId(baseClientOrderId: string, actionType: LifecycleActionType): string {
   const normalizedBase = baseClientOrderId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 36);
   const actionSuffix = actionType.toLowerCase().replace(/[^A-Za-z0-9_-]/g, "");
@@ -5234,6 +5242,16 @@ async function submitOrdersToBroker(
         continue;
       }
     }
+    let entryQtyForSubmit: string | null = null;
+    if (!isLifecycleExitAction(effectiveActionType)) {
+      entryQtyForSubmit = toWholeShareQtyFromNotional(payload.notional, payload.limit_price);
+      if (!entryQtyForSubmit) {
+        row.actionType = effectiveActionType ?? row.actionType;
+        row.reason = `entry_notional_below_limit_price(notional=${payload.notional.toFixed(2)},limit=${payload.limit_price.toFixed(2)})`;
+        summary.skipped += 1;
+        continue;
+      }
+    }
     row.actionType = effectiveActionType ?? row.actionType;
     row.attempted = true;
     summary.attempted += 1;
@@ -5257,6 +5275,10 @@ async function submitOrdersToBroker(
           exitSubmit.submittedQty
         );
       } else {
+        const submitQty = entryQtyForSubmit;
+        if (!submitQty) {
+          throw new Error("entry_qty_missing");
+        }
         const orderBody = {
           symbol: payload.symbol,
           side: payload.side,
@@ -5264,7 +5286,7 @@ async function submitOrdersToBroker(
           time_in_force: payload.time_in_force,
           order_class: payload.order_class,
           limit_price: payload.limit_price,
-          notional: payload.notional,
+          qty: submitQty,
           take_profit: payload.take_profit,
           stop_loss: payload.stop_loss,
           client_order_id: payload.client_order_id
@@ -5742,11 +5764,11 @@ async function updateHfDriftAlert(
       ? "hf_soft_disabled"
       : !hasPayloadSample
         ? `insufficient_payload(${snapshot.payloadCount ?? 0}/1)`
-        : !hasSample
-          ? baselineSamples < minHistory
-            ? `insufficient_history(${baselineSamples}/${minHistory})`
-            : `insufficient_candidates(${snapshot.checkedCandidates}/${minCandidates})`
-          : [negativeSpikeTriggered ? "negative_ratio_spike" : null, appliedDropTriggered ? "applied_ratio_drop" : null]
+      : !hasSample
+        ? baselineSamples < minHistory
+          ? `insufficient_history(${baselineSamples}/${minHistory})`
+          : `insufficient_candidates(${snapshot.checkedCandidates}/${minCandidates})`
+        : [negativeSpikeTriggered ? "negative_ratio_spike" : null, appliedDropTriggered ? "applied_ratio_drop" : null]
             .filter((row): row is string => Boolean(row))
             .join("|") || "stable";
 
@@ -5802,9 +5824,9 @@ async function loadHfFreezeState(): Promise<HfFreezeState> {
     const statusRaw = String(parsed?.status ?? "").trim().toUpperCase();
     const status: HfFreezeStatus =
       statusRaw === "OBSERVE" ||
-        statusRaw === "CANDIDATE" ||
-        statusRaw === "FROZEN" ||
-        statusRaw === "UNFREEZE_REVIEW"
+      statusRaw === "CANDIDATE" ||
+      statusRaw === "FROZEN" ||
+      statusRaw === "UNFREEZE_REVIEW"
         ? (statusRaw as HfFreezeStatus)
         : "OBSERVE";
     return {
@@ -6520,15 +6542,15 @@ function deriveHfLivePromotionSummary(
     },
     alert: hfAlert
       ? {
-        triggered: hfAlert.triggered,
-        reason: hfAlert.reason
-      }
+          triggered: hfAlert.triggered,
+          reason: hfAlert.reason
+        }
       : null,
     shadowTrend: hfShadowTrend
       ? {
-        comparedRuns: hfShadowTrend.comparedRuns,
-        alertTriggeredRate: hfShadowTrend.alertTriggeredRate
-      }
+          comparedRuns: hfShadowTrend.comparedRuns,
+          alertTriggeredRate: hfShadowTrend.alertTriggeredRate
+        }
       : null,
     payloadProbe: {
       active: hfPayloadProbe.active,
@@ -6669,14 +6691,14 @@ function deriveHfTuningPhase(
     tradeCount: perfLoop.tradeCount,
     alert: hfAlert
       ? {
-        triggered: hfAlert.triggered,
-        reason: hfAlert.reason
-      }
+          triggered: hfAlert.triggered,
+          reason: hfAlert.reason
+        }
       : null,
     shadowTrend: hfShadowTrend
       ? {
-        alertTriggeredRate: hfShadowTrend.alertTriggeredRate
-      }
+          alertTriggeredRate: hfShadowTrend.alertTriggeredRate
+        }
       : null,
     requiredTrades: PERFORMANCE_LOOP_REQUIRED_TRADES
   });
@@ -6731,10 +6753,10 @@ function buildHfSoftGateExplainLine(
   const blockerSummary =
     blockers.length > 0
       ? blockers
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 3)
-        .map((item) => `${item.key}:${item.count}`)
-        .join(",")
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 3)
+          .map((item) => `${item.key}:${item.count}`)
+          .join(",")
       : "none";
 
   if (gate.applied <= 0) {
@@ -6906,26 +6928,26 @@ function computeHfShadowTrendSummary(
   const avgAbsPayloadDelta =
     comparedCount > 0
       ? Number(
-        (
-          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowPayloadDelta), 0) / comparedCount
-        ).toFixed(2)
-      )
+          (
+            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowPayloadDelta), 0) / comparedCount
+          ).toFixed(2)
+        )
       : 0;
   const avgAbsNotionalDelta =
     comparedCount > 0
       ? Number(
-        (
-          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowNotionalDelta), 0) / comparedCount
-        ).toFixed(2)
-      )
+          (
+            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowNotionalDelta), 0) / comparedCount
+          ).toFixed(2)
+        )
       : 0;
   const avgAbsSkippedDelta =
     comparedCount > 0
       ? Number(
-        (
-          compared.reduce((acc, row) => acc + Math.abs(row.hfShadowSkippedDelta), 0) / comparedCount
-        ).toFixed(2)
-      )
+          (
+            compared.reduce((acc, row) => acc + Math.abs(row.hfShadowSkippedDelta), 0) / comparedCount
+          ).toFixed(2)
+        )
       : 0;
   const zeroPayloadRuns = window.filter((row) => row.payloadCount === 0).length;
   const alertTriggeredRate =
@@ -7665,13 +7687,13 @@ async function loadPerformanceLoopState(
       : [];
     const notifiedMilestones = Array.isArray(parsed?.notifiedMilestones)
       ? Array.from(
-        new Set(
-          parsed.notifiedMilestones
-            .map((value) => Number(value))
-            .filter((value) => Number.isFinite(value) && value > 0)
-            .map((value) => Math.round(value))
+          new Set(
+            parsed.notifiedMilestones
+              .map((value) => Number(value))
+              .filter((value) => Number.isFinite(value) && value > 0)
+              .map((value) => Math.round(value))
+          )
         )
-      )
       : [];
 
     return {
@@ -8763,7 +8785,8 @@ async function main() {
       lifecycleHeldContext = await loadHeldPositionSnapshots();
       lifecycleHeldSymbols = new Set([...lifecycleHeldContext.keys()]);
       console.log(
-        `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
+        `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${
+          lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
         }`
       );
     } catch (error) {
