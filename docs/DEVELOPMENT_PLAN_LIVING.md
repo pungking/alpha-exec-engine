@@ -84,7 +84,7 @@ Priority: P1
   - template + first daily report file exists
   - Notion audit script exists and is wired to root `mcp-ops-daily` workflow
 - Remaining:
-  - auto-generate daily report markdown from run data
+  - auto-generate daily report markdown from run data ✅
   - auto-upsert summary row to Notion (daily consolidated row, not per-run only)
   - ensure evidence links are mandatory fields
 
@@ -169,3 +169,8 @@ Priority: P0
 - 2026-04-22 UTC/KST (workflow wiring):
   - Root workflow `/.github/workflows/mcp-ops-daily.yml` now runs `ops:notion:audit`.
   - Workflow publishes audit markdown into Step Summary and uploads audit artifacts.
+- 2026-04-22 UTC/KST (daily report auto):
+  - Added `npm run ops:daily:report` (`scripts/build-ops-daily-report.mjs`).
+  - Report aggregates GitHub workflow KPI window (canary + sidecar dry-run) and Notion audit status.
+  - Outputs: `state/ops-daily-report.json` and `state/ops-daily-report.md`.
+  - Root workflow `/.github/workflows/mcp-ops-daily.yml` now publishes and uploads ops daily report artifacts.
