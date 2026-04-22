@@ -26,7 +26,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
 - Live submit lane now enforces one-symbol-one-open-entry guard (default ON) to prevent stacking duplicate open buy entries.
-- Optional stale-open-entry cleanup can cancel aged open entry orders before submitting a refreshed entry (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
+- Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -228,6 +228,8 @@ Use `.env.example` as baseline.
 - `ENTRY_OPEN_ORDER_GUARD_ENABLED` (default `true`; skip new entry when same symbol already has open buy entry order)
 - `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED` (default `false`; when `true`, cancel stale open entry order then allow refreshed submit)
 - `ENTRY_OPEN_ORDER_STALE_MINUTES` (default `180`; stale threshold for open-entry cancellation)
+- `ENTRY_OPEN_ORDER_REPLACE_MIN_DELTA_BPS` (default `10`; minimum absolute price delta vs existing open entry required before stale cancel+replace)
+- `ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS` (default `120`; maximum allowed upward replace chase for buy entries)
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`

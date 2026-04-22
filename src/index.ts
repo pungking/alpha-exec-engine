@@ -526,6 +526,8 @@ type OpenEntryOrderGuardConfig = {
   enabled: boolean;
   staleCancelEnabled: boolean;
   staleMinutes: number;
+  replaceMinDeltaBps: number;
+  replaceMaxChaseBps: number;
 };
 
 type OpenEntryOrderSnapshot = {
@@ -1048,7 +1050,9 @@ function buildOpenEntryOrderGuardConfig(): OpenEntryOrderGuardConfig {
   return {
     enabled: readBoolEnv("ENTRY_OPEN_ORDER_GUARD_ENABLED", true),
     staleCancelEnabled: readBoolEnv("ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED", false),
-    staleMinutes: Math.max(5, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_STALE_MINUTES", 180)))
+    staleMinutes: Math.max(5, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_STALE_MINUTES", 180))),
+    replaceMinDeltaBps: Math.max(0, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MIN_DELTA_BPS", 10))),
+    replaceMaxChaseBps: Math.max(0, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS", 120)))
   };
 }
 
@@ -1323,6 +1327,8 @@ function printStartupSummary() {
   console.log(`OPEN_ENTRY_GUARD: ${openEntryGuardCfg.enabled}`);
   console.log(`OPEN_ENTRY_STALE: ${openEntryGuardCfg.staleCancelEnabled}`);
   console.log(`OPEN_ENTRY_STMIN: ${openEntryGuardCfg.staleMinutes}`);
+  console.log(`OPEN_ENTRY_RDEL : ${openEntryGuardCfg.replaceMinDeltaBps}`);
+  console.log(`OPEN_ENTRY_RMAX : ${openEntryGuardCfg.replaceMaxChaseBps}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -4749,6 +4755,53 @@ async function cancelOpenEntryOrder(orderId: string): Promise<void> {
   });
 }
 
+function evaluateOpenEntryReplacePolicy(
+  openEntry: OpenEntryOrderSnapshot,
+  refreshedLimitPrice: number,
+  cfg: OpenEntryOrderGuardConfig
+): {
+  allowed: boolean;
+  deltaBps: number | null;
+  reason: string;
+} {
+  const liveLimit = openEntry.limitPrice;
+  if (!Number.isFinite(liveLimit) || liveLimit == null || liveLimit <= 0) {
+    return {
+      allowed: false,
+      deltaBps: null,
+      reason: "open_entry_replace_missing_limit_price"
+    };
+  }
+  if (!Number.isFinite(refreshedLimitPrice) || refreshedLimitPrice <= 0) {
+    return {
+      allowed: false,
+      deltaBps: null,
+      reason: "open_entry_replace_invalid_refreshed_limit"
+    };
+  }
+  const deltaBps = ((refreshedLimitPrice - liveLimit) / liveLimit) * 10000;
+  const absDeltaBps = Math.abs(deltaBps);
+  if (absDeltaBps < cfg.replaceMinDeltaBps) {
+    return {
+      allowed: false,
+      deltaBps,
+      reason: `open_entry_replace_delta_too_small(deltaBps=${deltaBps.toFixed(1)}<min=${cfg.replaceMinDeltaBps})`
+    };
+  }
+  if (deltaBps > cfg.replaceMaxChaseBps) {
+    return {
+      allowed: false,
+      deltaBps,
+      reason: `open_entry_replace_chase_exceeds(deltaBps=${deltaBps.toFixed(1)}>max=${cfg.replaceMaxChaseBps})`
+    };
+  }
+  return {
+    allowed: true,
+    deltaBps,
+    reason: "replace_allowed"
+  };
+}
+
 async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightResult> {
   const cfg = loadRuntimeConfig();
   const enabled = readBoolEnv("PREFLIGHT_ENABLED", true);
@@ -5374,7 +5427,7 @@ async function submitOrdersToBroker(
     try {
       openEntryOrders = await loadOpenEntryOrderIndex();
       console.log(
-        `[OPEN_ENTRY_GUARD] enabled=true staleCancel=${openEntryGuardCfg.staleCancelEnabled} staleMin=${openEntryGuardCfg.staleMinutes} openEntries=${openEntryOrders.total} duplicateSymbols=${openEntryOrders.duplicateSymbols}`
+        `[OPEN_ENTRY_GUARD] enabled=true staleCancel=${openEntryGuardCfg.staleCancelEnabled} staleMin=${openEntryGuardCfg.staleMinutes} replaceMinDeltaBps=${openEntryGuardCfg.replaceMinDeltaBps} replaceMaxChaseBps=${openEntryGuardCfg.replaceMaxChaseBps} openEntries=${openEntryOrders.total} duplicateSymbols=${openEntryOrders.duplicateSymbols}`
       );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -5478,11 +5531,22 @@ async function submitOrdersToBroker(
             openEntry.ageMinutes != null &&
             openEntry.ageMinutes >= openEntryGuardCfg.staleMinutes;
           if (staleEligible) {
+            const replacePolicy = evaluateOpenEntryReplacePolicy(
+              openEntry,
+              payload.limit_price,
+              openEntryGuardCfg
+            );
+            if (!replacePolicy.allowed) {
+              row.actionType = "HOLD_WAIT";
+              row.reason = replacePolicy.reason;
+              summary.skipped += 1;
+              continue;
+            }
             try {
               await cancelOpenEntryOrder(openEntry.orderId);
               openEntryOrders.bySymbol.delete(payload.symbol);
               console.warn(
-                `[OPEN_ENTRY_GUARD] symbol=${payload.symbol} stale_open_entry_cancelled orderId=${openEntry.orderId} ageMin=${openEntry.ageMinutes?.toFixed(1) ?? "n/a"}`
+                `[OPEN_ENTRY_GUARD] symbol=${payload.symbol} stale_open_entry_cancelled orderId=${openEntry.orderId} ageMin=${openEntry.ageMinutes?.toFixed(1) ?? "n/a"} deltaBps=${replacePolicy.deltaBps?.toFixed(1) ?? "n/a"}`
               );
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error);
