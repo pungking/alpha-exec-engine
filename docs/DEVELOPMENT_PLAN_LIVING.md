@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-22 (KST)
+Last updated: 2026-04-22 (KST, after Notion audit)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -33,12 +33,17 @@ This document is the single live plan for sidecar development.
   - `submitted>=1`
 - Duplicate `client_order_id` failure path is mitigated with retry+unique suffix.
 - `SCALE_UP` chase guard controls are implemented and documented.
+- Notion ingestion path is alive:
+  - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
+  - HF Tuning Tracker rows are being updated for latest dry-run runs.
+  - Performance Dashboard database/schema is accessible and query-ready.
 
 ### What is not fully closed
 
 - Daily ops reporting is documented but not fully auto-upserted as one consolidated Notion daily report row.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
 - Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but needs tighter daily ops integration.
+- Notion quality checks (required-field completeness / duplicate row rollup / canary-specific KPI row) are not automated yet.
 
 ---
 
@@ -79,7 +84,7 @@ Priority: P1
   - template + first daily report file exists
 - Remaining:
   - auto-generate daily report markdown from run data
-  - auto-upsert summary row to Notion
+  - auto-upsert summary row to Notion (daily consolidated row, not per-run only)
   - ensure evidence links are mandatory fields
 
 ## M4. Knowledge Loop Integration (Notion/Obsidian/NotebookLM)
@@ -91,6 +96,10 @@ Priority: P1
   - daily report ingestion into Obsidian note stream
   - NotebookLM source refresh checkpoint linked to daily ops report
   - concise weekly synthesis output
+  - define canonical ownership:
+    - Notion = record DB
+    - Obsidian = decision journal
+    - NotebookLM = synthesis/QA layer
 
 ## M5. Paper-to-Live Promotion Gate
 Status: PLANNED  
@@ -113,13 +122,14 @@ Priority: P0
 
 1. Generate `OPS_DAILY_REPORT_YYYY-MM-DD.md` with latest KPI block and evidence links.
 2. Run baseline Step-1 data collection for chase guard (default params).
-3. Define Notion upsert target format for daily consolidated ops row.
+3. Implement Notion data-quality audit checklist (required fields + duplicate guard + stale row alert).
 
 ### Next 72h
 
 1. Add automation script/workflow to compile daily metrics from GitHub runs.
 2. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB).
 3. Add Obsidian append step for daily report index + links.
+4. Add NotebookLM ingestion marker update linked to the daily report row.
 
 ---
 
@@ -145,4 +155,7 @@ Priority: P0
   - Initialized living development plan.
   - Set current milestones and active backlog.
   - Established mandatory update rule for ongoing work.
-
+- 2026-04-22 UTC/KST (Notion audit):
+  - Confirmed latest sidecar dry-run / market-guard rows are collected in Notion.
+  - Confirmed HF Tuning Tracker and Performance Dashboard structures are reachable.
+  - Added explicit backlog for Notion data-quality automation and cross-tool ownership model.

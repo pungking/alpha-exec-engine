@@ -74,3 +74,14 @@ Reference: `docs/TRADING_POLICY_MATRIX.md`
   - https://github.com/pungking/alpha-exec-engine/actions/runs/24759663273
   - https://github.com/pungking/alpha-exec-engine/actions/runs/24759991965
 
+## 9) Notion Collection Audit (sample check)
+
+- Daily Snapshot row present:
+  - `sidecar-dryrun-24759991965-1`
+  - `sidecar-guard-24759835536-1`
+- HF Tuning Tracker row present:
+  - `sidecar-dryrun-24759991965-1`
+- Field sanity (sample):
+  - `Stage6 Hash`, `Payload Count`, `Skipped Count`, `Status`, `Summary` populated
+- Note:
+  - consolidated daily row automation is still pending (currently per-run rows are primary evidence).

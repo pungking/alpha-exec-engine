@@ -454,6 +454,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `docs/OPS_DAILY_REPORT_TEMPLATE.md`
 - Scale-up chase guard tuning plan:
   - `docs/SCALE_UP_CHASE_GUARD_TUNING_PLAN.md`
+- Knowledge system operating model (Notion/Obsidian/NotebookLM):
+  - `docs/KNOWLEDGE_SYSTEM_OPERATING_MODEL.md`
 
 ## Workflow
 - Workflow ownership (avoid path confusion):
