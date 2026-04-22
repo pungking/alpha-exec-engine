@@ -48,7 +48,7 @@ This document is the single live plan for sidecar development.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
 - Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but needs tighter daily ops integration.
 - Canary-specific KPI extraction (`preflight_pass`, `attempted`, `submitted`) is not yet integrated into daily report JSON.
-- Automation integration audit baseline (2026-04-22): `Connected 13 / Partial 5 / Not connected 2` (65.0%).
+- Automation integration audit snapshot (2026-04-22): `Connected 15 / Partial 3 / Not connected 2` (75.0%).
 - Evidence: `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
 
 ---
@@ -91,9 +91,10 @@ Priority: P1
   - Notion audit script exists and is wired to root `mcp-ops-daily` workflow
 - Remaining:
   - auto-generate daily report markdown from run data ✅
-  - auto-upsert summary row to Notion (daily consolidated row, not per-run only)
+  - auto-upsert summary row to Notion (daily consolidated row, not per-run only) ✅
   - ensure evidence links are mandatory fields
-  - ingest canary KPI markers from logs (`preflight_pass`, `attempted`, `submitted`)
+  - ingest canary KPI markers from logs (`preflight_pass`, `attempted`, `submitted`) ✅
+  - enforce evidence URL mandatory fields in Notion row schema
 
 ## M4. Knowledge Loop Integration (Notion/Obsidian/NotebookLM)
 Status: IN_PROGRESS  
@@ -193,6 +194,7 @@ Priority: P0
     - consolidated Notion daily upsert,
     - canary KPI marker ingestion in ops daily report,
     - sidecar-to-knowledge handoff contract.
+  - After P0 closure updates: `15/20 connected (75.0%)`.
 - 2026-04-22 UTC/KST (knowledge markdown guard):
   - Hardened NotebookLM summary sanitizer in `scripts/knowledge-intake-pipeline.mjs` for:
     - trailing citation-number residue cleanup,
@@ -202,3 +204,12 @@ Priority: P0
   - Added quality audit script `npm run ops:knowledge:quality` (`scripts/check-knowledge-markdown-quality.mjs`).
   - Wired `.github/workflows/knowledge-intake-pipeline.yml` to run markdown quality check and upload quality report artifacts.
   - Added prevention runbook: `docs/KNOWLEDGE_MARKDOWN_ERROR_PREVENTION_2026-04-22.md`.
+- 2026-04-22 UTC/KST (ops daily Notion integration):
+  - Added canary verify log marker ingestion in `scripts/build-ops-daily-report.mjs`:
+    - parses `[PREFLIGHT_CANARY_VERIFY] preflight_pass=... attempted=... submitted=...`
+    - aggregates parsed run ratio + attempted/submitted totals.
+  - Added consolidated Notion upsert script:
+    - `npm run ops:daily:notion:sync` (`scripts/sync-notion-ops-daily.mjs`)
+    - run key: `ops-daily-YYYY-MM-DD`
+    - output: `state/notion-ops-daily-sync.json`
+  - Root workflow `/.github/workflows/mcp-ops-daily.yml` now executes ops daily Notion sync and publishes sync summary.
