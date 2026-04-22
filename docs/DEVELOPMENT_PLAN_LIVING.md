@@ -82,6 +82,7 @@ Priority: P1
 - Goal: daily ops report becomes systemized, auditable, and queryable.
 - Current:
   - template + first daily report file exists
+  - Notion audit script exists and is wired to root `mcp-ops-daily` workflow
 - Remaining:
   - auto-generate daily report markdown from run data
   - auto-upsert summary row to Notion (daily consolidated row, not per-run only)
@@ -165,3 +166,6 @@ Priority: P0
   - Outputs: `state/notion-ops-audit.json` and `state/notion-ops-audit.md`.
   - Added run-key scope control (`NOTION_AUDIT_RUNKEY_PREFIXES`, default `sidecar-`) to avoid cross-engine false positives.
   - Validation result: `status=pass rows=39 missingRows=0 duplicateRunKeys=0`.
+- 2026-04-22 UTC/KST (workflow wiring):
+  - Root workflow `/.github/workflows/mcp-ops-daily.yml` now runs `ops:notion:audit`.
+  - Workflow publishes audit markdown into Step Summary and uploads audit artifacts.
