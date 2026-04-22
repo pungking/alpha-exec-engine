@@ -64,3 +64,12 @@ If `SCALE_UP` conversion collapses or drawdown worsens materially, revert to pri
 - Canary pass evidence (`preflight_pass=true`, `attempted>=1`, `submitted>=1`)
 - Run summary lines containing guard reason counts
 - Daily report entries for each tuning step
+
+## Kickoff Log
+
+- Kickoff date: `2026-04-22`
+- Baseline parameter set:
+  - `POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT=0.03`
+  - `POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT=0.02`
+- Verification evidence (post-fix):
+  - canary `24759989453` -> `preflight_pass=true attempted=2 submitted=2`
