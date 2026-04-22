@@ -171,6 +171,10 @@ Evidence timestamp basis:
     - `knowledge-intake-pipeline.yml` now runs handoff build/validate before NotebookLM collect and queue processing.
     - `scripts/knowledge-intake-pipeline.mjs` now reads the handoff contract directly and records `report.handoff.*` in `state/knowledge-intake-pipeline-report.json`.
     - When `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED=true`, handoff gate block (`HOLD/BLOCK` under current policy) causes pipeline exit.
+    - `scripts/knowledge-pipeline-alert.mjs` now classifies handoff states:
+      - `HANDOFF_HOLD`
+      - `HANDOFF_BLOCK`
+      and includes `handoffStatus/handoffReason/handoffMissing` in Telegram alert payload.
     - Strict toggle variables:
       - `KNOWLEDGE_PIPELINE_HANDOFF_ENABLED`
       - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED`
