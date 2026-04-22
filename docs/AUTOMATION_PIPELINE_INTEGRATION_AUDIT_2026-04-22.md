@@ -169,6 +169,8 @@ Evidence timestamp basis:
       - `state/ops-knowledge-handoff.json`
       - `state/ops-knowledge-handoff.md`
     - `knowledge-intake-pipeline.yml` now runs handoff build/validate before NotebookLM collect and queue processing.
+    - `scripts/knowledge-intake-pipeline.mjs` now reads the handoff contract directly and records `report.handoff.*` in `state/knowledge-intake-pipeline-report.json`.
+    - When `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED=true`, handoff gate block (`HOLD/BLOCK` under current policy) causes pipeline exit.
     - Strict toggle variables:
       - `KNOWLEDGE_PIPELINE_HANDOFF_ENABLED`
       - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED`
