@@ -108,6 +108,7 @@ HF verification shortcuts:
 - `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
 - `npm run ops:health:dry-run`: build dry-run focused health snapshot.
 - `npm run ops:health:market-guard`: build market-guard focused health snapshot.
+- `npm run ops:notion:audit`: audit latest Notion Daily Snapshot rows for required fields/duplicate run keys/staleness (`state/notion-ops-audit.json`, `.md`).
 - `npm run backfill:notion:perf-pct:dry`: dry-run check for legacy Notion percent-scale rows.
 - `npm run backfill:notion:perf-pct`: one-time fix for legacy Notion percent-scale rows.
 - `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
@@ -301,6 +302,10 @@ Use `.env.example` as baseline.
 - `NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED` (optional, default `false`; when `true`, incident log sync failure fails workflow)
 - `NOTION_AUTOMATION_INCIDENT_LOG_ROLLUP_ENABLED` (optional, default `true`; dedupe incidents by fingerprint and update existing open row)
 - `NOTION_SYNC_MAX_RETRIES` (optional, default `2`; retry count for retryable Notion HTTP statuses `429/5xx`)
+- `NOTION_AUDIT_PAGE_SIZE` (optional, default `40`; number of latest Notion rows to inspect in audit)
+- `NOTION_AUDIT_RUNKEY_PREFIXES` (optional, default `sidecar-`; comma-separated prefixes included in audit scope)
+- `NOTION_AUDIT_STALE_MINUTES` (optional, default `240`; warn threshold for latest row freshness)
+- `NOTION_AUDIT_STRICT_FAIL` (optional, default `false`; when `true`, notion audit warning/fail exits non-zero)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED` (optional, default `true`)
 - `NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED` (optional, default `false`; when `true`, key-rotation ledger sync failure fails workflow)
 - `NOTION_PROJECT` (optional; project page ID pointer for workspace ops)

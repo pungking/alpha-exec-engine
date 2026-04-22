@@ -122,12 +122,12 @@ Priority: P0
 
 1. Generate `OPS_DAILY_REPORT_YYYY-MM-DD.md` with latest KPI block and evidence links.
 2. Run baseline Step-1 data collection for chase guard (default params).
-3. Implement Notion data-quality audit checklist (required fields + duplicate guard + stale row alert).
+3. Implement Notion data-quality audit checklist (required fields + duplicate guard + stale row alert). ✅
 
 ### Next 72h
 
 1. Add automation script/workflow to compile daily metrics from GitHub runs.
-2. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB).
+2. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB). (in progress)
 3. Add Obsidian append step for daily report index + links.
 4. Add NotebookLM ingestion marker update linked to the daily report row.
 
@@ -159,3 +159,9 @@ Priority: P0
   - Confirmed latest sidecar dry-run / market-guard rows are collected in Notion.
   - Confirmed HF Tuning Tracker and Performance Dashboard structures are reachable.
   - Added explicit backlog for Notion data-quality automation and cross-tool ownership model.
+- 2026-04-22 UTC/KST (ops automation):
+  - Added `npm run ops:notion:audit` (`scripts/build-notion-ops-audit.mjs`).
+  - Audit checks required fields, duplicate run keys, and latest-row staleness for Daily Snapshot DB.
+  - Outputs: `state/notion-ops-audit.json` and `state/notion-ops-audit.md`.
+  - Added run-key scope control (`NOTION_AUDIT_RUNKEY_PREFIXES`, default `sidecar-`) to avoid cross-engine false positives.
+  - Validation result: `status=pass rows=39 missingRows=0 duplicateRunKeys=0`.
