@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-22 (KST, after Notion audit)
+Last updated: 2026-04-22 (KST, after integration audit)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -37,13 +37,19 @@ This document is the single live plan for sidecar development.
   - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
   - HF Tuning Tracker rows are being updated for latest dry-run runs.
   - Performance Dashboard database/schema is accessible and query-ready.
+- Ops automation chain now includes:
+  - Notion data-quality audit (`ops:notion:audit`)
+  - consolidated ops daily artifact report (`ops:daily:report`)
+  - root workflow publication/artifact wiring (`mcp-ops-daily`)
 
 ### What is not fully closed
 
 - Daily ops reporting is documented but not fully auto-upserted as one consolidated Notion daily report row.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
 - Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but needs tighter daily ops integration.
-- Notion quality checks (required-field completeness / duplicate row rollup / canary-specific KPI row) are not automated yet.
+- Canary-specific KPI extraction (`preflight_pass`, `attempted`, `submitted`) is not yet integrated into daily report JSON.
+- Automation integration audit baseline (2026-04-22): `Connected 13 / Partial 5 / Not connected 2` (65.0%).
+- Evidence: `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
 
 ---
 
@@ -87,6 +93,7 @@ Priority: P1
   - auto-generate daily report markdown from run data ✅
   - auto-upsert summary row to Notion (daily consolidated row, not per-run only)
   - ensure evidence links are mandatory fields
+  - ingest canary KPI markers from logs (`preflight_pass`, `attempted`, `submitted`)
 
 ## M4. Knowledge Loop Integration (Notion/Obsidian/NotebookLM)
 Status: IN_PROGRESS  
@@ -121,16 +128,17 @@ Priority: P0
 
 ### Next 24h
 
-1. Generate `OPS_DAILY_REPORT_YYYY-MM-DD.md` with latest KPI block and evidence links.
-2. Run baseline Step-1 data collection for chase guard (default params).
-3. Implement Notion data-quality audit checklist (required fields + duplicate guard + stale row alert). ✅
+1. Implement daily consolidated Notion upsert from `state/ops-daily-report.json`.
+2. Extend ops daily report with canary verification marker parser.
+3. Run baseline Step-1 data collection for chase guard (default params).
 
 ### Next 72h
 
-1. Add automation script/workflow to compile daily metrics from GitHub runs.
-2. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB). (in progress)
+1. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB). (in progress)
+2. Add evidence URL hard requirement in daily Notion row schema and sync script.
 3. Add Obsidian append step for daily report index + links.
 4. Add NotebookLM ingestion marker update linked to the daily report row.
+5. Add template/runtime drift check for bridge and sidecar workflow mirrors.
 
 ---
 
@@ -174,3 +182,12 @@ Priority: P0
   - Report aggregates GitHub workflow KPI window (canary + sidecar dry-run) and Notion audit status.
   - Outputs: `state/ops-daily-report.json` and `state/ops-daily-report.md`.
   - Root workflow `/.github/workflows/mcp-ops-daily.yml` now publishes and uploads ops daily report artifacts.
+- 2026-04-22 UTC/KST (integration audit):
+  - Added end-to-end pipeline connectivity audit document:
+    - `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`
+  - Classified each lane as `Connected / Partial / Not connected`.
+  - Baseline score: `13/20 connected (65.0%)`.
+  - Promoted next critical closures:
+    - consolidated Notion daily upsert,
+    - canary KPI marker ingestion in ops daily report,
+    - sidecar-to-knowledge handoff contract.
