@@ -4813,6 +4813,17 @@ function makeActionClientOrderId(baseClientOrderId: string, actionType: Lifecycl
   return out || `act_${Date.now().toString(36).slice(-8)}`;
 }
 
+function isClientOrderIdDuplicateError(error: unknown): boolean {
+  const text = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return text.includes("client_order_id") && text.includes("unique");
+}
+
+function makeRetryClientOrderId(baseClientOrderId: string): string {
+  const normalizedBase = baseClientOrderId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+  const nonce = Date.now().toString(36).slice(-6);
+  return `${normalizedBase}_${nonce}`.slice(0, 48);
+}
+
 function resolveLifecycleExitRatio(
   actionType: LifecycleActionType,
   lifecycleCfg: PositionLifecycleConfig
@@ -5279,23 +5290,40 @@ async function submitOrdersToBroker(
         if (!submitQty) {
           throw new Error("entry_qty_missing");
         }
-        const orderBody = {
-          symbol: payload.symbol,
-          side: payload.side,
-          type: payload.type,
-          time_in_force: payload.time_in_force,
-          order_class: payload.order_class,
-          limit_price: payload.limit_price,
-          qty: submitQty,
-          take_profit: payload.take_profit,
-          stop_loss: payload.stop_loss,
-          client_order_id: payload.client_order_id
-        };
-        const rawResponse = await fetchAlpacaJson("/v2/orders", {
-          method: "POST",
-          body: orderBody,
-          expectedStatuses: [200, 201]
-        });
+        let submitClientOrderId = payload.client_order_id;
+        let rawResponse: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const orderBody = {
+            symbol: payload.symbol,
+            side: payload.side,
+            type: payload.type,
+            time_in_force: payload.time_in_force,
+            order_class: payload.order_class,
+            limit_price: payload.limit_price,
+            qty: submitQty,
+            take_profit: payload.take_profit,
+            stop_loss: payload.stop_loss,
+            client_order_id: submitClientOrderId
+          };
+          try {
+            rawResponse = await fetchAlpacaJson("/v2/orders", {
+              method: "POST",
+              body: orderBody,
+              expectedStatuses: [200, 201]
+            });
+            break;
+          } catch (error) {
+            if (attempt === 0 && isClientOrderIdDuplicateError(error)) {
+              const retryClientOrderId = makeRetryClientOrderId(payload.client_order_id);
+              console.warn(
+                `[BROKER_SUBMIT] symbol=${payload.symbol} duplicate client_order_id=${submitClientOrderId} retry_with=${retryClientOrderId}`
+              );
+              submitClientOrderId = retryClientOrderId;
+              continue;
+            }
+            throw error;
+          }
+        }
         const responseRecord =
           rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
         const brokerOrderIdRaw = responseRecord.id;
