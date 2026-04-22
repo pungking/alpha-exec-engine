@@ -162,6 +162,20 @@ Evidence timestamp basis:
   - Define handoff contract JSON (`runKey`, `stage6Hash`, `dryRunUrl`, `canaryUrl`, `opsDailyUrl`, `status`).
   - Make knowledge intake pipeline consume this contract first.
   - Owner lane: `knowledge-intake-pipeline.mjs` + ops daily sync output.
+  - Implementation status (2026-04-22):
+    - Added contract builder: `scripts/build-ops-knowledge-handoff.mjs`
+    - Added contract validator: `scripts/validate-ops-knowledge-handoff.mjs`
+    - Contract outputs:
+      - `state/ops-knowledge-handoff.json`
+      - `state/ops-knowledge-handoff.md`
+    - `knowledge-intake-pipeline.yml` now runs handoff build/validate before NotebookLM collect and queue processing.
+    - Strict toggle variables:
+      - `KNOWLEDGE_PIPELINE_HANDOFF_ENABLED`
+      - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED`
+      - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRE_PASS`
+      - `KNOWLEDGE_PIPELINE_HANDOFF_MAX_AGE_MIN`
+      - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRE_EXEC_READY`
+      - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRE_CANARY_FRESH`
 
 ---
 
