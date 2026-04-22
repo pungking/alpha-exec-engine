@@ -485,6 +485,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Emergency self-healing mode: run `Sidecar Dispatch Watchdog` with `loop_enabled=true` to keep requeueing watchdog checks at a fixed interval even when GitHub cron slots are missed.
   - These files are intentionally separated; execution logic stays in sidecar repo, bridge logic stays in webapp repo.
   - Integration status baseline (2026-04-22): `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
+  - Handoff strict-mode switch checklist: `docs/HANDOFF_OPERATIONAL_SWITCH_CHECKLIST.md`.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
