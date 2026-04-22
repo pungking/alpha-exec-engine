@@ -73,6 +73,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 ### P3-3 Test Checklist
 - Step-by-step validation checklist: `docs/P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`
 - Trading action policy matrix: `docs/TRADING_POLICY_MATRIX.md`
+- Living development plan: `docs/DEVELOPMENT_PLAN_LIVING.md`
 
 ## Safety Defaults
 - `EXEC_ENABLED=false`
