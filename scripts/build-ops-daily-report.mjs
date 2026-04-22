@@ -217,6 +217,35 @@ const parseDryRunExecutionMetrics = (text) => {
   };
 };
 
+const parseGuardSummaryMetrics = (text) => {
+  const lineMatch = text.match(/\[GUARD_SUMMARY\][^\n]*/);
+  if (!lineMatch) {
+    return {
+      parsed: false,
+      level: null,
+      mode: null,
+      source: null,
+      vix: null,
+      actionReason: null
+    };
+  }
+  const line = lineMatch[0];
+  const take = (regex) => {
+    const hit = line.match(regex);
+    return hit ? hit[1] : null;
+  };
+  const vixRaw = take(/vix=([0-9.\-]+)/);
+  const vix = vixRaw != null && Number.isFinite(Number(vixRaw)) ? Number(vixRaw) : null;
+  return {
+    parsed: true,
+    level: take(/level=(L[0-3])/),
+    mode: take(/mode=([a-z_]+)/i),
+    source: take(/source=([a-z_]+)/i),
+    vix,
+    actionReason: take(/action_reason=([a-z0-9_:-]+)/i)
+  };
+};
+
 const collectLatestDryRunExecutionMetrics = async ({ token, repo, completedRuns }) => {
   const latest = completedRuns[0] || null;
   if (!latest) {
@@ -270,6 +299,56 @@ const collectLatestDryRunExecutionMetrics = async ({ token, repo, completedRuns 
       skipped: 0,
       submitPass: false,
       status: "UNKNOWN",
+      reason: error instanceof Error ? error.message.slice(0, 180) : String(error).slice(0, 180)
+    };
+  }
+};
+
+const collectLatestGuardSummary = async ({ token, repo, completedRuns }) => {
+  const latest = completedRuns[0] || null;
+  if (!latest) {
+    return {
+      inspected: false,
+      runId: null,
+      runNumber: null,
+      htmlUrl: null,
+      parsed: false,
+      level: null,
+      mode: null,
+      source: null,
+      vix: null,
+      actionReason: null,
+      reason: "no_completed_guard_run"
+    };
+  }
+  try {
+    const text = await fetchRunLogText({
+      token,
+      owner: repo.owner,
+      repo: repo.repo,
+      runId: latest.id
+    });
+    const parsed = parseGuardSummaryMetrics(text);
+    return {
+      inspected: true,
+      runId: latest.id,
+      runNumber: latest.run_number,
+      htmlUrl: latest.html_url,
+      ...parsed,
+      reason: parsed.parsed ? "ok" : "guard_summary_marker_not_found"
+    };
+  } catch (error) {
+    return {
+      inspected: true,
+      runId: latest.id,
+      runNumber: latest.run_number,
+      htmlUrl: latest.html_url,
+      parsed: false,
+      level: null,
+      mode: null,
+      source: null,
+      vix: null,
+      actionReason: null,
       reason: error instanceof Error ? error.message.slice(0, 180) : String(error).slice(0, 180)
     };
   }
@@ -362,6 +441,9 @@ const buildMarkdown = (report) => {
   lines.push(
     `- exec_readiness_now: \`${report.execReadinessNow.status}\` preflight=\`${report.execReadinessNow.preflightStatus ?? "n/a"}:${report.execReadinessNow.preflightCode ?? "n/a"}\` attempted=\`${report.execReadinessNow.attempted}\` submitted=\`${report.execReadinessNow.submitted}\``
   );
+  lines.push(
+    `- latest_guard: mode=\`${report.latestGuard.mode ?? "n/a"}\` level=\`${report.latestGuard.level ?? "n/a"}\` source=\`${report.latestGuard.source ?? "n/a"}\` action=\`${report.latestGuard.actionReason ?? "n/a"}\``
+  );
   lines.push("");
 
   lines.push("### Notion Audit Snapshot");
@@ -389,6 +471,7 @@ const buildMarkdown = (report) => {
 
   appendRuns("Latest Canary Runs", report.canary.latest);
   appendRuns("Latest Dry-Run Runs", report.dryRun.latest);
+  appendRuns("Latest Market-Guard Runs", report.marketGuard.latest);
 
   lines.push("### Canary Verify Sample");
   if (!report.canaryVerify.perRun.length) {
@@ -412,6 +495,16 @@ const buildMarkdown = (report) => {
   }
   lines.push("");
 
+  lines.push("### Latest Guard Provenance");
+  if (!report.latestGuard.inspected) {
+    lines.push(`- status=n/a reason=${report.latestGuard.reason}`);
+  } else {
+    lines.push(
+      `- run=#${report.latestGuard.runNumber} parsed=${report.latestGuard.parsed} mode=${report.latestGuard.mode ?? "n/a"} level=${report.latestGuard.level ?? "n/a"} source=${report.latestGuard.source ?? "n/a"} vix=${report.latestGuard.vix ?? "n/a"} actionReason=${report.latestGuard.actionReason ?? "n/a"} reason=${report.latestGuard.reason} (${report.latestGuard.htmlUrl || "n/a"})`
+    );
+  }
+  lines.push("");
+
   lines.push("### Decision");
   lines.push(`- automatedSummary: ${report.decision}`);
 
@@ -424,6 +517,8 @@ const main = async () => {
   const dryRunRepo = parseRepo(env("OPS_REPORT_DRYRUN_REPO"), "pungking/alpha-exec-engine");
   const canaryWorkflow = env("OPS_REPORT_CANARY_WORKFLOW", "sidecar-preflight-canary-recheck.yml");
   const dryRunWorkflow = env("OPS_REPORT_DRYRUN_WORKFLOW", "dry-run.yml");
+  const marketGuardWorkflow = env("OPS_REPORT_GUARD_WORKFLOW", "market-guard.yml");
+  const guardRepo = parseRepo(env("OPS_REPORT_GUARD_REPO"), "pungking/alpha-exec-engine");
   const windowHours = Math.max(1, Math.min(168, toNum(env("OPS_REPORT_LOOKBACK_HOURS", "24"), 24)));
   const perPage = Math.max(10, Math.min(100, toNum(env("OPS_REPORT_MAX_RUNS", "30"), 30)));
   const canaryVerifyInspectRuns = Math.max(
@@ -432,7 +527,7 @@ const main = async () => {
   );
   const canaryFreshMaxMin = Math.max(30, Math.min(1440, toNum(env("OPS_REPORT_CANARY_FRESH_MAX_MIN", "360"), 360)));
 
-  if (!canaryRepo || !dryRunRepo) {
+  if (!canaryRepo || !dryRunRepo || !guardRepo) {
     throw new Error("invalid OPS_REPORT_*_REPO format (expected owner/repo)");
   }
 
@@ -457,6 +552,15 @@ const main = async () => {
       windowStartUtc: new Date(sinceMs).toISOString(),
       canary: { scanned: 0, inWindow: 0, completed: 0, success: 0, failed: 0, successRatePct: null, latest: [] },
       dryRun: { scanned: 0, inWindow: 0, completed: 0, success: 0, failed: 0, successRatePct: null, latest: [] },
+      marketGuard: {
+        scanned: 0,
+        inWindow: 0,
+        completed: 0,
+        success: 0,
+        failed: 0,
+        successRatePct: null,
+        latest: []
+      },
       canaryVerify: {
         inspected: 0,
         parsed: 0,
@@ -485,6 +589,18 @@ const main = async () => {
         skipped: 0,
         reason: "missing_github_token"
       },
+      latestGuard: {
+        inspected: false,
+        parsed: false,
+        runNumber: null,
+        htmlUrl: null,
+        mode: null,
+        level: null,
+        source: null,
+        vix: null,
+        actionReason: null,
+        reason: "missing_github_token"
+      },
       notionAudit,
       decision: "GitHub token missing; cannot compute workflow KPIs."
     };
@@ -494,7 +610,7 @@ const main = async () => {
     return;
   }
 
-  const [canaryRuns, dryRunRuns] = await Promise.all([
+  const [canaryRuns, dryRunRuns, marketGuardRuns] = await Promise.all([
     fetchRuns({
       token,
       owner: canaryRepo.owner,
@@ -508,11 +624,19 @@ const main = async () => {
       repo: dryRunRepo.repo,
       workflow: dryRunWorkflow,
       perPage
+    }),
+    fetchRuns({
+      token,
+      owner: guardRepo.owner,
+      repo: guardRepo.repo,
+      workflow: marketGuardWorkflow,
+      perPage
     })
   ]);
 
   const canary = summarizeRuns(canaryRuns, sinceMs);
   const dryRun = summarizeRuns(dryRunRuns, sinceMs);
+  const marketGuard = summarizeRuns(marketGuardRuns, sinceMs);
   const latestCanaryCreatedMs = parseIso(canary.latest[0]?.createdAt || "");
   const canaryLatestAgeMin =
     Number.isFinite(latestCanaryCreatedMs)
@@ -536,6 +660,14 @@ const main = async () => {
       return Number.isFinite(createdMs) && createdMs >= sinceMs && run?.status === "completed";
     })
   });
+  const latestGuard = await collectLatestGuardSummary({
+    token,
+    repo: guardRepo,
+    completedRuns: marketGuardRuns.filter((run) => {
+      const createdMs = parseIso(run?.created_at);
+      return Number.isFinite(createdMs) && createdMs >= sinceMs && run?.status === "completed";
+    })
+  });
   const canaryVerify = await collectCanaryVerificationMetrics({
     token,
     repo: canaryRepo,
@@ -548,7 +680,7 @@ const main = async () => {
 
   let status = "pass";
   let reason = "healthy";
-  if (canary.completed === 0 || dryRun.completed === 0) {
+  if (canary.completed === 0 || dryRun.completed === 0 || marketGuard.completed === 0) {
     status = "warn";
     reason = "insufficient_completed_runs";
   }
@@ -560,7 +692,7 @@ const main = async () => {
     status = "warn";
     reason = reason === "healthy" ? "canary_submit_gate_partial" : `${reason}+canary_submit_gate_partial`;
   }
-  if (canary.failed > 0 || dryRun.failed > 0) {
+  if (canary.failed > 0 || dryRun.failed > 0 || marketGuard.failed > 0) {
     status = "warn";
     reason = "failed_runs_detected";
   }
@@ -587,9 +719,11 @@ const main = async () => {
     windowStartUtc: new Date(sinceMs).toISOString(),
     canary,
     dryRun,
+    marketGuard,
     canaryVerify,
     canaryFreshness,
     execReadinessNow: latestDryRunExecution,
+    latestGuard,
     notionAudit: {
       status: notionAudit.status || "missing",
       rowsChecked: notionAudit.rowsChecked ?? 0,
@@ -604,7 +738,7 @@ const main = async () => {
   writeText(OUTPUT_MD, buildMarkdown(report));
 
   console.log(
-    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} canaryFresh=${report.canaryFreshness.status} execReadiness=${report.execReadinessNow.status} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal}`
+    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} guard=${report.marketGuard.success}/${report.marketGuard.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} canaryFresh=${report.canaryFreshness.status} execReadiness=${report.execReadinessNow.status} guardMode=${report.latestGuard.mode ?? "n/a"} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal}`
   );
 };
 

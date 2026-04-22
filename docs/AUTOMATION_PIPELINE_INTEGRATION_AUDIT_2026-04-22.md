@@ -135,6 +135,12 @@ Evidence timestamp basis:
     - `guard_source_workflow`, `guard_source_run_id`, `guard_source_generated_at`.
   - In daily report, print both "latest standalone guard run" and "embedded dry-run guard context."
   - Owner lane: `build-ops-daily-report.mjs` + guard summary producer script/workflow step summary.
+  - Implementation status (2026-04-22):
+    - Ops daily report now pulls `market-guard.yml` run history and parses latest `[GUARD_SUMMARY]` marker.
+    - Added `latest_guard` KPI line and `Latest Guard Provenance` section (run number/url/mode/level/source/vix/actionReason).
+    - Configurable via:
+      - `OPS_REPORT_GUARD_REPO`
+      - `OPS_REPORT_GUARD_WORKFLOW`
 
 ### P1-2) Runtime/template drift risk remains process-based, not enforced
 - [BAD]
