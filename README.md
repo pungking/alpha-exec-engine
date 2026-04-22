@@ -25,6 +25,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane now applies held-position guard: existing symbols require `SCALE_UP` allowed + conviction threshold.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
+- Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
 - Approval queue gate targets entry-expansion intents (`ENTRY_NEW`, `SCALE_UP`) and does not block de-risk sell intents.
@@ -71,6 +72,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 
 ### P3-3 Test Checklist
 - Step-by-step validation checklist: `docs/P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`
+- Trading action policy matrix: `docs/TRADING_POLICY_MATRIX.md`
 
 ## Safety Defaults
 - `EXEC_ENABLED=false`
@@ -151,6 +153,8 @@ Use `.env.example` as baseline.
 - `POSITION_LIFECYCLE_PREVIEW_ONLY` (default `true`; scaffold stays telemetry-only)
 - `POSITION_LIFECYCLE_ACTION_TYPES` (default `ENTRY_NEW,HOLD_WAIT`)
 - `POSITION_LIFECYCLE_SCALE_UP_MIN_CONVICTION` (default `82`; minimum conviction for live `SCALE_UP` on already-held symbols)
+- `POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT` (default `0.03`; block `SCALE_UP` when current price is too far above avg-entry for held long, or too far below for held short)
+- `POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT` (default `0.02`; block `SCALE_UP` when intraday gain already exceeds chase guard)
 - `POSITION_LIFECYCLE_SCALE_DOWN_PCT` (default `0.35`; sell ratio applied for `SCALE_DOWN`)
 - `POSITION_LIFECYCLE_EXIT_PARTIAL_PCT` (default `0.5`; sell ratio applied for `EXIT_PARTIAL`)
 - `POSITION_LIFECYCLE_SCALE_DOWN_MAX_CONVICTION` (default `scale_up_min-8`; held-symbol auto `SCALE_DOWN` conviction trigger upper bound)

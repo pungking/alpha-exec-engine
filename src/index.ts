@@ -1196,6 +1196,16 @@ function printStartupSummary() {
     0.02,
     2
   );
+  const lifecycleScaleUpMaxChaseFromAvgEntryPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT", 0.03),
+    0,
+    0.5
+  );
+  const lifecycleScaleUpMaxIntradayGainPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT", 0.02),
+    0,
+    0.5
+  );
   const lifecycleStaleHoldDays = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
     1,
@@ -1225,6 +1235,8 @@ function printStartupSummary() {
   console.log(`LIFECYCLE_SDNLOSS: ${lifecycleScaleDownMaxLossPct}`);
   console.log(`LIFECYCLE_RISKSHK: ${lifecycleRiskOffIntradayShockPct}`);
   console.log(`LIFECYCLE_TPPRTL: ${lifecycleTakeProfitPartialPct}`);
+  console.log(`LIFECYCLE_SUCHAS: ${lifecycleScaleUpMaxChaseFromAvgEntryPct}`);
+  console.log(`LIFECYCLE_SUINTR: ${lifecycleScaleUpMaxIntradayGainPct}`);
   console.log(`LIFECYCLE_STALE_D: ${lifecycleStaleHoldDays}`);
   console.log(`LIFECYCLE_SELFTS: ${readBoolEnv("LIFECYCLE_SELFTEST", false)}`);
   console.log(`APPROVAL_REQ    : ${approvalCfg.required}`);
@@ -3777,27 +3789,68 @@ function resolveHeldLifecycleAction(
     0.02,
     2
   );
+  const scaleUpMaxChaseFromAvgEntryPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT", 0.03),
+    0,
+    0.5
+  );
+  const scaleUpMaxIntradayGainPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT", 0.02),
+    0,
+    0.5
+  );
   const staleHoldDays = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
     1,
     365
   );
+  const scaleUpChasePct =
+    heldPosition &&
+    heldPosition.avgEntryPrice != null &&
+    heldPosition.currentPrice != null &&
+    heldPosition.avgEntryPrice > 0 &&
+    heldPosition.currentPrice > 0
+      ? Number(
+          (
+            heldPosition.side === "short"
+              ? (heldPosition.avgEntryPrice - heldPosition.currentPrice) / heldPosition.avgEntryPrice
+              : (heldPosition.currentPrice - heldPosition.avgEntryPrice) / heldPosition.avgEntryPrice
+          ).toFixed(4)
+        )
+      : null;
+  const scaleUpChaseToken = scaleUpChasePct == null ? "n/a" : scaleUpChasePct.toFixed(4);
 
   if (effectiveExecutable && conviction != null && conviction >= lifecycle.scaleUpMinConviction) {
+    if (scaleUpChasePct != null && scaleUpChasePct > scaleUpMaxChaseFromAvgEntryPct) {
+      return {
+        actionType: null,
+        actionReason: "scale_up_chase_guard",
+        skipReason: "scale_up_chase_guard",
+        detail: `chasePct=${scaleUpChaseToken}|max=${scaleUpMaxChaseFromAvgEntryPct.toFixed(4)}|entry=${heldPosition?.avgEntryPrice?.toFixed(2) ?? "n/a"}|last=${heldPosition?.currentPrice?.toFixed(2) ?? "n/a"}`
+      };
+    }
+    if (intradayPnlPct != null && intradayPnlPct > scaleUpMaxIntradayGainPct) {
+      return {
+        actionType: null,
+        actionReason: "scale_up_intraday_chase_guard",
+        skipReason: "scale_up_intraday_chase_guard",
+        detail: `intraday=${intradayToken}|max=${scaleUpMaxIntradayGainPct.toFixed(4)}|chasePct=${scaleUpChaseToken}`
+      };
+    }
     const actionType = resolveHeldPreferredAction("SCALE_UP", lifecycle);
     if (actionType) {
       return {
         actionType,
         actionReason: "existing_position_scale_up",
         skipReason: null,
-        detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}`
+        detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}|chasePct=${scaleUpChaseToken}|intraday=${intradayToken}`
       };
     }
     return {
       actionType: null,
       actionReason: "scale_up_not_allowed",
       skipReason: "scale_up_not_allowed",
-      detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}`
+      detail: `conv=${convictionToken}|scaleUpMin=${lifecycle.scaleUpMinConviction.toFixed(1)}|chasePct=${scaleUpChaseToken}|intraday=${intradayToken}`
     };
   }
 
@@ -8331,6 +8384,16 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     0.02,
     2
   );
+  const lifecycleScaleUpMaxChaseFromAvgEntryPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT", 0.03),
+    0,
+    0.5
+  );
+  const lifecycleScaleUpMaxIntradayGainPct = clamp(
+    readNonNegativeNumberEnv("POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT", 0.02),
+    0,
+    0.5
+  );
   const lifecycleStaleHoldDays = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_STALE_HOLD_DAYS", 15),
     1,
@@ -8371,6 +8434,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `POSITION_LIFECYCLE_SCALE_DOWN_MAX_LOSS_PCT=${lifecycleScaleDownMaxLossPct}`,
     `POSITION_LIFECYCLE_RISK_OFF_INTRADAY_SHOCK_PCT=${lifecycleRiskOffIntradayShockPct}`,
     `POSITION_LIFECYCLE_TAKE_PROFIT_PARTIAL_PCT=${lifecycleTakeProfitPartialPct}`,
+    `POSITION_LIFECYCLE_SCALE_UP_MAX_CHASE_FROM_AVG_ENTRY_PCT=${lifecycleScaleUpMaxChaseFromAvgEntryPct}`,
+    `POSITION_LIFECYCLE_SCALE_UP_MAX_INTRADAY_GAIN_PCT=${lifecycleScaleUpMaxIntradayGainPct}`,
     `POSITION_LIFECYCLE_STALE_HOLD_DAYS=${lifecycleStaleHoldDays}`,
     `LIFECYCLE_SELFTEST=${readBoolEnv("LIFECYCLE_SELFTEST", false)}`,
     `APPROVAL_REQUIRED=${approvalCfg.required}`,
