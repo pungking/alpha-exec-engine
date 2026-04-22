@@ -100,6 +100,8 @@ Status: IN_PROGRESS
 Priority: P1
 
 - Goal: research/ops loop supports tuning decisions with minimal manual friction.
+- Current:
+  - knowledge pipeline now has markdown quality gate step (`ops:knowledge:quality`) wired in workflow.
 - Remaining:
   - daily report ingestion into Obsidian note stream
   - NotebookLM source refresh checkpoint linked to daily ops report
@@ -191,3 +193,12 @@ Priority: P0
     - consolidated Notion daily upsert,
     - canary KPI marker ingestion in ops daily report,
     - sidecar-to-knowledge handoff contract.
+- 2026-04-22 UTC/KST (knowledge markdown guard):
+  - Hardened NotebookLM summary sanitizer in `scripts/knowledge-intake-pipeline.mjs` for:
+    - trailing citation-number residue cleanup,
+    - divider normalization (`### -` -> `---`),
+    - inline label promotion (`- [Label] ...`),
+    - consecutive duplicate section-header suppression.
+  - Added quality audit script `npm run ops:knowledge:quality` (`scripts/check-knowledge-markdown-quality.mjs`).
+  - Wired `.github/workflows/knowledge-intake-pipeline.yml` to run markdown quality check and upload quality report artifacts.
+  - Added prevention runbook: `docs/KNOWLEDGE_MARKDOWN_ERROR_PREVENTION_2026-04-22.md`.
