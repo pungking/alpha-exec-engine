@@ -179,6 +179,10 @@ Evidence timestamp basis:
       - history ledger: `state/ops-knowledge-handoff-history.jsonl`
       - rolling trend fields in contract: `trend.passRatePct`, `trend.pass/hold/block`, `trend.windowSize`
       - controls: `KNOWLEDGE_PIPELINE_HANDOFF_HISTORY_MAX`, `KNOWLEDGE_PIPELINE_HANDOFF_TREND_WINDOW`
+    - Knowledge pipeline now pulls the latest `mcp-ops-daily` artifact before handoff build:
+      - script: `scripts/fetch-latest-ops-daily-artifact.mjs`
+      - workflow step: `Pull latest ops daily artifact`
+      - purpose: avoid stale/local-only ops report when deriving handoff status.
     - Strict toggle variables:
       - `KNOWLEDGE_PIPELINE_HANDOFF_ENABLED`
       - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED`
