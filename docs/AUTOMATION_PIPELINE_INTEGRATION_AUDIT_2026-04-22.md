@@ -175,6 +175,10 @@ Evidence timestamp basis:
       - `HANDOFF_HOLD`
       - `HANDOFF_BLOCK`
       and includes `handoffStatus/handoffReason/handoffMissing` in Telegram alert payload.
+    - Handoff trend telemetry added:
+      - history ledger: `state/ops-knowledge-handoff-history.jsonl`
+      - rolling trend fields in contract: `trend.passRatePct`, `trend.pass/hold/block`, `trend.windowSize`
+      - controls: `KNOWLEDGE_PIPELINE_HANDOFF_HISTORY_MAX`, `KNOWLEDGE_PIPELINE_HANDOFF_TREND_WINDOW`
     - Strict toggle variables:
       - `KNOWLEDGE_PIPELINE_HANDOFF_ENABLED`
       - `KNOWLEDGE_PIPELINE_HANDOFF_REQUIRED`
