@@ -449,6 +449,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `docs/NOTION_WORKSPACE_TUNEUP_CHECKLIST.md` (repo root)
 - 20-trade gate operations runbook:
   - `docs/OPS_RUNBOOK_20TRADE_GATE.md`
+- Daily operations report template:
+  - `docs/OPS_DAILY_REPORT_TEMPLATE.md`
+- Scale-up chase guard tuning plan:
+  - `docs/SCALE_UP_CHASE_GUARD_TUNING_PLAN.md`
 
 ## Workflow
 - Workflow ownership (avoid path confusion):
