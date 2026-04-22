@@ -1,42 +1,80 @@
 import fs from "node:fs";
 
-const STATE_DIR = "state";
-const OUTPUT_JSON = `${STATE_DIR}/notion-ops-audit.json`;
-const OUTPUT_MD = `${STATE_DIR}/notion-ops-audit.md`;
 const NOTION_VERSION = "2022-06-28";
+const STATE_DIR = "state";
+const REPORT_PATH = `${STATE_DIR}/ops-daily-report.json`;
+const OUTPUT_PATH = `${STATE_DIR}/notion-ops-daily-sync.json`;
 
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
-const toNum = (value, fallback = null) => {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-};
-const short = (value, max = 160) => String(value ?? "").trim().slice(0, max);
-const nowIso = () => new Date().toISOString();
+const hasValue = (v) => String(v ?? "").trim().length > 0;
+const short = (v, max = 1800) => String(v ?? "").trim().slice(0, max);
 
-const writeJson = (path, data) => {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(path, JSON.stringify(data, null, 2), "utf8");
-};
-
-const writeText = (path, text) => {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(path, text, "utf8");
+const readJson = (filePath) => {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
 };
 
-const headers = (token) => ({
+const boolFromEnv = (name, fallback = true) => {
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = raw.toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return fallback;
+};
+
+const toIso = (value) => {
+  const dt = new Date(value || "");
+  if (Number.isNaN(dt.getTime())) return new Date().toISOString();
+  return dt.toISOString();
+};
+
+const toDate = (value) => toIso(value).slice(0, 10);
+
+const titleProp = (value) => ({
+  title: [{ text: { content: short(value, 200) } }]
+});
+
+const textProp = (value) => ({
+  rich_text: [{ text: { content: short(value, 1900) } }]
+});
+
+const numberProp = (value) => ({
+  number: Number.isFinite(Number(value)) ? Number(value) : null
+});
+
+const selectProp = (value) => ({
+  select: { name: short(value, 100) || "Unknown" }
+});
+
+const statusProp = (value) => ({
+  status: { name: short(value, 100) || "Unknown" }
+});
+
+const dateProp = (value) => ({
+  date: { start: toDate(value) }
+});
+
+const dateTimeProp = (value) => ({
+  date: { start: toIso(value) }
+});
+
+const notionHeaders = (token) => ({
   Authorization: `Bearer ${token}`,
   "Notion-Version": NOTION_VERSION,
   "Content-Type": "application/json"
 });
 
-const queryDatabase = async (token, databaseId, pageSize) => {
-  const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {
-    method: "POST",
-    headers: headers(token),
-    body: JSON.stringify({
-      page_size: pageSize,
-      sorts: [{ timestamp: "created_time", direction: "descending" }]
-    })
+const notionRequest = async (token, path, init = {}) => {
+  const response = await fetch(`https://api.notion.com${path}`, {
+    ...init,
+    headers: {
+      ...notionHeaders(token),
+      ...(init.headers || {})
+    }
   });
   const text = await response.text();
   let data = {};
@@ -46,197 +84,193 @@ const queryDatabase = async (token, databaseId, pageSize) => {
     data = {};
   }
   if (!response.ok) {
-    throw new Error(`Notion query failed (${response.status}): ${short(JSON.stringify(data), 260)}`);
+    throw new Error(`Notion ${path} failed (${response.status}): ${JSON.stringify(data).slice(0, 300)}`);
   }
   return data;
 };
 
-const pagePropText = (page, key) => {
-  const prop = page?.properties?.[key];
-  if (!prop) return "";
-  if (prop.type === "title") {
-    return (prop.title || []).map((row) => row.plain_text || row.text?.content || "").join("").trim();
-  }
-  if (prop.type === "rich_text") {
-    return (prop.rich_text || []).map((row) => row.plain_text || row.text?.content || "").join("").trim();
-  }
-  if (prop.type === "select") {
-    return String(prop.select?.name || "").trim();
-  }
-  if (prop.type === "status") {
-    return String(prop.status?.name || "").trim();
-  }
-  if (prop.type === "number") {
-    return Number.isFinite(prop.number) ? String(prop.number) : "";
-  }
-  if (prop.type === "date") {
-    return String(prop.date?.start || "").trim();
-  }
-  if (prop.type === "checkbox") {
-    return prop.checkbox ? "true" : "false";
-  }
-  return "";
+const findTitlePropertyName = (schema) => {
+  const entries = Object.entries(schema || {});
+  const hit = entries.find(([, def]) => String(def?.type || "") === "title");
+  return hit ? hit[0] : null;
 };
 
-const pickExisting = (properties, candidates) => {
-  for (const key of candidates) {
-    if (properties?.[key]) return key;
+const findPropertyAlias = (schema, names, types = []) => {
+  for (const name of names) {
+    const def = schema?.[name];
+    if (!def?.type) continue;
+    if (types.length > 0 && !types.includes(def.type)) continue;
+    return name;
   }
   return null;
 };
 
-const buildMarkdown = (audit) => {
-  const lines = [];
-  lines.push("## Notion Ops Audit");
-  lines.push(`- generatedAt: \`${audit.generatedAt}\``);
-  lines.push(`- status: \`${audit.status.toUpperCase()}\``);
-  lines.push(`- db: \`${audit.databaseId || "N/A"}\``);
-  lines.push(`- rowsChecked: \`${audit.rowsChecked}\` (scanned=\`${audit.scannedRows}\`)`);
-  lines.push(`- runKeyPrefixes: \`${(audit.runKeyPrefixes || []).join(",") || "none"}\``);
-  if (audit.reason) lines.push(`- reason: \`${audit.reason}\``);
-  lines.push("");
-  lines.push("### Checks");
-  lines.push(`- required_fields_missing_rows: \`${audit.requiredFieldMissingRows}\``);
-  lines.push(`- duplicate_run_key_count: \`${audit.duplicateRunKeyCount}\``);
-  lines.push(`- stale_latest_minutes: \`${audit.staleLatestMinutes ?? "N/A"}\``);
-  lines.push(`- stale_threshold_minutes: \`${audit.staleThresholdMinutes}\``);
-  lines.push("");
-  if (audit.samples?.missingFields?.length) {
-    lines.push("### Missing Field Samples");
-    for (const row of audit.samples.missingFields.slice(0, 8)) {
-      lines.push(`- run=\`${row.runKey || "N/A"}\` missing=\`${row.missing.join(",")}\``);
-    }
-    lines.push("");
-  }
-  if (audit.samples?.duplicateRunKeys?.length) {
-    lines.push("### Duplicate Run Key Samples");
-    for (const row of audit.samples.duplicateRunKeys.slice(0, 8)) {
-      lines.push(`- \`${row.runKey}\` count=\`${row.count}\``);
-    }
-    lines.push("");
-  }
-  return `${lines.join("\n")}\n`;
+const queryByTitle = async (token, databaseId, titlePropertyName, titleValue) => {
+  const payload = {
+    filter: {
+      property: titlePropertyName,
+      title: { equals: titleValue }
+    },
+    page_size: 1
+  };
+  const data = await notionRequest(token, `/v1/databases/${databaseId}/query`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  return Array.isArray(data?.results) && data.results.length > 0 ? data.results[0] : null;
+};
+
+const setProp = (props, schema, name, buildFn) => {
+  const def = schema?.[name];
+  if (!def?.type) return;
+  props[name] = buildFn(def.type);
+};
+
+const makeRunKey = (generatedAt) => `ops-daily-${toDate(generatedAt)}`;
+
+const writeOutput = (payload) => {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 };
 
 const main = async () => {
+  const enabled = boolFromEnv("NOTION_OPS_DAILY_SYNC_ENABLED", true);
+  const required = boolFromEnv("NOTION_OPS_DAILY_SYNC_REQUIRED", false);
   const token = env("NOTION_TOKEN");
   const databaseId = env("NOTION_DB_DAILY_SNAPSHOT");
-  const pageSize = Math.max(5, Math.min(100, toNum(env("NOTION_AUDIT_PAGE_SIZE", "40"), 40)));
-  const runKeyPrefixes = env("NOTION_AUDIT_RUNKEY_PREFIXES", "sidecar-")
-    .split(",")
-    .map((row) => row.trim())
-    .filter(Boolean);
-  const staleThresholdMinutes = Math.max(
-    30,
-    Math.min(24 * 60, toNum(env("NOTION_AUDIT_STALE_MINUTES", "240"), 240))
-  );
-  const strictFail = env("NOTION_AUDIT_STRICT_FAIL", "false").toLowerCase() === "true";
 
-  if (!token || !databaseId) {
-    const skipped = {
-      generatedAt: nowIso(),
-      status: "skip",
-      reason: "missing_notion_token_or_db",
-      databaseId: databaseId || null,
-      rowsChecked: 0,
-      requiredFieldMissingRows: 0,
-      duplicateRunKeyCount: 0,
-      staleLatestMinutes: null,
-      staleThresholdMinutes,
-      samples: { missingFields: [], duplicateRunKeys: [] }
-    };
-    writeJson(OUTPUT_JSON, skipped);
-    writeText(OUTPUT_MD, buildMarkdown(skipped));
-    console.log("[NOTION_AUDIT] skipped missing token/db");
+  if (!enabled) {
+    const out = { at: new Date().toISOString(), status: "skip", reason: "disabled" };
+    writeOutput(out);
+    console.log("[NOTION_OPS_DAILY] skipped disabled");
     return;
   }
 
-  const result = await queryDatabase(token, databaseId, pageSize);
-  const rows = Array.isArray(result.results) ? result.results : [];
-  const scopedRows = [];
-
-  let requiredFieldMissingRows = 0;
-  const missingSamples = [];
-  const runKeyCounts = new Map();
-
-  for (const page of rows) {
-    const props = page?.properties || {};
-    const runKeyName = pickExisting(props, ["Run Date", "Run Key", "Name"]);
-    const statusName = pickExisting(props, ["Status"]);
-    const sourceName = pickExisting(props, ["Source"]);
-    const stage6HashName = pickExisting(props, ["Stage6 Hash"]);
-    const payloadName = pickExisting(props, ["Payload Count"]);
-    const skippedName = pickExisting(props, ["Skipped Count"]);
-    const summaryName = pickExisting(props, ["Summary"]);
-
-    const runKey = runKeyName ? pagePropText(page, runKeyName) : "";
-    const inScope =
-      runKeyPrefixes.length === 0 || runKeyPrefixes.some((prefix) => runKey.startsWith(prefix));
-    if (!inScope) continue;
-    scopedRows.push(page);
-    if (runKey) runKeyCounts.set(runKey, (runKeyCounts.get(runKey) || 0) + 1);
-
-    const missing = [];
-    if (!runKey) missing.push("Run Key");
-    if (!statusName || !pagePropText(page, statusName)) missing.push("Status");
-    if (!sourceName || !pagePropText(page, sourceName)) missing.push("Source");
-    if (!stage6HashName || !pagePropText(page, stage6HashName)) missing.push("Stage6 Hash");
-    if (!payloadName || !pagePropText(page, payloadName)) missing.push("Payload Count");
-    if (!skippedName || !pagePropText(page, skippedName)) missing.push("Skipped Count");
-    if (!summaryName || !pagePropText(page, summaryName)) missing.push("Summary");
-
-    if (missing.length > 0) {
-      requiredFieldMissingRows += 1;
-      missingSamples.push({ runKey, missing });
-    }
+  if (!hasValue(token) || !hasValue(databaseId)) {
+    const out = { at: new Date().toISOString(), status: "skip", reason: "missing_token_or_db" };
+    writeOutput(out);
+    console.log("[NOTION_OPS_DAILY] skipped missing token/db");
+    if (required) process.exit(1);
+    return;
   }
 
-  const duplicateRunKeys = Array.from(runKeyCounts.entries())
-    .filter(([, count]) => count > 1)
-    .map(([runKey, count]) => ({ runKey, count }))
-    .sort((a, b) => b.count - a.count);
+  const report = readJson(REPORT_PATH);
+  if (!report || typeof report !== "object") {
+    const out = { at: new Date().toISOString(), status: "skip", reason: "missing_ops_daily_report" };
+    writeOutput(out);
+    console.log("[NOTION_OPS_DAILY] skipped missing report");
+    if (required) process.exit(1);
+    return;
+  }
 
-  const rowsChecked = scopedRows.length;
-  const latestCreated = scopedRows[0]?.created_time ? Date.parse(scopedRows[0].created_time) : NaN;
-  const staleLatestMinutes =
-    Number.isFinite(latestCreated) && latestCreated > 0
-      ? Math.round((Date.now() - latestCreated) / 60000)
-      : null;
-
-  let status = "pass";
-  if (requiredFieldMissingRows > 0 || duplicateRunKeys.length > 0) status = "warn";
-  if (staleLatestMinutes != null && staleLatestMinutes > staleThresholdMinutes) status = "warn";
-
-  const audit = {
-    generatedAt: nowIso(),
-    status,
-    reason: "",
-    databaseId,
-    rowsChecked,
-    runKeyPrefixes,
-    scannedRows: rows.length,
-    requiredFieldMissingRows,
-    duplicateRunKeyCount: duplicateRunKeys.length,
-    staleLatestMinutes,
-    staleThresholdMinutes,
-    samples: {
-      missingFields: missingSamples.slice(0, 15),
-      duplicateRunKeys: duplicateRunKeys.slice(0, 15)
-    }
-  };
-
-  writeJson(OUTPUT_JSON, audit);
-  writeText(OUTPUT_MD, buildMarkdown(audit));
-  console.log(
-    `[NOTION_AUDIT] status=${status} rows=${rowsChecked} missingRows=${requiredFieldMissingRows} duplicateRunKeys=${duplicateRunKeys.length} staleMin=${staleLatestMinutes ?? "N/A"}`
-  );
-
-  if (strictFail && status !== "pass") {
+  const db = await notionRequest(token, `/v1/databases/${databaseId}`);
+  const schema = db?.properties || {};
+  const titleProperty = findTitlePropertyName(schema);
+  if (!titleProperty) {
+    const out = { at: new Date().toISOString(), status: "fail", reason: "missing_title_property" };
+    writeOutput(out);
+    console.error("[NOTION_OPS_DAILY] fail missing title property");
     process.exit(1);
   }
+
+  const runKey = makeRunKey(report.generatedAt || new Date().toISOString());
+  const nowIso = new Date().toISOString();
+  const summary = [
+    `ops_daily=${String(report.status || "n/a").toUpperCase()}`,
+    `canary=${report?.canary?.success ?? 0}/${report?.canary?.completed ?? 0}`,
+    `dryrun=${report?.dryRun?.success ?? 0}/${report?.dryRun?.completed ?? 0}`,
+    `verify=${report?.canaryVerify?.parsed ?? 0}/${report?.canaryVerify?.inspected ?? 0}`,
+    `canaryFresh=${String(report?.canaryFreshness?.status || "unknown")}`,
+    `execReady=${String(report?.execReadinessNow?.status || "UNKNOWN")}`,
+    `preflight=${report?.canaryVerify?.preflightPassRuns ?? 0}/${report?.canaryVerify?.parsed ?? 0}`,
+    `submit=${report?.canaryVerify?.submittedTotal ?? 0}/${report?.canaryVerify?.attemptedTotal ?? 0}`,
+    `notionAudit=${String(report?.notionAudit?.status || "n/a")}`
+  ].join(" | ");
+
+  const properties = {
+    [titleProperty]: titleProp(runKey)
+  };
+
+  const statusName = findPropertyAlias(schema, ["Status"], ["select", "status"]);
+  if (statusName) {
+    const val = String(report.status || "warn").toUpperCase();
+    if (schema[statusName].type === "status") properties[statusName] = statusProp(val);
+    else properties[statusName] = selectProp(val);
+  }
+
+  const sourceName = findPropertyAlias(schema, ["Source"], ["select", "rich_text"]);
+  if (sourceName) {
+    if (schema[sourceName].type === "select") properties[sourceName] = selectProp("ops_daily");
+    else properties[sourceName] = textProp("ops_daily");
+  }
+
+  const engineName = findPropertyAlias(schema, ["Engine"], ["select", "rich_text"]);
+  if (engineName) {
+    if (schema[engineName].type === "select") properties[engineName] = selectProp("mcp_ops_daily");
+    else properties[engineName] = textProp("mcp_ops_daily");
+  }
+
+  const summaryName = findPropertyAlias(schema, ["Summary"], ["rich_text"]);
+  if (summaryName) properties[summaryName] = textProp(summary);
+
+  const timeName = findPropertyAlias(schema, ["Time", "Date"], ["date"]);
+  if (timeName) {
+    const isTime = timeName.toLowerCase() === "time";
+    properties[timeName] = isTime ? dateTimeProp(report.generatedAt || nowIso) : dateProp(report.generatedAt || nowIso);
+  }
+
+  const runDateName = findPropertyAlias(schema, ["Run Date"], ["rich_text", "title"]);
+  if (runDateName && runDateName !== titleProperty) {
+    if (schema[runDateName].type === "rich_text") properties[runDateName] = textProp(runKey);
+  }
+
+  const payloadCountName = findPropertyAlias(schema, ["Payload Count"], ["number"]);
+  if (payloadCountName) properties[payloadCountName] = numberProp(report?.canaryVerify?.submittedTotal ?? null);
+
+  const skippedCountName = findPropertyAlias(schema, ["Skipped Count"], ["number"]);
+  if (skippedCountName)
+    properties[skippedCountName] = numberProp(
+      Math.max(0, Number(report?.canaryVerify?.attemptedTotal || 0) - Number(report?.canaryVerify?.submittedTotal || 0))
+    );
+
+  const existing = await queryByTitle(token, databaseId, titleProperty, runKey);
+  let action = "created";
+  if (existing?.id) {
+    await notionRequest(token, `/v1/pages/${existing.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties })
+    });
+    action = "updated";
+  } else {
+    await notionRequest(token, "/v1/pages", {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { database_id: databaseId },
+        properties
+      })
+    });
+  }
+
+  const out = {
+    at: nowIso,
+    status: "ok",
+    action,
+    runKey,
+    databaseId,
+    summary
+  };
+  writeOutput(out);
+  console.log(`[NOTION_OPS_DAILY] ok action=${action} runKey=${runKey}`);
 };
 
 main().catch((error) => {
-  console.error("[NOTION_AUDIT] failed:", error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  const required = boolFromEnv("NOTION_OPS_DAILY_SYNC_REQUIRED", false);
+  const out = {
+    at: new Date().toISOString(),
+    status: "fail",
+    reason: error instanceof Error ? error.message : String(error)
+  };
+  writeOutput(out);
+  console.error(`[NOTION_OPS_DAILY] fail: ${out.reason}`);
+  if (required) process.exit(1);
 });

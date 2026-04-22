@@ -80,7 +80,7 @@ const parseCanaryVerifyMetrics = (text) => {
   };
 };
 
-const fetchCanaryLogText = async ({ token, owner, repo, runId }) => {
+const fetchRunLogText = async ({ token, owner, repo, runId }) => {
   const response = await fetch(
     `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(String(runId))}/logs`,
     {
@@ -142,7 +142,7 @@ const collectCanaryVerificationMetrics = async ({ token, repo, completedRuns, ma
       reason: "not_checked"
     };
     try {
-      const text = await fetchCanaryLogText({
+      const text = await fetchRunLogText({
         token,
         owner: repo.owner,
         repo: repo.repo,
@@ -181,6 +181,98 @@ const collectCanaryVerificationMetrics = async ({ token, repo, completedRuns, ma
         : null,
     perRun
   };
+};
+
+const parseDryRunExecutionMetrics = (text) => {
+  const preflightMatch = text.match(/\[PREFLIGHT\]\s+status=(PASS|FAIL)\s+code=([A-Z0-9_:-]+)/);
+  const submitMatch = text.match(
+    /\[BROKER_SUBMIT\][^\n]*attempted=(\d+)\s+submitted=(\d+)\s+failed=(\d+)\s+skipped=(\d+)/
+  );
+  const preflightStatus = preflightMatch ? preflightMatch[1] : null;
+  const preflightCode = preflightMatch ? preflightMatch[2] : null;
+  const attempted = submitMatch ? Number(submitMatch[1]) : 0;
+  const submitted = submitMatch ? Number(submitMatch[2]) : 0;
+  const failed = submitMatch ? Number(submitMatch[3]) : 0;
+  const skipped = submitMatch ? Number(submitMatch[4]) : 0;
+  const preflightPass = preflightStatus === "PASS";
+  const submitPass = attempted >= 1 && submitted >= 1;
+  const status = preflightPass && submitPass
+    ? "READY"
+    : preflightCode === "PREFLIGHT_MARKET_CLOSED"
+      ? "BLOCKED_MARKET_CLOSED"
+      : preflightStatus
+        ? "BLOCKED_GATES"
+        : "UNKNOWN";
+  return {
+    parsed: Boolean(preflightMatch || submitMatch),
+    preflightStatus,
+    preflightCode,
+    preflightPass,
+    attempted,
+    submitted,
+    failed,
+    skipped,
+    submitPass,
+    status
+  };
+};
+
+const collectLatestDryRunExecutionMetrics = async ({ token, repo, completedRuns }) => {
+  const latest = completedRuns[0] || null;
+  if (!latest) {
+    return {
+      inspected: false,
+      runId: null,
+      runNumber: null,
+      htmlUrl: null,
+      parsed: false,
+      preflightStatus: null,
+      preflightCode: null,
+      preflightPass: false,
+      attempted: 0,
+      submitted: 0,
+      failed: 0,
+      skipped: 0,
+      submitPass: false,
+      status: "UNKNOWN",
+      reason: "no_completed_dry_run"
+    };
+  }
+  try {
+    const text = await fetchRunLogText({
+      token,
+      owner: repo.owner,
+      repo: repo.repo,
+      runId: latest.id
+    });
+    const parsed = parseDryRunExecutionMetrics(text);
+    return {
+      inspected: true,
+      runId: latest.id,
+      runNumber: latest.run_number,
+      htmlUrl: latest.html_url,
+      ...parsed,
+      reason: parsed.parsed ? "ok" : "markers_not_found"
+    };
+  } catch (error) {
+    return {
+      inspected: true,
+      runId: latest.id,
+      runNumber: latest.run_number,
+      htmlUrl: latest.html_url,
+      parsed: false,
+      preflightStatus: null,
+      preflightCode: null,
+      preflightPass: false,
+      attempted: 0,
+      submitted: 0,
+      failed: 0,
+      skipped: 0,
+      submitPass: false,
+      status: "UNKNOWN",
+      reason: error instanceof Error ? error.message.slice(0, 180) : String(error).slice(0, 180)
+    };
+  }
 };
 
 const fetchRuns = async ({ token, owner, repo, workflow, perPage }) => {
@@ -264,6 +356,12 @@ const buildMarkdown = (report) => {
   lines.push(
     `- canary_verify: parsed=\`${report.canaryVerify.parsed}/${report.canaryVerify.inspected}\` preflight_pass=\`${report.canaryVerify.preflightPassRuns}/${report.canaryVerify.parsed || 0}\` submit_pass=\`${report.canaryVerify.submitPassRuns}/${report.canaryVerify.parsed || 0}\` attempted=\`${report.canaryVerify.attemptedTotal}\` submitted=\`${report.canaryVerify.submittedTotal}\``
   );
+  lines.push(
+    `- canary_freshness: \`${report.canaryFreshness.status}\` latestAgeMin=\`${report.canaryFreshness.latestAgeMin ?? "N/A"}\` threshold=\`${report.canaryFreshness.maxAllowedAgeMin}\``
+  );
+  lines.push(
+    `- exec_readiness_now: \`${report.execReadinessNow.status}\` preflight=\`${report.execReadinessNow.preflightStatus ?? "n/a"}:${report.execReadinessNow.preflightCode ?? "n/a"}\` attempted=\`${report.execReadinessNow.attempted}\` submitted=\`${report.execReadinessNow.submitted}\``
+  );
   lines.push("");
 
   lines.push("### Notion Audit Snapshot");
@@ -304,6 +402,16 @@ const buildMarkdown = (report) => {
   }
   lines.push("");
 
+  lines.push("### Latest Dry-Run Readiness");
+  if (!report.execReadinessNow.inspected) {
+    lines.push(`- status=${report.execReadinessNow.status} reason=${report.execReadinessNow.reason}`);
+  } else {
+    lines.push(
+      `- run=#${report.execReadinessNow.runNumber} status=${report.execReadinessNow.status} preflight=${report.execReadinessNow.preflightStatus ?? "n/a"}:${report.execReadinessNow.preflightCode ?? "n/a"} attempted=${report.execReadinessNow.attempted} submitted=${report.execReadinessNow.submitted} failed=${report.execReadinessNow.failed} skipped=${report.execReadinessNow.skipped} reason=${report.execReadinessNow.reason} (${report.execReadinessNow.htmlUrl || "n/a"})`
+    );
+  }
+  lines.push("");
+
   lines.push("### Decision");
   lines.push(`- automatedSummary: ${report.decision}`);
 
@@ -322,6 +430,7 @@ const main = async () => {
     1,
     Math.min(20, toNum(env("OPS_REPORT_CANARY_VERIFY_MAX_RUNS", "8"), 8))
   );
+  const canaryFreshMaxMin = Math.max(30, Math.min(1440, toNum(env("OPS_REPORT_CANARY_FRESH_MAX_MIN", "360"), 360)));
 
   if (!canaryRepo || !dryRunRepo) {
     throw new Error("invalid OPS_REPORT_*_REPO format (expected owner/repo)");
@@ -360,6 +469,22 @@ const main = async () => {
         submitSuccessRatePct: null,
         perRun: []
       },
+      canaryFreshness: {
+        status: "unknown",
+        latestAgeMin: null,
+        maxAllowedAgeMin: canaryFreshMaxMin
+      },
+      execReadinessNow: {
+        inspected: false,
+        status: "UNKNOWN",
+        preflightStatus: null,
+        preflightCode: null,
+        attempted: 0,
+        submitted: 0,
+        failed: 0,
+        skipped: 0,
+        reason: "missing_github_token"
+      },
       notionAudit,
       decision: "GitHub token missing; cannot compute workflow KPIs."
     };
@@ -388,6 +513,29 @@ const main = async () => {
 
   const canary = summarizeRuns(canaryRuns, sinceMs);
   const dryRun = summarizeRuns(dryRunRuns, sinceMs);
+  const latestCanaryCreatedMs = parseIso(canary.latest[0]?.createdAt || "");
+  const canaryLatestAgeMin =
+    Number.isFinite(latestCanaryCreatedMs)
+      ? Number(((Date.now() - latestCanaryCreatedMs) / 60000).toFixed(1))
+      : null;
+  const canaryFreshness = {
+    status:
+      canaryLatestAgeMin == null
+        ? "unknown"
+        : canaryLatestAgeMin <= canaryFreshMaxMin
+          ? "fresh"
+          : "stale",
+    latestAgeMin: canaryLatestAgeMin,
+    maxAllowedAgeMin: canaryFreshMaxMin
+  };
+  const latestDryRunExecution = await collectLatestDryRunExecutionMetrics({
+    token,
+    repo: dryRunRepo,
+    completedRuns: dryRunRuns.filter((run) => {
+      const createdMs = parseIso(run?.created_at);
+      return Number.isFinite(createdMs) && createdMs >= sinceMs && run?.status === "completed";
+    })
+  });
   const canaryVerify = await collectCanaryVerificationMetrics({
     token,
     repo: canaryRepo,
@@ -416,6 +564,10 @@ const main = async () => {
     status = "warn";
     reason = "failed_runs_detected";
   }
+  if (canaryFreshness.status === "stale") {
+    status = "warn";
+    reason = reason === "healthy" ? "canary_stale" : `${reason}+canary_stale`;
+  }
   if (String(notionAudit.status || "").toLowerCase() !== "pass") {
     status = "warn";
     reason = reason === "healthy" ? "notion_audit_not_pass" : `${reason}+notion_audit_not_pass`;
@@ -424,7 +576,7 @@ const main = async () => {
   const decision =
     status === "pass"
       ? "No immediate blocker in lookback window. Continue baseline/tuning workflow."
-      : "Investigate failed runs or Notion audit warnings before changing policy thresholds.";
+      : "Investigate failed runs, canary freshness, or Notion audit warnings before changing policy thresholds.";
 
   const report = {
     generatedAt: nowIso(),
@@ -436,6 +588,8 @@ const main = async () => {
     canary,
     dryRun,
     canaryVerify,
+    canaryFreshness,
+    execReadinessNow: latestDryRunExecution,
     notionAudit: {
       status: notionAudit.status || "missing",
       rowsChecked: notionAudit.rowsChecked ?? 0,
@@ -450,7 +604,7 @@ const main = async () => {
   writeText(OUTPUT_MD, buildMarkdown(report));
 
   console.log(
-    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal}`
+    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} canaryFresh=${report.canaryFreshness.status} execReadiness=${report.execReadinessNow.status} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal}`
   );
 };
 

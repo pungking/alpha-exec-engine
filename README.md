@@ -313,6 +313,7 @@ Use `.env.example` as baseline.
 - `OPS_REPORT_LOOKBACK_HOURS` (optional, default `24`; GitHub workflow KPI lookback window for ops daily report)
 - `OPS_REPORT_MAX_RUNS` (optional, default `30`; max workflow runs fetched per pipeline)
 - `OPS_REPORT_CANARY_VERIFY_MAX_RUNS` (optional, default `8`; max successful canary runs inspected for verify markers)
+- `OPS_REPORT_CANARY_FRESH_MAX_MIN` (optional, default `360`; canary staleness threshold in minutes for ops daily warning)
 - `OPS_REPORT_CANARY_REPO` (optional, default `pungking/US_Alpha_Seeker`; canary workflow owner repo)
 - `OPS_REPORT_DRYRUN_REPO` (optional, default `pungking/alpha-exec-engine`; dry-run workflow owner repo)
 - `OPS_REPORT_CANARY_WORKFLOW` (optional, default `sidecar-preflight-canary-recheck.yml`)
