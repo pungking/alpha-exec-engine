@@ -522,6 +522,31 @@ type BrokerSubmitSummary = {
   orders: Record<string, BrokerSubmitOrderResult>;
 };
 
+type OpenEntryOrderGuardConfig = {
+  enabled: boolean;
+  staleCancelEnabled: boolean;
+  staleMinutes: number;
+};
+
+type OpenEntryOrderSnapshot = {
+  orderId: string;
+  symbol: string;
+  status: string;
+  limitPrice: number | null;
+  qty: number | null;
+  clientOrderId: string | null;
+  submittedAt: string | null;
+  submittedAtMs: number;
+  ageMinutes: number | null;
+  symbolOpenCount: number;
+};
+
+type OpenEntryOrderIndex = {
+  total: number;
+  duplicateSymbols: number;
+  bySymbol: Map<string, OpenEntryOrderSnapshot>;
+};
+
 type SidecarRunState = {
   lastStage6Sha256: string;
   lastStage6FileId: string;
@@ -1019,6 +1044,14 @@ function hasValue(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
 }
 
+function buildOpenEntryOrderGuardConfig(): OpenEntryOrderGuardConfig {
+  return {
+    enabled: readBoolEnv("ENTRY_OPEN_ORDER_GUARD_ENABLED", true),
+    staleCancelEnabled: readBoolEnv("ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED", false),
+    staleMinutes: Math.max(5, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_STALE_MINUTES", 180)))
+  };
+}
+
 function normalizeApprovalQueueStatus(raw: unknown): ApprovalQueueStatus {
   const normalized = String(raw ?? "")
     .trim()
@@ -1170,6 +1203,7 @@ function printStartupSummary() {
   const check = runEnvGuard();
   const shadowDataBus = buildShadowDataBusSummary();
   const approvalCfg = buildApprovalQueueGateConfig();
+  const openEntryGuardCfg = buildOpenEntryOrderGuardConfig();
   const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const lifecycleExitFullMaxLossPct = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
@@ -1286,6 +1320,9 @@ function printStartupSummary() {
   console.log(
     `LIVE_SUBMIT_REQH: ${readBoolEnv("LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS", true)}`
   );
+  console.log(`OPEN_ENTRY_GUARD: ${openEntryGuardCfg.enabled}`);
+  console.log(`OPEN_ENTRY_STALE: ${openEntryGuardCfg.staleCancelEnabled}`);
+  console.log(`OPEN_ENTRY_STMIN: ${openEntryGuardCfg.staleMinutes}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -4586,7 +4623,7 @@ function buildDryExecPayloads(
 async function fetchAlpacaJson(
   path: string,
   init: {
-    method?: "GET" | "POST";
+    method?: "GET" | "POST" | "PATCH" | "DELETE";
     body?: Record<string, unknown>;
     expectedStatuses?: number[];
   } = {}
@@ -4620,6 +4657,96 @@ async function fetchAlpacaJson(
   } catch {
     return text;
   }
+}
+
+function parseOpenEntryOrderSnapshot(raw: unknown, nowMs: number): OpenEntryOrderSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const node = raw as Record<string, unknown>;
+  const orderId = String(node.id ?? "").trim();
+  const symbol = String(node.symbol ?? "")
+    .trim()
+    .toUpperCase();
+  const side = String(node.side ?? "")
+    .trim()
+    .toLowerCase();
+  if (!orderId || !symbol || side !== "buy") return null;
+  const status = String(node.status ?? "")
+    .trim()
+    .toLowerCase();
+  const submittedAtRaw =
+    typeof node.submitted_at === "string"
+      ? node.submitted_at
+      : typeof node.created_at === "string"
+        ? node.created_at
+        : null;
+  const submittedAtMs =
+    submittedAtRaw && Number.isFinite(Date.parse(submittedAtRaw)) ? Date.parse(submittedAtRaw) : 0;
+  const ageMinutes =
+    submittedAtMs > 0 ? Number(Math.max(0, (nowMs - submittedAtMs) / 60000).toFixed(2)) : null;
+  return {
+    orderId,
+    symbol,
+    status,
+    limitPrice: parseFiniteNumber(node.limit_price ?? node.limitPrice),
+    qty: parseFiniteNumber(node.qty),
+    clientOrderId: typeof node.client_order_id === "string" ? node.client_order_id : null,
+    submittedAt: submittedAtRaw,
+    submittedAtMs,
+    ageMinutes,
+    symbolOpenCount: 1
+  };
+}
+
+async function loadOpenEntryOrderIndex(): Promise<OpenEntryOrderIndex> {
+  const raw = await fetchAlpacaJson("/v2/orders?status=open&nested=true&direction=desc&limit=500");
+  if (!Array.isArray(raw)) {
+    return {
+      total: 0,
+      duplicateSymbols: 0,
+      bySymbol: new Map<string, OpenEntryOrderSnapshot>()
+    };
+  }
+  const nowMs = Date.now();
+  const bySymbol = new Map<string, OpenEntryOrderSnapshot>();
+  const countBySymbol = new Map<string, number>();
+
+  raw.forEach((row) => {
+    const snapshot = parseOpenEntryOrderSnapshot(row, nowMs);
+    if (!snapshot) return;
+    countBySymbol.set(snapshot.symbol, (countBySymbol.get(snapshot.symbol) ?? 0) + 1);
+    const existing = bySymbol.get(snapshot.symbol);
+    if (!existing || snapshot.submittedAtMs > existing.submittedAtMs) {
+      bySymbol.set(snapshot.symbol, snapshot);
+    }
+  });
+
+  let total = 0;
+  let duplicateSymbols = 0;
+  countBySymbol.forEach((count, symbol) => {
+    total += count;
+    if (count > 1) duplicateSymbols += 1;
+    const latest = bySymbol.get(symbol);
+    if (!latest) return;
+    bySymbol.set(symbol, {
+      ...latest,
+      symbolOpenCount: count
+    });
+  });
+
+  return {
+    total,
+    duplicateSymbols,
+    bySymbol
+  };
+}
+
+async function cancelOpenEntryOrder(orderId: string): Promise<void> {
+  const normalized = orderId.trim();
+  if (!normalized) throw new Error("open_entry_cancel_order_id_missing");
+  await fetchAlpacaJson(`/v2/orders/${encodeURIComponent(normalized)}`, {
+    method: "DELETE",
+    expectedStatuses: [200, 204]
+  });
 }
 
 async function runPreflightGate(dryExec: DryExecBuildResult): Promise<PreflightResult> {
@@ -5237,6 +5364,27 @@ async function submitOrdersToBroker(
   summary.active = true;
   summary.reason = "submit_attempted";
   summary.skipped = 0;
+  const openEntryGuardCfg = buildOpenEntryOrderGuardConfig();
+  let openEntryOrders: OpenEntryOrderIndex = {
+    total: 0,
+    duplicateSymbols: 0,
+    bySymbol: new Map<string, OpenEntryOrderSnapshot>()
+  };
+  if (openEntryGuardCfg.enabled) {
+    try {
+      openEntryOrders = await loadOpenEntryOrderIndex();
+      console.log(
+        `[OPEN_ENTRY_GUARD] enabled=true staleCancel=${openEntryGuardCfg.staleCancelEnabled} staleMin=${openEntryGuardCfg.staleMinutes} openEntries=${openEntryOrders.total} duplicateSymbols=${openEntryOrders.duplicateSymbols}`
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      summary.reason = "open_entry_order_fetch_failed";
+      summary.perfGateReason = `open_entry_order_fetch_failed:${msg.slice(0, 120)}`;
+      return summary;
+    }
+  } else {
+    console.log("[OPEN_ENTRY_GUARD] enabled=false");
+  }
 
   let heldSymbols = new Set<string>();
   let heldQtyBySymbol = new Map<string, number>();
@@ -5306,14 +5454,50 @@ async function submitOrdersToBroker(
         continue;
       }
     }
+    const isEntryStyleAction = !isLifecycleExitAction(effectiveActionType);
     let entryQtyForSubmit: string | null = null;
-    if (!isLifecycleExitAction(effectiveActionType)) {
+    if (isEntryStyleAction) {
       entryQtyForSubmit = toWholeShareQtyFromNotional(payload.notional, payload.limit_price);
       if (!entryQtyForSubmit) {
         row.actionType = effectiveActionType ?? row.actionType;
         row.reason = `entry_notional_below_limit_price(notional=${payload.notional.toFixed(2)},limit=${payload.limit_price.toFixed(2)})`;
         summary.skipped += 1;
         continue;
+      }
+      if (openEntryGuardCfg.enabled) {
+        const openEntry = openEntryOrders.bySymbol.get(payload.symbol);
+        if (openEntry) {
+          if (openEntry.symbolOpenCount > 1) {
+            row.actionType = "HOLD_WAIT";
+            row.reason = `open_entry_duplicate_exists(count=${openEntry.symbolOpenCount})`;
+            summary.skipped += 1;
+            continue;
+          }
+          const staleEligible =
+            openEntryGuardCfg.staleCancelEnabled &&
+            openEntry.ageMinutes != null &&
+            openEntry.ageMinutes >= openEntryGuardCfg.staleMinutes;
+          if (staleEligible) {
+            try {
+              await cancelOpenEntryOrder(openEntry.orderId);
+              openEntryOrders.bySymbol.delete(payload.symbol);
+              console.warn(
+                `[OPEN_ENTRY_GUARD] symbol=${payload.symbol} stale_open_entry_cancelled orderId=${openEntry.orderId} ageMin=${openEntry.ageMinutes?.toFixed(1) ?? "n/a"}`
+              );
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error);
+              row.actionType = "HOLD_WAIT";
+              row.reason = `open_entry_cancel_failed:${msg.slice(0, 96)}`;
+              summary.skipped += 1;
+              continue;
+            }
+          } else {
+            row.actionType = "HOLD_WAIT";
+            row.reason = `open_entry_order_exists(id=${openEntry.orderId.slice(0, 10)} age=${openEntry.ageMinutes != null ? `${openEntry.ageMinutes.toFixed(1)}m` : "n/a"})`;
+            summary.skipped += 1;
+            continue;
+          }
+        }
       }
     }
     row.actionType = effectiveActionType ?? row.actionType;
@@ -5389,6 +5573,20 @@ async function submitOrdersToBroker(
       row.brokerStatus = brokerStatus;
       row.reason = `submitted:${row.actionType}`;
       summary.submitted += 1;
+      if (isEntryStyleAction && brokerOrderId) {
+        openEntryOrders.bySymbol.set(payload.symbol, {
+          orderId: brokerOrderId,
+          symbol: payload.symbol,
+          status: String(brokerStatus || "submitted"),
+          limitPrice: payload.limit_price,
+          qty: parseFiniteNumber(entryQtyForSubmit),
+          clientOrderId: payload.client_order_id,
+          submittedAt: new Date().toISOString(),
+          submittedAtMs: Date.now(),
+          ageMinutes: 0,
+          symbolOpenCount: 1
+        });
+      }
       console.log(
         `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
       );
