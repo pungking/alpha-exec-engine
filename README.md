@@ -321,6 +321,8 @@ Use `.env.example` as baseline.
 - `NOTION_OPS_DAILY_SYNC_ENABLED` (optional, default `true`; enable consolidated ops daily row upsert)
 - `NOTION_OPS_DAILY_SYNC_REQUIRED` (optional, default `false`; when `true`, ops daily Notion sync failure fails workflow)
 - `NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL` (optional, default `true`; require evidence URL and matching property (`Evidence URL`/`Run URL`/`Workflow URL`) for ops daily Notion sync)
+- `NOTION_OPS_DAILY_EVIDENCE_URL_PROPERTY` (optional; explicit Notion property name for primary evidence URL, e.g. `Run Link`)
+- `NOTION_OPS_DAILY_EVIDENCE_LINKS_PROPERTY` (optional; explicit rich-text property name for full evidence link bundle, e.g. `Evidence Bundle`)
 - `OPS_REPORT_LOOKBACK_HOURS` (optional, default `24`; GitHub workflow KPI lookback window for ops daily report)
 - `OPS_REPORT_MAX_RUNS` (optional, default `30`; max workflow runs fetched per pipeline)
 - `OPS_REPORT_CANARY_VERIFY_MAX_RUNS` (optional, default `8`; max successful canary runs inspected for verify markers)

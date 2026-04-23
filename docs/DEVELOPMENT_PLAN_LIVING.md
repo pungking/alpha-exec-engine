@@ -218,3 +218,9 @@ Priority: P0
   - `scripts/sync-notion-ops-daily.mjs` now enforces evidence URL by default (`NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL=true`).
   - Notion sync now requires one URL + matching property alias (`Evidence URL` / `Run URL` / `Workflow URL`) and writes summary fields (`evidencePrimary`, `evidenceCount`).
   - Root workflow `/.github/workflows/mcp-ops-daily.yml` now exports `NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL` and shows evidence sync summary in Step Summary.
+- 2026-04-23 UTC/KST (ops daily evidence mapping override):
+  - Added explicit Notion column override envs:
+    - `NOTION_OPS_DAILY_EVIDENCE_URL_PROPERTY`
+    - `NOTION_OPS_DAILY_EVIDENCE_LINKS_PROPERTY`
+  - Missing-evidence-property failure now includes override values and schema candidate hints for faster DB alignment.
+  - Step Summary now includes resolved evidence property names (`evidenceUrlProperty`, `evidenceLinksProperty`).

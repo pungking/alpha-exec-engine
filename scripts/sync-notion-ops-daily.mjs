@@ -8,6 +8,11 @@ const OUTPUT_PATH = `${STATE_DIR}/notion-ops-daily-sync.json`;
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
 const hasValue = (v) => String(v ?? "").trim().length > 0;
 const short = (v, max = 1800) => String(v ?? "").trim().slice(0, max);
+const csvEnv = (name) =>
+  env(name)
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => hasValue(v));
 const normalizeUrl = (v) => {
   const raw = String(v ?? "").trim();
   if (!/^https?:\/\//i.test(raw)) return "";
@@ -115,6 +120,14 @@ const findPropertyAlias = (schema, names, types = []) => {
   return null;
 };
 
+const schemaPropertyNamesByType = (schema, types = []) =>
+  Object.entries(schema || {})
+    .filter(([, def]) => {
+      const t = String(def?.type || "");
+      return t && (types.length === 0 || types.includes(t));
+    })
+    .map(([name]) => name);
+
 const queryByTitle = async (token, databaseId, titlePropertyName, titleValue) => {
   const payload = {
     filter: {
@@ -168,6 +181,8 @@ const main = async () => {
   const enabled = boolFromEnv("NOTION_OPS_DAILY_SYNC_ENABLED", true);
   const required = boolFromEnv("NOTION_OPS_DAILY_SYNC_REQUIRED", false);
   const requireEvidenceUrl = boolFromEnv("NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL", true);
+  const evidenceUrlPropertyOverrides = csvEnv("NOTION_OPS_DAILY_EVIDENCE_URL_PROPERTY");
+  const evidenceLinksPropertyOverrides = csvEnv("NOTION_OPS_DAILY_EVIDENCE_LINKS_PROPERTY");
   const token = env("NOTION_TOKEN");
   const databaseId = env("NOTION_DB_DAILY_SNAPSHOT");
 
@@ -267,13 +282,26 @@ const main = async () => {
       Math.max(0, Number(report?.canaryVerify?.attemptedTotal || 0) - Number(report?.canaryVerify?.submittedTotal || 0))
     );
 
-  const evidenceUrlName = findPropertyAlias(schema, ["Evidence URL", "Run URL", "Workflow URL"], ["url", "rich_text"]);
-  const evidenceLinksName = findPropertyAlias(schema, ["Evidence URLs", "Evidence Links"], ["rich_text"]);
+  const evidenceUrlName = findPropertyAlias(
+    schema,
+    [...evidenceUrlPropertyOverrides, "Evidence URL", "Run URL", "Workflow URL"],
+    ["url", "rich_text"]
+  );
+  const evidenceLinksName = findPropertyAlias(
+    schema,
+    [...evidenceLinksPropertyOverrides, "Evidence URLs", "Evidence Links"],
+    ["rich_text"]
+  );
   if (requireEvidenceUrl && !evidence.primary) {
     throw new Error("missing_evidence_url");
   }
   if (requireEvidenceUrl && !evidenceUrlName && !evidenceLinksName) {
-    throw new Error("missing_evidence_url_property");
+    const urlCandidates = schemaPropertyNamesByType(schema, ["url", "rich_text"])
+      .slice(0, 12)
+      .join(",");
+    throw new Error(
+      `missing_evidence_url_property(overrides_url=${evidenceUrlPropertyOverrides.join("|") || "none"},overrides_links=${evidenceLinksPropertyOverrides.join("|") || "none"},candidates=${urlCandidates || "none"})`
+    );
   }
 
   if (evidence.primary && evidenceUrlName) {
@@ -313,7 +341,9 @@ const main = async () => {
     evidencePrimary: evidence.primary,
     evidenceCount: evidence.all.length,
     evidenceUrlProperty: evidenceUrlName || null,
-    evidenceLinksProperty: evidenceLinksName || null
+    evidenceLinksProperty: evidenceLinksName || null,
+    evidenceUrlPropertyOverrides,
+    evidenceLinksPropertyOverrides
   };
   writeOutput(out);
   console.log(`[NOTION_OPS_DAILY] ok action=${action} runKey=${runKey}`);
