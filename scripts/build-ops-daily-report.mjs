@@ -460,6 +460,19 @@ const buildMarkdown = (report) => {
   lines.push(`- missingRows: \`${report.notionAudit.requiredFieldMissingRows}\``);
   lines.push(`- duplicateRunKeys: \`${report.notionAudit.duplicateRunKeyCount}\``);
   lines.push(`- staleLatestMinutes: \`${report.notionAudit.staleLatestMinutes ?? "N/A"}\``);
+  lines.push(
+    `- dbCounts: pass=\`${report.notionAudit.databaseCounts?.pass ?? 0}\` warn=\`${report.notionAudit.databaseCounts?.warn ?? 0}\` fail=\`${report.notionAudit.databaseCounts?.fail ?? 0}\` skip=\`${report.notionAudit.databaseCounts?.skip ?? 0}\``
+  );
+  lines.push(
+    `- dbRisk: missingConfig=\`${report.notionAudit.missingConfigCount ?? 0}\` empty=\`${report.notionAudit.emptyDatabaseCount ?? 0}\` stale=\`${report.notionAudit.staleDatabaseCount ?? 0}\``
+  );
+  if (Array.isArray(report.notionAudit.databaseHealth) && report.notionAudit.databaseHealth.length > 0) {
+    report.notionAudit.databaseHealth.slice(0, 12).forEach((row) => {
+      lines.push(
+        `- db:${row.key} status=\`${row.status}\` rows=\`${row.rowCount ?? 0}\` ageMin=\`${row.latestAgeMin ?? "N/A"}\` threshold=\`${row.staleThresholdMinutes ?? "N/A"}\` reason=\`${row.reason || "n/a"}\``
+      );
+    });
+  }
   lines.push("");
 
   const appendRuns = (title, items) => {
@@ -547,7 +560,12 @@ const main = async () => {
     rowsChecked: 0,
     requiredFieldMissingRows: 0,
     duplicateRunKeyCount: 0,
-    staleLatestMinutes: null
+    staleLatestMinutes: null,
+    databaseCounts: { pass: 0, warn: 0, fail: 0, info: 0, skip: 0 },
+    missingConfigCount: 0,
+    emptyDatabaseCount: 0,
+    staleDatabaseCount: 0,
+    databaseHealth: []
   };
 
   if (!token) {
@@ -737,7 +755,12 @@ const main = async () => {
       rowsChecked: notionAudit.rowsChecked ?? 0,
       requiredFieldMissingRows: notionAudit.requiredFieldMissingRows ?? 0,
       duplicateRunKeyCount: notionAudit.duplicateRunKeyCount ?? 0,
-      staleLatestMinutes: notionAudit.staleLatestMinutes ?? null
+      staleLatestMinutes: notionAudit.staleLatestMinutes ?? null,
+      databaseCounts: notionAudit.databaseCounts || { pass: 0, warn: 0, fail: 0, info: 0, skip: 0 },
+      missingConfigCount: notionAudit.missingConfigCount ?? 0,
+      emptyDatabaseCount: notionAudit.emptyDatabaseCount ?? 0,
+      staleDatabaseCount: notionAudit.staleDatabaseCount ?? 0,
+      databaseHealth: Array.isArray(notionAudit.databaseHealth) ? notionAudit.databaseHealth.slice(0, 20) : []
     },
     decision
   };
