@@ -15,6 +15,7 @@ const toNum = (value, fallback) => {
 const now = () => new Date();
 const nowIso = () => now().toISOString();
 const fmtPct = (num, den) => (den > 0 ? `${((num / den) * 100).toFixed(1)}%` : "N/A");
+const stripAnsi = (text) => String(text || "").replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
 const safeJsonRead = (path) => {
   try {
     return JSON.parse(fs.readFileSync(path, "utf8"));
@@ -59,18 +60,25 @@ const makeKst = (date) => {
 };
 
 const parseCanaryVerifyMetrics = (text) => {
-  const regex =
-    /\[PREFLIGHT_CANARY_VERIFY\]\s+preflight_pass=(true|false)\s+attempted=(\d+)\s+submitted=(\d+)/g;
-  let hit = null;
-  let match = regex.exec(text);
-  while (match) {
-    hit = match;
-    match = regex.exec(text);
-  }
-  if (!hit) return null;
-  const preflightPass = String(hit[1]).toLowerCase() === "true";
-  const attempted = Number(hit[2]);
-  const submitted = Number(hit[3]);
+  const lines = stripAnsi(text)
+    .split(/\r?\n/)
+    .filter((line) => line.includes("[PREFLIGHT_CANARY_VERIFY]"));
+  if (!lines.length) return null;
+
+  const line = lines[lines.length - 1];
+  const take = (key) => {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hit = line.match(new RegExp(`${escaped}=([^\\s]+)`));
+    return hit ? String(hit[1]) : null;
+  };
+  const preflightRaw = take("preflight_pass");
+  const attemptedRaw = take("attempted");
+  const submittedRaw = take("submitted");
+  if (preflightRaw == null || attemptedRaw == null || submittedRaw == null) return null;
+
+  const preflightPass = preflightRaw.toLowerCase() === "true";
+  const attempted = Number(attemptedRaw);
+  const submitted = Number(submittedRaw);
   if (!Number.isFinite(attempted) || !Number.isFinite(submitted)) return null;
   return {
     preflightPass,
