@@ -526,10 +526,10 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - Recommended lifecycle vars (simulation mode): `POSITION_LIFECYCLE_ENABLED=true`, `POSITION_LIFECYCLE_PREVIEW_ONLY=true`, `POSITION_LIFECYCLE_ACTION_TYPES=ENTRY_NEW,HOLD_WAIT,SCALE_UP,SCALE_DOWN,EXIT_PARTIAL,EXIT_FULL`.
   - Manual dispatch inputs:
     - `run_verify_mode=safe_default|submit_pass|guard_skip_pass|auto`:
-      - `safe_default` (default): forces safe lane (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`).
+      - `auto` (default): keeps repository variable defaults without verify-mode overrides.
+      - `safe_default`: forces safe lane (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`).
       - `submit_pass`: forces submit-verification lane (`READ_ONLY=false`, `EXEC_ENABLED=true`, `SIMULATION_LIVE_PARITY=true`, `LIVE_ORDER_SUBMIT_ENABLED=true`, `ENTRY_OPEN_ORDER_GUARD_ENABLED=false`).
       - `guard_skip_pass`: same as submit lane + open-entry guard strictness (`ENTRY_OPEN_ORDER_GUARD_ENABLED=true`, `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false`).
-      - `auto`: keeps repository variable defaults without verify-mode overrides.
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
       - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).

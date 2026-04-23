@@ -18,13 +18,13 @@ on:
       run_verify_mode:
         description: "Manual safety/verification preset"
         required: false
-        default: "safe_default"
+        default: "auto"
         type: choice
         options:
+          - "auto"
           - "safe_default"
           - "submit_pass"
           - "guard_skip_pass"
-          - "auto"
       run_allow_entry_outside_rth:
         description: "Allow entry outside RTH for this manual run only"
         required: false
@@ -402,7 +402,7 @@ jobs:
           import os
           import sys
 
-          requested = (os.getenv("RUN_VERIFY_MODE") or "safe_default").strip().lower()
+          requested = (os.getenv("RUN_VERIFY_MODE") or "auto").strip().lower()
           preset_map = {
               "auto": [],
               "safe_default": [
