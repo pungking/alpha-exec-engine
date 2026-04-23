@@ -384,6 +384,8 @@ jobs:
                   "EXEC_ENABLED=true",
                   "SIMULATION_LIVE_PARITY=true",
                   "LIVE_ORDER_SUBMIT_ENABLED=true",
+                  "ENTRY_OPEN_ORDER_GUARD_ENABLED=false",
+                  "ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false",
               ],
               "guard_skip_pass": [
                   "READ_ONLY=false",

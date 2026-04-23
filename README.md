@@ -508,7 +508,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Manual dispatch inputs:
     - `run_verify_mode=safe_default|submit_pass|guard_skip_pass|auto`:
       - `safe_default` (default): forces safe lane (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`).
-      - `submit_pass`: forces submit-verification lane (`READ_ONLY=false`, `EXEC_ENABLED=true`, `SIMULATION_LIVE_PARITY=true`, `LIVE_ORDER_SUBMIT_ENABLED=true`).
+      - `submit_pass`: forces submit-verification lane (`READ_ONLY=false`, `EXEC_ENABLED=true`, `SIMULATION_LIVE_PARITY=true`, `LIVE_ORDER_SUBMIT_ENABLED=true`, `ENTRY_OPEN_ORDER_GUARD_ENABLED=false`).
       - `guard_skip_pass`: same as submit lane + open-entry guard strictness (`ENTRY_OPEN_ORDER_GUARD_ENABLED=true`, `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false`).
       - `auto`: keeps repository variable defaults without verify-mode overrides.
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
