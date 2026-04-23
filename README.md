@@ -492,6 +492,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `docs/OPS_DAILY_REPORT_TEMPLATE.md`
 - Scale-up chase guard tuning plan:
   - `docs/SCALE_UP_CHASE_GUARD_TUNING_PLAN.md`
+- Entry-price adaptive canary presets:
+  - `docs/ENTRY_PRICE_ADAPTIVE_CANARY_PRESETS.md`
 - Knowledge system operating model (Notion/Obsidian/NotebookLM):
   - `docs/KNOWLEDGE_SYSTEM_OPERATING_MODEL.md`
 
@@ -530,6 +532,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `run_disable_order_idempotency=true`: disable idempotency gate for one manual validation run.
     - `run_dry_max_orders_override=<int>`: override `DRY_MAX_ORDERS` for one manual run.
     - `run_dry_max_total_notional_override=<number>`: override `DRY_MAX_TOTAL_NOTIONAL` for one manual run.
+    - `run_entry_price_mode=strict|adaptive`: override entry-price policy for one manual run.
+    - `run_entry_price_max_chase_pct=<number>`: manual override for adaptive chase cap.
+    - `run_entry_price_distance_trigger_pct=<number>`: manual override for adaptive distance trigger.
+    - `run_entry_price_distance_scale=<number>`: manual override for adaptive distance scale.
+    - `run_entry_price_min_rr=<number>`: manual override for adaptive minimum RR floor.
   - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
   - Optional auto-dispatch (`VALIDATION_PACK_AUTO_TRIGGER_ENABLED=true`):
     - when `hf_tuning_phase.gateProgress` reaches `20/20` with final gate status (`GO` or `NO_GO`), dispatches a one-shot `validation_pack=true`.
