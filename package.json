@@ -19,6 +19,7 @@
     "ops:notion:audit": "node scripts/build-notion-ops-audit.mjs",
     "ops:daily:report": "node scripts/build-ops-daily-report.mjs",
     "ops:daily:notion:sync": "node scripts/sync-notion-ops-daily.mjs",
+    "ops:approval:queue": "node scripts/manage-approval-queue.mjs",
     "backfill:notion:perf-pct:dry": "node scripts/backfill-notion-performance-percent.mjs",
     "backfill:notion:perf-pct": "NOTION_PERF_PERCENT_BACKFILL_DRY_RUN=false node scripts/backfill-notion-performance-percent.mjs",
     "start": "node dist/src/index.js",

@@ -238,6 +238,20 @@ type DryExecSkipReason = {
   actionReason?: string;
 };
 
+type EntryPriceMode = "strict" | "adaptive";
+
+type EntryPricePolicySummary = {
+  mode: EntryPriceMode;
+  maxChasePct: number;
+  distanceTriggerPct: number;
+  distanceScale: number;
+  minRr: number;
+  adjusted: number;
+  capped: number;
+  avgChasePct: number;
+  maxChaseAppliedPct: number;
+};
+
 type RegimeProfile = "default" | "risk_off";
 
 type RegimeQualityStatus = "high" | "medium" | "low";
@@ -410,6 +424,7 @@ type DryExecBuildResult = {
     watchlist: number;
     blocked: number;
   };
+  entryPricePolicy: EntryPricePolicySummary;
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -1234,6 +1249,7 @@ function printStartupSummary() {
   const shadowDataBus = buildShadowDataBusSummary();
   const approvalCfg = buildApprovalQueueGateConfig();
   const openEntryGuardCfg = buildOpenEntryOrderGuardConfig();
+  const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const lifecycleExitFullMaxLossPct = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
@@ -1357,6 +1373,11 @@ function printStartupSummary() {
   console.log(`OPEN_ENTRY_RMAX : ${openEntryGuardCfg.replaceMaxChaseBps}`);
   console.log(`OPEN_ENTRY_RCDN : ${openEntryGuardCfg.replaceCooldownMinutes}`);
   console.log(`OPEN_ENTRY_RDAY : ${openEntryGuardCfg.replaceMaxPerSymbolPerDay}`);
+  console.log(`ENTRY_PRICE_MODE: ${entryPricePolicy.mode}`);
+  console.log(`ENTRY_PRICE_CHMAX: ${entryPricePolicy.maxChasePct}`);
+  console.log(`ENTRY_PRICE_DISTT: ${entryPricePolicy.distanceTriggerPct}`);
+  console.log(`ENTRY_PRICE_DSCL : ${entryPricePolicy.distanceScale}`);
+  console.log(`ENTRY_PRICE_MINRR: ${entryPricePolicy.minRr}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -2021,6 +2042,88 @@ function readNonNegativeNumberEnv(key: string, fallback: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+type EntryPriceAdjustmentPolicy = {
+  mode: EntryPriceMode;
+  maxChasePct: number;
+  distanceTriggerPct: number;
+  distanceScale: number;
+  minRr: number;
+};
+
+type EntryPriceAdjustmentResult = {
+  entry: number;
+  adjusted: boolean;
+  capped: boolean;
+  chasePct: number;
+};
+
+function resolveEntryPriceMode(raw: string | undefined): EntryPriceMode {
+  const key = String(raw || "")
+    .trim()
+    .toLowerCase();
+  return key === "adaptive" ? "adaptive" : "strict";
+}
+
+function buildEntryPriceAdjustmentPolicy(): EntryPriceAdjustmentPolicy {
+  const mode = resolveEntryPriceMode(process.env.ENTRY_PRICE_MODE);
+  const maxChasePct = clamp(readNonNegativeNumberEnv("ENTRY_PRICE_MAX_CHASE_PCT", 2.5), 0, 30);
+  const distanceTriggerPct = clamp(readNonNegativeNumberEnv("ENTRY_PRICE_DISTANCE_TRIGGER_PCT", 2), 0, 30);
+  const distanceScale = clamp(readNonNegativeNumberEnv("ENTRY_PRICE_DISTANCE_SCALE", 0.4), 0, 5);
+  const minRr = clamp(readPositiveNumberEnv("ENTRY_PRICE_MIN_RR", 1.8), 0.25, 10);
+  return {
+    mode,
+    maxChasePct,
+    distanceTriggerPct,
+    distanceScale,
+    minRr
+  };
+}
+
+function evaluateAdaptiveEntryPrice(
+  entry: number,
+  target: number,
+  stop: number,
+  entryDistancePct: number | null,
+  maxStopDistancePct: number,
+  policy: EntryPriceAdjustmentPolicy
+): EntryPriceAdjustmentResult {
+  if (policy.mode !== "adaptive") {
+    return { entry, adjusted: false, capped: false, chasePct: 0 };
+  }
+  if (!Number.isFinite(entryDistancePct ?? NaN) || (entryDistancePct ?? 0) <= policy.distanceTriggerPct) {
+    return { entry, adjusted: false, capped: false, chasePct: 0 };
+  }
+  const overflow = Math.max(0, (entryDistancePct ?? 0) - policy.distanceTriggerPct);
+  const desiredChasePct = Math.min(policy.maxChasePct, overflow * policy.distanceScale);
+  if (!Number.isFinite(desiredChasePct) || desiredChasePct <= 0) {
+    return { entry, adjusted: false, capped: false, chasePct: 0 };
+  }
+
+  const desiredEntry = roundToCent(entry * (1 + desiredChasePct / 100));
+  const maxEntryByTarget = roundToCent(Math.max(stop + 0.01, target - 0.01));
+  const maxEntryByStopDistance =
+    maxStopDistancePct >= 100
+      ? maxEntryByTarget
+      : roundToCent(stop / Math.max(0.0001, 1 - maxStopDistancePct / 100));
+  const maxEntryByRr = roundToCent((target + policy.minRr * stop) / (1 + policy.minRr));
+  const maxAllowedEntry = Math.min(maxEntryByTarget, maxEntryByStopDistance, maxEntryByRr);
+  if (!Number.isFinite(maxAllowedEntry) || maxAllowedEntry <= entry) {
+    return { entry, adjusted: false, capped: false, chasePct: 0 };
+  }
+
+  const adjustedEntry = roundToCent(Math.min(desiredEntry, maxAllowedEntry));
+  if (!Number.isFinite(adjustedEntry) || adjustedEntry <= entry) {
+    return { entry, adjusted: false, capped: false, chasePct: 0 };
+  }
+  const chasePct = Number((((adjustedEntry - entry) / entry) * 100).toFixed(4));
+  return {
+    entry: adjustedEntry,
+    adjusted: chasePct > 0,
+    capped: adjustedEntry < desiredEntry,
+    chasePct: Math.max(0, chasePct)
+  };
 }
 
 function computeAgeMinutes(isoTs: string | null | undefined): number | null {
@@ -4247,6 +4350,7 @@ function buildDryExecPayloads(
   const entryFeasibilityEnforce = readBoolEnv("ENTRY_FEASIBILITY_ENFORCE", false);
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
+  const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
   const lifecycleHeldContext = overrides?.lifecycleHeldContext;
   const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
@@ -4259,6 +4363,10 @@ function buildDryExecPayloads(
   let stage6ContractExecutable = 0;
   let stage6ContractWatchlist = 0;
   let stage6ContractBlocked = 0;
+  let entryPriceAdjusted = 0;
+  let entryPriceCapped = 0;
+  let entryPriceChaseTotalPct = 0;
+  let entryPriceMaxAppliedPct = 0;
 
   const pushSkip = (
     symbol: string,
@@ -4462,6 +4570,29 @@ function buildDryExecPayloads(
         pushSkip(row.symbol, "invalid_price_geometry");
         return;
       }
+      const entryDistancePct =
+        row.entryDistancePct != null && Number.isFinite(Number(row.entryDistancePct))
+          ? Math.max(0, Number(row.entryDistancePct))
+          : null;
+      const adjustedEntry = evaluateAdaptiveEntryPrice(
+        entry,
+        target,
+        stop,
+        entryDistancePct,
+        maxStopDistancePct,
+        entryPricePolicy
+      );
+      if (adjustedEntry.adjusted) {
+        entry = adjustedEntry.entry;
+        entryPriceAdjusted += 1;
+        if (adjustedEntry.capped) entryPriceCapped += 1;
+        entryPriceChaseTotalPct += adjustedEntry.chasePct;
+        entryPriceMaxAppliedPct = Math.max(entryPriceMaxAppliedPct, adjustedEntry.chasePct);
+      }
+      if (!(target > entry && stop < entry)) {
+        pushSkip(row.symbol, "invalid_price_geometry");
+        return;
+      }
       const stopDistancePct = ((entry - stop) / entry) * 100;
       if (stopDistancePct < minStopDistancePct || stopDistancePct > maxStopDistancePct) {
         pushSkip(row.symbol, "stop_distance_out_of_range");
@@ -4642,6 +4773,17 @@ function buildDryExecPayloads(
       executable: stage6ContractExecutable,
       watchlist: stage6ContractWatchlist,
       blocked: stage6ContractBlocked
+    },
+    entryPricePolicy: {
+      mode: entryPricePolicy.mode,
+      maxChasePct: Number(entryPricePolicy.maxChasePct.toFixed(2)),
+      distanceTriggerPct: Number(entryPricePolicy.distanceTriggerPct.toFixed(2)),
+      distanceScale: Number(entryPricePolicy.distanceScale.toFixed(2)),
+      minRr: Number(entryPricePolicy.minRr.toFixed(2)),
+      adjusted: entryPriceAdjusted,
+      capped: entryPriceCapped,
+      avgChasePct: entryPriceAdjusted > 0 ? Number((entryPriceChaseTotalPct / entryPriceAdjusted).toFixed(4)) : 0,
+      maxChaseAppliedPct: Number(entryPriceMaxAppliedPct.toFixed(4))
     },
     regime,
     idempotency: {
@@ -5944,6 +6086,9 @@ function buildSimulationMessage(
   );
   lines.push(
     `Gate: Conv>=${dryExec.minConviction} (base=${dryExec.minConvictionPolicy.base}, vix+${dryExec.minConvictionPolicy.marketTighten}, quality-${dryExec.minConvictionPolicy.qualityRelief}, sampleCap=${dryExec.minConvictionPolicy.sampleCap ?? "N/A"}) | StopDist ${dryExec.minStopDistancePct}%~${dryExec.maxStopDistancePct}%`
+  );
+  lines.push(
+    `Entry Price: mode=${dryExec.entryPricePolicy.mode} maxChasePct=${dryExec.entryPricePolicy.maxChasePct} triggerPct=${dryExec.entryPricePolicy.distanceTriggerPct} distanceScale=${dryExec.entryPricePolicy.distanceScale} minRR=${dryExec.entryPricePolicy.minRr} adjusted=${dryExec.entryPricePolicy.adjusted} capped=${dryExec.entryPricePolicy.capped} avgChasePct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} maxAppliedPct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)}`
   );
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
@@ -7751,6 +7896,7 @@ async function saveDryExecPreview(
     maxStopDistancePct: dryExec.maxStopDistancePct,
     stopDistancePolicy: dryExec.stopDistancePolicy,
     entryFeasibility: dryExec.entryFeasibility,
+    entryPricePolicy: dryExec.entryPricePolicy,
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
     stage6SkipHintCountsPrimary,
@@ -7878,6 +8024,11 @@ function buildPerformancePolicyFingerprint(dryExec: DryExecBuildResult): string 
     `stopMax=${dryExec.maxStopDistancePct}`,
     `entryEnf=${dryExec.entryFeasibility.enforce}`,
     `entryMaxDist=${dryExec.entryFeasibility.maxDistancePct}`,
+    `entryPriceMode=${dryExec.entryPricePolicy.mode}`,
+    `entryPriceMaxChase=${dryExec.entryPricePolicy.maxChasePct}`,
+    `entryPriceDistTrg=${dryExec.entryPricePolicy.distanceTriggerPct}`,
+    `entryPriceScale=${dryExec.entryPricePolicy.distanceScale}`,
+    `entryPriceMinRr=${dryExec.entryPricePolicy.minRr}`,
     `bucketEnf=${dryExec.stage6Contract.enforce}`
   ].join(";");
 }
@@ -8809,6 +8960,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const orderLifecycleEnabled = readBoolEnv("ORDER_LIFECYCLE_ENABLED", true);
   const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
+  const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const actionableVerdicts = resolveActionableVerdicts();
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
@@ -8872,6 +9024,11 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `STOP_STAGE6=${dryExec.stopDistancePolicy.stage6MinPct}~${dryExec.stopDistancePolicy.stage6MaxPct}`,
     `ENTRY_FEAS_ENFORCE=${dryExec.entryFeasibility.enforce}`,
     `ENTRY_MAX_DISTANCE_PCT=${dryExec.entryFeasibility.maxDistancePct}`,
+    `ENTRY_PRICE_MODE=${entryPricePolicy.mode}`,
+    `ENTRY_PRICE_MAX_CHASE_PCT=${entryPricePolicy.maxChasePct}`,
+    `ENTRY_PRICE_DISTANCE_TRIGGER_PCT=${entryPricePolicy.distanceTriggerPct}`,
+    `ENTRY_PRICE_DISTANCE_SCALE=${entryPricePolicy.distanceScale}`,
+    `ENTRY_PRICE_MIN_RR=${entryPricePolicy.minRr}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
     `POSITION_LIFECYCLE_ENABLED=${cfg.positionLifecycle.enabled}`,
@@ -9275,7 +9432,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

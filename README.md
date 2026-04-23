@@ -27,6 +27,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
 - Live submit lane now enforces one-symbol-one-open-entry guard (default ON) to prevent stacking duplicate open buy entries.
 - Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase + cooldown/daily-cap guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
+- Optional adaptive entry price mode can apply bounded chase from Stage6 entry (`ENTRY_PRICE_MODE=adaptive`) while preserving RR floor and stop-distance guardrails.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -154,6 +155,11 @@ Use `.env.example` as baseline.
 - `DRY_MAX_STOP_DISTANCE_PCT`
 - `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
 - `ENTRY_MAX_DISTANCE_PCT` (default `15`)
+- `ENTRY_PRICE_MODE` (default `strict`; `strict|adaptive`)
+- `ENTRY_PRICE_MAX_CHASE_PCT` (default `2.5`; max upward chase from Stage6 entry in adaptive mode)
+- `ENTRY_PRICE_DISTANCE_TRIGGER_PCT` (default `2`; adaptive mode only activates when `entryDistancePct` exceeds this)
+- `ENTRY_PRICE_DISTANCE_SCALE` (default `0.4`; adaptive chase slope vs distance overflow)
+- `ENTRY_PRICE_MIN_RR` (default `1.8`; adaptive mode keeps entry within minimum RR floor)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
 - `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
@@ -493,12 +499,14 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Workflow ownership (avoid path confusion):
   - Execution owner (real sidecar runs): `pungking/alpha-exec-engine/.github/workflows/dry-run.yml`.
   - Watchdog owner (real sidecar freshness checks): `pungking/alpha-exec-engine/.github/workflows/dry-run-watchdog.yml`.
+  - Approval owner (real sidecar approval queue updates): `pungking/alpha-exec-engine/.github/workflows/approval-queue-action.yml`.
   - Template mirror path in this repository: `/sidecar-template/alpha-exec-engine/.github/workflows/*.yml`.
-  - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml` (manual dispatch bridge only). `schedule.yml` also kicks watchdog cadence slots.
+  - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml`, `/.github/workflows/sidecar-approval-action-bridge.yml` (manual dispatch bridges only). `schedule.yml` also kicks watchdog cadence slots.
   - Emergency self-healing mode: run `Sidecar Dispatch Watchdog` with `loop_enabled=true` to keep requeueing watchdog checks at a fixed interval even when GitHub cron slots are missed.
   - These files are intentionally separated; execution logic stays in sidecar repo, bridge logic stays in webapp repo.
   - Integration status baseline (2026-04-22): `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
   - Handoff strict-mode switch checklist: `docs/HANDOFF_OPERATIONAL_SWITCH_CHECKLIST.md`.
+  - Approval one-click operations runbook: `docs/APPROVAL_QUEUE_ONE_CLICK_RUNBOOK.md`.
 - `sidecar-ci`: typecheck/build gate on push/PR.
 - `sidecar-dry-run`: manual + scheduled dry-run with state cache restore/save.
   - Publishes concise run summary to GitHub Step Summary.
@@ -562,6 +570,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
   - Does **not** restore/save `state` cache and does **not** sync Notion (no persistent baseline contamination).
   - Uploads probe artifacts only (`state/last-run.json`, `state/last-dry-exec-preview.json`, `state/payload-probe/**`).
+- `sidecar-approval-queue-action`: one-click manual approve/reject workflow for `APPROVAL_QUEUE.json` (Drive) without JSON hand edits.
+  - Inputs: `action`, `request_id` (preferred) or `symbol(+stage6_hash)`, optional `reason`, optional `dry_run=true`.
+  - Updates only the latest matching `pending` row by default and stamps `resolvedAt/resolvedBy`.
 - `sidecar-market-guard`: manual + weekday 5-minute guard run.
   - Publishes level/signal/action summary to Step Summary.
   - Uploads guard state artifacts (`last-market-guard`, `market-guard-state`, `guard-action-ledger`) plus core state files.
