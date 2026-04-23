@@ -252,6 +252,10 @@ Use `.env.example` as baseline.
 - `SIDECAR_BRIDGE_LOOP_ENABLED` (optional, default `false`; enables watchdog self-healing requeue loop mode)
 - `SIDECAR_BRIDGE_LOOP_INTERVAL_MIN` (optional, default `15`; self-healing loop interval in minutes)
 - `SIDECAR_BRIDGE_LOOP_MAX_RUNS` (optional, default `48`; maximum chained watchdog runs before automatic stop)
+- `SIDECAR_BRIDGE_VERIFY_MODE` (optional, default `auto`; watchdog fallback dispatch `run_verify_mode` input)
+- `SIDECAR_BRIDGE_ALLOW_ENTRY_OUTSIDE_RTH` (optional, default `false`; watchdog fallback dispatch `run_allow_entry_outside_rth`)
+- `SIDECAR_BRIDGE_ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (optional, default `false`; watchdog fallback dispatch `run_actionable_include_speculative_buy`)
+- `SIDECAR_BRIDGE_FORCE_SEND_ONCE` (optional, default `false`; watchdog fallback dispatch `run_force_send_once`)
 - `VALIDATION_PACK_AUTO_TRIGGER_ENABLED` (default `false`; auto-dispatch one `validation_pack=true` run when gate reaches final `20/20`)
 - `REGIME_AUTO_ENABLED`
 - `REGIME_FORCE_PROFILE` (`auto|default|risk_off`)
@@ -504,6 +508,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Approval owner (real sidecar approval queue updates): `pungking/alpha-exec-engine/.github/workflows/approval-queue-action.yml`.
   - Template mirror path in this repository: `/sidecar-template/alpha-exec-engine/.github/workflows/*.yml`.
   - Webapp bridge layer in `US_Alpha_Seeker`: `/.github/workflows/schedule.yml`, `/.github/workflows/sidecar-dispatch-watchdog.yml`, `/.github/workflows/dry-run.yml`, `/.github/workflows/sidecar-approval-action-bridge.yml` (manual dispatch bridges only). `schedule.yml` also kicks watchdog cadence slots.
+  - Bridge watchdog fallback dispatch sends `run_verify_mode` (default `auto`) so workflow-dispatch fallback does not silently drop to `safe_default`.
+  - Bridge watchdog schedule events default to loop mode when `SIDECAR_BRIDGE_LOOP_ENABLED` is unset, reducing missed-sidecar gaps when GitHub cron ticks are dropped.
   - Emergency self-healing mode: run `Sidecar Dispatch Watchdog` with `loop_enabled=true` to keep requeueing watchdog checks at a fixed interval even when GitHub cron slots are missed.
   - These files are intentionally separated; execution logic stays in sidecar repo, bridge logic stays in webapp repo.
   - Integration status baseline (2026-04-22): `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
