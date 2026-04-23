@@ -224,3 +224,4 @@ Priority: P0
     - `NOTION_OPS_DAILY_EVIDENCE_LINKS_PROPERTY`
   - Missing-evidence-property failure now includes override values and schema candidate hints for faster DB alignment.
   - Step Summary now includes resolved evidence property names (`evidenceUrlProperty`, `evidenceLinksProperty`).
+  - `mcp-ops-daily.yml` default fallback for links property set to `Run Actions` (can be overridden by repo variable).
