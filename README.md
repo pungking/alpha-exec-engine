@@ -26,7 +26,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane supports lifecycle sell actions (`SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`) using live held-position qty.
 - Live submit lane enforces `SCALE_UP` only when a held position exists (`scale_up_no_position` otherwise).
 - Live submit lane now enforces one-symbol-one-open-entry guard (default ON) to prevent stacking duplicate open buy entries.
-- Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
+- Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase + cooldown/daily-cap guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -52,6 +52,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Optional watchdog workflow (`sidecar-dry-run-watchdog`) can trigger fallback dispatch when scheduled dry-run is stale/missed.
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
+- Persists open-entry stale replace throttle ledger to `state/open-entry-replace-guard.json` (cooldown + per-day cap tracking).
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
 - Adds MCP Shadow Data Bus telemetry (Phase-1): Alpaca(read-only), Alpha Vantage, SEC EDGAR, Perplexity, Supabase toggles are recorded in startup/run summary/preview without changing trade path.
 - Uses shared JSON parse guard (`src/json-utils.ts`) for Drive/state payloads (`NaN/Infinity -> null`) to reduce runtime parse breaks.
@@ -230,6 +231,8 @@ Use `.env.example` as baseline.
 - `ENTRY_OPEN_ORDER_STALE_MINUTES` (default `180`; stale threshold for open-entry cancellation)
 - `ENTRY_OPEN_ORDER_REPLACE_MIN_DELTA_BPS` (default `10`; minimum absolute price delta vs existing open entry required before stale cancel+replace)
 - `ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS` (default `120`; maximum allowed upward replace chase for buy entries)
+- `ENTRY_OPEN_ORDER_REPLACE_COOLDOWN_MINUTES` (default `10`; minimum cooldown between stale cancel+replace actions per symbol)
+- `ENTRY_OPEN_ORDER_REPLACE_MAX_PER_SYMBOL_PER_DAY` (default `3`; max stale cancel+replace actions allowed per symbol per UTC day)
 - `FORCE_SEND_ONCE` (one-shot override for current hash/mode)
 - `TELEGRAM_SEND_ENABLED` (default `true`; set `false` for isolated verification lanes)
 - `TELEGRAM_HEARTBEAT_ON_DEDUPE`
@@ -545,7 +548,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.

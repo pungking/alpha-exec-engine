@@ -528,6 +528,8 @@ type OpenEntryOrderGuardConfig = {
   staleMinutes: number;
   replaceMinDeltaBps: number;
   replaceMaxChaseBps: number;
+  replaceCooldownMinutes: number;
+  replaceMaxPerSymbolPerDay: number;
 };
 
 type OpenEntryOrderSnapshot = {
@@ -547,6 +549,21 @@ type OpenEntryOrderIndex = {
   total: number;
   duplicateSymbols: number;
   bySymbol: Map<string, OpenEntryOrderSnapshot>;
+};
+
+type OpenEntryReplaceGuardSymbolState = {
+  lastReplaceAt: string | null;
+  replaceCountByDay: Record<string, number>;
+};
+
+type OpenEntryReplaceGuardState = {
+  symbols: Record<string, OpenEntryReplaceGuardSymbolState>;
+  updatedAt: string;
+};
+
+type OpenEntryReplaceThrottle = {
+  lastReplaceAtMs: number | null;
+  replaceCountToday: number;
 };
 
 type SidecarRunState = {
@@ -992,6 +1009,7 @@ const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
+const OPEN_ENTRY_REPLACE_GUARD_PATH = "state/open-entry-replace-guard.json";
 const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
 const PERFORMANCE_LOOP_JSON_PATH = "state/stage6-20trade-loop.json";
@@ -1052,7 +1070,15 @@ function buildOpenEntryOrderGuardConfig(): OpenEntryOrderGuardConfig {
     staleCancelEnabled: readBoolEnv("ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED", false),
     staleMinutes: Math.max(5, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_STALE_MINUTES", 180))),
     replaceMinDeltaBps: Math.max(0, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MIN_DELTA_BPS", 10))),
-    replaceMaxChaseBps: Math.max(0, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS", 120)))
+    replaceMaxChaseBps: Math.max(0, Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS", 120))),
+    replaceCooldownMinutes: Math.max(
+      0,
+      Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_COOLDOWN_MINUTES", 10))
+    ),
+    replaceMaxPerSymbolPerDay: Math.max(
+      1,
+      Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_REPLACE_MAX_PER_SYMBOL_PER_DAY", 3))
+    )
   };
 }
 
@@ -1329,6 +1355,8 @@ function printStartupSummary() {
   console.log(`OPEN_ENTRY_STMIN: ${openEntryGuardCfg.staleMinutes}`);
   console.log(`OPEN_ENTRY_RDEL : ${openEntryGuardCfg.replaceMinDeltaBps}`);
   console.log(`OPEN_ENTRY_RMAX : ${openEntryGuardCfg.replaceMaxChaseBps}`);
+  console.log(`OPEN_ENTRY_RCDN : ${openEntryGuardCfg.replaceCooldownMinutes}`);
+  console.log(`OPEN_ENTRY_RDAY : ${openEntryGuardCfg.replaceMaxPerSymbolPerDay}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -4746,6 +4774,128 @@ async function loadOpenEntryOrderIndex(): Promise<OpenEntryOrderIndex> {
   };
 }
 
+function createOpenEntryReplaceGuardState(): OpenEntryReplaceGuardState {
+  return {
+    symbols: {},
+    updatedAt: ""
+  };
+}
+
+function toUtcDayKey(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function normalizeOpenEntryReplaceGuardState(raw: unknown): OpenEntryReplaceGuardState {
+  if (!raw || typeof raw !== "object") return createOpenEntryReplaceGuardState();
+  const node = raw as Record<string, unknown>;
+  const symbolsRaw = node.symbols && typeof node.symbols === "object" ? (node.symbols as Record<string, unknown>) : {};
+  const symbols: Record<string, OpenEntryReplaceGuardSymbolState> = {};
+  for (const [rawSymbol, value] of Object.entries(symbolsRaw)) {
+    if (!value || typeof value !== "object") continue;
+    const symbol = String(rawSymbol || "")
+      .trim()
+      .toUpperCase();
+    if (!symbol) continue;
+    const row = value as Record<string, unknown>;
+    const replaceCountByDayRaw =
+      row.replaceCountByDay && typeof row.replaceCountByDay === "object"
+        ? (row.replaceCountByDay as Record<string, unknown>)
+        : {};
+    const replaceCountByDay: Record<string, number> = {};
+    for (const [day, countRaw] of Object.entries(replaceCountByDayRaw)) {
+      const count = Math.max(0, Math.round(Number(countRaw)));
+      if (!Number.isFinite(count) || count <= 0) continue;
+      replaceCountByDay[day] = count;
+    }
+    const lastReplaceAt =
+      typeof row.lastReplaceAt === "string" && row.lastReplaceAt.trim().length > 0 ? row.lastReplaceAt : null;
+    symbols[symbol] = {
+      lastReplaceAt,
+      replaceCountByDay
+    };
+  }
+  return {
+    symbols,
+    updatedAt: typeof node.updatedAt === "string" ? node.updatedAt : ""
+  };
+}
+
+async function loadOpenEntryReplaceGuardState(): Promise<OpenEntryReplaceGuardState> {
+  try {
+    const raw = await readFile(OPEN_ENTRY_REPLACE_GUARD_PATH, "utf8");
+    const parsed = parseJsonText<unknown>(raw, "open_entry_replace_guard_state");
+    return normalizeOpenEntryReplaceGuardState(parsed);
+  } catch {
+    return createOpenEntryReplaceGuardState();
+  }
+}
+
+async function saveOpenEntryReplaceGuardState(state: OpenEntryReplaceGuardState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(OPEN_ENTRY_REPLACE_GUARD_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${OPEN_ENTRY_REPLACE_GUARD_PATH}`);
+}
+
+function pruneOpenEntryReplaceGuardState(state: OpenEntryReplaceGuardState, keepDays: number): number {
+  const ttlDays = Math.max(1, Math.round(keepDays));
+  const cutoffMs = Date.now() - ttlDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const [symbol, row] of Object.entries(state.symbols)) {
+    for (const dayKey of Object.keys(row.replaceCountByDay)) {
+      const dayMs = Date.parse(`${dayKey}T00:00:00.000Z`);
+      if (!Number.isFinite(dayMs) || dayMs < cutoffMs) {
+        delete row.replaceCountByDay[dayKey];
+        removed += 1;
+      }
+    }
+    if (!row.lastReplaceAt && Object.keys(row.replaceCountByDay).length === 0) {
+      delete state.symbols[symbol];
+    }
+  }
+  if (removed > 0) {
+    state.updatedAt = new Date().toISOString();
+  }
+  return removed;
+}
+
+function resolveOpenEntryReplaceThrottle(
+  state: OpenEntryReplaceGuardState,
+  symbol: string,
+  nowMs: number
+): OpenEntryReplaceThrottle {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const row = state.symbols[normalizedSymbol];
+  const todayKey = toUtcDayKey(nowMs);
+  const lastReplaceAtMs =
+    row?.lastReplaceAt && Number.isFinite(Date.parse(row.lastReplaceAt)) ? Date.parse(row.lastReplaceAt) : null;
+  const replaceCountToday = Math.max(0, Math.round(Number(row?.replaceCountByDay?.[todayKey] ?? 0)));
+  return {
+    lastReplaceAtMs,
+    replaceCountToday
+  };
+}
+
+function recordOpenEntryReplace(
+  state: OpenEntryReplaceGuardState,
+  symbol: string,
+  replacedAtIso: string
+): number {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const replacedTs = Date.parse(replacedAtIso);
+  const safeIso =
+    Number.isFinite(replacedTs) && replacedTs > 0 ? new Date(replacedTs).toISOString() : new Date().toISOString();
+  const dayKey = safeIso.slice(0, 10);
+  const existing = state.symbols[normalizedSymbol] || {
+    lastReplaceAt: null,
+    replaceCountByDay: {}
+  };
+  existing.lastReplaceAt = safeIso;
+  existing.replaceCountByDay[dayKey] = Math.max(0, Math.round(Number(existing.replaceCountByDay[dayKey] ?? 0))) + 1;
+  state.symbols[normalizedSymbol] = existing;
+  state.updatedAt = safeIso;
+  return existing.replaceCountByDay[dayKey];
+}
+
 async function cancelOpenEntryOrder(orderId: string): Promise<void> {
   const normalized = orderId.trim();
   if (!normalized) throw new Error("open_entry_cancel_order_id_missing");
@@ -4758,7 +4908,8 @@ async function cancelOpenEntryOrder(orderId: string): Promise<void> {
 function evaluateOpenEntryReplacePolicy(
   openEntry: OpenEntryOrderSnapshot,
   refreshedLimitPrice: number,
-  cfg: OpenEntryOrderGuardConfig
+  cfg: OpenEntryOrderGuardConfig,
+  throttle: OpenEntryReplaceThrottle
 ): {
   allowed: boolean;
   deltaBps: number | null;
@@ -4777,6 +4928,23 @@ function evaluateOpenEntryReplacePolicy(
       allowed: false,
       deltaBps: null,
       reason: "open_entry_replace_invalid_refreshed_limit"
+    };
+  }
+  if (cfg.replaceCooldownMinutes > 0 && throttle.lastReplaceAtMs != null) {
+    const elapsedMin = Math.max(0, (Date.now() - throttle.lastReplaceAtMs) / 60000);
+    if (elapsedMin < cfg.replaceCooldownMinutes) {
+      return {
+        allowed: false,
+        deltaBps: null,
+        reason: `open_entry_replace_cooldown_active(elapsedMin=${elapsedMin.toFixed(1)}<cooldownMin=${cfg.replaceCooldownMinutes})`
+      };
+    }
+  }
+  if (throttle.replaceCountToday >= cfg.replaceMaxPerSymbolPerDay) {
+    return {
+      allowed: false,
+      deltaBps: null,
+      reason: `open_entry_replace_daily_cap(count=${throttle.replaceCountToday}>=max=${cfg.replaceMaxPerSymbolPerDay})`
     };
   }
   const deltaBps = ((refreshedLimitPrice - liveLimit) / liveLimit) * 10000;
@@ -5423,11 +5591,16 @@ async function submitOrdersToBroker(
     duplicateSymbols: 0,
     bySymbol: new Map<string, OpenEntryOrderSnapshot>()
   };
+  let openEntryReplaceState = createOpenEntryReplaceGuardState();
+  let openEntryReplaceStateTouched = false;
   if (openEntryGuardCfg.enabled) {
     try {
       openEntryOrders = await loadOpenEntryOrderIndex();
+      openEntryReplaceState = await loadOpenEntryReplaceGuardState();
+      const prunedEntries = pruneOpenEntryReplaceGuardState(openEntryReplaceState, 14);
+      openEntryReplaceStateTouched = prunedEntries > 0;
       console.log(
-        `[OPEN_ENTRY_GUARD] enabled=true staleCancel=${openEntryGuardCfg.staleCancelEnabled} staleMin=${openEntryGuardCfg.staleMinutes} replaceMinDeltaBps=${openEntryGuardCfg.replaceMinDeltaBps} replaceMaxChaseBps=${openEntryGuardCfg.replaceMaxChaseBps} openEntries=${openEntryOrders.total} duplicateSymbols=${openEntryOrders.duplicateSymbols}`
+        `[OPEN_ENTRY_GUARD] enabled=true staleCancel=${openEntryGuardCfg.staleCancelEnabled} staleMin=${openEntryGuardCfg.staleMinutes} replaceMinDeltaBps=${openEntryGuardCfg.replaceMinDeltaBps} replaceMaxChaseBps=${openEntryGuardCfg.replaceMaxChaseBps} replaceCooldownMin=${openEntryGuardCfg.replaceCooldownMinutes} replaceMaxPerDay=${openEntryGuardCfg.replaceMaxPerSymbolPerDay} openEntries=${openEntryOrders.total} duplicateSymbols=${openEntryOrders.duplicateSymbols} replaceLedgerPruned=${prunedEntries}`
       );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -5531,10 +5704,16 @@ async function submitOrdersToBroker(
             openEntry.ageMinutes != null &&
             openEntry.ageMinutes >= openEntryGuardCfg.staleMinutes;
           if (staleEligible) {
+            const replaceThrottle = resolveOpenEntryReplaceThrottle(
+              openEntryReplaceState,
+              payload.symbol,
+              Date.now()
+            );
             const replacePolicy = evaluateOpenEntryReplacePolicy(
               openEntry,
               payload.limit_price,
-              openEntryGuardCfg
+              openEntryGuardCfg,
+              replaceThrottle
             );
             if (!replacePolicy.allowed) {
               row.actionType = "HOLD_WAIT";
@@ -5545,8 +5724,14 @@ async function submitOrdersToBroker(
             try {
               await cancelOpenEntryOrder(openEntry.orderId);
               openEntryOrders.bySymbol.delete(payload.symbol);
+              const replaceCountToday = recordOpenEntryReplace(
+                openEntryReplaceState,
+                payload.symbol,
+                new Date().toISOString()
+              );
+              openEntryReplaceStateTouched = true;
               console.warn(
-                `[OPEN_ENTRY_GUARD] symbol=${payload.symbol} stale_open_entry_cancelled orderId=${openEntry.orderId} ageMin=${openEntry.ageMinutes?.toFixed(1) ?? "n/a"} deltaBps=${replacePolicy.deltaBps?.toFixed(1) ?? "n/a"}`
+                `[OPEN_ENTRY_GUARD] symbol=${payload.symbol} stale_open_entry_cancelled orderId=${openEntry.orderId} ageMin=${openEntry.ageMinutes?.toFixed(1) ?? "n/a"} deltaBps=${replacePolicy.deltaBps?.toFixed(1) ?? "n/a"} replaceCountToday=${replaceCountToday} cooldownMin=${openEntryGuardCfg.replaceCooldownMinutes}`
               );
             } catch (error) {
               const msg = error instanceof Error ? error.message : String(error);
@@ -5661,6 +5846,15 @@ async function submitOrdersToBroker(
       row.reason = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
       summary.failed += 1;
       console.warn(`[BROKER_SUBMIT] symbol=${payload.symbol} failed reason=${row.reason}`);
+    }
+  }
+
+  if (openEntryGuardCfg.enabled && openEntryReplaceStateTouched) {
+    try {
+      await saveOpenEntryReplaceGuardState(openEntryReplaceState);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`[OPEN_ENTRY_GUARD] replace_guard_state_save_failed=${msg.slice(0, 160)}`);
     }
   }
 
