@@ -15,6 +15,16 @@ on:
         options:
           - "false"
           - "true"
+      run_verify_mode:
+        description: "Manual safety/verification preset"
+        required: false
+        default: "safe_default"
+        type: choice
+        options:
+          - "safe_default"
+          - "submit_pass"
+          - "guard_skip_pass"
+          - "auto"
       run_allow_entry_outside_rth:
         description: "Allow entry outside RTH for this manual run only"
         required: false
@@ -141,6 +151,7 @@ jobs:
     timeout-minutes: 10
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      RUN_VERIFY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_verify_mode || 'auto' }}
       EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
       READ_ONLY: ${{ vars.READ_ONLY }}
       SIMULATION_LIVE_PARITY: ${{ vars.SIMULATION_LIVE_PARITY }}
@@ -345,6 +356,66 @@ jobs:
         run: |
           echo "[TRIGGER] event=${WORKFLOW_EVENT_NAME} action=${WORKFLOW_EVENT_ACTION:-n/a}"
           echo "[TRIGGER] stage6Hash=${TRIGGER_STAGE6_HASH:-n/a} stage6File=${TRIGGER_STAGE6_FILE:-n/a} sourceRun=${TRIGGER_STAGE6_SOURCE_RUN:-n/a}"
+          echo "[VERIFY_MODE] requested=${RUN_VERIFY_MODE}"
+
+      - name: Resolve verify mode safety preset (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RUN_VERIFY_MODE: ${{ env.RUN_VERIFY_MODE }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+
+          requested = (os.getenv("RUN_VERIFY_MODE") or "safe_default").strip().lower()
+          preset_map = {
+              "auto": [],
+              "safe_default": [
+                  "READ_ONLY=true",
+                  "EXEC_ENABLED=false",
+                  "SIMULATION_LIVE_PARITY=false",
+                  "LIVE_ORDER_SUBMIT_ENABLED=false",
+                  "ALLOW_ENTRY_OUTSIDE_RTH=false",
+                  "FORCE_SEND_ONCE=false",
+              ],
+              "submit_pass": [
+                  "READ_ONLY=false",
+                  "EXEC_ENABLED=true",
+                  "SIMULATION_LIVE_PARITY=true",
+                  "LIVE_ORDER_SUBMIT_ENABLED=true",
+              ],
+              "guard_skip_pass": [
+                  "READ_ONLY=false",
+                  "EXEC_ENABLED=true",
+                  "SIMULATION_LIVE_PARITY=true",
+                  "LIVE_ORDER_SUBMIT_ENABLED=true",
+                  "ENTRY_OPEN_ORDER_GUARD_ENABLED=true",
+                  "ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false",
+              ],
+          }
+
+          if requested not in preset_map:
+              print(
+                  "::error::run_verify_mode must be one of "
+                  "safe_default|submit_pass|guard_skip_pass|auto"
+              )
+              sys.exit(1)
+
+          lines = list(preset_map[requested])
+          lines.append(f"RUN_VERIFY_MODE_EFFECTIVE={requested}")
+          lines.append(f"RUN_VERIFY_MODE_REQUESTED={requested}")
+
+          github_env = os.getenv("GITHUB_ENV")
+          if not github_env:
+              print("::error::GITHUB_ENV not found.")
+              sys.exit(1)
+          with open(github_env, "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+
+          override_log = ",".join(lines[:-2]) if len(lines) > 2 else "none"
+          print(f"[VERIFY_MODE] requested={requested} applied={requested} overrides={override_log}")
+          PY
 
       - name: Resolve lifecycle action types (manual)
         if: ${{ github.event_name == 'workflow_dispatch' }}
