@@ -8,6 +8,12 @@ const OUTPUT_PATH = `${STATE_DIR}/notion-ops-daily-sync.json`;
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
 const hasValue = (v) => String(v ?? "").trim().length > 0;
 const short = (v, max = 1800) => String(v ?? "").trim().slice(0, max);
+const normalizeUrl = (v) => {
+  const raw = String(v ?? "").trim();
+  if (!/^https?:\/\//i.test(raw)) return "";
+  return raw.slice(0, 1900);
+};
+const uniqueNonEmpty = (arr) => Array.from(new Set(arr.filter((v) => hasValue(v))));
 
 const readJson = (filePath) => {
   try {
@@ -60,6 +66,10 @@ const dateProp = (value) => ({
 
 const dateTimeProp = (value) => ({
   date: { start: toIso(value) }
+});
+
+const urlProp = (value) => ({
+  url: normalizeUrl(value) || null
 });
 
 const notionHeaders = (token) => ({
@@ -128,6 +138,27 @@ const setProp = (props, schema, name, buildFn) => {
 
 const makeRunKey = (generatedAt) => `ops-daily-${toDate(generatedAt)}`;
 
+const collectEvidenceUrls = (report) => {
+  const urls = uniqueNonEmpty(
+    [
+      report?.evidence?.primaryUrl,
+      report?.evidence?.opsRunUrl,
+      report?.evidence?.canaryLatestUrl,
+      report?.evidence?.dryRunLatestUrl,
+      report?.evidence?.marketGuardLatestUrl,
+      report?.execReadinessNow?.htmlUrl,
+      report?.latestGuard?.htmlUrl,
+      report?.canary?.latest?.[0]?.htmlUrl,
+      report?.dryRun?.latest?.[0]?.htmlUrl,
+      report?.marketGuard?.latest?.[0]?.htmlUrl
+    ].map(normalizeUrl)
+  );
+  return {
+    primary: urls[0] || null,
+    all: urls
+  };
+};
+
 const writeOutput = (payload) => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(OUTPUT_PATH, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -136,6 +167,7 @@ const writeOutput = (payload) => {
 const main = async () => {
   const enabled = boolFromEnv("NOTION_OPS_DAILY_SYNC_ENABLED", true);
   const required = boolFromEnv("NOTION_OPS_DAILY_SYNC_REQUIRED", false);
+  const requireEvidenceUrl = boolFromEnv("NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL", true);
   const token = env("NOTION_TOKEN");
   const databaseId = env("NOTION_DB_DAILY_SNAPSHOT");
 
@@ -175,14 +207,18 @@ const main = async () => {
 
   const runKey = makeRunKey(report.generatedAt || new Date().toISOString());
   const nowIso = new Date().toISOString();
+  const evidence = collectEvidenceUrls(report);
   const summary = [
     `ops_daily=${String(report.status || "n/a").toUpperCase()}`,
     `canary=${report?.canary?.success ?? 0}/${report?.canary?.completed ?? 0}`,
     `dryrun=${report?.dryRun?.success ?? 0}/${report?.dryRun?.completed ?? 0}`,
     `verify=${report?.canaryVerify?.parsed ?? 0}/${report?.canaryVerify?.inspected ?? 0}`,
+    `canaryFresh=${String(report?.canaryFreshness?.status || "unknown")}`,
+    `execReady=${String(report?.execReadinessNow?.status || "UNKNOWN")}`,
     `preflight=${report?.canaryVerify?.preflightPassRuns ?? 0}/${report?.canaryVerify?.parsed ?? 0}`,
     `submit=${report?.canaryVerify?.submittedTotal ?? 0}/${report?.canaryVerify?.attemptedTotal ?? 0}`,
-    `notionAudit=${String(report?.notionAudit?.status || "n/a")}`
+    `notionAudit=${String(report?.notionAudit?.status || "n/a")}`,
+    `evidence=${evidence.primary || "n/a"}`
   ].join(" | ");
 
   const properties = {
@@ -231,6 +267,23 @@ const main = async () => {
       Math.max(0, Number(report?.canaryVerify?.attemptedTotal || 0) - Number(report?.canaryVerify?.submittedTotal || 0))
     );
 
+  const evidenceUrlName = findPropertyAlias(schema, ["Evidence URL", "Run URL", "Workflow URL"], ["url", "rich_text"]);
+  const evidenceLinksName = findPropertyAlias(schema, ["Evidence URLs", "Evidence Links"], ["rich_text"]);
+  if (requireEvidenceUrl && !evidence.primary) {
+    throw new Error("missing_evidence_url");
+  }
+  if (requireEvidenceUrl && !evidenceUrlName && !evidenceLinksName) {
+    throw new Error("missing_evidence_url_property");
+  }
+
+  if (evidence.primary && evidenceUrlName) {
+    if (schema[evidenceUrlName].type === "url") properties[evidenceUrlName] = urlProp(evidence.primary);
+    if (schema[evidenceUrlName].type === "rich_text") properties[evidenceUrlName] = textProp(evidence.primary);
+  }
+  if (evidence.all.length > 0 && evidenceLinksName) {
+    properties[evidenceLinksName] = textProp(evidence.all.join(" | "));
+  }
+
   const existing = await queryByTitle(token, databaseId, titleProperty, runKey);
   let action = "created";
   if (existing?.id) {
@@ -255,7 +308,12 @@ const main = async () => {
     action,
     runKey,
     databaseId,
-    summary
+    summary,
+    requireEvidenceUrl,
+    evidencePrimary: evidence.primary,
+    evidenceCount: evidence.all.length,
+    evidenceUrlProperty: evidenceUrlName || null,
+    evidenceLinksProperty: evidenceLinksName || null
   };
   writeOutput(out);
   console.log(`[NOTION_OPS_DAILY] ok action=${action} runKey=${runKey}`);

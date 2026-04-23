@@ -46,6 +46,14 @@ const parseIso = (value) => {
   return Number.isFinite(ms) ? ms : NaN;
 };
 
+const buildOpsRunUrl = () => {
+  const repo = env("GITHUB_REPOSITORY");
+  const runId = env("GITHUB_RUN_ID");
+  if (!repo || !runId) return null;
+  const server = env("GITHUB_SERVER_URL", "https://github.com").replace(/\/+$/, "");
+  return `${server}/${repo}/actions/runs/${runId}`;
+};
+
 const makeKst = (date) => {
   return new Intl.DateTimeFormat("sv-SE", {
     timeZone: "Asia/Seoul",
@@ -454,6 +462,14 @@ const buildMarkdown = (report) => {
   );
   lines.push("");
 
+  lines.push("### Evidence Links");
+  lines.push(`- primary: ${report.evidence.primaryUrl || "N/A"}`);
+  lines.push(`- ops_run: ${report.evidence.opsRunUrl || "N/A"}`);
+  lines.push(`- canary_latest: ${report.evidence.canaryLatestUrl || "N/A"}`);
+  lines.push(`- dryrun_latest: ${report.evidence.dryRunLatestUrl || "N/A"}`);
+  lines.push(`- guard_latest: ${report.evidence.marketGuardLatestUrl || "N/A"}`);
+  lines.push("");
+
   lines.push("### Notion Audit Snapshot");
   lines.push(`- status: \`${report.notionAudit.status}\``);
   lines.push(`- rowsChecked: \`${report.notionAudit.rowsChecked}\``);
@@ -569,6 +585,7 @@ const main = async () => {
   };
 
   if (!token) {
+    const opsRunUrl = buildOpsRunUrl();
     const skipped = {
       generatedAt: nowIso(),
       generatedAtKst: makeKst(current),
@@ -626,6 +643,13 @@ const main = async () => {
         vix: null,
         actionReason: null,
         reason: "missing_github_token"
+      },
+      evidence: {
+        primaryUrl: opsRunUrl,
+        opsRunUrl,
+        canaryLatestUrl: null,
+        dryRunLatestUrl: null,
+        marketGuardLatestUrl: null
       },
       notionAudit,
       decision: "GitHub token missing; cannot compute workflow KPIs."
@@ -703,6 +727,18 @@ const main = async () => {
     }),
     maxInspect: canaryVerifyInspectRuns
   });
+  const opsRunUrl = buildOpsRunUrl();
+  const evidence = {
+    primaryUrl:
+      latestDryRunExecution.htmlUrl ||
+      canary.latest[0]?.htmlUrl ||
+      opsRunUrl ||
+      null,
+    opsRunUrl,
+    canaryLatestUrl: canary.latest[0]?.htmlUrl || null,
+    dryRunLatestUrl: latestDryRunExecution.htmlUrl || dryRun.latest[0]?.htmlUrl || null,
+    marketGuardLatestUrl: latestGuard.htmlUrl || marketGuard.latest[0]?.htmlUrl || null
+  };
 
   let status = "pass";
   let reason = "healthy";
@@ -750,6 +786,7 @@ const main = async () => {
     canaryFreshness,
     execReadinessNow: latestDryRunExecution,
     latestGuard,
+    evidence,
     notionAudit: {
       status: notionAudit.status || "missing",
       rowsChecked: notionAudit.rowsChecked ?? 0,
@@ -769,7 +806,7 @@ const main = async () => {
   writeText(OUTPUT_MD, buildMarkdown(report));
 
   console.log(
-    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} guard=${report.marketGuard.success}/${report.marketGuard.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} canaryFresh=${report.canaryFreshness.status} execReadiness=${report.execReadinessNow.status} guardMode=${report.latestGuard.mode ?? "n/a"} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal}`
+    `[OPS_DAILY] status=${report.status} reason=${report.reason} canary=${report.canary.success}/${report.canary.completed} dryrun=${report.dryRun.success}/${report.dryRun.completed} guard=${report.marketGuard.success}/${report.marketGuard.completed} canaryVerify=${report.canaryVerify.parsed}/${report.canaryVerify.inspected} canaryFresh=${report.canaryFreshness.status} execReadiness=${report.execReadinessNow.status} guardMode=${report.latestGuard.mode ?? "n/a"} attempted=${report.canaryVerify.attemptedTotal} submitted=${report.canaryVerify.submittedTotal} evidence=${report.evidence.primaryUrl || "n/a"}`
   );
 };
 

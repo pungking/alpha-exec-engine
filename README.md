@@ -113,7 +113,7 @@ HF verification shortcuts:
 - `npm run ops:health:market-guard`: build market-guard focused health snapshot.
 - `npm run ops:notion:audit`: audit latest Notion Daily Snapshot rows for required fields/duplicate run keys/staleness (`state/notion-ops-audit.json`, `.md`).
 - `npm run ops:daily:report`: build consolidated daily ops report from GitHub workflow KPIs + Notion audit (`state/ops-daily-report.json`, `.md`).
-- `npm run ops:daily:notion:sync`: upsert consolidated ops daily row into Notion Daily Snapshot (`state/notion-ops-daily-sync.json`).
+- `npm run ops:daily:notion:sync`: upsert consolidated ops daily row into Notion Daily Snapshot (`state/notion-ops-daily-sync.json`, evidence URL required by default).
 - `npm run backfill:notion:perf-pct:dry`: dry-run check for legacy Notion percent-scale rows.
 - `npm run backfill:notion:perf-pct`: one-time fix for legacy Notion percent-scale rows.
 - `npm run sync:notion:dry-run`: upsert `state/last-run.json + state/last-dry-exec-preview.json` into Notion (optional).
@@ -320,6 +320,7 @@ Use `.env.example` as baseline.
 - `NOTION_AUDIT_STRICT_FAIL` (optional, default `false`; when `true`, notion audit warning/fail exits non-zero)
 - `NOTION_OPS_DAILY_SYNC_ENABLED` (optional, default `true`; enable consolidated ops daily row upsert)
 - `NOTION_OPS_DAILY_SYNC_REQUIRED` (optional, default `false`; when `true`, ops daily Notion sync failure fails workflow)
+- `NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL` (optional, default `true`; require evidence URL and matching property (`Evidence URL`/`Run URL`/`Workflow URL`) for ops daily Notion sync)
 - `OPS_REPORT_LOOKBACK_HOURS` (optional, default `24`; GitHub workflow KPI lookback window for ops daily report)
 - `OPS_REPORT_MAX_RUNS` (optional, default `30`; max workflow runs fetched per pipeline)
 - `OPS_REPORT_CANARY_VERIFY_MAX_RUNS` (optional, default `8`; max successful canary runs inspected for verify markers)

@@ -138,7 +138,7 @@ Priority: P0
 ### Next 72h
 
 1. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB). (in progress)
-2. Add evidence URL hard requirement in daily Notion row schema and sync script.
+2. Add evidence URL hard requirement in daily Notion row schema and sync script. (done 2026-04-23)
 3. Add Obsidian append step for daily report index + links.
 4. Add NotebookLM ingestion marker update linked to the daily report row.
 5. Add template/runtime drift check for bridge and sidecar workflow mirrors.
@@ -213,3 +213,8 @@ Priority: P0
     - run key: `ops-daily-YYYY-MM-DD`
     - output: `state/notion-ops-daily-sync.json`
   - Root workflow `/.github/workflows/mcp-ops-daily.yml` now executes ops daily Notion sync and publishes sync summary.
+- 2026-04-23 UTC/KST (ops daily evidence hardening):
+  - `scripts/build-ops-daily-report.mjs` now emits `evidence.*` links (`ops_run`, latest canary/dry-run/guard, primary).
+  - `scripts/sync-notion-ops-daily.mjs` now enforces evidence URL by default (`NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL=true`).
+  - Notion sync now requires one URL + matching property alias (`Evidence URL` / `Run URL` / `Workflow URL`) and writes summary fields (`evidencePrimary`, `evidenceCount`).
+  - Root workflow `/.github/workflows/mcp-ops-daily.yml` now exports `NOTION_OPS_DAILY_REQUIRE_EVIDENCE_URL` and shows evidence sync summary in Step Summary.
