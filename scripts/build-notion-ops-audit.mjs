@@ -7,7 +7,10 @@ const NOTION_VERSION = "2022-06-28";
 
 const env = (name, fallback = "") => String(process.env[name] ?? fallback).trim();
 const toNum = (value, fallback = null) => {
-  const n = Number(value);
+  if (value === undefined || value === null) return fallback;
+  const raw = String(value).trim();
+  if (!raw) return fallback;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 };
 const short = (value, max = 180) => String(value ?? "").trim().slice(0, max);
