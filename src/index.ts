@@ -8751,10 +8751,10 @@ async function applyOrderIdempotency(
   for (const payload of dryExec.payloads) {
     const key = payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
     payload.idempotencyKey = key;
-    let existing = state.orders[key];
+    let existing: OrderIdempotencyState["orders"][string] | undefined = state.orders[key];
     if (existing && entryResetDaily) {
       const existingTs = Date.parse(existing.lastSeenAt || existing.firstSeenAt || "");
-      const existingDayKey =
+      let existingDayKey =
         Number.isFinite(existingTs) && existingTs > 0 ? toTimeZoneDayKey(existingTs, idempotencyTimeZone) : "";
       if (existingDayKey && todayKey && existingDayKey !== todayKey) {
         delete state.orders[key];
