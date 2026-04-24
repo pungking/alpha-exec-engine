@@ -156,6 +156,7 @@ Use `.env.example` as baseline.
 - `ENTRY_FEASIBILITY_ENFORCE` (default `false`)
 - `ENTRY_MAX_DISTANCE_PCT` (default `15`)
 - `ENTRY_PRICE_MODE` (default `strict`; `strict|adaptive`)
+- Workflow fallback: when `ENTRY_PRICE_MODE` variable is unset, dry-run workflow uses `adaptive` to reduce chronic no-fill drift.
 - `ENTRY_PRICE_MAX_CHASE_PCT` (default `2.5`; max upward chase from Stage6 entry in adaptive mode)
 - `ENTRY_PRICE_DISTANCE_TRIGGER_PCT` (default `2`; adaptive mode only activates when `entryDistancePct` exceeds this)
 - `ENTRY_PRICE_DISTANCE_SCALE` (default `0.4`; adaptive chase slope vs distance overflow)
@@ -222,6 +223,7 @@ Use `.env.example` as baseline.
 - `ORDER_IDEMPOTENCY_ENABLED`
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
+- `ORDER_IDEMPOTENCY_ENTRY_RESET_DAILY` (default `true`; releases previous-day keys so next RTH session can re-submit same stage hash if still valid)
 - `PREFLIGHT_ENABLED`
 - `DAILY_MAX_NOTIONAL`
 - `ALLOW_ENTRY_OUTSIDE_RTH`
