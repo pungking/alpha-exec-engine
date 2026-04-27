@@ -5362,7 +5362,8 @@ function toBrokerQtyString(value: number): string | null {
   return trimmed || null;
 }
 
-function toWholeShareQtyFromNotional(notional: number, limitPrice: number): string | null {
+// CHATGPT PATCH: convert notional and limit price into a whole-share quantity.
+(notional: number, limitPrice: number): string | null {
   if (!Number.isFinite(notional) || !Number.isFinite(limitPrice)) return null;
   if (notional <= 0 || limitPrice <= 0) return null;
   const wholeQty = Math.floor(notional / limitPrice);
@@ -5844,6 +5845,7 @@ async function submitOrdersToBroker(
       }
     }
     const isEntryStyleAction = !isLifecycleExitAction(effectiveActionType);
+    // CHATGPT PATCH: compute entry quantity from notional and limit price.
     let entryQtyForSubmit: string | null = null;
     if (isEntryStyleAction) {
       entryQtyForSubmit = toWholeShareQtyFromNotional(payload.notional, payload.limit_price);
@@ -5949,6 +5951,7 @@ async function submitOrdersToBroker(
             time_in_force: payload.time_in_force,
             order_class: payload.order_class,
             limit_price: payload.limit_price,
+            // CHATGPT PATCH: use quantity instead of notional for Alpaca orders.
             qty: submitQty,
             take_profit: payload.take_profit,
             stop_loss: payload.stop_loss,
