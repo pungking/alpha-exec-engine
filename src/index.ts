@@ -5363,7 +5363,7 @@ function toBrokerQtyString(value: number): string | null {
 }
 
 // CHATGPT PATCH: convert notional and limit price into a whole-share quantity.
-(notional: number, limitPrice: number): string | null {
+function toWholeShareQtyFromNotional(notional: number, limitPrice: number): string | null {
   if (!Number.isFinite(notional) || !Number.isFinite(limitPrice)) return null;
   if (notional <= 0 || limitPrice <= 0) return null;
   const wholeQty = Math.floor(notional / limitPrice);
