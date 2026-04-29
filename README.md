@@ -29,6 +29,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase + cooldown/daily-cap guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
 - Optional adaptive entry price mode can apply bounded chase from Stage6 entry (`ENTRY_PRICE_MODE=adaptive`) while preserving RR floor and stop-distance guardrails.
 - Optional high-price sizing can promote entries to one whole share when `DRY_NOTIONAL_PER_TRADE` is below the limit price, but only inside explicit notional and dollar-risk caps.
+- Execution overlay v1 adds observe-only current-market context from Alpaca data before broker submit audit (`EXECUTION_OVERLAY_ENABLED=true`).
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -167,6 +168,15 @@ Use `.env.example` as baseline.
 - `ENTRY_HIGH_PRICE_POLICY` (default `skip`; `skip|min_one_share`)
 - `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL` (default `300`; max one-share notional when `min_one_share` is enabled)
 - `ENTRY_MAX_RISK_DOLLARS_PER_TRADE` (default `25`; max dollars at risk for one-share high-price entries; `0` disables this cap)
+- `EXECUTION_OVERLAY_ENABLED` (default `true`; attach current-market execution audit to each payload/skip decision)
+- `EXECUTION_OVERLAY_MODE` (default/only supported v1 value: `observe`; non-observe values are ignored for safety)
+- `EXECUTION_OVERLAY_DATA_FEED` (default `iex`; Alpaca data feed used for latest/daily bars)
+- `EXECUTION_OVERLAY_MIN_RR` (default `1.8`; minimum RR required for a confirmed adaptive-entry recommendation)
+- `EXECUTION_OVERLAY_MAX_ADAPTIVE_DISTANCE_PCT` (default `3`; max current-price premium over Stage6 entry for confirmed adaptive-entry recommendation)
+- `EXECUTION_OVERLAY_MAX_PULLBACK_DISTANCE_PCT` (default `6`; max current-price premium over Stage6 entry to keep pullback-limit recommendation)
+- `EXECUTION_OVERLAY_TARGET_BUFFER_PCT` (default `1`; marks no-trade when current price is too close to target)
+- `EXECUTION_OVERLAY_DAILY_LOOKBACK_DAYS` (default `260`; daily-bar lookback for SMA/ATR/trend context)
+- `ALPACA_DATA_BASE_URL` (optional, default `https://data.alpaca.markets`; Alpaca market-data endpoint)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
 - `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
@@ -372,6 +382,18 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - paper canary: keep small caps (`DRY_NOTIONAL_PER_TRADE=100`, `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=300`, risk cap `25`)
   - paper stabilization: move to risk-based sizing after fill/exit telemetry is reliable
   - live: keep user approval or strict capital/risk caps before any increase
+
+### Execution Overlay (observe-only v1)
+- Purpose: diagnose the chronic "valid Stage6 plan, no realistic fill" gap without rewriting Stage6.
+- Source of truth remains `STAGE6_ALPHA_FINAL_*.json`; overlay only reads current market context before broker-submit audit.
+- Data source: Alpaca latest minute bars + daily bars from `ALPACA_DATA_BASE_URL` using `EXECUTION_OVERLAY_DATA_FEED`.
+- Per-symbol decision tags:
+  - `CONFIRMED_ADAPTIVE_ENTRY`: current price is close enough to Stage6 entry, trend is not broken, and RR floor is preserved.
+  - `PULLBACK_LIMIT`: Stage6 limit remains valid; keep waiting for the pullback instead of chasing.
+  - `WAIT_PULLBACK`: current price is too far above Stage6 entry.
+  - `NO_TRADE`: current price makes RR/target buffer unattractive.
+  - `DATA_MISSING`: market-data fetch failed or returned no usable latest price.
+- Rollout rule: v1 is audit-only. It writes `executionOverlay` into `state/last-dry-exec-preview.json`, decision audit rows, Telegram summary, and `[RUN_SUMMARY]`; it must not change payloads until enough paper-trading evidence proves the policy improves fill rate without degrading RR.
 
 ### Adaptive Conviction Gate
 - Sidecar applies an adaptive conviction floor from:

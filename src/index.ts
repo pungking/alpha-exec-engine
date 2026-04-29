@@ -268,11 +268,82 @@ type OrderDecisionAuditRecord = {
   riskDollars: number | null;
   highPriceAdjusted: boolean;
   sizingReason: string | null;
+  executionOverlay: ExecutionOverlayDecision | null;
 };
 
 type EntryPriceMode = "strict" | "adaptive";
 
 type EntryHighPricePolicy = "skip" | "min_one_share";
+
+type ExecutionOverlayMode = "observe";
+
+type ExecutionOverlayStyle =
+  | "DISABLED"
+  | "DATA_MISSING"
+  | "PULLBACK_LIMIT"
+  | "CONFIRMED_ADAPTIVE_ENTRY"
+  | "WAIT_PULLBACK"
+  | "NO_TRADE";
+
+type ExecutionOverlayPolicy = {
+  enabled: boolean;
+  mode: ExecutionOverlayMode;
+  dataFeed: string;
+  minRr: number;
+  maxAdaptiveDistancePct: number;
+  maxPullbackDistancePct: number;
+  targetBufferPct: number;
+  dailyLookbackDays: number;
+};
+
+type ExecutionOverlayMarketSnapshot = {
+  source: string;
+  currentPrice: number | null;
+  latestBarAt: string | null;
+  latestVwap: number | null;
+  previousClose: number | null;
+  dayHigh: number | null;
+  dayLow: number | null;
+  sma20: number | null;
+  sma50: number | null;
+  atr14Pct: number | null;
+  volumeRatio20: number | null;
+  weeklyTrendPct: number | null;
+  monthlyTrendPct: number | null;
+  dataStatus: "ok" | "missing" | "failed";
+  reason: string;
+};
+
+type ExecutionOverlayDecision = {
+  enabled: boolean;
+  mode: ExecutionOverlayMode;
+  style: ExecutionOverlayStyle;
+  reason: string;
+  currentPrice: number | null;
+  stage6Entry: number | null;
+  adjustedEntry: number | null;
+  target: number | null;
+  stop: number | null;
+  currentDistancePct: number | null;
+  rrAtCurrent: number | null;
+  rrAtAdjustedEntry: number | null;
+  trendConfirmed: boolean;
+  market: ExecutionOverlayMarketSnapshot | null;
+};
+
+type ExecutionOverlaySummary = {
+  enabled: boolean;
+  mode: ExecutionOverlayMode;
+  dataFeed: string;
+  dataStatus: "ok" | "partial" | "missing" | "failed" | "disabled";
+  evaluated: number;
+  confirmedAdaptiveEntry: number;
+  pullbackLimit: number;
+  waitPullback: number;
+  noTrade: number;
+  dataMissing: number;
+  reasonCounts: Record<string, number>;
+};
 
 type EntrySizingPolicy = {
   highPricePolicy: EntryHighPricePolicy;
@@ -482,6 +553,7 @@ type DryExecBuildResult = {
   };
   entryPricePolicy: EntryPricePolicySummary;
   entrySizingPolicy: EntrySizingPolicySummary;
+  executionOverlay: ExecutionOverlaySummary;
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -1310,6 +1382,7 @@ function printStartupSummary() {
   const openEntryGuardCfg = buildOpenEntryOrderGuardConfig();
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const entrySizingPolicy = buildEntrySizingPolicy();
+  const executionOverlayPolicy = buildExecutionOverlayPolicy();
   const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const lifecycleExitFullMaxLossPct = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
@@ -1441,6 +1514,14 @@ function printStartupSummary() {
   console.log(`ENTRY_SIZE_HIPOL : ${entrySizingPolicy.highPricePolicy}`);
   console.log(`ENTRY_SIZE_1MAX : ${entrySizingPolicy.minOneShareMaxNotional}`);
   console.log(`ENTRY_SIZE_RISK : ${entrySizingPolicy.maxRiskDollarsPerTrade}`);
+  console.log(`EXEC_OVLY_EN    : ${executionOverlayPolicy.enabled}`);
+  console.log(`EXEC_OVLY_MODE  : ${executionOverlayPolicy.mode}`);
+  console.log(`EXEC_OVLY_FEED  : ${executionOverlayPolicy.dataFeed}`);
+  console.log(`EXEC_OVLY_MINRR : ${executionOverlayPolicy.minRr}`);
+  console.log(`EXEC_OVLY_ADMAX : ${executionOverlayPolicy.maxAdaptiveDistancePct}`);
+  console.log(`EXEC_OVLY_PBMAX : ${executionOverlayPolicy.maxPullbackDistancePct}`);
+  console.log(`EXEC_OVLY_TBUFP : ${executionOverlayPolicy.targetBufferPct}`);
+  console.log(`EXEC_OVLY_LOOKBK: ${executionOverlayPolicy.dailyLookbackDays}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -2296,6 +2377,178 @@ function computeRiskReward(entry: number | null, target: number | null, stop: nu
   return Number(((target - entry) / risk).toFixed(4));
 }
 
+function resolveExecutionOverlayMode(raw: string | undefined): ExecutionOverlayMode {
+  const key = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (key && key !== "observe") {
+    console.warn(`[EXEC_OVERLAY] unsupported_mode=${key}; falling back to observe`);
+  }
+  return "observe";
+}
+
+function buildExecutionOverlayPolicy(): ExecutionOverlayPolicy {
+  return {
+    enabled: readBoolEnv("EXECUTION_OVERLAY_ENABLED", true),
+    mode: resolveExecutionOverlayMode(process.env.EXECUTION_OVERLAY_MODE),
+    dataFeed: String(process.env.EXECUTION_OVERLAY_DATA_FEED || "iex").trim() || "iex",
+    minRr: clamp(readPositiveNumberEnv("EXECUTION_OVERLAY_MIN_RR", 1.8), 0.25, 10),
+    maxAdaptiveDistancePct: clamp(
+      readNonNegativeNumberEnv("EXECUTION_OVERLAY_MAX_ADAPTIVE_DISTANCE_PCT", 3),
+      0,
+      30
+    ),
+    maxPullbackDistancePct: clamp(
+      readNonNegativeNumberEnv("EXECUTION_OVERLAY_MAX_PULLBACK_DISTANCE_PCT", 6),
+      0,
+      50
+    ),
+    targetBufferPct: clamp(readNonNegativeNumberEnv("EXECUTION_OVERLAY_TARGET_BUFFER_PCT", 1), 0, 20),
+    dailyLookbackDays: Math.max(
+      60,
+      Math.round(clamp(readNonNegativeNumberEnv("EXECUTION_OVERLAY_DAILY_LOOKBACK_DAYS", 260), 60, 500))
+    )
+  };
+}
+
+function createExecutionOverlaySummary(
+  policy: ExecutionOverlayPolicy,
+  dataStatus: ExecutionOverlaySummary["dataStatus"] = policy.enabled ? "missing" : "disabled",
+  reasonCounts: Record<string, number> = {}
+): ExecutionOverlaySummary {
+  return {
+    enabled: policy.enabled,
+    mode: policy.mode,
+    dataFeed: policy.dataFeed,
+    dataStatus,
+    evaluated: 0,
+    confirmedAdaptiveEntry: 0,
+    pullbackLimit: 0,
+    waitPullback: 0,
+    noTrade: 0,
+    dataMissing: 0,
+    reasonCounts
+  };
+}
+
+function incrementCount(map: Record<string, number>, key: string) {
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+function summarizeExecutionOverlay(decisions: ExecutionOverlayDecision[], policy: ExecutionOverlayPolicy): ExecutionOverlaySummary {
+  const reasonCounts: Record<string, number> = {};
+  let confirmedAdaptiveEntry = 0;
+  let pullbackLimit = 0;
+  let waitPullback = 0;
+  let noTrade = 0;
+  let dataMissing = 0;
+  let okData = 0;
+  decisions.forEach((decision) => {
+    incrementCount(reasonCounts, decision.reason || decision.style.toLowerCase());
+    if (decision.market?.dataStatus === "ok") okData += 1;
+    if (decision.style === "CONFIRMED_ADAPTIVE_ENTRY") confirmedAdaptiveEntry += 1;
+    else if (decision.style === "PULLBACK_LIMIT") pullbackLimit += 1;
+    else if (decision.style === "WAIT_PULLBACK") waitPullback += 1;
+    else if (decision.style === "NO_TRADE") noTrade += 1;
+    else if (decision.style === "DATA_MISSING") dataMissing += 1;
+  });
+  const dataStatus: ExecutionOverlaySummary["dataStatus"] =
+    !policy.enabled ? "disabled" : okData === decisions.length && decisions.length > 0 ? "ok" : okData > 0 ? "partial" : "missing";
+  return {
+    enabled: policy.enabled,
+    mode: policy.mode,
+    dataFeed: policy.dataFeed,
+    dataStatus,
+    evaluated: decisions.length,
+    confirmedAdaptiveEntry,
+    pullbackLimit,
+    waitPullback,
+    noTrade,
+    dataMissing,
+    reasonCounts
+  };
+}
+
+type AlpacaDataBar = {
+  t: string | null;
+  o: number | null;
+  h: number | null;
+  l: number | null;
+  c: number | null;
+  v: number | null;
+  vw: number | null;
+};
+
+function parseAlpacaDataBar(raw: unknown): AlpacaDataBar | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const close = parseFiniteNumber(row.c ?? row.close);
+  if (close == null || close <= 0) return null;
+  return {
+    t: typeof row.t === "string" ? row.t : typeof row.timestamp === "string" ? row.timestamp : null,
+    o: parseFiniteNumber(row.o ?? row.open),
+    h: parseFiniteNumber(row.h ?? row.high),
+    l: parseFiniteNumber(row.l ?? row.low),
+    c: close,
+    v: parseFiniteNumber(row.v ?? row.volume),
+    vw: parseFiniteNumber(row.vw ?? row.vwap)
+  };
+}
+
+function averageFinite(values: number[]): number | null {
+  const finite = values.filter((value) => Number.isFinite(value));
+  if (finite.length === 0) return null;
+  return finite.reduce((acc, value) => acc + value, 0) / finite.length;
+}
+
+function simpleMovingAverage(bars: AlpacaDataBar[], length: number): number | null {
+  const closes = bars
+    .slice(-length)
+    .map((bar) => bar.c)
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  if (closes.length < Math.max(3, Math.floor(length * 0.75))) return null;
+  const avg = averageFinite(closes);
+  return avg != null ? Number(avg.toFixed(4)) : null;
+}
+
+function computeAtrPct(bars: AlpacaDataBar[], length = 14): number | null {
+  if (bars.length < length + 1) return null;
+  const recent = bars.slice(-(length + 1));
+  const trueRanges: number[] = [];
+  for (let index = 1; index < recent.length; index += 1) {
+    const bar = recent[index];
+    const previousClose = recent[index - 1].c;
+    if (bar.h == null || bar.l == null || previousClose == null) continue;
+    trueRanges.push(Math.max(bar.h - bar.l, Math.abs(bar.h - previousClose), Math.abs(bar.l - previousClose)));
+  }
+  const atr = averageFinite(trueRanges);
+  const latestClose = bars[bars.length - 1]?.c;
+  if (atr == null || latestClose == null || latestClose <= 0) return null;
+  return Number(((atr / latestClose) * 100).toFixed(4));
+}
+
+function computeVolumeRatio20(bars: AlpacaDataBar[]): number | null {
+  if (bars.length < 21) return null;
+  const latestVolume = bars[bars.length - 1]?.v;
+  if (latestVolume == null || latestVolume <= 0) return null;
+  const avg = averageFinite(
+    bars
+      .slice(-21, -1)
+      .map((bar) => bar.v)
+      .filter((value): value is number => value != null && Number.isFinite(value) && value > 0)
+  );
+  if (avg == null || avg <= 0) return null;
+  return Number((latestVolume / avg).toFixed(4));
+}
+
+function computeCloseTrendPct(bars: AlpacaDataBar[], lookback: number): number | null {
+  if (bars.length <= lookback) return null;
+  const latestClose = bars[bars.length - 1]?.c;
+  const priorClose = bars[bars.length - 1 - lookback]?.c;
+  if (latestClose == null || priorClose == null || priorClose <= 0) return null;
+  return Number((((latestClose - priorClose) / priorClose) * 100).toFixed(4));
+}
+
 function buildOrderDecisionAudit(
   actionable: Stage6CandidateSummary[],
   payloads: DryExecOrderPayload[],
@@ -2373,7 +2626,8 @@ function buildOrderDecisionAudit(
       brokerQty: payload?.entrySizing?.qty ?? null,
       riskDollars: payload?.entrySizing?.riskDollars ?? null,
       highPriceAdjusted: Boolean(payload?.entrySizing?.highPriceAdjusted),
-      sizingReason: payload?.entrySizing?.reason ?? null
+      sizingReason: payload?.entrySizing?.reason ?? null,
+      executionOverlay: null
     };
   });
 }
@@ -2404,6 +2658,7 @@ function reconcileDecisionAuditWithDryExec(
         riskDollars: payload.entrySizing?.riskDollars ?? row.riskDollars,
         highPriceAdjusted: Boolean(payload.entrySizing?.highPriceAdjusted),
         sizingReason: payload.entrySizing?.reason ?? row.sizingReason,
+        executionOverlay: row.executionOverlay,
         entryAdjusted: payload.limit_price,
         riskRewardAfter: computeRiskReward(
           payload.limit_price,
@@ -2425,7 +2680,8 @@ function reconcileDecisionAuditWithDryExec(
       brokerQty: null,
       riskDollars: null,
       highPriceAdjusted: false,
-      sizingReason: null
+      sizingReason: null,
+      executionOverlay: row.executionOverlay
     };
   });
 }
@@ -4681,6 +4937,7 @@ function buildDryExecPayloads(
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const entrySizingPolicy = buildEntrySizingPolicy();
+  const executionOverlayPolicy = buildExecutionOverlayPolicy();
   const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
   const lifecycleHeldContext = overrides?.lifecycleHeldContext;
   const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
@@ -5173,6 +5430,7 @@ function buildDryExecPayloads(
       minOneShareAllowed,
       minOneShareBlocked
     },
+    executionOverlay: createExecutionOverlaySummary(executionOverlayPolicy),
     regime,
     idempotency: {
       enabled: false,
@@ -5221,6 +5479,294 @@ async function fetchAlpacaJson(
   } catch {
     return text;
   }
+}
+
+async function fetchAlpacaDataJson(path: string): Promise<unknown> {
+  const baseUrl = (process.env.ALPACA_DATA_BASE_URL || "https://data.alpaca.markets")
+    .trim()
+    .replace(/\/+$/, "");
+  const keyId = (process.env.ALPACA_KEY_ID || "").trim();
+  const secret = (process.env.ALPACA_SECRET_KEY || "").trim();
+
+  if (!baseUrl) throw new Error("ALPACA_DATA_BASE_URL missing");
+  if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "GET",
+    headers: {
+      "APCA-API-KEY-ID": keyId,
+      "APCA-API-SECRET-KEY": secret
+    }
+  });
+  const text = await response.text();
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`alpaca data ${path} failed (${response.status}): ${text.slice(0, 160)}`);
+  }
+  if (!text) return null;
+  return parseJsonText<unknown>(text, `alpaca_data_response(${path})`);
+}
+
+function extractBarsMap(raw: unknown): Map<string, AlpacaDataBar[]> {
+  const out = new Map<string, AlpacaDataBar[]>();
+  if (!raw || typeof raw !== "object") return out;
+  const root = raw as Record<string, unknown>;
+  const bars = root.bars && typeof root.bars === "object" ? (root.bars as Record<string, unknown>) : {};
+  for (const [symbolRaw, value] of Object.entries(bars)) {
+    const symbol = symbolRaw.trim().toUpperCase();
+    if (!symbol) continue;
+    const rows = Array.isArray(value) ? value : [value];
+    const parsed = rows
+      .map((row) => parseAlpacaDataBar(row))
+      .filter((row): row is AlpacaDataBar => row != null)
+      .sort((a, b) => Date.parse(a.t ?? "") - Date.parse(b.t ?? ""));
+    if (parsed.length > 0) out.set(symbol, parsed);
+  }
+  return out;
+}
+
+async function loadExecutionOverlayMarketSnapshots(
+  symbols: string[],
+  policy: ExecutionOverlayPolicy
+): Promise<Map<string, ExecutionOverlayMarketSnapshot>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+  const out = new Map<string, ExecutionOverlayMarketSnapshot>();
+  if (uniqueSymbols.length === 0) return out;
+
+  const paramsLatest = new URLSearchParams({
+    symbols: uniqueSymbols.join(","),
+    feed: policy.dataFeed
+  });
+  const latestRaw = await fetchAlpacaDataJson(`/v2/stocks/bars/latest?${paramsLatest.toString()}`);
+  const latestBySymbol = extractBarsMap(latestRaw);
+
+  const end = new Date();
+  const start = new Date(end.getTime() - policy.dailyLookbackDays * 24 * 60 * 60 * 1000);
+  const paramsDaily = new URLSearchParams({
+    symbols: uniqueSymbols.join(","),
+    timeframe: "1Day",
+    start: start.toISOString(),
+    end: end.toISOString(),
+    adjustment: "raw",
+    feed: policy.dataFeed,
+    limit: "10000"
+  });
+  const dailyRaw = await fetchAlpacaDataJson(`/v2/stocks/bars?${paramsDaily.toString()}`);
+  const dailyBySymbol = extractBarsMap(dailyRaw);
+
+  for (const symbol of uniqueSymbols) {
+    const latest = latestBySymbol.get(symbol)?.at(-1) ?? null;
+    const daily = dailyBySymbol.get(symbol) ?? [];
+    const latestDaily = daily.at(-1) ?? null;
+    const previousDaily = daily.length >= 2 ? daily[daily.length - 2] : null;
+    const currentPrice = latest?.c ?? latestDaily?.c ?? null;
+    out.set(symbol, {
+      source: `alpaca_${policy.dataFeed}`,
+      currentPrice,
+      latestBarAt: latest?.t ?? latestDaily?.t ?? null,
+      latestVwap: latest?.vw ?? null,
+      previousClose: previousDaily?.c ?? null,
+      dayHigh: latestDaily?.h ?? latest?.h ?? null,
+      dayLow: latestDaily?.l ?? latest?.l ?? null,
+      sma20: simpleMovingAverage(daily, 20),
+      sma50: simpleMovingAverage(daily, 50),
+      atr14Pct: computeAtrPct(daily, 14),
+      volumeRatio20: computeVolumeRatio20(daily),
+      weeklyTrendPct: computeCloseTrendPct(daily, 5),
+      monthlyTrendPct: computeCloseTrendPct(daily, 21),
+      dataStatus: currentPrice != null ? "ok" : "missing",
+      reason: currentPrice != null ? "ok" : "latest_price_missing"
+    });
+  }
+  return out;
+}
+
+function buildFailedExecutionOverlaySnapshot(reason: string): ExecutionOverlayMarketSnapshot {
+  return {
+    source: "alpaca",
+    currentPrice: null,
+    latestBarAt: null,
+    latestVwap: null,
+    previousClose: null,
+    dayHigh: null,
+    dayLow: null,
+    sma20: null,
+    sma50: null,
+    atr14Pct: null,
+    volumeRatio20: null,
+    weeklyTrendPct: null,
+    monthlyTrendPct: null,
+    dataStatus: "failed",
+    reason
+  };
+}
+
+function classifyExecutionOverlayMarket(
+  currentPrice: number,
+  stage6Entry: number | null,
+  target: number | null,
+  stop: number | null,
+  market: ExecutionOverlayMarketSnapshot,
+  policy: ExecutionOverlayPolicy
+): {
+  style: ExecutionOverlayStyle;
+  reason: string;
+  currentDistancePct: number | null;
+  rrAtCurrent: number | null;
+  trendConfirmed: boolean;
+} {
+  const currentDistancePct =
+    stage6Entry != null && stage6Entry > 0
+      ? Number((((currentPrice - stage6Entry) / stage6Entry) * 100).toFixed(4))
+      : null;
+  const rrAtCurrent = computeRiskReward(currentPrice, target, stop);
+  const targetGapPct =
+    target != null && currentPrice > 0 ? Number((((target - currentPrice) / currentPrice) * 100).toFixed(4)) : null;
+  const aboveVwap = market.latestVwap == null || currentPrice >= market.latestVwap;
+  const aboveSma20 = market.sma20 == null || currentPrice >= market.sma20;
+  const weeklyOk = market.weeklyTrendPct == null || market.weeklyTrendPct >= -2;
+  const trendConfirmed = Boolean(aboveVwap && aboveSma20 && weeklyOk);
+
+  if (targetGapPct != null && targetGapPct <= policy.targetBufferPct) {
+    return { style: "NO_TRADE", reason: "target_too_close_to_current", currentDistancePct, rrAtCurrent, trendConfirmed };
+  }
+  if (rrAtCurrent != null && rrAtCurrent < policy.minRr) {
+    return { style: "NO_TRADE", reason: "rr_below_floor_at_current", currentDistancePct, rrAtCurrent, trendConfirmed };
+  }
+  if (currentDistancePct != null && currentDistancePct <= 0) {
+    return { style: "PULLBACK_LIMIT", reason: "current_at_or_below_stage6_entry", currentDistancePct, rrAtCurrent, trendConfirmed };
+  }
+  if (
+    currentDistancePct != null &&
+    currentDistancePct <= policy.maxAdaptiveDistancePct &&
+    trendConfirmed &&
+    rrAtCurrent != null &&
+    rrAtCurrent >= policy.minRr
+  ) {
+    return { style: "CONFIRMED_ADAPTIVE_ENTRY", reason: "trend_confirmed_rr_preserved", currentDistancePct, rrAtCurrent, trendConfirmed };
+  }
+  if (currentDistancePct != null && currentDistancePct <= policy.maxPullbackDistancePct) {
+    return {
+      style: "PULLBACK_LIMIT",
+      reason: trendConfirmed ? "near_entry_keep_limit" : "near_entry_trend_unconfirmed",
+      currentDistancePct,
+      rrAtCurrent,
+      trendConfirmed
+    };
+  }
+  return { style: "WAIT_PULLBACK", reason: "current_too_far_above_entry", currentDistancePct, rrAtCurrent, trendConfirmed };
+}
+
+function evaluateExecutionOverlayDecision(
+  row: OrderDecisionAuditRecord,
+  market: ExecutionOverlayMarketSnapshot | null,
+  policy: ExecutionOverlayPolicy
+): ExecutionOverlayDecision {
+  if (!policy.enabled) {
+    return {
+      enabled: false,
+      mode: policy.mode,
+      style: "DISABLED",
+      reason: "disabled",
+      currentPrice: null,
+      stage6Entry: row.entryOriginal,
+      adjustedEntry: row.entryAdjusted,
+      target: row.target,
+      stop: row.stop,
+      currentDistancePct: null,
+      rrAtCurrent: null,
+      rrAtAdjustedEntry: row.riskRewardAfter,
+      trendConfirmed: false,
+      market: null
+    };
+  }
+  const currentPrice = market?.currentPrice ?? null;
+  if (!market || market.dataStatus !== "ok" || currentPrice == null) {
+    return {
+      enabled: true,
+      mode: policy.mode,
+      style: "DATA_MISSING",
+      reason: market?.reason ?? "market_data_missing",
+      currentPrice: null,
+      stage6Entry: row.entryOriginal,
+      adjustedEntry: row.entryAdjusted,
+      target: row.target,
+      stop: row.stop,
+      currentDistancePct: null,
+      rrAtCurrent: null,
+      rrAtAdjustedEntry: row.riskRewardAfter,
+      trendConfirmed: false,
+      market
+    };
+  }
+
+  const stage6Entry = row.entryOriginal;
+  const target = row.target;
+  const stop = row.stop;
+  const classification = classifyExecutionOverlayMarket(currentPrice, stage6Entry, target, stop, market, policy);
+
+  return {
+    enabled: true,
+    mode: policy.mode,
+    style: classification.style,
+    reason: classification.reason,
+    currentPrice: Number(currentPrice.toFixed(4)),
+    stage6Entry,
+    adjustedEntry: row.entryAdjusted,
+    target,
+    stop,
+    currentDistancePct: classification.currentDistancePct,
+    rrAtCurrent: classification.rrAtCurrent,
+    rrAtAdjustedEntry: row.riskRewardAfter,
+    trendConfirmed: classification.trendConfirmed,
+    market
+  };
+}
+
+async function applyExecutionOverlayToDryExec(dryExec: DryExecBuildResult): Promise<DryExecBuildResult> {
+  const policy = buildExecutionOverlayPolicy();
+  if (!policy.enabled) {
+    return {
+      ...dryExec,
+      executionOverlay: createExecutionOverlaySummary(policy, "disabled"),
+      decisionAudit: dryExec.decisionAudit.map((row) => ({
+        ...row,
+        executionOverlay: evaluateExecutionOverlayDecision(row, null, policy)
+      }))
+    };
+  }
+
+  const symbols = dryExec.decisionAudit.map((row) => row.symbol);
+  let snapshots = new Map<string, ExecutionOverlayMarketSnapshot>();
+  let fetchError: string | null = null;
+  try {
+    snapshots = await loadExecutionOverlayMarketSnapshots(symbols, policy);
+  } catch (error) {
+    fetchError = error instanceof Error ? error.message : String(error);
+    console.warn(`[EXEC_OVERLAY] market_data_failed=${fetchError.slice(0, 180)}`);
+  }
+
+  const decisionAudit = dryExec.decisionAudit.map((row) => {
+    const market =
+      snapshots.get(row.symbol) ??
+      (fetchError ? buildFailedExecutionOverlaySnapshot(fetchError.slice(0, 120)) : null);
+    return {
+      ...row,
+      executionOverlay: evaluateExecutionOverlayDecision(row, market, policy)
+    };
+  });
+  const decisions = decisionAudit
+    .map((row) => row.executionOverlay)
+    .filter((row): row is ExecutionOverlayDecision => row != null);
+  const summary = summarizeExecutionOverlay(decisions, policy);
+  if (fetchError && summary.dataStatus === "missing") summary.dataStatus = "failed";
+  console.log(
+    `[EXEC_OVERLAY] enabled=${summary.enabled} mode=${summary.mode} feed=${summary.dataFeed} data=${summary.dataStatus} evaluated=${summary.evaluated} confirmed=${summary.confirmedAdaptiveEntry} pullback=${summary.pullbackLimit} wait=${summary.waitPullback} noTrade=${summary.noTrade} missing=${summary.dataMissing} reasons=${formatSkipReasonCounts(summary.reasonCounts)}`
+  );
+  return {
+    ...dryExec,
+    decisionAudit,
+    executionOverlay: summary
+  };
 }
 
 function parseOpenEntryOrderSnapshot(raw: unknown, nowMs: number): OpenEntryOrderSnapshot | null {
@@ -6512,6 +7058,9 @@ function buildSimulationMessage(
   );
   lines.push(
     `Entry Sizing: highPricePolicy=${dryExec.entrySizingPolicy.highPricePolicy} minOneShareMax=$${dryExec.entrySizingPolicy.minOneShareMaxNotional.toFixed(2)} maxRisk=$${dryExec.entrySizingPolicy.maxRiskDollarsPerTrade.toFixed(2)} minOneShare=${dryExec.entrySizingPolicy.minOneShareAllowed}/${dryExec.entrySizingPolicy.minOneShareAttempts} blocked=${dryExec.entrySizingPolicy.minOneShareBlocked}`
+  );
+  lines.push(
+    `Execution Overlay: enabled=${dryExec.executionOverlay.enabled} mode=${dryExec.executionOverlay.mode} data=${dryExec.executionOverlay.dataStatus} confirmed=${dryExec.executionOverlay.confirmedAdaptiveEntry} pullback=${dryExec.executionOverlay.pullbackLimit} wait=${dryExec.executionOverlay.waitPullback} noTrade=${dryExec.executionOverlay.noTrade} missing=${dryExec.executionOverlay.dataMissing} reasons=${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`
   );
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
@@ -8383,6 +8932,7 @@ async function saveDryExecPreview(
     stopDistancePolicy: dryExec.stopDistancePolicy,
     entryFeasibility: dryExec.entryFeasibility,
     entryPricePolicy: dryExec.entryPricePolicy,
+    executionOverlay: dryExec.executionOverlay,
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
     stage6SkipHintCountsPrimary,
@@ -8433,6 +8983,9 @@ async function saveDryExecPreview(
     `[BROKER_SUBMIT] enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} requireHfPass=${brokerSubmit.requireHfLivePromotionPass} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} hfLive=${brokerSubmit.hfLivePromotionStatus} hfReason=${brokerSubmit.hfLivePromotionReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
   );
   console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
+  console.log(
+    `[EXEC_OVERLAY] enabled=${dryExec.executionOverlay.enabled} mode=${dryExec.executionOverlay.mode} feed=${dryExec.executionOverlay.dataFeed} data=${dryExec.executionOverlay.dataStatus} evaluated=${dryExec.executionOverlay.evaluated} confirmed=${dryExec.executionOverlay.confirmedAdaptiveEntry} pullback=${dryExec.executionOverlay.pullbackLimit} wait=${dryExec.executionOverlay.waitPullback} noTrade=${dryExec.executionOverlay.noTrade} missing=${dryExec.executionOverlay.dataMissing} reasons=${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`
+  );
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
@@ -9805,6 +10358,7 @@ function printRunSummary(
   );
   const stage6ContractReasonsPrimarySummary = formatSkipReasonCounts(stage6ContractReasonCountsPrimary);
   const stage6SkipHintsPrimarySummary = formatSkipReasonCounts(stage6SkipHintCountsPrimary);
+  const executionOverlaySummary = `enabled:${dryExec.executionOverlay.enabled}|mode:${dryExec.executionOverlay.mode}|data:${dryExec.executionOverlay.dataStatus}|evaluated:${dryExec.executionOverlay.evaluated}|confirmed:${dryExec.executionOverlay.confirmedAdaptiveEntry}|pullback:${dryExec.executionOverlay.pullbackLimit}|wait:${dryExec.executionOverlay.waitPullback}|noTrade:${dryExec.executionOverlay.noTrade}|missing:${dryExec.executionOverlay.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`;
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -9952,7 +10506,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -10046,7 +10600,9 @@ async function main() {
     `[ACTION_INTENT] enabled=${dryExecBase.actionIntent.enabled} previewOnly=${dryExecBase.actionIntent.previewOnly} allowed=${dryExecBase.actionIntent.allowedActionTypes.join("/")} counts=ENTRY_NEW:${dryExecBase.actionIntent.counts.ENTRY_NEW},HOLD_WAIT:${dryExecBase.actionIntent.counts.HOLD_WAIT},SCALE_UP:${dryExecBase.actionIntent.counts.SCALE_UP},SCALE_DOWN:${dryExecBase.actionIntent.counts.SCALE_DOWN},EXIT_PARTIAL:${dryExecBase.actionIntent.counts.EXIT_PARTIAL},EXIT_FULL:${dryExecBase.actionIntent.counts.EXIT_FULL}`
   );
   const dryExecAfterRegime = applyEntryGuardToDryExec(dryExecBase, regime);
-  const dryExec = applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl);
+  const dryExec = await applyExecutionOverlayToDryExec(
+    applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl)
+  );
   const hfShadow = computeHfShadowSummary(actionable, stage6.sha256, regime, guardControl, dryExec);
   await saveHfShadowSummary(hfShadow);
   const mode = buildRunModeLabel(dryExec, guardControl);

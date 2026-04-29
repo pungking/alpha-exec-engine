@@ -224,6 +224,15 @@ Priority: P2 until M1/M2 stabilize; then P1
 
 ## 5) Update Log
 
+- 2026-04-30 KST (execution overlay v1):
+  - Added observe-only execution overlay to close the gap between Stage6 planned entry and real-time fillability.
+  - Overlay reads Alpaca latest/daily bars and tags each decision as `CONFIRMED_ADAPTIVE_ENTRY`, `PULLBACK_LIMIT`,
+    `WAIT_PULLBACK`, `NO_TRADE`, or `DATA_MISSING`.
+  - Kept Stage6 as the signal source of truth; overlay v1 only writes audit/summary telemetry and does not mutate
+    payload price, target, stop, or broker-submit behavior.
+  - Next evidence gate: compare overlay tags against paper fills/expired orders before enabling any order-mutating
+    overlay mode.
+
 - 2026-04-30 KST (manual canary override sync):
   - RTH high-price canary submitted 1 SPG paper bracket order with `ENTRY_HIGH_PRICE_POLICY=min_one_share`.
   - Found manual override drift: `run_dry_max_total_notional_override` wrote legacy `DRY_MAX_TOTAL_NOTIONAL`, while
