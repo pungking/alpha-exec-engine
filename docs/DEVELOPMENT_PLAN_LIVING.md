@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-22 (KST, after integration audit)
+Last updated: 2026-04-29 (KST, execution stabilization reset)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -27,12 +27,17 @@ This document is the single live plan for sidecar development.
 
 ### What is verified
 
-- Canary order-path verification is passing:
-  - `preflight_pass=true`
-  - `attempted>=1`
-  - `submitted>=1`
+- Canary order-path verification has passed before, but it is **not considered closed** until the current recurring
+  `payload preview != broker submitted` gap is removed:
+  - required markers: `preflight_pass=true`, `attempted>=1`, `submitted>=1`
+  - current operating issue: payloads can be present while broker submit remains skipped/disabled/dedupe-blocked.
 - Duplicate `client_order_id` failure path is mitigated with retry+unique suffix.
 - `SCALE_UP` chase guard controls are implemented and documented.
+- Order-decision audit is now required evidence for execution diagnosis:
+  - `state/last-order-decision-audit.json`
+  - `state/order-decision-audit.jsonl`
+  - required purpose: distinguish `payload_ready`, `entry_too_far_from_market`, `dedupe_skip`, `preflight_blocked`,
+    `submit_disabled`, `read_only`, `exec_disabled`, and Alpaca rejection/failure paths.
 - Notion ingestion path is alive:
   - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
   - HF Tuning Tracker rows are being updated for latest dry-run runs.
@@ -44,9 +49,13 @@ This document is the single live plan for sidecar development.
 
 ### What is not fully closed
 
+- Execution/paper-trading stabilization is the current P0. The system must prove that sidecar env variables,
+  preflight, idempotency, open-entry guard, broker submit, and Alpaca paper order visibility all agree on the same
+  run before any dashboard expansion work starts.
 - Daily ops reporting is documented but not fully auto-upserted as one consolidated Notion daily report row.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
-- Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but needs tighter daily ops integration.
+- Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but is explicitly deferred until a stable always-on
+  computer/NotebookLM source-refresh setup is available.
 - Canary-specific KPI extraction (`preflight_pass`, `attempted`, `submitted`) is not yet integrated into daily report JSON.
 - Automation integration audit snapshot (2026-04-22): `Connected 15 / Partial 3 / Not connected 2` (75.0%).
 - Evidence: `docs/AUTOMATION_PIPELINE_INTEGRATION_AUDIT_2026-04-22.md`.
@@ -56,15 +65,20 @@ This document is the single live plan for sidecar development.
 ## 2) Milestones (Living)
 
 ## M1. Execution Reliability (Order Path)
-Status: DONE  
+Status: REOPENED  
 Priority: P0
 
-- Goal: keep `preflight/attempted/submitted` path stable.
+- Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
 - Done when:
-  - repeated canary success with submit > 0
+  - repeated canary success with submit > 0 during RTH
+  - `state/last-order-decision-audit.json` exists for normal and dedupe runs
+  - Telegram/Step Summary separates preview payloads from actual broker submissions
+  - Alpaca paper orders are visible for submitted runs, or the exact blocking reason is recorded
   - no unresolved duplicate-id hard failures
 - Evidence:
   - canary runs + sidecar dry-run logs with pass markers
+  - `state/last-dry-exec-preview.json`
+  - `state/last-order-decision-audit.json`
 
 ## M2. Trading Policy Hardening
 Status: IN_PROGRESS  
@@ -125,23 +139,58 @@ Priority: P0
 - Output:
   - promotion checklist + sign-off evidence bundle
 
+## M6. Stage 7 Performance / Trading Ops Board
+Status: DEFERRED  
+Priority: P2 until M1/M2 stabilize; then P1
+
+- Goal: extend existing `7: Performance` into a unified `Performance / Trading Ops` board instead of creating
+  a separate Stage 8 immediately.
+- Decision:
+  - Do **not** build this now.
+  - Keep the current Stage 0-7 structure.
+  - After execution stabilization, add internal Stage 7 tabs:
+    - Simulation
+    - Paper Trading
+    - Live Account (read-only first)
+    - Orders
+    - Execution Queue
+    - Risk Guard
+    - Sidecar Logs
+- Rationale:
+  - `components/PerformanceDashboard.tsx` already owns Simulation/Live views.
+  - Current operational pain is not lack of a prettier terminal; it is lack of clear broker-submit diagnosis.
+  - A future Trading Ops board must consume stabilized state files, not become another unverified data surface.
+- Done when:
+  - M1 has repeated `attempted>=1 submitted>=1` evidence.
+  - order-decision audit is stable in artifacts.
+  - dashboard API can expose preview payloads, broker reality, skip reasons, open orders, and market guard state
+    without leaking credentials to the frontend.
+
 ---
 
 ## 3) Active Backlog (Next Actions)
 
 ### Next 24h
 
-1. Implement daily consolidated Notion upsert from `state/ops-daily-report.json`.
-2. Extend ops daily report with canary verification marker parser.
-3. Run baseline Step-1 data collection for chase guard (default params).
+1. Finish execution stabilization:
+   - verify sidecar Action variables are reflected in actual dry-run environment,
+   - run RTH canary with `preflight_pass=true`,
+   - confirm `attempted>=1 submitted>=1`,
+   - confirm Alpaca paper order appears or exact broker blocking reason is captured.
+2. Use `state/last-order-decision-audit.json` as the primary evidence for why each candidate became payload or skip.
+3. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 is green again.
 
 ### Next 72h
 
-1. Push consolidated daily row to Notion (`Daily Snapshot` or dedicated Ops DB). (in progress)
-2. Add evidence URL hard requirement in daily Notion row schema and sync script. (done 2026-04-23)
-3. Add Obsidian append step for daily report index + links.
-4. Add NotebookLM ingestion marker update linked to the daily report row.
-5. Add template/runtime drift check for bridge and sidecar workflow mirrors.
+1. Re-run sidecar workflow with the stabilized audit path and compare:
+   - Telegram summary
+   - GitHub Step Summary
+   - `last-dry-exec-preview.json`
+   - `last-order-decision-audit.json`
+   - Alpaca paper order list
+2. Tune adaptive entry only after audit proves the blocking source is entry distance, not env/dedupe/preflight.
+3. Keep Notion/Obsidian/NotebookLM integration in hold status unless it blocks execution evidence.
+4. Add template/runtime drift check for bridge and sidecar workflow mirrors.
 
 ---
 
@@ -159,9 +208,22 @@ Priority: P0
 - Risk: Notion/Obsidian/NotebookLM diverge in state.
 - Control: daily report as canonical summary object with shared run links.
 
+### R4. Dashboard before execution truth
+- Risk: building a high-density trading terminal before broker-submit truth is stable creates a prettier but less
+  reliable system.
+- Control: Stage 7 Trading Ops work is blocked behind M1 evidence; only read from audited state files.
+
 ---
 
 ## 5) Update Log
+
+- 2026-04-29 KST (execution stabilization reset):
+  - Reopened M1 because current operation still shows payload/preview paths that do not always become Alpaca paper
+    submissions.
+  - Promoted `state/last-order-decision-audit.json` and `state/order-decision-audit.jsonl` as required evidence
+    for per-symbol payload/skip/broker diagnosis.
+  - Deferred Stage 7 `Performance / Trading Ops` expansion until order path stabilization is green again.
+  - Deferred Notion/Obsidian/NotebookLM loop work until always-on NotebookLM/source-refresh environment is available.
 
 - 2026-04-22 UTC/KST:
   - Initialized living development plan.
