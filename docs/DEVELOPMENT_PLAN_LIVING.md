@@ -52,8 +52,9 @@ This document is the single live plan for sidecar development.
 - Execution/paper-trading stabilization is the current P0. The system must prove that sidecar env variables,
   preflight, idempotency, open-entry guard, broker submit, and Alpaca paper order visibility all agree on the same
   run before any dashboard expansion work starts.
-- High-price whole-share sizing is implemented but must be canary-tested with `ENTRY_HIGH_PRICE_POLICY=min_one_share`
-  before it is treated as a normal paper-trading profile.
+- High-price whole-share sizing produced a successful RTH paper submit canary, but the manual canary override layer
+  must stay synchronized because profile-specific `DRY_DEFAULT_*` / `DRY_RISK_OFF_*` values can override legacy
+  `DRY_*` inputs.
 - Daily ops reporting is documented but not fully auto-upserted as one consolidated Notion daily report row.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
 - Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but is explicitly deferred until a stable always-on
@@ -94,7 +95,7 @@ Priority: P0
   - policy matrix documented
   - high-price one-share sizing policy added behind explicit caps
 - Remaining:
-  - RTH canary with `ENTRY_HIGH_PRICE_POLICY=min_one_share`
+  - repeat RTH canary after profile-aware manual override sync is pushed
   - 3-trading-day baseline for chase guard
   - compare conservative/balanced variants
 - Evidence source:
@@ -222,6 +223,14 @@ Priority: P2 until M1/M2 stabilize; then P1
 ---
 
 ## 5) Update Log
+
+- 2026-04-30 KST (manual canary override sync):
+  - RTH high-price canary submitted 1 SPG paper bracket order with `ENTRY_HIGH_PRICE_POLICY=min_one_share`.
+  - Found manual override drift: `run_dry_max_total_notional_override` wrote legacy `DRY_MAX_TOTAL_NOTIONAL`, while
+    runtime profile vars could still enforce `DRY_DEFAULT_MAX_TOTAL_NOTIONAL` / `DRY_RISK_OFF_MAX_TOTAL_NOTIONAL`.
+  - Updated workflow override handling to write profile-specific and legacy `DRY_*` values together.
+  - Added bridge inputs for high-price/adaptive-entry knobs so US_Alpha_Seeker manual dispatch can reach the real
+    sidecar workflow without local template-only drift.
 
 - 2026-04-30 KST (execution sizing hardening):
   - Added high-price whole-share sizing policy (`ENTRY_HIGH_PRICE_POLICY=skip|min_one_share`).

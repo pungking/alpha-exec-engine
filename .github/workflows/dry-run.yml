@@ -88,6 +88,11 @@ on:
         options:
           - "false"
           - "true"
+      run_dry_notional_per_trade_override:
+        description: "Override DRY_NOTIONAL_PER_TRADE for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
       run_dry_max_orders_override:
         description: "Override DRY_MAX_ORDERS for this manual run only (blank=keep default)"
         required: false
@@ -538,6 +543,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           RUN_DISABLE_ORDER_IDEMPOTENCY: ${{ inputs.run_disable_order_idempotency }}
+          RUN_DRY_NOTIONAL_PER_TRADE_OVERRIDE: ${{ inputs.run_dry_notional_per_trade_override }}
           RUN_DRY_MAX_ORDERS_OVERRIDE: ${{ inputs.run_dry_max_orders_override }}
           RUN_DRY_MAX_TOTAL_NOTIONAL_OVERRIDE: ${{ inputs.run_dry_max_total_notional_override }}
           RUN_ENTRY_PRICE_MODE: ${{ inputs.run_entry_price_mode }}
@@ -555,6 +561,7 @@ jobs:
           import sys
 
           disable_idemp = (os.getenv("RUN_DISABLE_ORDER_IDEMPOTENCY") or "false").strip().lower() == "true"
+          notional_per_trade_raw = (os.getenv("RUN_DRY_NOTIONAL_PER_TRADE_OVERRIDE") or "").strip()
           max_orders_raw = (os.getenv("RUN_DRY_MAX_ORDERS_OVERRIDE") or "").strip()
           max_total_notional_raw = (os.getenv("RUN_DRY_MAX_TOTAL_NOTIONAL_OVERRIDE") or "").strip()
           entry_price_mode_raw = (os.getenv("RUN_ENTRY_PRICE_MODE") or "").strip().lower()
@@ -575,40 +582,15 @@ jobs:
             lines.append("ORDER_IDEMPOTENCY_ENABLED=false")
             lines.append("ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=false")
 
-          if max_orders_raw:
-            try:
-              max_orders = int(max_orders_raw)
-            except ValueError:
-              print(f"::error::run_dry_max_orders_override must be integer, got={max_orders_raw!r}")
-              sys.exit(1)
-            if max_orders <= 0:
-              print(f"::error::run_dry_max_orders_override must be > 0, got={max_orders}")
-              sys.exit(1)
-            lines.append(f"DRY_MAX_ORDERS={max_orders}")
+          def append_profile_number_override(base_key: str, value: float):
+            lines.append(f"DRY_{base_key}={value}")
+            lines.append(f"DRY_DEFAULT_{base_key}={value}")
+            lines.append(f"DRY_RISK_OFF_{base_key}={value}")
 
-          if max_total_notional_raw:
-            try:
-              max_total_notional = float(max_total_notional_raw)
-            except ValueError:
-              print(
-                f"::error::run_dry_max_total_notional_override must be number, got={max_total_notional_raw!r}"
-              )
-              sys.exit(1)
-            if max_total_notional <= 0:
-              print(
-                f"::error::run_dry_max_total_notional_override must be > 0, got={max_total_notional}"
-              )
-              sys.exit(1)
-            lines.append(f"DRY_MAX_TOTAL_NOTIONAL={max_total_notional}")
-
-          if entry_price_mode_raw:
-            if entry_price_mode_raw not in {"strict", "adaptive"}:
-              print(
-                "::error::run_entry_price_mode must be strict|adaptive|empty, "
-                f"got={entry_price_mode_raw!r}"
-              )
-              sys.exit(1)
-            lines.append(f"ENTRY_PRICE_MODE={entry_price_mode_raw}")
+          def append_profile_int_override(base_key: str, value: int):
+            lines.append(f"DRY_{base_key}={value}")
+            lines.append(f"DRY_DEFAULT_{base_key}={value}")
+            lines.append(f"DRY_RISK_OFF_{base_key}={value}")
 
           def parse_positive_float(raw_value: str, key_name: str) -> float:
             try:
@@ -631,6 +613,40 @@ jobs:
               print(f"::error::{key_name} must be >= 0, got={value}")
               sys.exit(1)
             return value
+
+          if notional_per_trade_raw:
+            notional_per_trade = parse_positive_float(
+              notional_per_trade_raw,
+              "run_dry_notional_per_trade_override",
+            )
+            append_profile_number_override("NOTIONAL_PER_TRADE", notional_per_trade)
+
+          if max_orders_raw:
+            try:
+              max_orders = int(max_orders_raw)
+            except ValueError:
+              print(f"::error::run_dry_max_orders_override must be integer, got={max_orders_raw!r}")
+              sys.exit(1)
+            if max_orders <= 0:
+              print(f"::error::run_dry_max_orders_override must be > 0, got={max_orders}")
+              sys.exit(1)
+            append_profile_int_override("MAX_ORDERS", max_orders)
+
+          if max_total_notional_raw:
+            max_total_notional = parse_positive_float(
+              max_total_notional_raw,
+              "run_dry_max_total_notional_override",
+            )
+            append_profile_number_override("MAX_TOTAL_NOTIONAL", max_total_notional)
+
+          if entry_price_mode_raw:
+            if entry_price_mode_raw not in {"strict", "adaptive"}:
+              print(
+                "::error::run_entry_price_mode must be strict|adaptive|empty, "
+                f"got={entry_price_mode_raw!r}"
+              )
+              sys.exit(1)
+            lines.append(f"ENTRY_PRICE_MODE={entry_price_mode_raw}")
 
           if entry_price_max_chase_raw:
             entry_price_max_chase = parse_non_negative_float(

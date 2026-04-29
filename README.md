@@ -362,6 +362,17 @@ Use `.env.example` as baseline.
 
 If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 
+### Order Sizing Policy
+- `DRY_NOTIONAL_PER_TRADE` is the baseline paper-trading order budget, not a permanent investment-theory limit.
+- Profile-specific values (`DRY_DEFAULT_*`, `DRY_RISK_OFF_*`) take precedence over legacy `DRY_*`; manual workflow overrides write both profile and legacy keys so canary runs use the requested values consistently.
+- Whole-share brokers can skip high-priced symbols when baseline notional is below one share. To reduce cheap-stock bias, `ENTRY_HIGH_PRICE_POLICY=min_one_share` can allow one-share entries when both caps pass:
+  - one-share notional <= `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL`
+  - one-share dollar risk (`entry - stop`) <= `ENTRY_MAX_RISK_DOLLARS_PER_TRADE`
+- Recommended rollout:
+  - paper canary: keep small caps (`DRY_NOTIONAL_PER_TRADE=100`, `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=300`, risk cap `25`)
+  - paper stabilization: move to risk-based sizing after fill/exit telemetry is reliable
+  - live: keep user approval or strict capital/risk caps before any increase
+
 ### Adaptive Conviction Gate
 - Sidecar applies an adaptive conviction floor from:
   - base profile floor (`DRY_DEFAULT_MIN_CONVICTION` / `DRY_RISK_OFF_MIN_CONVICTION`)
@@ -544,6 +555,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
       - Probe step is executed with temporary dry-safe overrides (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`) to allow probe mutation without live-submit risk.
     - `payload_probe_mode=tighten|relief`: force HF path on a selected executable candidate (workflow_dispatch + preview-only safe lane).
     - `run_disable_order_idempotency=true`: disable idempotency gate for one manual validation run.
+    - `run_dry_notional_per_trade_override=<number>`: override `DRY_NOTIONAL_PER_TRADE` for one manual run.
     - `run_dry_max_orders_override=<int>`: override `DRY_MAX_ORDERS` for one manual run.
     - `run_dry_max_total_notional_override=<number>`: override `DRY_MAX_TOTAL_NOTIONAL` for one manual run.
     - `run_entry_price_mode=strict|adaptive`: override entry-price policy for one manual run.
