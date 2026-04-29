@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-29 (KST, execution stabilization reset)
+Last updated: 2026-04-30 (KST, execution sizing hardening)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -52,6 +52,8 @@ This document is the single live plan for sidecar development.
 - Execution/paper-trading stabilization is the current P0. The system must prove that sidecar env variables,
   preflight, idempotency, open-entry guard, broker submit, and Alpaca paper order visibility all agree on the same
   run before any dashboard expansion work starts.
+- High-price whole-share sizing is implemented but must be canary-tested with `ENTRY_HIGH_PRICE_POLICY=min_one_share`
+  before it is treated as a normal paper-trading profile.
 - Daily ops reporting is documented but not fully auto-upserted as one consolidated Notion daily report row.
 - Chase-guard tuning is in kickoff phase; baseline accumulation period is still pending.
 - Cross-tool loop (Notion <-> Obsidian <-> NotebookLM) exists but is explicitly deferred until a stable always-on
@@ -69,6 +71,8 @@ Status: REOPENED
 Priority: P0
 
 - Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
+- Current focus: separate ideal Stage6 entry from executable whole-share sizing so high-priced names do not silently
+  die at broker submit when `DRY_NOTIONAL_PER_TRADE < limit_price`.
 - Done when:
   - repeated canary success with submit > 0 during RTH
   - `state/last-order-decision-audit.json` exists for normal and dedupe runs
@@ -88,7 +92,9 @@ Priority: P0
 - Current:
   - chase guard introduced
   - policy matrix documented
+  - high-price one-share sizing policy added behind explicit caps
 - Remaining:
+  - RTH canary with `ENTRY_HIGH_PRICE_POLICY=min_one_share`
   - 3-trading-day baseline for chase guard
   - compare conservative/balanced variants
 - Evidence source:
@@ -216,6 +222,14 @@ Priority: P2 until M1/M2 stabilize; then P1
 ---
 
 ## 5) Update Log
+
+- 2026-04-30 KST (execution sizing hardening):
+  - Added high-price whole-share sizing policy (`ENTRY_HIGH_PRICE_POLICY=skip|min_one_share`).
+  - Added one-share notional/risk caps (`ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL`,
+    `ENTRY_MAX_RISK_DOLLARS_PER_TRADE`).
+  - Extended order decision audit with requested notional, actual whole-share notional, broker quantity, dollar
+    risk, and high-price sizing reason.
+  - Kept default policy conservative (`skip`); paper canaries can opt in with `min_one_share`.
 
 - 2026-04-29 KST (execution stabilization reset):
   - Reopened M1 because current operation still shows payload/preview paths that do not always become Alpaca paper

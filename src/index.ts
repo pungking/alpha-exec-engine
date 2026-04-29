@@ -228,6 +228,7 @@ type DryExecOrderPayload = {
   conviction?: number;
   actionType?: LifecycleActionType;
   actionReason?: string;
+  entrySizing?: EntrySizingDecision;
 };
 
 type DryExecSkipReason = {
@@ -262,9 +263,31 @@ type OrderDecisionAuditRecord = {
   actionType: LifecycleActionType | null;
   actionReason: string | null;
   notional: number | null;
+  requestedNotional: number | null;
+  brokerQty: number | null;
+  riskDollars: number | null;
+  highPriceAdjusted: boolean;
+  sizingReason: string | null;
 };
 
 type EntryPriceMode = "strict" | "adaptive";
+
+type EntryHighPricePolicy = "skip" | "min_one_share";
+
+type EntrySizingPolicy = {
+  highPricePolicy: EntryHighPricePolicy;
+  minOneShareMaxNotional: number;
+  maxRiskDollarsPerTrade: number;
+};
+
+type EntrySizingDecision = {
+  requestedNotional: number;
+  notional: number;
+  qty: number;
+  riskDollars: number;
+  highPriceAdjusted: boolean;
+  reason: string;
+};
 
 type EntryPricePolicySummary = {
   mode: EntryPriceMode;
@@ -276,6 +299,12 @@ type EntryPricePolicySummary = {
   capped: number;
   avgChasePct: number;
   maxChaseAppliedPct: number;
+};
+
+type EntrySizingPolicySummary = EntrySizingPolicy & {
+  minOneShareAttempts: number;
+  minOneShareAllowed: number;
+  minOneShareBlocked: number;
 };
 
 type RegimeProfile = "default" | "risk_off";
@@ -452,6 +481,7 @@ type DryExecBuildResult = {
     blocked: number;
   };
   entryPricePolicy: EntryPricePolicySummary;
+  entrySizingPolicy: EntrySizingPolicySummary;
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -1279,6 +1309,7 @@ function printStartupSummary() {
   const approvalCfg = buildApprovalQueueGateConfig();
   const openEntryGuardCfg = buildOpenEntryOrderGuardConfig();
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
+  const entrySizingPolicy = buildEntrySizingPolicy();
   const lifecycleThresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const lifecycleExitFullMaxLossPct = clamp(
     readNonNegativeNumberEnv("POSITION_LIFECYCLE_EXIT_FULL_MAX_LOSS_PCT", 0.08),
@@ -1407,6 +1438,9 @@ function printStartupSummary() {
   console.log(`ENTRY_PRICE_DISTT: ${entryPricePolicy.distanceTriggerPct}`);
   console.log(`ENTRY_PRICE_DSCL : ${entryPricePolicy.distanceScale}`);
   console.log(`ENTRY_PRICE_MINRR: ${entryPricePolicy.minRr}`);
+  console.log(`ENTRY_SIZE_HIPOL : ${entrySizingPolicy.highPricePolicy}`);
+  console.log(`ENTRY_SIZE_1MAX : ${entrySizingPolicy.minOneShareMaxNotional}`);
+  console.log(`ENTRY_SIZE_RISK : ${entrySizingPolicy.maxRiskDollarsPerTrade}`);
   console.log(`TELEGRAM_SEND   : ${readBoolEnv("TELEGRAM_SEND_ENABLED", true)}`);
   console.log(
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
@@ -2110,6 +2144,96 @@ function buildEntryPriceAdjustmentPolicy(): EntryPriceAdjustmentPolicy {
   };
 }
 
+function resolveEntryHighPricePolicy(raw: string | undefined): EntryHighPricePolicy {
+  const key = String(raw || "")
+    .trim()
+    .toLowerCase();
+  return key === "min_one_share" ? "min_one_share" : "skip";
+}
+
+function buildEntrySizingPolicy(): EntrySizingPolicy {
+  return {
+    highPricePolicy: resolveEntryHighPricePolicy(process.env.ENTRY_HIGH_PRICE_POLICY),
+    minOneShareMaxNotional: clamp(
+      readNonNegativeNumberEnv("ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL", 300),
+      0,
+      100000
+    ),
+    maxRiskDollarsPerTrade: clamp(
+      readNonNegativeNumberEnv("ENTRY_MAX_RISK_DOLLARS_PER_TRADE", 25),
+      0,
+      100000
+    )
+  };
+}
+
+function evaluateEntrySizing(
+  requestedNotional: number,
+  entry: number,
+  stop: number,
+  policy: EntrySizingPolicy
+): { ok: true; decision: EntrySizingDecision } | { ok: false; reason: string; detail: string } {
+  if (![requestedNotional, entry, stop].every((value) => Number.isFinite(value))) {
+    return { ok: false, reason: "entry_sizing_non_finite", detail: "requested_or_price_not_finite" };
+  }
+  if (requestedNotional <= 0 || entry <= 0 || stop <= 0 || stop >= entry) {
+    return { ok: false, reason: "entry_sizing_invalid_geometry", detail: "non_positive_or_stop_above_entry" };
+  }
+
+  const wholeQty = Math.floor(requestedNotional / entry);
+  if (wholeQty >= 1) {
+    const notional = roundToCent(wholeQty * entry);
+    return {
+      ok: true,
+      decision: {
+        requestedNotional: roundToCent(requestedNotional),
+        notional,
+        qty: wholeQty,
+        riskDollars: roundToCent((entry - stop) * wholeQty),
+        highPriceAdjusted: false,
+        reason: "whole_share_from_notional"
+      }
+    };
+  }
+
+  if (policy.highPricePolicy !== "min_one_share") {
+    return {
+      ok: false,
+      reason: "entry_notional_below_limit_price",
+      detail: `notional=${requestedNotional.toFixed(2)}|limit=${entry.toFixed(2)}|policy=${policy.highPricePolicy}`
+    };
+  }
+
+  const minShareNotional = roundToCent(entry);
+  const riskDollars = roundToCent(entry - stop);
+  if (policy.minOneShareMaxNotional > 0 && minShareNotional > policy.minOneShareMaxNotional) {
+    return {
+      ok: false,
+      reason: "entry_min_one_share_notional_above_cap",
+      detail: `notional=${minShareNotional.toFixed(2)}|cap=${policy.minOneShareMaxNotional.toFixed(2)}`
+    };
+  }
+  if (policy.maxRiskDollarsPerTrade > 0 && riskDollars > policy.maxRiskDollarsPerTrade) {
+    return {
+      ok: false,
+      reason: "entry_min_one_share_risk_above_cap",
+      detail: `risk=${riskDollars.toFixed(2)}|cap=${policy.maxRiskDollarsPerTrade.toFixed(2)}`
+    };
+  }
+
+  return {
+    ok: true,
+    decision: {
+      requestedNotional: roundToCent(requestedNotional),
+      notional: minShareNotional,
+      qty: 1,
+      riskDollars,
+      highPriceAdjusted: true,
+      reason: "min_one_share_high_price"
+    }
+  };
+}
+
 function evaluateAdaptiveEntryPrice(
   entry: number,
   target: number,
@@ -2244,7 +2368,12 @@ function buildOrderDecisionAudit(
       entryPriceChasePct: Number(adjustment.chasePct.toFixed(4)),
       actionType: payload?.actionType ?? firstSkip?.actionType ?? null,
       actionReason: payload?.actionReason ?? firstSkip?.actionReason ?? null,
-      notional: payload?.notional ?? null
+      notional: payload?.notional ?? null,
+      requestedNotional: payload?.entrySizing?.requestedNotional ?? null,
+      brokerQty: payload?.entrySizing?.qty ?? null,
+      riskDollars: payload?.entrySizing?.riskDollars ?? null,
+      highPriceAdjusted: Boolean(payload?.entrySizing?.highPriceAdjusted),
+      sizingReason: payload?.entrySizing?.reason ?? null
     };
   });
 }
@@ -2270,6 +2399,11 @@ function reconcileDecisionAuditWithDryExec(
         actionType: payload.actionType ?? row.actionType,
         actionReason: payload.actionReason ?? row.actionReason,
         notional: payload.notional,
+        requestedNotional: payload.entrySizing?.requestedNotional ?? row.requestedNotional,
+        brokerQty: payload.entrySizing?.qty ?? row.brokerQty,
+        riskDollars: payload.entrySizing?.riskDollars ?? row.riskDollars,
+        highPriceAdjusted: Boolean(payload.entrySizing?.highPriceAdjusted),
+        sizingReason: payload.entrySizing?.reason ?? row.sizingReason,
         entryAdjusted: payload.limit_price,
         riskRewardAfter: computeRiskReward(
           payload.limit_price,
@@ -2286,7 +2420,12 @@ function reconcileDecisionAuditWithDryExec(
       reason: `${skip.reason}${skip.detail ? `[${skip.detail}]` : ""}`,
       actionType: skip.actionType ?? row.actionType,
       actionReason: skip.actionReason ?? row.actionReason,
-      notional: null
+      notional: null,
+      requestedNotional: null,
+      brokerQty: null,
+      riskDollars: null,
+      highPriceAdjusted: false,
+      sizingReason: null
     };
   });
 }
@@ -2494,9 +2633,30 @@ function validateAndNormalizePayload(payload: DryExecOrderPayload): { ok: true; 
   if (!(takeProfit > limit && stopLoss < limit)) {
     return { ok: false, reason: "payload_invalid_price_geometry" };
   }
+  if (payload.entrySizing) {
+    const qty = Math.floor(payload.entrySizing.qty);
+    const riskDollars = roundToCent(payload.entrySizing.riskDollars);
+    const requestedNotional = roundToCent(payload.entrySizing.requestedNotional);
+    if (!Number.isFinite(qty) || qty < 1 || !Number.isInteger(qty)) {
+      return { ok: false, reason: "payload_invalid_entry_qty" };
+    }
+    if (![riskDollars, requestedNotional].every((n) => Number.isFinite(n))) {
+      return { ok: false, reason: "payload_invalid_entry_sizing" };
+    }
+  }
   if (!/^[A-Za-z0-9_-]{1,48}$/.test(payload.client_order_id)) {
     return { ok: false, reason: "payload_invalid_client_order_id" };
   }
+
+  const entrySizing = payload.entrySizing
+    ? {
+        ...payload.entrySizing,
+        requestedNotional: roundToCent(payload.entrySizing.requestedNotional),
+        notional,
+        qty: Math.floor(payload.entrySizing.qty),
+        riskDollars: roundToCent(payload.entrySizing.riskDollars)
+      }
+    : undefined;
 
   return {
     ok: true,
@@ -2506,7 +2666,8 @@ function validateAndNormalizePayload(payload: DryExecOrderPayload): { ok: true; 
       notional,
       conviction,
       take_profit: { limit_price: takeProfit },
-      stop_loss: { stop_price: stopLoss }
+      stop_loss: { stop_price: stopLoss },
+      entrySizing
     }
   };
 }
@@ -4519,6 +4680,7 @@ function buildDryExecPayloads(
   const entryMaxDistancePct = Math.max(0, readNonNegativeNumberEnv("ENTRY_MAX_DISTANCE_PCT", 15));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
+  const entrySizingPolicy = buildEntrySizingPolicy();
   const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
   const lifecycleHeldContext = overrides?.lifecycleHeldContext;
   const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
@@ -4535,6 +4697,9 @@ function buildDryExecPayloads(
   let entryPriceCapped = 0;
   let entryPriceChaseTotalPct = 0;
   let entryPriceMaxAppliedPct = 0;
+  let minOneShareAttempts = 0;
+  let minOneShareAllowed = 0;
+  let minOneShareBlocked = 0;
 
   const pushSkip = (
     symbol: string,
@@ -4814,16 +4979,6 @@ function buildDryExecPayloads(
       stop = scaffold.stop;
     }
 
-    // Capacity / exposure gate only applies to entry/scale-up paths.
-    if (!isExitAction && payloads.length >= maxOrders) {
-      pushSkip(row.symbol, "max_orders_reached");
-      return;
-    }
-    if (!isExitAction && allocatedNotional + notionalPerOrder > maxTotalNotional) {
-      pushSkip(row.symbol, "max_total_notional_reached");
-      return;
-    }
-
     let effectiveNotional = notionalPerOrder;
     if (
       !isExitAction &&
@@ -4844,6 +4999,39 @@ function buildDryExecPayloads(
       effectiveNotional = reducedNotional;
     }
 
+    let entrySizing: EntrySizingDecision | undefined;
+    if (!isExitAction) {
+      const sizing = evaluateEntrySizing(effectiveNotional, entry, stop, entrySizingPolicy);
+      if (!sizing.ok) {
+        if (
+          sizing.reason === "entry_notional_below_limit_price" ||
+          sizing.reason.startsWith("entry_min_one_share_")
+        ) {
+          minOneShareAttempts += 1;
+          minOneShareBlocked += 1;
+        }
+        pushSkip(row.symbol, sizing.reason, "HOLD_WAIT", "entry_sizing_blocked", sizing.detail);
+        return;
+      }
+      entrySizing = sizing.decision;
+      effectiveNotional = sizing.decision.notional;
+      if (sizing.decision.highPriceAdjusted) {
+        minOneShareAttempts += 1;
+        minOneShareAllowed += 1;
+      }
+    }
+
+    // Capacity / exposure gate only applies to entry/scale-up paths.
+    if (!isExitAction && payloads.length >= maxOrders) {
+      pushSkip(row.symbol, "max_orders_reached");
+      return;
+    }
+    if (!isExitAction && allocatedNotional + effectiveNotional > maxTotalNotional) {
+      const detail = `allocated=${allocatedNotional.toFixed(2)}|next=${effectiveNotional.toFixed(2)}|max=${maxTotalNotional.toFixed(2)}`;
+      pushSkip(row.symbol, "max_total_notional_reached", "HOLD_WAIT", "exposure_cap_not_passed", detail);
+      return;
+    }
+
     const candidatePayload: DryExecOrderPayload = {
       symbol: row.symbol,
       side: "buy",
@@ -4858,7 +5046,8 @@ function buildDryExecPayloads(
       client_order_id: `dry_${stage6Hash.slice(0, 8)}_${row.symbol.toLowerCase()}`,
       idempotencyKey: buildOrderIdempotencyKey(stage6Hash, row.symbol, "buy", actionType),
       actionType,
-      actionReason
+      actionReason,
+      entrySizing
     };
     const normalized = validateAndNormalizePayload(candidatePayload);
     if (!normalized.ok) {
@@ -4870,7 +5059,7 @@ function buildDryExecPayloads(
       actionIntentCounts[actionType] += 1;
     }
     if (!isExitAction) {
-      allocatedNotional += notionalPerOrder;
+      allocatedNotional = roundToCent(allocatedNotional + normalized.payload.notional);
     }
   });
 
@@ -4975,6 +5164,14 @@ function buildDryExecPayloads(
       capped: entryPriceCapped,
       avgChasePct: entryPriceAdjusted > 0 ? Number((entryPriceChaseTotalPct / entryPriceAdjusted).toFixed(4)) : 0,
       maxChaseAppliedPct: Number(entryPriceMaxAppliedPct.toFixed(4))
+    },
+    entrySizingPolicy: {
+      highPricePolicy: entrySizingPolicy.highPricePolicy,
+      minOneShareMaxNotional: Number(entrySizingPolicy.minOneShareMaxNotional.toFixed(2)),
+      maxRiskDollarsPerTrade: Number(entrySizingPolicy.maxRiskDollarsPerTrade.toFixed(2)),
+      minOneShareAttempts,
+      minOneShareAllowed,
+      minOneShareBlocked
     },
     regime,
     idempotency: {
@@ -5562,6 +5759,14 @@ function toWholeShareQtyFromNotional(notional: number, limitPrice: number): stri
   return String(wholeQty);
 }
 
+function resolveEntrySubmitQty(payload: DryExecOrderPayload): string | null {
+  const sizingQty = payload.entrySizing?.qty;
+  if (Number.isFinite(sizingQty ?? NaN) && Number.isInteger(sizingQty) && (sizingQty ?? 0) >= 1) {
+    return String(sizingQty);
+  }
+  return toWholeShareQtyFromNotional(payload.notional, payload.limit_price);
+}
+
 function makeActionClientOrderId(baseClientOrderId: string, actionType: LifecycleActionType): string {
   const normalizedBase = baseClientOrderId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 36);
   const actionSuffix = actionType.toLowerCase().replace(/[^A-Za-z0-9_-]/g, "");
@@ -6039,7 +6244,7 @@ async function submitOrdersToBroker(
     // CHATGPT PATCH: compute entry quantity from notional and limit price.
     let entryQtyForSubmit: string | null = null;
     if (isEntryStyleAction) {
-      entryQtyForSubmit = toWholeShareQtyFromNotional(payload.notional, payload.limit_price);
+      entryQtyForSubmit = resolveEntrySubmitQty(payload);
       if (!entryQtyForSubmit) {
         row.actionType = effectiveActionType ?? row.actionType;
         row.reason = `entry_notional_below_limit_price(notional=${payload.notional.toFixed(2)},limit=${payload.limit_price.toFixed(2)})`;
@@ -6306,6 +6511,9 @@ function buildSimulationMessage(
     `Entry Price: mode=${dryExec.entryPricePolicy.mode} maxChasePct=${dryExec.entryPricePolicy.maxChasePct} triggerPct=${dryExec.entryPricePolicy.distanceTriggerPct} distanceScale=${dryExec.entryPricePolicy.distanceScale} minRR=${dryExec.entryPricePolicy.minRr} adjusted=${dryExec.entryPricePolicy.adjusted} capped=${dryExec.entryPricePolicy.capped} avgChasePct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} maxAppliedPct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)}`
   );
   lines.push(
+    `Entry Sizing: highPricePolicy=${dryExec.entrySizingPolicy.highPricePolicy} minOneShareMax=$${dryExec.entrySizingPolicy.minOneShareMaxNotional.toFixed(2)} maxRisk=$${dryExec.entrySizingPolicy.maxRiskDollarsPerTrade.toFixed(2)} minOneShare=${dryExec.entrySizingPolicy.minOneShareAllowed}/${dryExec.entrySizingPolicy.minOneShareAttempts} blocked=${dryExec.entrySizingPolicy.minOneShareBlocked}`
+  );
+  lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
   lines.push(`HF Explain: ${dryExec.hfSentimentGate.explainLine}`);
@@ -6367,8 +6575,11 @@ function buildSimulationMessage(
     lines.push("N/A (no payload generated)");
   } else {
     dryExec.payloads.forEach((order, index) => {
+      const qtyText = order.entrySizing ? ` | Qty ${order.entrySizing.qty}` : "";
+      const riskText = order.entrySizing ? ` | Risk $${order.entrySizing.riskDollars.toFixed(2)}` : "";
+      const highPriceText = order.entrySizing?.highPriceAdjusted ? " | Min1Share" : "";
       lines.push(
-        `${index + 1}) ${order.symbol} | A=${order.actionType ?? "N/A"} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}`
+        `${index + 1}) ${order.symbol} | A=${order.actionType ?? "N/A"} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}${qtyText}${riskText}${highPriceText}`
       );
     });
     if (brokerSubmit.submitted === 0) {
@@ -9266,6 +9477,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const orderLedgerTtlDays = Math.max(1, readPositiveNumberEnv("ORDER_LEDGER_TTL_DAYS", 90));
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
+  const entrySizingPolicy = buildEntrySizingPolicy();
   const actionableVerdicts = resolveActionableVerdicts();
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
@@ -9334,6 +9546,9 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ENTRY_PRICE_DISTANCE_TRIGGER_PCT=${entryPricePolicy.distanceTriggerPct}`,
     `ENTRY_PRICE_DISTANCE_SCALE=${entryPricePolicy.distanceScale}`,
     `ENTRY_PRICE_MIN_RR=${entryPricePolicy.minRr}`,
+    `ENTRY_HIGH_PRICE_POLICY=${entrySizingPolicy.highPricePolicy}`,
+    `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=${entrySizingPolicy.minOneShareMaxNotional}`,
+    `ENTRY_MAX_RISK_DOLLARS_PER_TRADE=${entrySizingPolicy.maxRiskDollarsPerTrade}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
     `POSITION_LIFECYCLE_ENABLED=${cfg.positionLifecycle.enabled}`,
@@ -9737,7 +9952,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 

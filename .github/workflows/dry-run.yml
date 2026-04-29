@@ -127,6 +127,25 @@ on:
         required: false
         default: ""
         type: string
+      run_entry_high_price_policy:
+        description: "Override ENTRY_HIGH_PRICE_POLICY for this manual run only"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "skip"
+          - "min_one_share"
+      run_entry_min_one_share_max_notional:
+        description: "Override ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
+      run_entry_max_risk_dollars_per_trade:
+        description: "Override ENTRY_MAX_RISK_DOLLARS_PER_TRADE for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
       validation_pack:
         description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
         required: false
@@ -199,6 +218,9 @@ jobs:
       ENTRY_PRICE_DISTANCE_TRIGGER_PCT: ${{ vars.ENTRY_PRICE_DISTANCE_TRIGGER_PCT }}
       ENTRY_PRICE_DISTANCE_SCALE: ${{ vars.ENTRY_PRICE_DISTANCE_SCALE }}
       ENTRY_PRICE_MIN_RR: ${{ vars.ENTRY_PRICE_MIN_RR }}
+      ENTRY_HIGH_PRICE_POLICY: ${{ vars.ENTRY_HIGH_PRICE_POLICY || 'skip' }}
+      ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL: ${{ vars.ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL }}
+      ENTRY_MAX_RISK_DOLLARS_PER_TRADE: ${{ vars.ENTRY_MAX_RISK_DOLLARS_PER_TRADE }}
       STAGE6_EXECUTION_BUCKET_ENFORCE: ${{ vars.STAGE6_EXECUTION_BUCKET_ENFORCE }}
       ACTIONABLE_INCLUDE_SPECULATIVE_BUY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_actionable_include_speculative_buy || vars.ACTIONABLE_INCLUDE_SPECULATIVE_BUY }}
       ORDER_IDEMPOTENCY_ENABLED: ${{ vars.ORDER_IDEMPOTENCY_ENABLED }}
@@ -523,6 +545,9 @@ jobs:
           RUN_ENTRY_PRICE_DISTANCE_TRIGGER_PCT: ${{ inputs.run_entry_price_distance_trigger_pct }}
           RUN_ENTRY_PRICE_DISTANCE_SCALE: ${{ inputs.run_entry_price_distance_scale }}
           RUN_ENTRY_PRICE_MIN_RR: ${{ inputs.run_entry_price_min_rr }}
+          RUN_ENTRY_HIGH_PRICE_POLICY: ${{ inputs.run_entry_high_price_policy }}
+          RUN_ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL: ${{ inputs.run_entry_min_one_share_max_notional }}
+          RUN_ENTRY_MAX_RISK_DOLLARS_PER_TRADE: ${{ inputs.run_entry_max_risk_dollars_per_trade }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -537,6 +562,9 @@ jobs:
           entry_price_trigger_raw = (os.getenv("RUN_ENTRY_PRICE_DISTANCE_TRIGGER_PCT") or "").strip()
           entry_price_scale_raw = (os.getenv("RUN_ENTRY_PRICE_DISTANCE_SCALE") or "").strip()
           entry_price_min_rr_raw = (os.getenv("RUN_ENTRY_PRICE_MIN_RR") or "").strip()
+          entry_high_price_policy_raw = (os.getenv("RUN_ENTRY_HIGH_PRICE_POLICY") or "").strip().lower()
+          entry_min_one_share_max_raw = (os.getenv("RUN_ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL") or "").strip()
+          entry_max_risk_raw = (os.getenv("RUN_ENTRY_MAX_RISK_DOLLARS_PER_TRADE") or "").strip()
           github_env = os.getenv("GITHUB_ENV")
           if not github_env:
             print("::error::GITHUB_ENV not found.")
@@ -631,6 +659,29 @@ jobs:
               "run_entry_price_min_rr",
             )
             lines.append(f"ENTRY_PRICE_MIN_RR={entry_price_min_rr}")
+
+          if entry_high_price_policy_raw:
+            if entry_high_price_policy_raw not in {"skip", "min_one_share"}:
+              print(
+                "::error::run_entry_high_price_policy must be skip|min_one_share|empty, "
+                f"got={entry_high_price_policy_raw!r}"
+              )
+              sys.exit(1)
+            lines.append(f"ENTRY_HIGH_PRICE_POLICY={entry_high_price_policy_raw}")
+
+          if entry_min_one_share_max_raw:
+            entry_min_one_share_max = parse_non_negative_float(
+              entry_min_one_share_max_raw,
+              "run_entry_min_one_share_max_notional",
+            )
+            lines.append(f"ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL={entry_min_one_share_max}")
+
+          if entry_max_risk_raw:
+            entry_max_risk = parse_non_negative_float(
+              entry_max_risk_raw,
+              "run_entry_max_risk_dollars_per_trade",
+            )
+            lines.append(f"ENTRY_MAX_RISK_DOLLARS_PER_TRADE={entry_max_risk}")
 
           if lines:
             print(f"[MANUAL_OVERRIDES] {' '.join(lines)}")
@@ -933,6 +984,10 @@ jobs:
             const entryFeasibility = preview?.entryFeasibility || {};
             lines.push(
               `- entry_feasibility: \`enforce=${entryFeasibility.enforce ?? "N/A"} maxDistancePct=${entryFeasibility.maxDistancePct ?? "N/A"} checked=${entryFeasibility.checked ?? "N/A"} blocked=${entryFeasibility.blocked ?? "N/A"}\``
+            );
+            const entrySizing = preview?.entrySizingPolicy || {};
+            lines.push(
+              `- entry_sizing: \`highPricePolicy=${entrySizing.highPricePolicy ?? "N/A"} minOneShare=${entrySizing.minOneShareAllowed ?? "N/A"}/${entrySizing.minOneShareAttempts ?? "N/A"} blocked=${entrySizing.minOneShareBlocked ?? "N/A"} maxNotional=${entrySizing.minOneShareMaxNotional ?? "N/A"} maxRisk=${entrySizing.maxRiskDollarsPerTrade ?? "N/A"}\``
             );
             const stage6Contract = preview?.stage6Contract || {};
             lines.push(

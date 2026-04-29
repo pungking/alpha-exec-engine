@@ -28,6 +28,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Live submit lane now enforces one-symbol-one-open-entry guard (default ON) to prevent stacking duplicate open buy entries.
 - Optional stale-open-entry cleanup can cancel aged open entry orders before refreshed submit, with replace delta/chase + cooldown/daily-cap guards to avoid cancel-repost churn (`ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`).
 - Optional adaptive entry price mode can apply bounded chase from Stage6 entry (`ENTRY_PRICE_MODE=adaptive`) while preserving RR floor and stop-distance guardrails.
+- Optional high-price sizing can promote entries to one whole share when `DRY_NOTIONAL_PER_TRADE` is below the limit price, but only inside explicit notional and dollar-risk caps.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -163,6 +164,9 @@ Use `.env.example` as baseline.
 - `ENTRY_PRICE_DISTANCE_SCALE` (default `0.4`; adaptive chase slope vs distance overflow)
 - `ENTRY_PRICE_MIN_RR` (default `1.8`; adaptive mode keeps entry within minimum RR floor)
 - Adaptive entry now re-evaluates the effective entry-distance gate after bounded chase; Stage6 `WAIT_PULLBACK_TOO_DEEP` is still blocked unless the adjusted distance fits `ENTRY_MAX_DISTANCE_PCT`.
+- `ENTRY_HIGH_PRICE_POLICY` (default `skip`; `skip|min_one_share`)
+- `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL` (default `300`; max one-share notional when `min_one_share` is enabled)
+- `ENTRY_MAX_RISK_DOLLARS_PER_TRADE` (default `25`; max dollars at risk for one-share high-price entries; `0` disables this cap)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
 - `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
@@ -547,6 +551,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `run_entry_price_distance_trigger_pct=<number>`: manual override for adaptive distance trigger.
     - `run_entry_price_distance_scale=<number>`: manual override for adaptive distance scale.
     - `run_entry_price_min_rr=<number>`: manual override for adaptive minimum RR floor.
+    - `run_entry_high_price_policy=skip|min_one_share`: manual override for high-price whole-share sizing.
+    - `run_entry_min_one_share_max_notional=<number>`: manual override for one-share notional cap.
+    - `run_entry_max_risk_dollars_per_trade=<number>`: manual override for one-share dollar-risk cap.
   - Non-`validation_pack` runs execute `npm run check:json-parse-guard` right after build.
   - Optional auto-dispatch (`VALIDATION_PACK_AUTO_TRIGGER_ENABLED=true`):
     - when `hf_tuning_phase.gateProgress` reaches `20/20` with final gate status (`GO` or `NO_GO`), dispatches a one-shot `validation_pack=true`.
