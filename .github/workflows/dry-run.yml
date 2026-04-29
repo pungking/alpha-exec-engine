@@ -833,6 +833,7 @@ jobs:
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
           const statePath = "state/last-run.json";
           const previewPath = "state/last-dry-exec-preview.json";
+          const orderDecisionAuditPath = "state/last-order-decision-audit.json";
           const hfMarkerAuditPath = "state/hf-marker-audit.json";
           const idempPath = "state/order-idempotency.json";
           const includeValidationPack = String(process.env.SUMMARY_INCLUDE_VALIDATION_PACK || "").trim().toLowerCase() === "true";
@@ -917,6 +918,18 @@ jobs:
             lines.push(
               `- payloads/skipped: \`${preview.payloadCount ?? 0}/${preview.skippedCount ?? 0}\``
             );
+            const orderDecisionAudit = preview?.orderDecisionAudit?.summary || {};
+            if (Object.keys(orderDecisionAudit).length > 0) {
+              lines.push(
+                `- order_decision_audit: \`candidates=${orderDecisionAudit.candidates ?? "N/A"} payloadReady=${orderDecisionAudit.payloadReady ?? "N/A"} skipped=${orderDecisionAudit.skipped ?? "N/A"} broker=${orderDecisionAudit.brokerReason ?? "N/A"} attempted=${orderDecisionAudit.brokerAttempted ?? "N/A"} submitted=${orderDecisionAudit.brokerSubmitted ?? "N/A"}\``
+              );
+            } else if (fs.existsSync(orderDecisionAuditPath)) {
+              const audit = JSON.parse(fs.readFileSync(orderDecisionAuditPath, "utf8"));
+              const s = audit?.summary || {};
+              lines.push(
+                `- order_decision_audit: \`candidates=${s.candidates ?? "N/A"} payloadReady=${s.payloadReady ?? "N/A"} skipped=${s.skipped ?? "N/A"} broker=${s.brokerReason ?? "N/A"} attempted=${s.brokerAttempted ?? "N/A"} submitted=${s.brokerSubmitted ?? "N/A"}\``
+              );
+            }
             const entryFeasibility = preview?.entryFeasibility || {};
             lines.push(
               `- entry_feasibility: \`enforce=${entryFeasibility.enforce ?? "N/A"} maxDistancePct=${entryFeasibility.maxDistancePct ?? "N/A"} checked=${entryFeasibility.checked ?? "N/A"} blocked=${entryFeasibility.blocked ?? "N/A"}\``
@@ -1139,7 +1152,7 @@ jobs:
               `- order_lifecycle: \`enabled=${lifecycle.enabled ?? "N/A"} target=${lifecycle.targetStatus ?? "N/A"} upserted=${lifecycle.upserted ?? "N/A"} transitioned=${lifecycle.transitioned ?? "N/A"} unchanged=${lifecycle.unchanged ?? "N/A"}\``
             );
           } else {
-            lines.push("- state/last-dry-exec-preview.json: not found (likely dedupe skip)");
+            lines.push("- state/last-dry-exec-preview.json: not found");
             lines.push("- hf_soft_gate: `enabled=N/A applied=N/A netDelta=N/A earningsBlocked=N/A earningsReduced=N/A sizeReduceEnabled=N/A sizeReducePct=N/A sizeReduced=N/A sizeSavedNotional=N/A explain=N/A`");
             lines.push("- hf_payload_probe: `status=N/A payloads=N/A hfApplied=N/A tighten=N/A sizeReduceEnabled=N/A sizeReduced=N/A savedNotional=N/A reason=N/A`");
             lines.push("- hf_payload_probe_forced: `mode=N/A active=N/A modified=N/A reason=N/A symbol=N/A basePayloads=N/A baseApplied=N/A baseTighten=N/A baseRelief=N/A baseSizeReduced=N/A baseSizeSaved=N/A`");
@@ -1513,6 +1526,8 @@ jobs:
           path: |
             state/last-run.json
             state/last-dry-exec-preview.json
+            state/last-order-decision-audit.json
+            state/order-decision-audit.jsonl
             state/hf-marker-audit.json
             state/hf-shadow-last.json
             state/hf-shadow-history.jsonl

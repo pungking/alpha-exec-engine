@@ -1,7 +1,7 @@
 import { loadRuntimeConfig } from "../config/policy.js";
 import type { LifecycleActionType, PositionLifecycleConfig } from "../config/policy.js";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   describeHfLivePromotionRequiredMissingCore,
   deriveHfLivePromotionSummaryCore,
@@ -238,6 +238,32 @@ type DryExecSkipReason = {
   actionReason?: string;
 };
 
+type OrderDecisionAuditRecord = {
+  symbol: string;
+  status: "payload" | "skipped";
+  reason: string;
+  verdict: string;
+  finalDecision: Stage6CandidateSummary["finalDecision"];
+  decisionReason: string;
+  executionBucket: Stage6CandidateSummary["executionBucket"];
+  executionReason: Stage6CandidateSummary["executionReason"];
+  conviction: number | null;
+  entryOriginal: number | null;
+  entryAdjusted: number | null;
+  target: number | null;
+  stop: number | null;
+  stage6EntryDistancePct: number | null;
+  effectiveEntryDistancePct: number | null;
+  riskRewardBefore: number | null;
+  riskRewardAfter: number | null;
+  entryPriceAdjusted: boolean;
+  entryPriceCapped: boolean;
+  entryPriceChasePct: number;
+  actionType: LifecycleActionType | null;
+  actionReason: string | null;
+  notional: number | null;
+};
+
 type EntryPriceMode = "strict" | "adaptive";
 
 type EntryPricePolicySummary = {
@@ -353,6 +379,7 @@ type DryExecBuildResult = {
   payloads: DryExecOrderPayload[];
   skipped: DryExecSkipReason[];
   skipReasonCounts: Record<string, number>;
+  decisionAudit: OrderDecisionAuditRecord[];
   actionIntent: {
     enabled: boolean;
     previewOnly: boolean;
@@ -1022,6 +1049,8 @@ type OrderIdempotencyState = {
 
 const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
+const ORDER_DECISION_AUDIT_PATH = "state/last-order-decision-audit.json";
+const ORDER_DECISION_AUDIT_HISTORY_PATH = "state/order-decision-audit.jsonl";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
 const OPEN_ENTRY_REPLACE_GUARD_PATH = "state/open-entry-replace-guard.json";
@@ -2124,6 +2153,142 @@ function evaluateAdaptiveEntryPrice(
     capped: adjustedEntry < desiredEntry,
     chasePct: Math.max(0, chasePct)
   };
+}
+
+function computeEffectiveEntryDistancePct(
+  entryDistancePct: number | null,
+  adjustment: EntryPriceAdjustmentResult
+): number | null {
+  if (entryDistancePct == null || !Number.isFinite(entryDistancePct)) return null;
+  return Number(Math.max(0, entryDistancePct - adjustment.chasePct).toFixed(4));
+}
+
+function computeRiskReward(entry: number | null, target: number | null, stop: number | null): number | null {
+  if (entry == null || target == null || stop == null) return null;
+  if (!Number.isFinite(entry) || !Number.isFinite(target) || !Number.isFinite(stop)) return null;
+  if (!(target > entry && stop < entry)) return null;
+  const risk = entry - stop;
+  if (!Number.isFinite(risk) || risk <= 0) return null;
+  return Number(((target - entry) / risk).toFixed(4));
+}
+
+function buildOrderDecisionAudit(
+  actionable: Stage6CandidateSummary[],
+  payloads: DryExecOrderPayload[],
+  skipped: DryExecSkipReason[],
+  maxStopDistancePct: number,
+  entryPricePolicy: EntryPriceAdjustmentPolicy
+): OrderDecisionAuditRecord[] {
+  const payloadBySymbol = new Map(payloads.map((payload) => [payload.symbol, payload]));
+  const skipsBySymbol = new Map<string, DryExecSkipReason[]>();
+  skipped.forEach((skip) => {
+    const rows = skipsBySymbol.get(skip.symbol) ?? [];
+    rows.push(skip);
+    skipsBySymbol.set(skip.symbol, rows);
+  });
+
+  return actionable.map((row) => {
+    const entryOriginal = row.entryValue ?? parseNumericPrice(row.entry);
+    const target = row.targetValue ?? parseNumericPrice(row.target);
+    const stop = row.stopValue ?? parseNumericPrice(row.stop);
+    const stage6EntryDistancePct =
+      row.entryDistancePct != null && Number.isFinite(Number(row.entryDistancePct))
+        ? Math.max(0, Number(row.entryDistancePct))
+        : null;
+    const adjustment =
+      entryOriginal != null && target != null && stop != null && target > entryOriginal && stop < entryOriginal
+        ? evaluateAdaptiveEntryPrice(
+            entryOriginal,
+            target,
+            stop,
+            stage6EntryDistancePct,
+            maxStopDistancePct,
+            entryPricePolicy
+          )
+        : { entry: entryOriginal ?? NaN, adjusted: false, capped: false, chasePct: 0 };
+    const payload = payloadBySymbol.get(row.symbol);
+    const skipRows = skipsBySymbol.get(row.symbol) ?? [];
+    const firstSkip = skipRows[0] ?? null;
+    const entryAdjusted = payload?.limit_price ?? (adjustment.adjusted ? adjustment.entry : entryOriginal);
+    const status: OrderDecisionAuditRecord["status"] = payload ? "payload" : "skipped";
+    const reason = payload
+      ? "payload_ready"
+      : firstSkip
+        ? `${firstSkip.reason}${firstSkip.detail ? `[${firstSkip.detail}]` : ""}`
+        : "not_selected";
+
+    return {
+      symbol: row.symbol,
+      status,
+      reason,
+      verdict: row.verdict,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      executionBucket: row.executionBucket,
+      executionReason: row.executionReason,
+      conviction: parseConviction(row.conviction),
+      entryOriginal: entryOriginal != null && Number.isFinite(entryOriginal) ? entryOriginal : null,
+      entryAdjusted: entryAdjusted != null && Number.isFinite(entryAdjusted) ? entryAdjusted : null,
+      target: target != null && Number.isFinite(target) ? target : null,
+      stop: stop != null && Number.isFinite(stop) ? stop : null,
+      stage6EntryDistancePct,
+      effectiveEntryDistancePct: computeEffectiveEntryDistancePct(stage6EntryDistancePct, adjustment),
+      riskRewardBefore: computeRiskReward(entryOriginal, target, stop),
+      riskRewardAfter: computeRiskReward(
+        entryAdjusted != null && Number.isFinite(entryAdjusted) ? entryAdjusted : null,
+        target,
+        stop
+      ),
+      entryPriceAdjusted: adjustment.adjusted,
+      entryPriceCapped: adjustment.capped,
+      entryPriceChasePct: Number(adjustment.chasePct.toFixed(4)),
+      actionType: payload?.actionType ?? firstSkip?.actionType ?? null,
+      actionReason: payload?.actionReason ?? firstSkip?.actionReason ?? null,
+      notional: payload?.notional ?? null
+    };
+  });
+}
+
+function reconcileDecisionAuditWithDryExec(
+  decisionAudit: OrderDecisionAuditRecord[],
+  payloads: DryExecOrderPayload[],
+  skipped: DryExecSkipReason[]
+): OrderDecisionAuditRecord[] {
+  const payloadBySymbol = new Map(payloads.map((payload) => [payload.symbol, payload]));
+  const skipBySymbol = new Map<string, DryExecSkipReason>();
+  skipped.forEach((skip) => {
+    if (!skipBySymbol.has(skip.symbol)) skipBySymbol.set(skip.symbol, skip);
+  });
+
+  return decisionAudit.map((row) => {
+    const payload = payloadBySymbol.get(row.symbol);
+    if (payload) {
+      return {
+        ...row,
+        status: "payload",
+        reason: "payload_ready",
+        actionType: payload.actionType ?? row.actionType,
+        actionReason: payload.actionReason ?? row.actionReason,
+        notional: payload.notional,
+        entryAdjusted: payload.limit_price,
+        riskRewardAfter: computeRiskReward(
+          payload.limit_price,
+          row.target,
+          row.stop
+        )
+      };
+    }
+    const skip = skipBySymbol.get(row.symbol);
+    if (!skip) return row;
+    return {
+      ...row,
+      status: "skipped",
+      reason: `${skip.reason}${skip.detail ? `[${skip.detail}]` : ""}`,
+      actionType: skip.actionType ?? row.actionType,
+      actionReason: skip.actionReason ?? row.actionReason,
+      notional: null
+    };
+  });
 }
 
 function computeAgeMinutes(isoTs: string | null | undefined): number | null {
@@ -3335,7 +3500,8 @@ function applyEntryGuardToDryExec(dryExec: DryExecBuildResult, regime: RegimeSel
     ...dryExec,
     payloads: [],
     skipped,
-    skipReasonCounts: buildSkipReasonCounts(skipped)
+    skipReasonCounts: buildSkipReasonCounts(skipped),
+    decisionAudit: reconcileDecisionAuditWithDryExec(dryExec.decisionAudit, [], skipped)
   };
 
   return {
@@ -3364,7 +3530,8 @@ function applyGuardControlGateToDryExec(dryExec: DryExecBuildResult, gate: Guard
     ...dryExec,
     payloads: [],
     skipped,
-    skipReasonCounts: buildSkipReasonCounts(skipped)
+    skipReasonCounts: buildSkipReasonCounts(skipped),
+    decisionAudit: reconcileDecisionAuditWithDryExec(dryExec.decisionAudit, [], skipped)
   };
 
   return {
@@ -3390,7 +3557,8 @@ function applyPreflightGateToDryExec(
     ...dryExec,
     payloads: [],
     skipped,
-    skipReasonCounts: buildSkipReasonCounts(skipped)
+    skipReasonCounts: buildSkipReasonCounts(skipped),
+    decisionAudit: reconcileDecisionAuditWithDryExec(dryExec.decisionAudit, [], skipped)
   };
 
   return {
@@ -4589,6 +4757,7 @@ function buildDryExecPayloads(
         entryPriceChaseTotalPct += adjustedEntry.chasePct;
         entryPriceMaxAppliedPct = Math.max(entryPriceMaxAppliedPct, adjustedEntry.chasePct);
       }
+      const effectiveEntryDistancePct = computeEffectiveEntryDistancePct(entryDistancePct, adjustedEntry);
       if (!(target > entry && stop < entry)) {
         pushSkip(row.symbol, "invalid_price_geometry");
         return;
@@ -4611,16 +4780,29 @@ function buildDryExecPayloads(
           return;
         }
         if (row.entryFeasible === false) {
-          const reason =
-            row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP"
-              ? "entry_too_far_from_market"
-              : "entry_feasibility_false";
-          pushSkip(row.symbol, reason, "HOLD_WAIT", "entry_feasibility_not_ready");
-          entryFeasibilityBlocked += 1;
-          return;
+          const adaptiveDistanceOverride =
+            row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP" &&
+            entryPricePolicy.mode === "adaptive" &&
+            adjustedEntry.adjusted &&
+            effectiveEntryDistancePct != null &&
+            effectiveEntryDistancePct <= entryMaxDistancePct;
+          if (!adaptiveDistanceOverride) {
+            const reason =
+              row.tradePlanStatus === "WAIT_PULLBACK_TOO_DEEP"
+                ? "entry_too_far_from_market"
+                : "entry_feasibility_false";
+            const detail =
+              effectiveEntryDistancePct == null
+                ? "entry_feasibility_not_ready"
+                : `stage6Distance=${entryDistancePct?.toFixed(2) ?? "n/a"}|effectiveDistance=${effectiveEntryDistancePct.toFixed(2)}|chasePct=${adjustedEntry.chasePct.toFixed(4)}`;
+            pushSkip(row.symbol, reason, "HOLD_WAIT", "entry_feasibility_not_ready", detail);
+            entryFeasibilityBlocked += 1;
+            return;
+          }
         }
-        if (row.entryDistancePct != null && row.entryDistancePct > entryMaxDistancePct) {
-          pushSkip(row.symbol, "entry_too_far_from_market", "HOLD_WAIT", "entry_distance_over_limit");
+        if (effectiveEntryDistancePct != null && effectiveEntryDistancePct > entryMaxDistancePct) {
+          const detail = `stage6Distance=${entryDistancePct?.toFixed(2) ?? "n/a"}|effectiveDistance=${effectiveEntryDistancePct.toFixed(2)}|maxDistance=${entryMaxDistancePct.toFixed(2)}|chasePct=${adjustedEntry.chasePct.toFixed(4)}`;
+          pushSkip(row.symbol, "entry_too_far_from_market", "HOLD_WAIT", "entry_distance_over_limit", detail);
           entryFeasibilityBlocked += 1;
           return;
         }
@@ -4692,10 +4874,19 @@ function buildDryExecPayloads(
     }
   });
 
+  const decisionAudit = buildOrderDecisionAudit(
+    actionable,
+    payloads,
+    skipped,
+    maxStopDistancePct,
+    entryPricePolicy
+  );
+
   return {
     payloads,
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped),
+    decisionAudit,
     actionIntent: {
       enabled: lifecycle.enabled,
       previewOnly: lifecycle.previewOnly,
@@ -6167,7 +6358,10 @@ function buildSimulationMessage(
   );
   lines.push("Payload Validation: price/notional finite check + geometry + client_order_id format");
   lines.push(
-    `Orders: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
+    `Preview Payloads: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
+  );
+  lines.push(
+    `Broker Reality: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} reason=${brokerSubmit.reason}`
   );
   if (dryExec.payloads.length === 0) {
     lines.push("N/A (no payload generated)");
@@ -6177,6 +6371,9 @@ function buildSimulationMessage(
         `${index + 1}) ${order.symbol} | A=${order.actionType ?? "N/A"} | LIMIT ${order.limit_price} | TP ${order.take_profit.limit_price} | SL ${order.stop_loss.stop_price} | Notional $${order.notional.toFixed(2)}`
       );
     });
+    if (brokerSubmit.submitted === 0) {
+      lines.push(`No Alpaca order submitted yet: ${brokerSubmit.reason}`);
+    }
   }
   if (dryExec.skipped.length > 0) {
     const skippedLog = dryExec.skipped
@@ -7829,6 +8026,60 @@ function buildHfEvidenceHistoryRecord(
   };
 }
 
+async function saveOrderDecisionAudit(
+  result: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult,
+  brokerSubmit: BrokerSubmitSummary
+): Promise<void> {
+  const generatedAt = new Date().toISOString();
+  const payloadReady = dryExec.decisionAudit.filter((row) => row.status === "payload").length;
+  const skipped = dryExec.decisionAudit.filter((row) => row.status === "skipped").length;
+  const audit = {
+    stage6File: result.fileName,
+    stage6FileId: result.fileId,
+    stage6Hash: result.sha256,
+    generatedAt,
+    summary: {
+      candidates: dryExec.decisionAudit.length,
+      payloadReady,
+      skipped,
+      payloadCount: dryExec.payloads.length,
+      skippedCount: dryExec.skipped.length,
+      preflightCode: preflight.code,
+      preflightStatus: preflight.status,
+      brokerEnabled: brokerSubmit.enabled,
+      brokerActive: brokerSubmit.active,
+      brokerReason: brokerSubmit.reason,
+      brokerAttempted: brokerSubmit.attempted,
+      brokerSubmitted: brokerSubmit.submitted,
+      brokerFailed: brokerSubmit.failed,
+      topSkipReasons: dryExec.skipReasonCounts
+    },
+    records: dryExec.decisionAudit
+  };
+  await mkdir("state", { recursive: true });
+  await writeFile(ORDER_DECISION_AUDIT_PATH, JSON.stringify(audit, null, 2), "utf8");
+  const historyRows = dryExec.decisionAudit.map((row) =>
+    JSON.stringify({
+      generatedAt,
+      stage6File: result.fileName,
+      stage6Hash: result.sha256,
+      preflightCode: preflight.code,
+      brokerReason: brokerSubmit.reason,
+      brokerAttempted: brokerSubmit.attempted,
+      brokerSubmitted: brokerSubmit.submitted,
+      ...row
+    })
+  );
+  if (historyRows.length > 0) {
+    await appendFile(ORDER_DECISION_AUDIT_HISTORY_PATH, `${historyRows.join("\n")}\n`, "utf8");
+  }
+  console.log(
+    `[ORDER_DECISION_AUDIT] saved=${ORDER_DECISION_AUDIT_PATH} history=${ORDER_DECISION_AUDIT_HISTORY_PATH} candidates=${dryExec.decisionAudit.length} payloadReady=${payloadReady} skipped=${skipped} broker=${brokerSubmit.reason} submitted=${brokerSubmit.submitted}`
+  );
+}
+
 async function loadRunState(): Promise<SidecarRunState | null> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
@@ -7927,6 +8178,19 @@ async function saveDryExecPreview(
     idempotency: dryExec.idempotency,
     orderLifecycle: ledger,
     brokerSubmission: brokerSubmit,
+    orderDecisionAudit: {
+      path: ORDER_DECISION_AUDIT_PATH,
+      historyPath: ORDER_DECISION_AUDIT_HISTORY_PATH,
+      summary: {
+        candidates: dryExec.decisionAudit.length,
+        payloadReady: dryExec.decisionAudit.filter((row) => row.status === "payload").length,
+        skipped: dryExec.decisionAudit.filter((row) => row.status === "skipped").length,
+        brokerReason: brokerSubmit.reason,
+        brokerAttempted: brokerSubmit.attempted,
+        brokerSubmitted: brokerSubmit.submitted
+      },
+      records: dryExec.decisionAudit
+    },
     preflight,
     guardControl,
     approvalQueueGate,
@@ -7945,6 +8209,7 @@ async function saveDryExecPreview(
     skipped: dryExec.skipped
   };
   await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
+  await saveOrderDecisionAudit(result, dryExec, preflight, brokerSubmit);
   console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
   console.log(
     `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
@@ -8807,6 +9072,7 @@ async function applyOrderIdempotency(
     payloads,
     skipped,
     skipReasonCounts: buildSkipReasonCounts(skipped),
+    decisionAudit: reconcileDecisionAuditWithDryExec(dryExec.decisionAudit, payloads, skipped),
     idempotency: {
       enabled,
       enforced,
@@ -9637,6 +9903,26 @@ async function main() {
     const dedupeApprovalGate = createApprovalQueueGateSummary(
       buildApprovalQueueGateConfig(),
       "not_evaluated_dedupe"
+    );
+    await saveDryExecPreview(
+      stage6,
+      dryExec,
+      dedupePreflight,
+      dedupeLedger,
+      dedupeBrokerSubmit,
+      hfPayloadProbe,
+      guardControl,
+      dedupeApprovalGate,
+      undefined,
+      hfShadow,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined
     );
     printRunSummary(
       "dedupe",

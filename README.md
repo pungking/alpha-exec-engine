@@ -53,6 +53,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional one-line Telegram heartbeat on dedupe skip (`TELEGRAM_HEARTBEAT_ON_DEDUPE=true`).
 - Optional watchdog workflow (`sidecar-dry-run-watchdog`) can trigger fallback dispatch when scheduled dry-run is stale/missed.
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
+- Saves order decision audit snapshot/history to `state/last-order-decision-audit.json` and `state/order-decision-audit.jsonl`.
 - Persists open-entry stale replace throttle ledger to `state/open-entry-replace-guard.json` (cooldown + per-day cap tracking).
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
 - Adds MCP Shadow Data Bus telemetry (Phase-1): Alpaca(read-only), Alpha Vantage, SEC EDGAR, Perplexity, Supabase toggles are recorded in startup/run summary/preview without changing trade path.
@@ -161,6 +162,7 @@ Use `.env.example` as baseline.
 - `ENTRY_PRICE_DISTANCE_TRIGGER_PCT` (default `2`; adaptive mode only activates when `entryDistancePct` exceeds this)
 - `ENTRY_PRICE_DISTANCE_SCALE` (default `0.4`; adaptive chase slope vs distance overflow)
 - `ENTRY_PRICE_MIN_RR` (default `1.8`; adaptive mode keeps entry within minimum RR floor)
+- Adaptive entry now re-evaluates the effective entry-distance gate after bounded chase; Stage6 `WAIT_PULLBACK_TOO_DEEP` is still blocked unless the adjusted distance fits `ENTRY_MAX_DISTANCE_PCT`.
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
 - `POSITION_LIFECYCLE_ENABLED` (default `false`; enables action intent scaffold logs)
@@ -579,7 +581,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
