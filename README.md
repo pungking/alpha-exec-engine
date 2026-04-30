@@ -31,6 +31,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional high-price sizing can promote entries to one whole share when `DRY_NOTIONAL_PER_TRADE` is below the limit price, but only inside explicit notional and dollar-risk caps.
 - Execution overlay v1 adds observe-only current-market context from Alpaca data before broker submit audit (`EXECUTION_OVERLAY_ENABLED=true`).
 - Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
+- Open-order monitor telemetry now prints per-symbol suggested reprice limits, current price, RR-at-limit/current, and age so stale open orders can be reviewed without mutating broker state.
+- Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -428,6 +430,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `DATA_MISSING`: open order or current-market data is incomplete.
 - Rollout rule: v1 is audit-only. It must not cancel or replace orders. Actual cancel/replace remains controlled by
   `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false` by default.
+- Telegram/preview diagnostics include `Open Order Detail`, which shows `limit/current/suggested`, `delta`, `distance`,
+  `rrLimit/rrCurrent`, and age for each matched open order. `REPRICE_CANDIDATE` is therefore actionable for manual review,
+  but remains non-mutating until a later, explicitly enabled cancel/replace lane is promoted.
 
 ### Adaptive Conviction Gate
 - Sidecar applies an adaptive conviction floor from:

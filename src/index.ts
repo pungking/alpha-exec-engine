@@ -3021,6 +3021,88 @@ function formatSkipDetails(skipped: DryExecSkipReason[], maxItems = 8): string {
   return `${visible.join(" || ")}${suffix}`;
 }
 
+function formatNullableNumber(value: number | null | undefined, digits = 2): string {
+  return value == null || !Number.isFinite(value) ? "N/A" : value.toFixed(digits);
+}
+
+function formatNullableMoney(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "N/A" : `$${value.toFixed(2)}`;
+}
+
+function formatNullablePct(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "N/A" : `${value.toFixed(2)}%`;
+}
+
+function sanitizeTelemetryToken(value: string, maxLength = 140): string {
+  return value
+    .replace(/\s+/g, "_")
+    .replace(/[|]+/g, "/")
+    .slice(0, maxLength);
+}
+
+function buildOrderIdempotencyTelemetry(dryExec: DryExecBuildResult): {
+  ledgerDuplicateCount: number;
+  skipDuplicateCount: number;
+  effectiveDuplicateCount: number;
+  summaryText: string;
+} {
+  const skipDuplicateCount = dryExec.skipReasonCounts.idempotency_duplicate ?? 0;
+  const ledgerDuplicateCount = dryExec.idempotency.duplicateCount;
+  const effectiveDuplicateCount = Math.max(ledgerDuplicateCount, skipDuplicateCount);
+  return {
+    ledgerDuplicateCount,
+    skipDuplicateCount,
+    effectiveDuplicateCount,
+    summaryText:
+      `enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays}` +
+      ` new=${dryExec.idempotency.newCount} duplicate=${effectiveDuplicateCount}` +
+      ` ledgerDuplicate=${ledgerDuplicateCount} skipDuplicate=${skipDuplicateCount}` +
+      ` released=${dryExec.idempotency.releasedCount} brokerChecked=${dryExec.idempotency.brokerCheckedCount}` +
+      ` brokerReleased=${dryExec.idempotency.brokerReleasedCount} brokerHeld=${dryExec.idempotency.brokerHeldCount}`
+  };
+}
+
+function buildOpenOrderMonitorDecisionText(decision: OpenOrderMonitorDecision): string {
+  const priceText =
+    `limit=${formatNullableMoney(decision.limitPrice)} current=${formatNullableMoney(decision.currentPrice)}` +
+    ` suggested=${formatNullableMoney(decision.suggestedLimitPrice)}`;
+  const riskText =
+    `delta=${formatNullablePct(decision.suggestedDeltaPct)} distance=${formatNullablePct(decision.distancePct)}` +
+    ` rrLimit=${formatNullableNumber(decision.rrAtLimit, 2)} rrCurrent=${formatNullableNumber(decision.rrAtCurrent, 2)}`;
+  const ageText = `age=${decision.ageMinutes == null ? "N/A" : `${decision.ageMinutes.toFixed(1)}m`}`;
+  return `${decision.symbol}:${decision.status} ${priceText} ${riskText} ${ageText} reason=${sanitizeTelemetryToken(decision.reason)}`;
+}
+
+function sortOpenOrderMonitorDecision(a: OpenOrderMonitorDecision, b: OpenOrderMonitorDecision): number {
+  const priority: Record<OpenOrderMonitorStatus, number> = {
+    CANCEL_CANDIDATE: 0,
+    REPRICE_CANDIDATE: 1,
+    WATCH_PULLBACK: 2,
+    KEEP: 3,
+    DATA_MISSING: 4,
+    NO_OPEN_ORDER: 5,
+    DISABLED: 6
+  };
+  const priorityDelta = priority[a.status] - priority[b.status];
+  if (priorityDelta !== 0) return priorityDelta;
+  return a.symbol.localeCompare(b.symbol);
+}
+
+function formatOpenOrderMonitorDetails(summary: OpenOrderMonitorSummary, maxItems = 4): string {
+  if (!summary.enabled) return "disabled";
+  const records = Object.values(summary.records)
+    .filter((row) => row.status !== "DISABLED" && row.status !== "NO_OPEN_ORDER")
+    .sort(sortOpenOrderMonitorDecision);
+  if (records.length === 0) return "none";
+  const visible = records.slice(0, maxItems).map(buildOpenOrderMonitorDecisionText);
+  const suffix = records.length > maxItems ? ` (+${records.length - maxItems} more)` : "";
+  return `${visible.join(" || ")}${suffix}`;
+}
+
+function formatOpenOrderMonitorRunDetails(summary: OpenOrderMonitorSummary, maxItems = 4): string {
+  return sanitizeTelemetryToken(formatOpenOrderMonitorDetails(summary, maxItems), 600);
+}
+
 function buildOrderReadinessSummary(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
@@ -6442,7 +6524,7 @@ async function applyOpenOrderMonitorToDryExec(dryExec: DryExecBuildResult): Prom
     .filter((row): row is OpenOrderMonitorDecision => row != null);
   const summary = summarizeOpenOrderMonitor(decisions, policy, openOrders);
   console.log(
-    `[OPEN_ORDER_MONITOR] enabled=${summary.enabled} mode=${summary.mode} data=${summary.dataStatus} checked=${summary.checked} openOrders=${summary.openOrders} matched=${summary.matched} keep=${summary.keep} watch=${summary.watchPullback} reprice=${summary.repriceCandidate} cancel=${summary.cancelCandidate} missing=${summary.dataMissing} reasons=${formatSkipReasonCounts(summary.reasonCounts)}`
+    `[OPEN_ORDER_MONITOR] enabled=${summary.enabled} mode=${summary.mode} data=${summary.dataStatus} checked=${summary.checked} openOrders=${summary.openOrders} matched=${summary.matched} keep=${summary.keep} watch=${summary.watchPullback} reprice=${summary.repriceCandidate} cancel=${summary.cancelCandidate} missing=${summary.dataMissing} reasons=${formatSkipReasonCounts(summary.reasonCounts)} details=${formatOpenOrderMonitorRunDetails(summary)}`
   );
   return {
     ...dryExec,
@@ -7750,6 +7832,7 @@ function buildSimulationMessage(
   lines.push(
     `Open Order Monitor: enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} open=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`
   );
+  lines.push(`Open Order Detail: ${formatOpenOrderMonitorDetails(dryExec.openOrderMonitor)}`);
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
@@ -7830,9 +7913,7 @@ function buildSimulationMessage(
       .join(", ");
     lines.push(`Skipped: ${skippedLog}`);
   }
-  lines.push(
-    `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount} released=${dryExec.idempotency.releasedCount} brokerChecked=${dryExec.idempotency.brokerCheckedCount} brokerReleased=${dryExec.idempotency.brokerReleasedCount} brokerHeld=${dryExec.idempotency.brokerHeldCount}`
-  );
+  lines.push(`Order Idempotency: ${buildOrderIdempotencyTelemetry(dryExec).summaryText}`);
   lines.push(
     `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
   );
@@ -7901,17 +7982,31 @@ async function sendPerformanceLoopMilestoneAlert(
   await sendTelegramMessage(token, chatId, perfLoop.alertMessage, "TELEGRAM_PERF_LOOP");
 }
 
-async function sendHeartbeatOnDedupe(stage6: Stage6LoadResult, mode: string): Promise<void> {
+function buildModeSignature(mode: string): string {
+  return createHash("sha256").update(mode).digest("hex").slice(0, 12);
+}
+
+async function sendHeartbeatOnDedupe(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  guardControl: GuardControlGate,
+  mode: string
+): Promise<void> {
   const enabled = readBoolEnv("TELEGRAM_HEARTBEAT_ON_DEDUPE", false);
   if (!enabled) return;
   const token = process.env.TELEGRAM_TOKEN || "";
   const chatId = process.env.TELEGRAM_SIMULATION_CHAT_ID || "";
+  const cfg = loadRuntimeConfig();
+  const idempotency = buildOrderIdempotencyTelemetry(dryExec);
   const text = [
     "💓 Sidecar Heartbeat",
     `Dedupe skip: same hash/mode`,
     `Stage6: ${stage6.fileName}`,
-    `Hash: ${stage6.sha256.slice(0, 12)}`,
-    `Mode: ${mode}`
+    `Hash: ${stage6.sha256.slice(0, 12)} | ModeSig: ${buildModeSignature(mode)}`,
+    `Runtime: READ_ONLY=${cfg.readOnly};EXEC_ENABLED=${cfg.execEnabled};SIMULATION_LIVE_PARITY=${cfg.simulationLiveParity};PROFILE=${dryExec.regime.profile};PAYLOADS=${dryExec.payloads.length};SKIPPED=${dryExec.skipped.length}`,
+    `Guard: blocked=${guardControl.blocked};level=${guardControl.level != null ? `L${guardControl.level}` : "N/A"};stale=${guardControl.stale}`,
+    `Idempotency: duplicate=${idempotency.effectiveDuplicateCount};ledgerDuplicate=${idempotency.ledgerDuplicateCount};skipDuplicate=${idempotency.skipDuplicateCount};brokerHeld=${dryExec.idempotency.brokerHeldCount}`,
+    `OpenOrder: open=${dryExec.openOrderMonitor.openOrders};matched=${dryExec.openOrderMonitor.matched};reprice=${dryExec.openOrderMonitor.repriceCandidate};cancel=${dryExec.openOrderMonitor.cancelCandidate};detail=${formatOpenOrderMonitorDetails(dryExec.openOrderMonitor, 2)}`
   ].join("\n");
 
   await sendTelegramMessage(token, chatId, text, "TELEGRAM_HEARTBEAT");
@@ -9624,11 +9719,13 @@ async function saveDryExecPreview(
     entrySizingPolicy: dryExec.entrySizingPolicy,
     executionOverlay: dryExec.executionOverlay,
     openOrderMonitor: dryExec.openOrderMonitor,
+    openOrderMonitorDetail: formatOpenOrderMonitorDetails(dryExec.openOrderMonitor),
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
     stage6SkipHintCountsPrimary,
     idempotency: dryExec.idempotency,
+    idempotencyTelemetry: buildOrderIdempotencyTelemetry(dryExec),
     orderLifecycle: ledger,
     brokerSubmission: brokerSubmit,
     orderDecisionAudit: {
@@ -9679,7 +9776,7 @@ async function saveDryExecPreview(
     `[EXEC_OVERLAY] enabled=${dryExec.executionOverlay.enabled} mode=${dryExec.executionOverlay.mode} feed=${dryExec.executionOverlay.dataFeed} data=${dryExec.executionOverlay.dataStatus} evaluated=${dryExec.executionOverlay.evaluated} confirmed=${dryExec.executionOverlay.confirmedAdaptiveEntry} pullback=${dryExec.executionOverlay.pullbackLimit} wait=${dryExec.executionOverlay.waitPullback} noTrade=${dryExec.executionOverlay.noTrade} missing=${dryExec.executionOverlay.dataMissing} reasons=${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`
   );
   console.log(
-    `[OPEN_ORDER_MONITOR] enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} checked=${dryExec.openOrderMonitor.checked} openOrders=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} missing=${dryExec.openOrderMonitor.dataMissing} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`
+    `[OPEN_ORDER_MONITOR] enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} checked=${dryExec.openOrderMonitor.checked} openOrders=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} missing=${dryExec.openOrderMonitor.dataMissing} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)} details=${formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor)}`
   );
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
@@ -11284,6 +11381,8 @@ function printRunSummary(
   const stage6SkipHintsPrimarySummary = formatSkipReasonCounts(stage6SkipHintCountsPrimary);
   const executionOverlaySummary = `enabled:${dryExec.executionOverlay.enabled}|mode:${dryExec.executionOverlay.mode}|data:${dryExec.executionOverlay.dataStatus}|evaluated:${dryExec.executionOverlay.evaluated}|confirmed:${dryExec.executionOverlay.confirmedAdaptiveEntry}|pullback:${dryExec.executionOverlay.pullbackLimit}|wait:${dryExec.executionOverlay.waitPullback}|noTrade:${dryExec.executionOverlay.noTrade}|missing:${dryExec.executionOverlay.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`;
   const openOrderMonitorSummary = `enabled:${dryExec.openOrderMonitor.enabled}|mode:${dryExec.openOrderMonitor.mode}|data:${dryExec.openOrderMonitor.dataStatus}|open:${dryExec.openOrderMonitor.openOrders}|matched:${dryExec.openOrderMonitor.matched}|keep:${dryExec.openOrderMonitor.keep}|watch:${dryExec.openOrderMonitor.watchPullback}|reprice:${dryExec.openOrderMonitor.repriceCandidate}|cancel:${dryExec.openOrderMonitor.cancelCandidate}|missing:${dryExec.openOrderMonitor.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`;
+  const openOrderMonitorDetailSummary = formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor);
+  const idempotencyTelemetry = buildOrderIdempotencyTelemetry(dryExec);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -11431,7 +11530,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -11551,7 +11650,7 @@ async function main() {
 
   if (!shouldSend(priorState, stage6, mode) && !forceSendBypassDedupe) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
-    await sendHeartbeatOnDedupe(stage6, mode);
+    await sendHeartbeatOnDedupe(stage6, dryExec, guardControl, mode);
     const dedupePreflight: PreflightResult = {
       enabled: readBoolEnv("PREFLIGHT_ENABLED", true),
       enforced: false,

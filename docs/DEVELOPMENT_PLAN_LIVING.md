@@ -83,6 +83,11 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - `Execution Overlay: data=ok`
   - `missing=0`
   - INVA/JHG had market snapshots instead of endpoint-wide failure.
+- Open-order monitor is still observe-only, but now exposes operator-grade reprice diagnostics:
+  - matched open orders show current price, existing limit, suggested RR-safe limit, delta, distance, RR at limit/current,
+    age, and reason;
+  - idempotency display separates ledger duplicate counts from skip-reason duplicates so "no payload" runs are not
+    misread as missing broker visibility.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
   - `state/last-order-decision-audit.json`
@@ -307,6 +312,9 @@ Priority: P2 until M1/M2 stabilize; then P1
     - INVA/JHG received current market snapshots.
   - Reclassified observe-only overlay semantics so a valid pullback-limit order is not labeled `NO_TRADE` merely because
     chasing current price would have poor RR. Low RR at the original limit remains a true `NO_TRADE`.
+  - Added compact dedupe heartbeat and detailed open-order monitor telemetry so repeated runs report actionable
+    stale/reprice evidence without Telegram mode-label spam.
+  - Kept all open-order reprice/cancel behavior observe-only; no broker mutation is introduced by this telemetry update.
 
 - 2026-04-30 KST (Telegram/order-readiness noise control):
   - Fixed dry-run dedupe key volatility by excluding `GUARD_CONTROL_AGE_MIN`; repeated schedules with the same
