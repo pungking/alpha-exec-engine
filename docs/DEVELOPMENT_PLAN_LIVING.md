@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-30 (KST, execution-first roadmap lock)
+Last updated: 2026-04-30 (KST, execution overlay fallback hardening)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -71,6 +71,12 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - canceled/rejected/expired broker orders can release the key,
   - filled orders remain protected to avoid accidental double-entry,
   - releases are recorded in `state/order-idempotency.json.releases`.
+- Broker submit path has a meaningful first pass from the 2026-04-30 RTH run:
+  - `Preflight: PASS`
+  - `Broker Reality: attempted=2 submitted=2 reason=submit_ok`
+  - Alpaca paper orders were visible to the operator.
+- Execution overlay fallback has been hardened so latest-bars failures can fall through to latest trade/quote and daily
+  bar context instead of marking all symbols `data=failed`.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
   - `state/last-order-decision-audit.json`
@@ -91,6 +97,8 @@ The critical path is not code volume; it is live-market evidence. If fill data r
 - Execution/paper-trading stabilization is the current P0. The system must prove that sidecar env variables,
   preflight, idempotency, open-entry guard, broker submit, and Alpaca paper order visibility all agree on the same
   run before any dashboard expansion work starts.
+- The 2026-04-30 run still showed `Execution Overlay: data=failed`; after the fallback patch, the next RTH run must
+  prove `execution_overlay.data` becomes `ok` or `partial`, or expose a specific endpoint/status failure.
 - High-price whole-share sizing produced a successful RTH paper submit canary, but the manual canary override layer
   must stay synchronized because profile-specific `DRY_DEFAULT_*` / `DRY_RISK_OFF_*` values can override legacy
   `DRY_*` inputs.

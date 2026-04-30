@@ -393,7 +393,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 ### Execution Overlay (observe-only v1)
 - Purpose: diagnose the chronic "valid Stage6 plan, no realistic fill" gap without rewriting Stage6.
 - Source of truth remains `STAGE6_ALPHA_FINAL_*.json`; overlay only reads current market context before broker-submit audit.
-- Data source: Alpaca latest minute bars + daily bars from `ALPACA_DATA_BASE_URL` using `EXECUTION_OVERLAY_DATA_FEED`.
+- Data source: Alpaca latest bars first, then latest trades, then latest quotes, plus daily bars from `ALPACA_DATA_BASE_URL` using `EXECUTION_OVERLAY_DATA_FEED`.
+- Fallback behavior: a failed latest-bars call no longer marks the whole overlay failed if latest trade/quote or daily-bar data can still provide a usable current price.
 - Per-symbol decision tags:
   - `CONFIRMED_ADAPTIVE_ENTRY`: current price is close enough to Stage6 entry, trend is not broken, and RR floor is preserved.
   - `PULLBACK_LIMIT`: Stage6 limit remains valid; keep waiting for the pullback instead of chasing.

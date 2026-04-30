@@ -314,6 +314,13 @@ type ExecutionOverlayMarketSnapshot = {
   reason: string;
 };
 
+type ExecutionOverlayLatestPriceSnapshot = {
+  source: string;
+  price: number;
+  timestamp: string | null;
+  vwap: number | null;
+};
+
 type ExecutionOverlayDecision = {
   enabled: boolean;
   mode: ExecutionOverlayMode;
@@ -5572,13 +5579,19 @@ async function fetchAlpacaJsonWithStatus(path: string): Promise<{
   if (!baseUrl) throw new Error("ALPACA_BASE_URL missing");
   if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
 
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: "GET",
-    headers: {
-      "APCA-API-KEY-ID": keyId,
-      "APCA-API-SECRET-KEY": secret
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method: "GET",
+      headers: {
+        "APCA-API-KEY-ID": keyId,
+        "APCA-API-SECRET-KEY": secret
+      }
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    throw new Error(`alpaca data ${path} fetch failed: ${msg.slice(0, 160)}`);
+  }
   const text = await response.text();
   if (!text) return { status: response.status, body: null, text };
   try {
@@ -5705,6 +5718,82 @@ function extractBarsMap(raw: unknown): Map<string, AlpacaDataBar[]> {
   return out;
 }
 
+function extractLatestBarsMap(raw: unknown, feed: string): Map<string, ExecutionOverlayLatestPriceSnapshot> {
+  const out = new Map<string, ExecutionOverlayLatestPriceSnapshot>();
+  const bars = extractBarsMap(raw);
+  for (const [symbol, rows] of bars.entries()) {
+    const latest = rows.at(-1);
+    if (!latest?.c || latest.c <= 0) continue;
+    out.set(symbol, {
+      source: `alpaca_${feed}_latest_bar`,
+      price: latest.c,
+      timestamp: latest.t,
+      vwap: latest.vw
+    });
+  }
+  return out;
+}
+
+function extractLatestTradesMap(raw: unknown, feed: string): Map<string, ExecutionOverlayLatestPriceSnapshot> {
+  const out = new Map<string, ExecutionOverlayLatestPriceSnapshot>();
+  if (!raw || typeof raw !== "object") return out;
+  const root = raw as Record<string, unknown>;
+  const trades = root.trades && typeof root.trades === "object" ? (root.trades as Record<string, unknown>) : {};
+  for (const [symbolRaw, value] of Object.entries(trades)) {
+    const symbol = symbolRaw.trim().toUpperCase();
+    if (!symbol || !value || typeof value !== "object") continue;
+    const row = value as Record<string, unknown>;
+    const price = parseFiniteNumber(row.p ?? row.price);
+    if (price == null || price <= 0) continue;
+    out.set(symbol, {
+      source: `alpaca_${feed}_latest_trade`,
+      price,
+      timestamp: typeof row.t === "string" ? row.t : typeof row.timestamp === "string" ? row.timestamp : null,
+      vwap: null
+    });
+  }
+  return out;
+}
+
+function extractLatestQuotesMap(raw: unknown, feed: string): Map<string, ExecutionOverlayLatestPriceSnapshot> {
+  const out = new Map<string, ExecutionOverlayLatestPriceSnapshot>();
+  if (!raw || typeof raw !== "object") return out;
+  const root = raw as Record<string, unknown>;
+  const quotes = root.quotes && typeof root.quotes === "object" ? (root.quotes as Record<string, unknown>) : {};
+  for (const [symbolRaw, value] of Object.entries(quotes)) {
+    const symbol = symbolRaw.trim().toUpperCase();
+    if (!symbol || !value || typeof value !== "object") continue;
+    const row = value as Record<string, unknown>;
+    const ask = parseFiniteNumber(row.ap ?? row.ask_price ?? row.askPrice);
+    const bid = parseFiniteNumber(row.bp ?? row.bid_price ?? row.bidPrice);
+    const price =
+      ask != null && ask > 0 && bid != null && bid > 0
+        ? Number(((ask + bid) / 2).toFixed(4))
+        : ask != null && ask > 0
+          ? ask
+          : bid != null && bid > 0
+            ? bid
+            : null;
+    if (price == null || price <= 0) continue;
+    out.set(symbol, {
+      source: `alpaca_${feed}_latest_quote_mid`,
+      price,
+      timestamp: typeof row.t === "string" ? row.t : typeof row.timestamp === "string" ? row.timestamp : null,
+      vwap: null
+    });
+  }
+  return out;
+}
+
+function mergeLatestPriceSnapshots(
+  target: Map<string, ExecutionOverlayLatestPriceSnapshot>,
+  source: Map<string, ExecutionOverlayLatestPriceSnapshot>
+): void {
+  for (const [symbol, row] of source.entries()) {
+    if (!target.has(symbol)) target.set(symbol, row);
+  }
+}
+
 async function loadExecutionOverlayMarketSnapshots(
   symbols: string[],
   policy: ExecutionOverlayPolicy
@@ -5713,12 +5802,37 @@ async function loadExecutionOverlayMarketSnapshots(
   const out = new Map<string, ExecutionOverlayMarketSnapshot>();
   if (uniqueSymbols.length === 0) return out;
 
+  const latestBySymbol = new Map<string, ExecutionOverlayLatestPriceSnapshot>();
+  const fetchNotes: string[] = [];
   const paramsLatest = new URLSearchParams({
     symbols: uniqueSymbols.join(","),
     feed: policy.dataFeed
   });
-  const latestRaw = await fetchAlpacaDataJson(`/v2/stocks/bars/latest?${paramsLatest.toString()}`);
-  const latestBySymbol = extractBarsMap(latestRaw);
+  try {
+    const latestRaw = await fetchAlpacaDataJson(`/v2/stocks/bars/latest?${paramsLatest.toString()}`);
+    mergeLatestPriceSnapshots(latestBySymbol, extractLatestBarsMap(latestRaw, policy.dataFeed));
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    fetchNotes.push(`latest_bars_failed:${msg.slice(0, 96)}`);
+  }
+  if (latestBySymbol.size < uniqueSymbols.length) {
+    try {
+      const latestRaw = await fetchAlpacaDataJson(`/v2/stocks/trades/latest?${paramsLatest.toString()}`);
+      mergeLatestPriceSnapshots(latestBySymbol, extractLatestTradesMap(latestRaw, policy.dataFeed));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      fetchNotes.push(`latest_trades_failed:${msg.slice(0, 96)}`);
+    }
+  }
+  if (latestBySymbol.size < uniqueSymbols.length) {
+    try {
+      const latestRaw = await fetchAlpacaDataJson(`/v2/stocks/quotes/latest?${paramsLatest.toString()}`);
+      mergeLatestPriceSnapshots(latestBySymbol, extractLatestQuotesMap(latestRaw, policy.dataFeed));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      fetchNotes.push(`latest_quotes_failed:${msg.slice(0, 96)}`);
+    }
+  }
 
   const end = new Date();
   const start = new Date(end.getTime() - policy.dailyLookbackDays * 24 * 60 * 60 * 1000);
@@ -5731,23 +5845,39 @@ async function loadExecutionOverlayMarketSnapshots(
     feed: policy.dataFeed,
     limit: "10000"
   });
-  const dailyRaw = await fetchAlpacaDataJson(`/v2/stocks/bars?${paramsDaily.toString()}`);
-  const dailyBySymbol = extractBarsMap(dailyRaw);
+  let dailyBySymbol = new Map<string, AlpacaDataBar[]>();
+  try {
+    const dailyRaw = await fetchAlpacaDataJson(`/v2/stocks/bars?${paramsDaily.toString()}`);
+    dailyBySymbol = extractBarsMap(dailyRaw);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    fetchNotes.push(`daily_bars_failed:${msg.slice(0, 96)}`);
+  }
 
   for (const symbol of uniqueSymbols) {
-    const latest = latestBySymbol.get(symbol)?.at(-1) ?? null;
+    const latest = latestBySymbol.get(symbol) ?? null;
     const daily = dailyBySymbol.get(symbol) ?? [];
     const latestDaily = daily.at(-1) ?? null;
     const previousDaily = daily.length >= 2 ? daily[daily.length - 2] : null;
-    const currentPrice = latest?.c ?? latestDaily?.c ?? null;
+    const currentPrice = latest?.price ?? latestDaily?.c ?? null;
+    const reason =
+      currentPrice != null
+        ? latest
+          ? fetchNotes.length > 0
+            ? `ok_with_fallback_notes:${fetchNotes.slice(0, 2).join("|")}`
+            : "ok"
+          : "daily_fallback"
+        : fetchNotes.length > 0
+          ? fetchNotes.slice(0, 2).join("|")
+          : "latest_price_missing";
     out.set(symbol, {
-      source: `alpaca_${policy.dataFeed}`,
+      source: latest?.source ?? `alpaca_${policy.dataFeed}_daily`,
       currentPrice,
-      latestBarAt: latest?.t ?? latestDaily?.t ?? null,
-      latestVwap: latest?.vw ?? null,
+      latestBarAt: latest?.timestamp ?? latestDaily?.t ?? null,
+      latestVwap: latest?.vwap ?? latestDaily?.vw ?? null,
       previousClose: previousDaily?.c ?? null,
-      dayHigh: latestDaily?.h ?? latest?.h ?? null,
-      dayLow: latestDaily?.l ?? latest?.l ?? null,
+      dayHigh: latestDaily?.h ?? null,
+      dayLow: latestDaily?.l ?? null,
       sma20: simpleMovingAverage(daily, 20),
       sma50: simpleMovingAverage(daily, 50),
       atr14Pct: computeAtrPct(daily, 14),
@@ -5755,7 +5885,7 @@ async function loadExecutionOverlayMarketSnapshots(
       weeklyTrendPct: computeCloseTrendPct(daily, 5),
       monthlyTrendPct: computeCloseTrendPct(daily, 21),
       dataStatus: currentPrice != null ? "ok" : "missing",
-      reason: currentPrice != null ? "ok" : "latest_price_missing"
+      reason
     });
   }
   return out;
@@ -5805,7 +5935,10 @@ function classifyExecutionOverlayMarket(
   const aboveVwap = market.latestVwap == null || currentPrice >= market.latestVwap;
   const aboveSma20 = market.sma20 == null || currentPrice >= market.sma20;
   const weeklyOk = market.weeklyTrendPct == null || market.weeklyTrendPct >= -2;
-  const trendConfirmed = Boolean(aboveVwap && aboveSma20 && weeklyOk);
+  const trendSignalCount = [market.latestVwap, market.sma20, market.weeklyTrendPct].filter(
+    (value) => value != null && Number.isFinite(value)
+  ).length;
+  const trendConfirmed = Boolean(trendSignalCount > 0 && aboveVwap && aboveSma20 && weeklyOk);
 
   if (targetGapPct != null && targetGapPct <= policy.targetBufferPct) {
     return { style: "NO_TRADE", reason: "target_too_close_to_current", currentDistancePct, rrAtCurrent, trendConfirmed };
