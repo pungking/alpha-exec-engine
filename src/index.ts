@@ -269,6 +269,7 @@ type OrderDecisionAuditRecord = {
   highPriceAdjusted: boolean;
   sizingReason: string | null;
   executionOverlay: ExecutionOverlayDecision | null;
+  openOrderMonitor: OpenOrderMonitorDecision | null;
 };
 
 type EntryPriceMode = "strict" | "adaptive";
@@ -350,6 +351,69 @@ type ExecutionOverlaySummary = {
   noTrade: number;
   dataMissing: number;
   reasonCounts: Record<string, number>;
+};
+
+type OpenOrderMonitorMode = "observe";
+
+type OpenOrderMonitorStatus =
+  | "DISABLED"
+  | "NO_OPEN_ORDER"
+  | "KEEP"
+  | "WATCH_PULLBACK"
+  | "REPRICE_CANDIDATE"
+  | "CANCEL_CANDIDATE"
+  | "DATA_MISSING";
+
+type OpenOrderMonitorPolicy = {
+  enabled: boolean;
+  mode: OpenOrderMonitorMode;
+  repriceAfterMinutes: number;
+  cancelAfterMinutes: number;
+  nearLimitPct: number;
+  repriceDistancePct: number;
+  cancelDistancePct: number;
+  minRr: number;
+  targetBufferPct: number;
+  minRepriceDeltaPct: number;
+};
+
+type OpenOrderMonitorDecision = {
+  symbol: string;
+  enabled: boolean;
+  mode: OpenOrderMonitorMode;
+  status: OpenOrderMonitorStatus;
+  reason: string;
+  orderId: string | null;
+  clientOrderId: string | null;
+  orderStatus: string | null;
+  ageMinutes: number | null;
+  limitPrice: number | null;
+  qty: number | null;
+  currentPrice: number | null;
+  distancePct: number | null;
+  rrAtLimit: number | null;
+  rrAtCurrent: number | null;
+  targetBufferPct: number | null;
+  suggestedLimitPrice: number | null;
+  suggestedDeltaPct: number | null;
+  duplicateOpenCount: number;
+};
+
+type OpenOrderMonitorSummary = {
+  enabled: boolean;
+  mode: OpenOrderMonitorMode;
+  dataStatus: "disabled" | "ok" | "partial" | "missing" | "failed";
+  checked: number;
+  openOrders: number;
+  duplicateSymbols: number;
+  matched: number;
+  keep: number;
+  watchPullback: number;
+  repriceCandidate: number;
+  cancelCandidate: number;
+  dataMissing: number;
+  reasonCounts: Record<string, number>;
+  records: Record<string, OpenOrderMonitorDecision>;
 };
 
 type EntrySizingPolicy = {
@@ -561,6 +625,7 @@ type DryExecBuildResult = {
   entryPricePolicy: EntryPricePolicySummary;
   entrySizingPolicy: EntrySizingPolicySummary;
   executionOverlay: ExecutionOverlaySummary;
+  openOrderMonitor: OpenOrderMonitorSummary;
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -2469,6 +2534,39 @@ function buildExecutionOverlayPolicy(): ExecutionOverlayPolicy {
   };
 }
 
+function resolveOpenOrderMonitorMode(raw: string | undefined): OpenOrderMonitorMode {
+  const key = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (key && key !== "observe") {
+    console.warn(`[OPEN_ORDER_MONITOR] unsupported_mode=${key}; falling back to observe`);
+  }
+  return "observe";
+}
+
+function buildOpenOrderMonitorPolicy(): OpenOrderMonitorPolicy {
+  const repriceAfterMinutes = Math.max(
+    5,
+    Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_REPRICE_AFTER_MINUTES", 60))
+  );
+  const cancelAfterMinutes = Math.max(
+    repriceAfterMinutes,
+    Math.round(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_CANCEL_AFTER_MINUTES", 240))
+  );
+  return {
+    enabled: readBoolEnv("ENTRY_OPEN_ORDER_MONITOR_ENABLED", true),
+    mode: resolveOpenOrderMonitorMode(process.env.ENTRY_OPEN_ORDER_MONITOR_MODE),
+    repriceAfterMinutes,
+    cancelAfterMinutes,
+    nearLimitPct: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_NEAR_LIMIT_PCT", 1), 0, 10),
+    repriceDistancePct: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_REPRICE_DISTANCE_PCT", 2.5), 0, 30),
+    cancelDistancePct: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_CANCEL_DISTANCE_PCT", 6), 0, 50),
+    minRr: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_MIN_RR", 1.8), 0.25, 10),
+    targetBufferPct: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_TARGET_BUFFER_PCT", 1), 0, 20),
+    minRepriceDeltaPct: clamp(readNonNegativeNumberEnv("ENTRY_OPEN_ORDER_MONITOR_MIN_REPRICE_DELTA_PCT", 0.25), 0, 10)
+  };
+}
+
 function createExecutionOverlaySummary(
   policy: ExecutionOverlayPolicy,
   dataStatus: ExecutionOverlaySummary["dataStatus"] = policy.enabled ? "missing" : "disabled",
@@ -2486,6 +2584,30 @@ function createExecutionOverlaySummary(
     noTrade: 0,
     dataMissing: 0,
     reasonCounts
+  };
+}
+
+function createOpenOrderMonitorSummary(
+  policy: OpenOrderMonitorPolicy,
+  dataStatus: OpenOrderMonitorSummary["dataStatus"] = policy.enabled ? "missing" : "disabled",
+  reasonCounts: Record<string, number> = {},
+  records: Record<string, OpenOrderMonitorDecision> = {}
+): OpenOrderMonitorSummary {
+  return {
+    enabled: policy.enabled,
+    mode: policy.mode,
+    dataStatus,
+    checked: 0,
+    openOrders: 0,
+    duplicateSymbols: 0,
+    matched: 0,
+    keep: 0,
+    watchPullback: 0,
+    repriceCandidate: 0,
+    cancelCandidate: 0,
+    dataMissing: 0,
+    reasonCounts,
+    records
   };
 }
 
@@ -2524,6 +2646,59 @@ function summarizeExecutionOverlay(decisions: ExecutionOverlayDecision[], policy
     noTrade,
     dataMissing,
     reasonCounts
+  };
+}
+
+function summarizeOpenOrderMonitor(
+  decisions: OpenOrderMonitorDecision[],
+  policy: OpenOrderMonitorPolicy,
+  openOrders: OpenEntryOrderIndex,
+  dataStatusOverride?: OpenOrderMonitorSummary["dataStatus"]
+): OpenOrderMonitorSummary {
+  const reasonCounts: Record<string, number> = {};
+  const records: Record<string, OpenOrderMonitorDecision> = {};
+  let matched = 0;
+  let keep = 0;
+  let watchPullback = 0;
+  let repriceCandidate = 0;
+  let cancelCandidate = 0;
+  let dataMissing = 0;
+  decisions.forEach((decision) => {
+    records[decision.symbol] = decision;
+    incrementCount(reasonCounts, decision.reason || decision.status.toLowerCase());
+    if (decision.orderId) matched += 1;
+    if (decision.status === "KEEP") keep += 1;
+    else if (decision.status === "WATCH_PULLBACK") watchPullback += 1;
+    else if (decision.status === "REPRICE_CANDIDATE") repriceCandidate += 1;
+    else if (decision.status === "CANCEL_CANDIDATE") cancelCandidate += 1;
+    else if (decision.status === "DATA_MISSING") dataMissing += 1;
+  });
+  const dataStatus: OpenOrderMonitorSummary["dataStatus"] =
+    dataStatusOverride ??
+    (!policy.enabled
+      ? "disabled"
+      : decisions.length === 0
+        ? "missing"
+        : dataMissing === 0
+          ? "ok"
+          : dataMissing < decisions.length
+            ? "partial"
+            : "missing");
+  return {
+    enabled: policy.enabled,
+    mode: policy.mode,
+    dataStatus,
+    checked: decisions.length,
+    openOrders: openOrders.total,
+    duplicateSymbols: openOrders.duplicateSymbols,
+    matched,
+    keep,
+    watchPullback,
+    repriceCandidate,
+    cancelCandidate,
+    dataMissing,
+    reasonCounts,
+    records
   };
 }
 
@@ -2685,7 +2860,8 @@ function buildOrderDecisionAudit(
       riskDollars: payload?.entrySizing?.riskDollars ?? null,
       highPriceAdjusted: Boolean(payload?.entrySizing?.highPriceAdjusted),
       sizingReason: payload?.entrySizing?.reason ?? null,
-      executionOverlay: null
+      executionOverlay: null,
+      openOrderMonitor: null
     };
   });
 }
@@ -2717,6 +2893,7 @@ function reconcileDecisionAuditWithDryExec(
         highPriceAdjusted: Boolean(payload.entrySizing?.highPriceAdjusted),
         sizingReason: payload.entrySizing?.reason ?? row.sizingReason,
         executionOverlay: row.executionOverlay,
+        openOrderMonitor: row.openOrderMonitor,
         entryAdjusted: payload.limit_price,
         riskRewardAfter: computeRiskReward(
           payload.limit_price,
@@ -2739,7 +2916,8 @@ function reconcileDecisionAuditWithDryExec(
       riskDollars: null,
       highPriceAdjusted: false,
       sizingReason: null,
-      executionOverlay: row.executionOverlay
+      executionOverlay: row.executionOverlay,
+      openOrderMonitor: row.openOrderMonitor
     };
   });
 }
@@ -2859,7 +3037,8 @@ function buildOrderReadinessSummary(
   }
   if (dryExec.payloads.length === 0) {
     const overlay = dryExec.executionOverlay;
-    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)}`;
+    const monitor = dryExec.openOrderMonitor;
+    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)}`;
   }
   if (brokerSubmit.attempted === 0) {
     return `NOT_SUBMITTED payloads=${dryExec.payloads.length} reason=${brokerSubmit.reason} skipped=${brokerSubmit.skipped}`;
@@ -5513,6 +5692,7 @@ function buildDryExecPayloads(
       minOneShareBlocked
     },
     executionOverlay: createExecutionOverlaySummary(executionOverlayPolicy),
+    openOrderMonitor: createOpenOrderMonitorSummary(buildOpenOrderMonitorPolicy()),
     regime,
     idempotency: {
       enabled: false,
@@ -6090,6 +6270,184 @@ async function applyExecutionOverlayToDryExec(dryExec: DryExecBuildResult): Prom
     ...dryExec,
     decisionAudit,
     executionOverlay: summary
+  };
+}
+
+function createEmptyOpenEntryOrderIndex(): OpenEntryOrderIndex {
+  return {
+    total: 0,
+    duplicateSymbols: 0,
+    bySymbol: new Map<string, OpenEntryOrderSnapshot>()
+  };
+}
+
+function computeTargetBufferPct(currentPrice: number | null, target: number | null): number | null {
+  if (currentPrice == null || target == null) return null;
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(target) || currentPrice <= 0) return null;
+  return Number((((target - currentPrice) / currentPrice) * 100).toFixed(4));
+}
+
+function computeOpenOrderDistancePct(currentPrice: number | null, limitPrice: number | null): number | null {
+  if (currentPrice == null || limitPrice == null) return null;
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(limitPrice) || limitPrice <= 0) return null;
+  return Number((((currentPrice - limitPrice) / limitPrice) * 100).toFixed(4));
+}
+
+function computeSuggestedOpenOrderRepriceLimit(
+  currentPrice: number | null,
+  target: number | null,
+  stop: number | null,
+  policy: OpenOrderMonitorPolicy
+): number | null {
+  if (currentPrice == null || target == null || stop == null) return null;
+  if (!Number.isFinite(currentPrice) || !Number.isFinite(target) || !Number.isFinite(stop)) return null;
+  if (!(target > stop && currentPrice > 0)) return null;
+  const maxByRr = (target + policy.minRr * stop) / (1 + policy.minRr);
+  const maxByTargetBuffer = target / (1 + policy.targetBufferPct / 100);
+  const suggested = Math.min(currentPrice, maxByRr, maxByTargetBuffer);
+  if (!Number.isFinite(suggested) || suggested <= 0) return null;
+  return roundToCent(suggested);
+}
+
+function buildOpenOrderMonitorDecision(
+  row: OrderDecisionAuditRecord,
+  openEntry: OpenEntryOrderSnapshot | null,
+  policy: OpenOrderMonitorPolicy
+): OpenOrderMonitorDecision {
+  const base = {
+    symbol: row.symbol,
+    enabled: policy.enabled,
+    mode: policy.mode,
+    orderId: openEntry?.orderId ?? null,
+    clientOrderId: openEntry?.clientOrderId ?? null,
+    orderStatus: openEntry?.status ?? null,
+    ageMinutes: openEntry?.ageMinutes ?? null,
+    limitPrice: openEntry?.limitPrice ?? null,
+    qty: openEntry?.qty ?? null,
+    currentPrice: row.executionOverlay?.currentPrice ?? null,
+    distancePct: null,
+    rrAtLimit: null,
+    rrAtCurrent: row.executionOverlay?.rrAtCurrent ?? null,
+    targetBufferPct: null,
+    suggestedLimitPrice: null,
+    suggestedDeltaPct: null,
+    duplicateOpenCount: openEntry?.symbolOpenCount ?? 0
+  };
+
+  if (!policy.enabled) {
+    return { ...base, status: "DISABLED", reason: "disabled" };
+  }
+  if (!openEntry) {
+    return { ...base, status: "NO_OPEN_ORDER", reason: "no_open_entry_order" };
+  }
+
+  const currentPrice = row.executionOverlay?.currentPrice ?? null;
+  const limitPrice = openEntry.limitPrice;
+  const distancePct = computeOpenOrderDistancePct(currentPrice, limitPrice);
+  const rrAtLimit = computeRiskReward(limitPrice, row.target, row.stop);
+  const rrAtCurrent = computeRiskReward(currentPrice, row.target, row.stop);
+  const targetBufferPct = computeTargetBufferPct(currentPrice, row.target);
+  const suggestedLimitPrice = computeSuggestedOpenOrderRepriceLimit(currentPrice, row.target, row.stop, policy);
+  const suggestedDeltaPct =
+    suggestedLimitPrice != null && limitPrice != null && limitPrice > 0
+      ? Number((((suggestedLimitPrice - limitPrice) / limitPrice) * 100).toFixed(4))
+      : null;
+  const nextBase = {
+    ...base,
+    currentPrice,
+    distancePct,
+    rrAtLimit,
+    rrAtCurrent,
+    targetBufferPct,
+    suggestedLimitPrice,
+    suggestedDeltaPct
+  };
+
+  if (currentPrice == null || limitPrice == null || distancePct == null) {
+    return { ...nextBase, status: "DATA_MISSING", reason: "missing_current_or_limit_price" };
+  }
+  if (openEntry.symbolOpenCount > 1) {
+    return { ...nextBase, status: "CANCEL_CANDIDATE", reason: `duplicate_open_entry(count=${openEntry.symbolOpenCount})` };
+  }
+  if (rrAtLimit != null && rrAtLimit < policy.minRr) {
+    return { ...nextBase, status: "CANCEL_CANDIDATE", reason: `rr_below_floor_at_limit(rr=${rrAtLimit.toFixed(2)}<${policy.minRr.toFixed(2)})` };
+  }
+  if (targetBufferPct != null && targetBufferPct <= policy.targetBufferPct && distancePct <= policy.nearLimitPct) {
+    return { ...nextBase, status: "CANCEL_CANDIDATE", reason: `target_buffer_too_thin(bufferPct=${targetBufferPct.toFixed(2)}<=${policy.targetBufferPct.toFixed(2)})` };
+  }
+  if (distancePct <= 0) {
+    return { ...nextBase, status: "KEEP", reason: "current_at_or_below_limit_wait_fill" };
+  }
+  if (distancePct <= policy.nearLimitPct) {
+    return { ...nextBase, status: "KEEP", reason: `near_limit(distancePct=${distancePct.toFixed(2)}<=${policy.nearLimitPct.toFixed(2)})` };
+  }
+  const ageMinutes = openEntry.ageMinutes ?? 0;
+  if (ageMinutes >= policy.cancelAfterMinutes && distancePct >= policy.cancelDistancePct) {
+    return { ...nextBase, status: "CANCEL_CANDIDATE", reason: `stale_far_from_limit(ageMin=${ageMinutes.toFixed(1)}>=${policy.cancelAfterMinutes},distancePct=${distancePct.toFixed(2)}>=${policy.cancelDistancePct.toFixed(2)})` };
+  }
+  if (ageMinutes >= policy.repriceAfterMinutes && distancePct >= policy.repriceDistancePct) {
+    const canReprice =
+      suggestedLimitPrice != null &&
+      suggestedDeltaPct != null &&
+      suggestedLimitPrice > limitPrice &&
+      suggestedDeltaPct >= policy.minRepriceDeltaPct;
+    if (canReprice) {
+      return { ...nextBase, status: "REPRICE_CANDIDATE", reason: `stale_reprice_rr_safe(ageMin=${ageMinutes.toFixed(1)},distancePct=${distancePct.toFixed(2)},deltaPct=${suggestedDeltaPct.toFixed(2)})` };
+    }
+    return { ...nextBase, status: "WATCH_PULLBACK", reason: `stale_reprice_not_rr_safe(ageMin=${ageMinutes.toFixed(1)},distancePct=${distancePct.toFixed(2)})` };
+  }
+  return { ...nextBase, status: "WATCH_PULLBACK", reason: `waiting_pullback(distancePct=${distancePct.toFixed(2)})` };
+}
+
+async function applyOpenOrderMonitorToDryExec(dryExec: DryExecBuildResult): Promise<DryExecBuildResult> {
+  const policy = buildOpenOrderMonitorPolicy();
+  if (!policy.enabled) {
+    const decisionAudit = dryExec.decisionAudit.map((row) => ({
+      ...row,
+      openOrderMonitor: buildOpenOrderMonitorDecision(row, null, policy)
+    }));
+    return {
+      ...dryExec,
+      decisionAudit,
+      openOrderMonitor: createOpenOrderMonitorSummary(policy, "disabled")
+    };
+  }
+
+  let openOrders = createEmptyOpenEntryOrderIndex();
+  try {
+    openOrders = await loadOpenEntryOrderIndex();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const summary = createOpenOrderMonitorSummary(
+      policy,
+      "failed",
+      { [`fetch_failed:${message.slice(0, 80)}`]: 1 }
+    );
+    console.warn(`[OPEN_ORDER_MONITOR] failed=${message.slice(0, 160)}`);
+    return {
+      ...dryExec,
+      openOrderMonitor: summary
+    };
+  }
+
+  const decisionAudit = dryExec.decisionAudit.map((row) => {
+    const decision = buildOpenOrderMonitorDecision(row, openOrders.bySymbol.get(row.symbol) ?? null, policy);
+    return {
+      ...row,
+      openOrderMonitor: decision
+    };
+  });
+  const decisions = decisionAudit
+    .map((row) => row.openOrderMonitor)
+    .filter((row): row is OpenOrderMonitorDecision => row != null);
+  const summary = summarizeOpenOrderMonitor(decisions, policy, openOrders);
+  console.log(
+    `[OPEN_ORDER_MONITOR] enabled=${summary.enabled} mode=${summary.mode} data=${summary.dataStatus} checked=${summary.checked} openOrders=${summary.openOrders} matched=${summary.matched} keep=${summary.keep} watch=${summary.watchPullback} reprice=${summary.repriceCandidate} cancel=${summary.cancelCandidate} missing=${summary.dataMissing} reasons=${formatSkipReasonCounts(summary.reasonCounts)}`
+  );
+  return {
+    ...dryExec,
+    decisionAudit,
+    openOrderMonitor: summary
   };
 }
 
@@ -7388,6 +7746,9 @@ function buildSimulationMessage(
   );
   lines.push(
     `Execution Overlay: enabled=${dryExec.executionOverlay.enabled} mode=${dryExec.executionOverlay.mode} data=${dryExec.executionOverlay.dataStatus} confirmed=${dryExec.executionOverlay.confirmedAdaptiveEntry} pullback=${dryExec.executionOverlay.pullbackLimit} wait=${dryExec.executionOverlay.waitPullback} noTrade=${dryExec.executionOverlay.noTrade} missing=${dryExec.executionOverlay.dataMissing} reasons=${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`
+  );
+  lines.push(
+    `Open Order Monitor: enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} open=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`
   );
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
@@ -9262,6 +9623,7 @@ async function saveDryExecPreview(
     entryPricePolicy: dryExec.entryPricePolicy,
     entrySizingPolicy: dryExec.entrySizingPolicy,
     executionOverlay: dryExec.executionOverlay,
+    openOrderMonitor: dryExec.openOrderMonitor,
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
@@ -9315,6 +9677,9 @@ async function saveDryExecPreview(
   console.log(`[SKIP_DETAILS] ${formatSkipDetails(dryExec.skipped)}`);
   console.log(
     `[EXEC_OVERLAY] enabled=${dryExec.executionOverlay.enabled} mode=${dryExec.executionOverlay.mode} feed=${dryExec.executionOverlay.dataFeed} data=${dryExec.executionOverlay.dataStatus} evaluated=${dryExec.executionOverlay.evaluated} confirmed=${dryExec.executionOverlay.confirmedAdaptiveEntry} pullback=${dryExec.executionOverlay.pullbackLimit} wait=${dryExec.executionOverlay.waitPullback} noTrade=${dryExec.executionOverlay.noTrade} missing=${dryExec.executionOverlay.dataMissing} reasons=${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`
+  );
+  console.log(
+    `[OPEN_ORDER_MONITOR] enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} checked=${dryExec.openOrderMonitor.checked} openOrders=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} missing=${dryExec.openOrderMonitor.dataMissing} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`
   );
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
@@ -10918,6 +11283,7 @@ function printRunSummary(
   const stage6ContractReasonsPrimarySummary = formatSkipReasonCounts(stage6ContractReasonCountsPrimary);
   const stage6SkipHintsPrimarySummary = formatSkipReasonCounts(stage6SkipHintCountsPrimary);
   const executionOverlaySummary = `enabled:${dryExec.executionOverlay.enabled}|mode:${dryExec.executionOverlay.mode}|data:${dryExec.executionOverlay.dataStatus}|evaluated:${dryExec.executionOverlay.evaluated}|confirmed:${dryExec.executionOverlay.confirmedAdaptiveEntry}|pullback:${dryExec.executionOverlay.pullbackLimit}|wait:${dryExec.executionOverlay.waitPullback}|noTrade:${dryExec.executionOverlay.noTrade}|missing:${dryExec.executionOverlay.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`;
+  const openOrderMonitorSummary = `enabled:${dryExec.openOrderMonitor.enabled}|mode:${dryExec.openOrderMonitor.mode}|data:${dryExec.openOrderMonitor.dataStatus}|open:${dryExec.openOrderMonitor.openOrders}|matched:${dryExec.openOrderMonitor.matched}|keep:${dryExec.openOrderMonitor.keep}|watch:${dryExec.openOrderMonitor.watchPullback}|reprice:${dryExec.openOrderMonitor.repriceCandidate}|cancel:${dryExec.openOrderMonitor.cancelCandidate}|missing:${dryExec.openOrderMonitor.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`;
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
     phase: "OBSERVE_ONLY" as HfTuningPhase,
@@ -11065,7 +11431,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -11326,6 +11692,7 @@ async function main() {
       `[ORDER_IDEMP] phase=final deferred=true reason=preflight_blocking code=${preflight.code}`
     );
   }
+  finalDryExec = await applyOpenOrderMonitorToDryExec(finalDryExec);
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
   const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);

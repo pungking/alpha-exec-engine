@@ -30,6 +30,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional adaptive entry price mode can apply bounded chase from Stage6 entry (`ENTRY_PRICE_MODE=adaptive`) while preserving RR floor and stop-distance guardrails.
 - Optional high-price sizing can promote entries to one whole share when `DRY_NOTIONAL_PER_TRADE` is below the limit price, but only inside explicit notional and dollar-risk caps.
 - Execution overlay v1 adds observe-only current-market context from Alpaca data before broker submit audit (`EXECUTION_OVERLAY_ENABLED=true`).
+- Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
@@ -178,6 +179,16 @@ Use `.env.example` as baseline.
 - `EXECUTION_OVERLAY_MAX_PULLBACK_DISTANCE_PCT` (default `6`; max current-price premium over Stage6 entry to keep pullback-limit recommendation)
 - `EXECUTION_OVERLAY_TARGET_BUFFER_PCT` (default `1`; marks no-trade when current price is too close to target)
 - `EXECUTION_OVERLAY_DAILY_LOOKBACK_DAYS` (default `260`; daily-bar lookback for SMA/ATR/trend context)
+- `ENTRY_OPEN_ORDER_MONITOR_ENABLED` (default `true`; observe open buy entry orders and classify keep/watch/reprice/cancel candidates)
+- `ENTRY_OPEN_ORDER_MONITOR_MODE` (default/only supported v1 value: `observe`; non-observe values are ignored for safety)
+- `ENTRY_OPEN_ORDER_MONITOR_REPRICE_AFTER_MINUTES` (default `60`; age threshold before an open order can be tagged `REPRICE_CANDIDATE`)
+- `ENTRY_OPEN_ORDER_MONITOR_CANCEL_AFTER_MINUTES` (default `240`; age threshold before a far stale open order can be tagged `CANCEL_CANDIDATE`)
+- `ENTRY_OPEN_ORDER_MONITOR_NEAR_LIMIT_PCT` (default `1`; distance at/below which an open order is considered close enough to keep)
+- `ENTRY_OPEN_ORDER_MONITOR_REPRICE_DISTANCE_PCT` (default `2.5`; distance threshold for reprice candidate evaluation)
+- `ENTRY_OPEN_ORDER_MONITOR_CANCEL_DISTANCE_PCT` (default `6`; distance threshold for stale cancel candidate evaluation)
+- `ENTRY_OPEN_ORDER_MONITOR_MIN_RR` (default `1.8`; minimum RR preserved for suggested reprice limit)
+- `ENTRY_OPEN_ORDER_MONITOR_TARGET_BUFFER_PCT` (default `1`; minimum target buffer preserved for suggested reprice limit)
+- `ENTRY_OPEN_ORDER_MONITOR_MIN_REPRICE_DELTA_PCT` (default `0.25`; minimum suggested-limit improvement before reprice candidate tag)
 - `ALPACA_DATA_BASE_URL` (optional, default `https://data.alpaca.markets`; Alpaca market-data endpoint)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
@@ -405,6 +416,18 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   original Stage6 limit is still valid. In that case the overlay keeps `PULLBACK_LIMIT` and records a reason such as
   `near_entry_chase_rr_below_floor_keep_limit`.
 - Rollout rule: v1 is audit-only. It writes `executionOverlay` into `state/last-dry-exec-preview.json`, decision audit rows, Telegram summary, and `[RUN_SUMMARY]`; it must not change payloads until enough paper-trading evidence proves the policy improves fill rate without degrading RR.
+
+### Open-Order Monitor (observe-only v1)
+- Purpose: explain why already-submitted open buy entries are not filling, without automatically canceling or replacing them.
+- Scope: reads current Alpaca open buy orders, matches them by symbol to the current Stage6 actionable rows, and writes `openOrderMonitor` telemetry.
+- Decision tags:
+  - `KEEP`: order is near the limit or current price is already at/below the limit.
+  - `WATCH_PULLBACK`: order is valid, but current price remains too far above the limit.
+  - `REPRICE_CANDIDATE`: order is stale enough and a higher suggested limit can preserve RR/target-buffer constraints.
+  - `CANCEL_CANDIDATE`: duplicate open entries, low RR at the open limit, thin target buffer near market, or far stale order.
+  - `DATA_MISSING`: open order or current-market data is incomplete.
+- Rollout rule: v1 is audit-only. It must not cancel or replace orders. Actual cancel/replace remains controlled by
+  `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false` by default.
 
 ### Adaptive Conviction Gate
 - Sidecar applies an adaptive conviction floor from:

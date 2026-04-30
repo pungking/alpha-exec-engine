@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-30 (KST, P0 broker reconciliation proof + overlay semantics)
+Last updated: 2026-05-01 (KST, open-order monitor observe-only)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -243,6 +243,7 @@ Priority: P2 until M1/M2 stabilize; then P1
    - order stayed open because current price never pulled back,
    - order filled and bracket children opened correctly,
    - order expired/canceled and idempotency reconciled correctly.
+   - open-order monitor emits `KEEP/WATCH_PULLBACK/REPRICE_CANDIDATE/CANCEL_CANDIDATE` before any automatic action.
 3. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 has scheduled-run confirmations, not only one
    manual canary proof.
 
@@ -282,6 +283,17 @@ Priority: P2 until M1/M2 stabilize; then P1
 ---
 
 ## 5) Update Log
+
+- 2026-05-01 KST (open-order monitor v1):
+  - Added observe-only open-order monitor for existing Alpaca buy entry orders.
+  - Monitor writes `openOrderMonitor` into preview/audit/Telegram/run-summary with:
+    - open-order age,
+    - current price vs limit distance,
+    - RR at open limit and current price,
+    - suggested RR-safe reprice limit,
+    - `KEEP/WATCH_PULLBACK/REPRICE_CANDIDATE/CANCEL_CANDIDATE/DATA_MISSING` status.
+  - Actual cancel/replace remains disabled by default; this step only produces the evidence needed before enabling
+    `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`.
 
 - 2026-04-30 KST (P0 broker reconciliation proof):
   - RTH canary `25170624706` completed with `Preflight=PASS`, `attempted=2`, `submitted=2`, `reason=submit_ok`.
