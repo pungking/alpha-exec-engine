@@ -45,6 +45,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional guard-control enforcement reads `state/guard-control.json` and can block new entries in live mode.
 - Adds market guard (P3-2) with L1/L2/L3 risk levels, de-escalation hold, cooldown, and observe/active mode.
 - Market guard auto-tunes effective thresholds by profile/quality while keeping env guardrails as base bounds.
+- Market guard Telegram dedupe keys use stable guard state (`level/action/profile/open`) instead of raw VIX/index ticks to avoid L0 notification spam.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
 - Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in exec mode it blocks on fail by default (`PREFLIGHT_BLOCKING_HARD_FAIL=true`).

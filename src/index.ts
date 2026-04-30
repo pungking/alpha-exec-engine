@@ -2785,6 +2785,30 @@ function formatSkipDetails(skipped: DryExecSkipReason[], maxItems = 8): string {
   return `${visible.join(" || ")}${suffix}`;
 }
 
+function buildOrderReadinessSummary(
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult,
+  brokerSubmit: BrokerSubmitSummary
+): string {
+  if (brokerSubmit.submitted > 0) {
+    return `SUBMITTED submitted=${brokerSubmit.submitted}/${brokerSubmit.attempted} broker=${brokerSubmit.reason}`;
+  }
+  if (brokerSubmit.failed > 0) {
+    return `BROKER_FAILED attempted=${brokerSubmit.attempted} failed=${brokerSubmit.failed} reason=${brokerSubmit.reason}`;
+  }
+  if (preflight.blocking) {
+    return `BLOCKED_PREFLIGHT code=${preflight.code} message=${preflight.message}`;
+  }
+  if (dryExec.payloads.length === 0) {
+    const overlay = dryExec.executionOverlay;
+    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)}`;
+  }
+  if (brokerSubmit.attempted === 0) {
+    return `NOT_SUBMITTED payloads=${dryExec.payloads.length} reason=${brokerSubmit.reason} skipped=${brokerSubmit.skipped}`;
+  }
+  return `PENDING payloads=${dryExec.payloads.length} attempted=${brokerSubmit.attempted} submitted=0 reason=${brokerSubmit.reason}`;
+}
+
 function createEmptyActionIntentCounts(): Record<LifecycleActionType, number> {
   return {
     ENTRY_NEW: 0,
@@ -7117,6 +7141,7 @@ function buildSimulationMessage(
   lines.push(
     `Preview Payloads: ${dryExec.payloads.length} | Notional/Order: $${dryExec.notionalPerOrder.toFixed(2)} | MaxOrders: ${dryExec.maxOrders} | MaxTotalNotional: $${dryExec.maxTotalNotional.toFixed(2)}`
   );
+  lines.push(`Order Readiness: ${buildOrderReadinessSummary(dryExec, preflight, brokerSubmit)}`);
   lines.push(
     `Broker Reality: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} reason=${brokerSubmit.reason}`
   );
@@ -8932,7 +8957,9 @@ async function saveDryExecPreview(
     stopDistancePolicy: dryExec.stopDistancePolicy,
     entryFeasibility: dryExec.entryFeasibility,
     entryPricePolicy: dryExec.entryPricePolicy,
+    entrySizingPolicy: dryExec.entrySizingPolicy,
     executionOverlay: dryExec.executionOverlay,
+    orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
     stage6SkipHintCountsPrimary,
@@ -10031,6 +10058,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const stage6ExecutionBucketEnforce = readBoolEnv("STAGE6_EXECUTION_BUCKET_ENFORCE", true);
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const entrySizingPolicy = buildEntrySizingPolicy();
+  const executionOverlayPolicy = buildExecutionOverlayPolicy();
   const actionableVerdicts = resolveActionableVerdicts();
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
@@ -10102,6 +10130,14 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `ENTRY_HIGH_PRICE_POLICY=${entrySizingPolicy.highPricePolicy}`,
     `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=${entrySizingPolicy.minOneShareMaxNotional}`,
     `ENTRY_MAX_RISK_DOLLARS_PER_TRADE=${entrySizingPolicy.maxRiskDollarsPerTrade}`,
+    `EXECUTION_OVERLAY_ENABLED=${executionOverlayPolicy.enabled}`,
+    `EXECUTION_OVERLAY_MODE=${executionOverlayPolicy.mode}`,
+    `EXECUTION_OVERLAY_DATA_FEED=${executionOverlayPolicy.dataFeed}`,
+    `EXECUTION_OVERLAY_MIN_RR=${executionOverlayPolicy.minRr}`,
+    `EXECUTION_OVERLAY_MAX_ADAPTIVE_DISTANCE_PCT=${executionOverlayPolicy.maxAdaptiveDistancePct}`,
+    `EXECUTION_OVERLAY_MAX_PULLBACK_DISTANCE_PCT=${executionOverlayPolicy.maxPullbackDistancePct}`,
+    `EXECUTION_OVERLAY_TARGET_BUFFER_PCT=${executionOverlayPolicy.targetBufferPct}`,
+    `EXECUTION_OVERLAY_DAILY_LOOKBACK_DAYS=${executionOverlayPolicy.dailyLookbackDays}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
     `POSITION_LIFECYCLE_ENABLED=${cfg.positionLifecycle.enabled}`,
@@ -10189,7 +10225,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `REGIME_VIX_MISMATCH_PCT=${regimeVixMismatchPct}`,
     `GUARD_CONTROL_ENFORCE=${guardControl.enforce}`,
     `GUARD_CONTROL_MAX_AGE_MIN=${guardControl.maxAgeMin}`,
-    `GUARD_CONTROL_AGE_MIN=${guardControl.ageMin != null ? guardControl.ageMin.toFixed(1) : "N/A"}`,
+    // Exclude volatile age from the dedupe key; otherwise every scheduled run looks unique.
     `GUARD_CONTROL_BLOCKED=${guardControl.blocked}`,
     `GUARD_CONTROL_LEVEL=${guardControl.level != null ? `L${guardControl.level}` : "N/A"}`,
     `GUARD_CONTROL_STALE=${guardControl.stale}`,

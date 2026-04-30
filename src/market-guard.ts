@@ -1263,13 +1263,17 @@ async function saveActionLedger(state: GuardActionLedgerState): Promise<void> {
 
 function buildSignature(decision: GuardDecision): string {
   return [
+    // Dedupe by actionable guard state, not raw VIX/index ticks. Raw ticks can change every run
+    // while the operational decision remains L0/no-action, which otherwise creates Telegram spam.
     `level=${decision.appliedLevel}`,
+    `raw=${decision.rawLevel}`,
+    `vixLevel=${decision.vixLevel}`,
+    `indexLevel=${decision.indexLevel}`,
     `mode=${decision.mode}`,
     `profile=${decision.profile}`,
-    `source=${decision.vixSource}`,
-    `vix=${decision.vix == null ? "N/A" : decision.vix.toFixed(2)}`,
-    `drop=${decision.indexWorstDropPct == null ? "N/A" : decision.indexWorstDropPct.toFixed(2)}`,
-    `q=${decision.quality.score}`,
+    `quality=${decision.quality.status}`,
+    `action=${decision.actionReason}`,
+    `runActions=${decision.shouldRunActions}`,
     `open=${decision.marketOpen == null ? "N/A" : decision.marketOpen}`
   ].join(";");
 }
@@ -1478,6 +1482,10 @@ function buildGuardMessage(decision: GuardDecision, actionResult: { records: Gua
 }
 
 async function sendTelegramMessage(token: string, chatId: string, text: string, tag: string): Promise<void> {
+  if (!readBoolEnv("TELEGRAM_SEND_ENABLED", true)) {
+    console.log(`[${tag}] skipped (TELEGRAM_SEND_ENABLED=false)`);
+    return;
+  }
   const maxLen = Math.max(500, Math.floor(readPositiveNumberEnv("TELEGRAM_MAX_MESSAGE_LENGTH", 3900)));
   const chunks = splitTelegramText(text, maxLen);
   for (let idx = 0; idx < chunks.length; idx++) {

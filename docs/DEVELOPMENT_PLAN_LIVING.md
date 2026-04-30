@@ -224,6 +224,15 @@ Priority: P2 until M1/M2 stabilize; then P1
 
 ## 5) Update Log
 
+- 2026-04-30 KST (Telegram/order-readiness noise control):
+  - Fixed dry-run dedupe key volatility by excluding `GUARD_CONTROL_AGE_MIN`; repeated schedules with the same
+    Stage6 hash and same execution policy should no longer send full Telegram reports every run.
+  - Added `Order Readiness` summary to Telegram/preview so `HF Live Promotion=PASS` is not confused with
+    actual broker order submission readiness.
+  - Stabilized market-guard Telegram dedupe signature to level/action/profile/open-state instead of raw VIX/index
+    ticks, reducing L0 no-action notification spam.
+  - Added `TELEGRAM_SEND_ENABLED=false` support to market-guard sender for isolated/no-noise runs.
+
 - 2026-04-30 KST (execution overlay v1):
   - Added observe-only execution overlay to close the gap between Stage6 planned entry and real-time fillability.
   - Overlay reads Alpaca latest/daily bars and tags each decision as `CONFIRMED_ADAPTIVE_ENTRY`, `PULLBACK_LIMIT`,
