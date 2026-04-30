@@ -48,6 +48,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Market guard Telegram dedupe keys use stable guard state (`level/action/profile/open`) instead of raw VIX/index ticks to avoid L0 notification spam.
 - Adds order-level idempotency key store (`stage6Hash:symbol:side`) at `state/order-idempotency.json`.
 - Optional dry-run enforcement (`ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN=true`) converts duplicate keys to skip reasons.
+- Broker-aware idempotency reconciliation checks Alpaca by `client_order_id` and releases same-key duplicates only after canceled/rejected/expired broker states (filled orders stay protected).
 - Adds preflight gate (`/v2/account`, `/v2/clock`) before send; in exec mode it blocks on fail by default (`PREFLIGHT_BLOCKING_HARD_FAIL=true`).
 - Adds lifecycle state machine ledger (`state/order-ledger.json`) with transition validation and history trail.
 - Optional one-shot dedupe bypass (`FORCE_SEND_ONCE=true`) sends once per current `stage6Hash+mode`.
@@ -241,6 +242,11 @@ Use `.env.example` as baseline.
 - `ORDER_IDEMPOTENCY_ENFORCE_DRY_RUN`
 - `ORDER_IDEMPOTENCY_TTL_DAYS`
 - `ORDER_IDEMPOTENCY_ENTRY_RESET_DAILY` (default `true`; releases previous-day keys so next RTH session can re-submit same stage hash if still valid)
+- `ORDER_IDEMPOTENCY_BROKER_RECONCILE_ENABLED` (default `true`; checks Alpaca order status for duplicate keys in exec mode)
+- `ORDER_IDEMPOTENCY_BROKER_RECONCILE_MAX_CHECKS` (default `25`; max duplicate keys to broker-check per run)
+- `ORDER_IDEMPOTENCY_RELEASE_ON_TERMINAL` (default `true`; releases canceled/rejected/expired broker orders, not filled orders)
+- `ORDER_IDEMPOTENCY_RELEASE_ON_MISSING_BROKER_ORDER` (default `false`; keep duplicate protection if Alpaca lookup cannot find the order)
+- `ORDER_IDEMPOTENCY_REISSUE_COOLDOWN_MINUTES` (default `15`; delay same-key reissue shortly after terminal broker status)
 - `PREFLIGHT_ENABLED`
 - `DAILY_MAX_NOTIONAL`
 - `ALLOW_ENTRY_OUTSIDE_RTH`

@@ -561,6 +561,10 @@ type DryExecBuildResult = {
     ttlDays: number;
     newCount: number;
     duplicateCount: number;
+    releasedCount: number;
+    brokerCheckedCount: number;
+    brokerReleasedCount: number;
+    brokerHeldCount: number;
   };
 };
 
@@ -641,6 +645,7 @@ type OrderLedgerUpdateResult = {
 type BrokerSubmitOrderResult = {
   idempotencyKey: string;
   symbol: string;
+  clientOrderId: string | null;
   actionType: LifecycleActionType | "N/A";
   attempted: boolean;
   submitted: boolean;
@@ -1134,19 +1139,65 @@ type HfAnomalyAlert = {
   };
 };
 
+type OrderIdempotencyEntry = {
+  symbol: string;
+  side: "buy";
+  stage6Hash: string;
+  stage6File: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  clientOrderId?: string;
+  brokerOrderId?: string | null;
+  brokerStatus?: OrderLifecycleStatus | null;
+  brokerCheckedAt?: string;
+};
+
+type OrderIdempotencyReleaseRecord = {
+  key: string;
+  symbol: string;
+  side: "buy";
+  stage6Hash: string;
+  stage6File: string;
+  clientOrderId: string | null;
+  brokerOrderId: string | null;
+  brokerStatus: OrderLifecycleStatus | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  releasedAt: string;
+  reason: string;
+};
+
 type OrderIdempotencyState = {
-  orders: Record<
-    string,
-    {
-      symbol: string;
-      side: "buy";
-      stage6Hash: string;
-      stage6File: string;
-      firstSeenAt: string;
-      lastSeenAt: string;
-    }
-  >;
+  orders: Record<string, OrderIdempotencyEntry>;
+  releases: OrderIdempotencyReleaseRecord[];
   updatedAt: string;
+};
+
+type OrderIdempotencyBrokerReconcilePolicy = {
+  enabled: boolean;
+  releaseOnTerminal: boolean;
+  releaseOnMissingBrokerOrder: boolean;
+  maxChecks: number;
+  reissueCooldownMinutes: number;
+};
+
+type BrokerOrderLookup = {
+  checked: boolean;
+  found: boolean;
+  brokerOrderId: string | null;
+  brokerStatus: OrderLifecycleStatus | null;
+  rawStatus: string | null;
+  terminalAt: string | null;
+  reason: string;
+};
+
+type OrderIdempotencyBrokerResolution = {
+  checked: boolean;
+  release: boolean;
+  holdReason: string;
+  releaseReason: string;
+  brokerOrderId: string | null;
+  brokerStatus: OrderLifecycleStatus | null;
 };
 
 const STATE_PATH = "state/last-run.json";
@@ -5461,7 +5512,11 @@ function buildDryExecPayloads(
       enforced: false,
       ttlDays: 0,
       newCount: 0,
-      duplicateCount: 0
+      duplicateCount: 0,
+      releasedCount: 0,
+      brokerCheckedCount: 0,
+      brokerReleasedCount: 0,
+      brokerHeldCount: 0
     }
   };
 }
@@ -5503,6 +5558,108 @@ async function fetchAlpacaJson(
   } catch {
     return text;
   }
+}
+
+async function fetchAlpacaJsonWithStatus(path: string): Promise<{
+  status: number;
+  body: unknown;
+  text: string;
+}> {
+  const baseUrl = (process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
+  const keyId = (process.env.ALPACA_KEY_ID || "").trim();
+  const secret = (process.env.ALPACA_SECRET_KEY || "").trim();
+
+  if (!baseUrl) throw new Error("ALPACA_BASE_URL missing");
+  if (!keyId || !secret) throw new Error("ALPACA_KEY_ID/ALPACA_SECRET_KEY missing");
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "GET",
+    headers: {
+      "APCA-API-KEY-ID": keyId,
+      "APCA-API-SECRET-KEY": secret
+    }
+  });
+  const text = await response.text();
+  if (!text) return { status: response.status, body: null, text };
+  try {
+    return {
+      status: response.status,
+      body: parseJsonText<unknown>(text, `alpaca_response(${path})`),
+      text
+    };
+  } catch {
+    return { status: response.status, body: text, text };
+  }
+}
+
+function isTerminalOrderStatus(status: OrderLifecycleStatus | null): boolean {
+  return status === "canceled" || status === "rejected" || status === "expired";
+}
+
+function extractBrokerTerminalAt(record: Record<string, unknown>): string | null {
+  const fields = ["filled_at", "canceled_at", "cancelled_at", "expired_at", "failed_at", "updated_at"];
+  for (const field of fields) {
+    const raw = record[field];
+    if (typeof raw === "string" && raw.trim()) return raw;
+  }
+  return null;
+}
+
+async function fetchAlpacaOrderByClientOrderId(clientOrderId: string): Promise<BrokerOrderLookup> {
+  const normalized = clientOrderId.trim();
+  if (!normalized) {
+    return {
+      checked: false,
+      found: false,
+      brokerOrderId: null,
+      brokerStatus: null,
+      rawStatus: null,
+      terminalAt: null,
+      reason: "missing_client_order_id"
+    };
+  }
+  const path = `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(normalized)}`;
+  const response = await fetchAlpacaJsonWithStatus(path);
+  if (response.status === 404) {
+    return {
+      checked: true,
+      found: false,
+      brokerOrderId: null,
+      brokerStatus: null,
+      rawStatus: null,
+      terminalAt: null,
+      reason: "broker_order_not_found"
+    };
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`alpaca order lookup failed (${response.status}): ${response.text.slice(0, 160)}`);
+  }
+  if (!response.body || typeof response.body !== "object") {
+    return {
+      checked: true,
+      found: false,
+      brokerOrderId: null,
+      brokerStatus: null,
+      rawStatus: null,
+      terminalAt: null,
+      reason: "broker_order_response_invalid"
+    };
+  }
+  const record = response.body as Record<string, unknown>;
+  const brokerOrderIdRaw = record.id;
+  const rawStatus = String(record.status ?? "")
+    .trim()
+    .toLowerCase();
+  return {
+    checked: true,
+    found: true,
+    brokerOrderId:
+      typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw.trim() : null,
+    brokerStatus: mapAlpacaOrderStatusToLifecycleStatus(rawStatus),
+    rawStatus: rawStatus || null,
+    terminalAt: extractBrokerTerminalAt(record),
+    reason: "broker_order_found"
+  };
 }
 
 async function fetchAlpacaDataJson(path: string): Promise<unknown> {
@@ -6657,6 +6814,7 @@ async function submitOrdersToBroker(
     summary.orders[payload.idempotencyKey] = {
       idempotencyKey: payload.idempotencyKey,
       symbol: payload.symbol,
+      clientOrderId: payload.client_order_id,
       actionType: payload.actionType ?? "N/A",
       attempted: false,
       submitted: false,
@@ -6896,6 +7054,7 @@ async function submitOrdersToBroker(
         );
         brokerOrderId = exitSubmit.brokerOrderId;
         brokerStatus = exitSubmit.brokerStatus;
+        row.clientOrderId = makeActionClientOrderId(payload.client_order_id, effectiveActionType);
         updateHeldPositionAfterExitSubmit(
           heldQtyBySymbol,
           heldSymbols,
@@ -6942,6 +7101,7 @@ async function submitOrdersToBroker(
             throw error;
           }
         }
+        row.clientOrderId = submitClientOrderId;
         const responseRecord =
           rawResponse && typeof rawResponse === "object" ? (rawResponse as Record<string, unknown>) : {};
         const brokerOrderIdRaw = responseRecord.id;
@@ -6961,7 +7121,7 @@ async function submitOrdersToBroker(
           status: String(brokerStatus || "submitted"),
           limitPrice: payload.limit_price,
           qty: parseFiniteNumber(entryQtyForSubmit),
-          clientOrderId: payload.client_order_id,
+          clientOrderId: row.clientOrderId,
           submittedAt: new Date().toISOString(),
           submittedAtMs: Date.now(),
           ageMinutes: 0,
@@ -7167,7 +7327,7 @@ function buildSimulationMessage(
     lines.push(`Skipped: ${skippedLog}`);
   }
   lines.push(
-    `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount}`
+    `Order Idempotency: enabled=${dryExec.idempotency.enabled} enforce=${dryExec.idempotency.enforced} ttlDays=${dryExec.idempotency.ttlDays} new=${dryExec.idempotency.newCount} duplicate=${dryExec.idempotency.duplicateCount} released=${dryExec.idempotency.releasedCount} brokerChecked=${dryExec.idempotency.brokerCheckedCount} brokerReleased=${dryExec.idempotency.brokerReleasedCount} brokerHeld=${dryExec.idempotency.brokerHeldCount}`
   );
   lines.push(
     `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
@@ -9738,10 +9898,13 @@ async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
       parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
         ? (parsed.orders as OrderIdempotencyState["orders"])
         : {};
+    const releases = Array.isArray(parsed?.releases)
+      ? (parsed.releases as OrderIdempotencyReleaseRecord[])
+      : [];
     const updatedAt = typeof parsed?.updatedAt === "string" ? parsed.updatedAt : "";
-    return { orders, updatedAt };
+    return { orders, releases, updatedAt };
   } catch {
-    return { orders: {}, updatedAt: "" };
+    return { orders: {}, releases: [], updatedAt: "" };
   }
 }
 
@@ -9765,6 +9928,115 @@ function pruneOrderIdempotencyState(state: OrderIdempotencyState, ttlDays: numbe
   return removed;
 }
 
+function buildOrderIdempotencyBrokerReconcilePolicy(): OrderIdempotencyBrokerReconcilePolicy {
+  return {
+    enabled: readBoolEnv("ORDER_IDEMPOTENCY_BROKER_RECONCILE_ENABLED", true),
+    releaseOnTerminal: readBoolEnv("ORDER_IDEMPOTENCY_RELEASE_ON_TERMINAL", true),
+    releaseOnMissingBrokerOrder: readBoolEnv("ORDER_IDEMPOTENCY_RELEASE_ON_MISSING_BROKER_ORDER", false),
+    maxChecks: Math.max(1, readPositiveIntEnv("ORDER_IDEMPOTENCY_BROKER_RECONCILE_MAX_CHECKS", 25)),
+    reissueCooldownMinutes: Math.max(
+      0,
+      readNumberEnv("ORDER_IDEMPOTENCY_REISSUE_COOLDOWN_MINUTES", 15)
+    )
+  };
+}
+
+function recordOrderIdempotencyRelease(
+  state: OrderIdempotencyState,
+  key: string,
+  entry: OrderIdempotencyEntry,
+  releasedAt: string,
+  reason: string,
+  brokerOrderId: string | null,
+  brokerStatus: OrderLifecycleStatus | null
+): void {
+  state.releases.push({
+    key,
+    symbol: entry.symbol,
+    side: entry.side,
+    stage6Hash: entry.stage6Hash,
+    stage6File: entry.stage6File,
+    clientOrderId: entry.clientOrderId ?? null,
+    brokerOrderId,
+    brokerStatus,
+    firstSeenAt: entry.firstSeenAt,
+    lastSeenAt: entry.lastSeenAt,
+    releasedAt,
+    reason
+  });
+  state.releases = state.releases.slice(-200);
+}
+
+function shouldHoldForReissueCooldown(
+  terminalAt: string | null,
+  policy: OrderIdempotencyBrokerReconcilePolicy
+): boolean {
+  if (policy.reissueCooldownMinutes <= 0) return false;
+  if (!terminalAt) return false;
+  const terminalMs = Date.parse(terminalAt);
+  if (!Number.isFinite(terminalMs) || terminalMs <= 0) return false;
+  return Date.now() - terminalMs < policy.reissueCooldownMinutes * 60 * 1000;
+}
+
+async function resolveOrderIdempotencyBrokerResolution(
+  payload: DryExecOrderPayload,
+  existing: OrderIdempotencyEntry,
+  policy: OrderIdempotencyBrokerReconcilePolicy
+): Promise<OrderIdempotencyBrokerResolution> {
+  const clientOrderId = existing.clientOrderId || payload.client_order_id;
+  const lookup = await fetchAlpacaOrderByClientOrderId(clientOrderId);
+  const brokerOrderId = lookup.brokerOrderId ?? existing.brokerOrderId ?? null;
+  const brokerStatus = lookup.brokerStatus ?? existing.brokerStatus ?? null;
+  if (!lookup.checked) {
+    return {
+      checked: false,
+      release: false,
+      holdReason: lookup.reason,
+      releaseReason: "",
+      brokerOrderId,
+      brokerStatus
+    };
+  }
+  if (!lookup.found) {
+    return {
+      checked: true,
+      release: policy.releaseOnMissingBrokerOrder,
+      holdReason: policy.releaseOnMissingBrokerOrder ? "" : lookup.reason,
+      releaseReason: "broker_order_missing",
+      brokerOrderId,
+      brokerStatus
+    };
+  }
+  if (policy.releaseOnTerminal && isTerminalOrderStatus(brokerStatus)) {
+    if (shouldHoldForReissueCooldown(lookup.terminalAt, policy)) {
+      return {
+        checked: true,
+        release: false,
+        holdReason: `terminal_cooldown:${brokerStatus}`,
+        releaseReason: "",
+        brokerOrderId,
+        brokerStatus
+      };
+    }
+    return {
+      checked: true,
+      release: true,
+      holdReason: "",
+      releaseReason: `broker_terminal:${brokerStatus}`,
+      brokerOrderId,
+      brokerStatus
+    };
+  }
+  return {
+    checked: true,
+    release: false,
+    holdReason: lookup.rawStatus ? `broker_status:${lookup.rawStatus}` : lookup.reason,
+    releaseReason: "",
+    brokerOrderId,
+    brokerStatus
+  };
+}
+
 async function applyOrderIdempotency(
   stage6: Stage6LoadResult,
   dryExec: DryExecBuildResult,
@@ -9780,6 +10052,8 @@ async function applyOrderIdempotency(
   const enforced = enabled && (cfg.execEnabled || enforceDryRun);
   const entryResetDaily = readBoolEnv("ORDER_IDEMPOTENCY_ENTRY_RESET_DAILY", true);
   const idempotencyTimeZone = (process.env.TZ || "America/New_York").trim() || "America/New_York";
+  const brokerReconcilePolicy = buildOrderIdempotencyBrokerReconcilePolicy();
+  const brokerReconcileActive = brokerReconcilePolicy.enabled && enforced && cfg.execEnabled && !cfg.readOnly;
   const persistNewEntries = options?.persistNewEntries ?? true;
   const phase = options?.phase ?? "final";
 
@@ -9791,7 +10065,11 @@ async function applyOrderIdempotency(
         enforced,
         ttlDays,
         newCount: 0,
-        duplicateCount: 0
+        duplicateCount: 0,
+        releasedCount: 0,
+        brokerCheckedCount: 0,
+        brokerReleasedCount: 0,
+        brokerHeldCount: 0
       }
     };
   }
@@ -9804,6 +10082,9 @@ async function applyOrderIdempotency(
   let duplicateCount = 0;
   let newCount = 0;
   let releasedCount = 0;
+  let brokerCheckedCount = 0;
+  let brokerReleasedCount = 0;
+  let brokerHeldCount = 0;
   let changed = persistNewEntries && pruned > 0;
   const todayKey = toTimeZoneDayKey(Date.now(), idempotencyTimeZone);
 
@@ -9816,10 +10097,72 @@ async function applyOrderIdempotency(
       let existingDayKey =
         Number.isFinite(existingTs) && existingTs > 0 ? toTimeZoneDayKey(existingTs, idempotencyTimeZone) : "";
       if (existingDayKey && todayKey && existingDayKey !== todayKey) {
+        recordOrderIdempotencyRelease(
+          state,
+          key,
+          existing,
+          now,
+          "daily_reset",
+          existing.brokerOrderId ?? null,
+          existing.brokerStatus ?? null
+        );
         delete state.orders[key];
         existing = undefined;
-        if (persistNewEntries) changed = true;
+        changed = true;
         releasedCount += 1;
+      }
+    }
+    if (
+      existing &&
+      brokerReconcileActive &&
+      brokerCheckedCount < brokerReconcilePolicy.maxChecks
+    ) {
+      try {
+        const resolution = await resolveOrderIdempotencyBrokerResolution(
+          payload,
+          existing,
+          brokerReconcilePolicy
+        );
+        if (resolution.checked) brokerCheckedCount += 1;
+        existing.clientOrderId = existing.clientOrderId || payload.client_order_id;
+        existing.brokerOrderId = resolution.brokerOrderId;
+        existing.brokerStatus = resolution.brokerStatus;
+        existing.brokerCheckedAt = now;
+        changed = true;
+        if (resolution.release) {
+          recordOrderIdempotencyRelease(
+            state,
+            key,
+            existing,
+            now,
+            resolution.releaseReason,
+            resolution.brokerOrderId,
+            resolution.brokerStatus
+          );
+          delete state.orders[key];
+          existing = undefined;
+          releasedCount += 1;
+          brokerReleasedCount += 1;
+          console.log(
+            `[ORDER_IDEMP] broker_release symbol=${payload.symbol} key=${key.slice(0, 18)} reason=${resolution.releaseReason} brokerStatus=${resolution.brokerStatus ?? "N/A"} brokerOrderId=${resolution.brokerOrderId ?? "N/A"}`
+          );
+        } else if (resolution.checked) {
+          brokerHeldCount += 1;
+          console.log(
+            `[ORDER_IDEMP] broker_hold symbol=${payload.symbol} key=${key.slice(0, 18)} reason=${resolution.holdReason} brokerStatus=${resolution.brokerStatus ?? "N/A"} brokerOrderId=${resolution.brokerOrderId ?? "N/A"}`
+          );
+        }
+      } catch (error) {
+        brokerHeldCount += 1;
+        const msg = error instanceof Error ? error.message : String(error);
+        if (existing) {
+          existing.clientOrderId = existing.clientOrderId || payload.client_order_id;
+          existing.brokerCheckedAt = now;
+          changed = true;
+        }
+        console.warn(
+          `[ORDER_IDEMP] broker_reconcile_failed symbol=${payload.symbol} key=${key.slice(0, 18)} reason=${msg.slice(0, 160)}`
+        );
       }
     }
     if (existing) {
@@ -9827,7 +10170,10 @@ async function applyOrderIdempotency(
       if (enforced) {
         const existingFirstSeen = existing.firstSeenAt || "n/a";
         const existingStage6 = existing.stage6File || "n/a";
-        const detail = `key=${key.slice(0, 18)}...|firstSeenAt=${existingFirstSeen}|stage6=${existingStage6}`;
+        const brokerMeta = existing.brokerCheckedAt
+          ? `|brokerStatus=${existing.brokerStatus ?? "N/A"}|brokerCheckedAt=${existing.brokerCheckedAt}`
+          : "";
+        const detail = `key=${key.slice(0, 18)}...|firstSeenAt=${existingFirstSeen}|stage6=${existingStage6}${brokerMeta}`;
         skipped.push({ symbol: payload.symbol, reason: "idempotency_duplicate", detail });
         continue;
       }
@@ -9843,6 +10189,9 @@ async function applyOrderIdempotency(
         side: payload.side,
         stage6Hash: stage6.sha256,
         stage6File: stage6.fileName,
+        clientOrderId: payload.client_order_id,
+        brokerOrderId: null,
+        brokerStatus: null,
         firstSeenAt: now,
         lastSeenAt: now
       };
@@ -9855,7 +10204,7 @@ async function applyOrderIdempotency(
     await saveOrderIdempotencyState(state);
   }
   console.log(
-    `[ORDER_IDEMP] phase=${phase} enabled=${enabled} enforce=${enforced} persist=${persistNewEntries} ttlDays=${ttlDays} resetDaily=${entryResetDaily} tz=${idempotencyTimeZone} released=${releasedCount} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
+    `[ORDER_IDEMP] phase=${phase} enabled=${enabled} enforce=${enforced} persist=${persistNewEntries} ttlDays=${ttlDays} resetDaily=${entryResetDaily} tz=${idempotencyTimeZone} brokerRecon=${brokerReconcileActive} brokerChecked=${brokerCheckedCount} brokerReleased=${brokerReleasedCount} brokerHeld=${brokerHeldCount} released=${releasedCount} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
   );
 
   const nextDryExec: DryExecBuildResult = {
@@ -9869,7 +10218,11 @@ async function applyOrderIdempotency(
       enforced,
       ttlDays,
       newCount,
-      duplicateCount
+      duplicateCount,
+      releasedCount,
+      brokerCheckedCount,
+      brokerReleasedCount,
+      brokerHeldCount
     }
   };
   return {
@@ -9899,6 +10252,33 @@ async function saveOrderLedgerState(state: OrderLedgerState): Promise<void> {
   await mkdir("state", { recursive: true });
   await writeFile(ORDER_LEDGER_PATH, JSON.stringify(state, null, 2), "utf8");
   console.log(`[STATE] saved ${ORDER_LEDGER_PATH}`);
+}
+
+async function updateOrderIdempotencyBrokerSubmission(
+  dryExec: DryExecBuildResult,
+  brokerSubmit: BrokerSubmitSummary
+): Promise<void> {
+  if (dryExec.payloads.length === 0) return;
+  if (brokerSubmit.attempted === 0 && brokerSubmit.submitted === 0 && brokerSubmit.failed === 0) return;
+  const state = await loadOrderIdempotencyState();
+  const now = new Date().toISOString();
+  let changed = false;
+  for (const payload of dryExec.payloads) {
+    const key = payload.idempotencyKey;
+    const entry = state.orders[key];
+    const brokerRow = brokerSubmit.orders[key];
+    if (!entry || !brokerRow) continue;
+    entry.clientOrderId = brokerRow.clientOrderId || payload.client_order_id;
+    entry.brokerOrderId = brokerRow.brokerOrderId;
+    entry.brokerStatus = brokerRow.brokerStatus;
+    entry.brokerCheckedAt = now;
+    entry.lastSeenAt = now;
+    changed = true;
+  }
+  if (changed) {
+    state.updatedAt = now;
+    await saveOrderIdempotencyState(state);
+  }
 }
 
 function pruneOrderLedgerState(state: OrderLedgerState, ttlDays: number): number {
@@ -9963,7 +10343,7 @@ async function updateOrderLedger(
         stage6Hash: stage6.sha256,
         stage6File: stage6.fileName,
         mode,
-        clientOrderId: payload.client_order_id,
+        clientOrderId: brokerRow?.clientOrderId || payload.client_order_id,
         status: rowStatus,
         statusReason: rowReason,
         preflightCode: preflight.code,
@@ -10015,7 +10395,7 @@ async function updateOrderLedger(
     existing.stage6Hash = stage6.sha256;
     existing.stage6File = stage6.fileName;
     existing.mode = mode;
-    existing.clientOrderId = payload.client_order_id;
+    existing.clientOrderId = brokerRow?.clientOrderId || payload.client_order_id;
     existing.preflightCode = preflight.code;
     existing.regimeProfile = dryExec.regime.profile;
     existing.notional = payload.notional;
@@ -10542,7 +10922,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${dryExec.idempotency.duplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -10835,6 +11215,7 @@ async function main() {
     payloadPathVerification
   );
   const brokerSubmit = await submitOrdersToBroker(postPreflightDryExec, preflight, hfLivePromotion);
+  await updateOrderIdempotencyBrokerSubmission(postPreflightDryExec, brokerSubmit);
   const ledger = await updateOrderLedger(stage6, mode, postPreflightDryExec, preflight, brokerSubmit);
   const hfNextAction = deriveHfNextActionSummary(
     hfLivePromotion,

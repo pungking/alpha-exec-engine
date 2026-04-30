@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-30 (KST, execution sizing hardening)
+Last updated: 2026-04-30 (KST, broker-aware idempotency reconciliation)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -32,6 +32,11 @@ This document is the single live plan for sidecar development.
   - required markers: `preflight_pass=true`, `attempted>=1`, `submitted>=1`
   - current operating issue: payloads can be present while broker submit remains skipped/disabled/dedupe-blocked.
 - Duplicate `client_order_id` failure path is mitigated with retry+unique suffix.
+- Broker-aware idempotency reconciliation is implemented:
+  - duplicate keys query Alpaca by `client_order_id` in exec mode,
+  - canceled/rejected/expired broker orders can release the key,
+  - filled orders remain protected to avoid accidental double-entry,
+  - releases are recorded in `state/order-idempotency.json.releases`.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
   - `state/last-order-decision-audit.json`
@@ -72,8 +77,8 @@ Status: REOPENED
 Priority: P0
 
 - Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
-- Current focus: separate ideal Stage6 entry from executable whole-share sizing so high-priced names do not silently
-  die at broker submit when `DRY_NOTIONAL_PER_TRADE < limit_price`.
+- Current focus: prove broker-aware idempotency/manual-cancel reconciliation under RTH so manually canceled paper orders do
+  not permanently block a valid same-stage retry, while filled orders remain dedup-protected.
 - Done when:
   - repeated canary success with submit > 0 during RTH
   - `state/last-order-decision-audit.json` exists for normal and dedupe runs
