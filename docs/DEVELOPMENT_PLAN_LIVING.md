@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-30 (KST, broker-aware idempotency reconciliation)
+Last updated: 2026-04-30 (KST, execution-first roadmap lock)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -20,6 +20,40 @@ This document is the single live plan for sidecar development.
   - what changed,
   - evidence link (GitHub run / Notion row / artifact).
 - If code changes but this plan is not updated, the task is not considered complete.
+
+### Execution-first roadmap lock
+
+Until paper trading proves that orders are submitted, visible at Alpaca, and diagnosable after cancel/replace, work must
+follow this sequence:
+
+1. **Broker path proof**: confirm RTH sidecar runs produce `preflight_pass=true`, `attempted>=1`, `submitted>=1`,
+   Alpaca paper order visibility, and broker-aware idempotency release after manual cancel.
+2. **Fillability tuning**: tune entry price realism before changing upstream scoring. Required dimensions:
+   current-price distance, ATR, spread, volume, stale order cancel/replace, and RR after any chase adjustment.
+3. **Stage 1-6 signal quality review**: only after execution telemetry exists, review why Stage6 "executable" entries are
+   too far from current market or too idealized.
+4. **Lifecycle policy hardening**: refine `ENTRY_NEW`, `HOLD_WAIT`, `SCALE_UP`, `SCALE_DOWN`, `EXIT_PARTIAL`,
+   `EXIT_FULL`, stop timing, take-profit timing, and sector/position concentration limits.
+5. **Performance / monitoring layer**: expand Stage 7 only after paper order/fill telemetry is reliable.
+6. **Paper-to-live promotion**: real-capital readiness requires stable paper execution evidence; no shortcut.
+
+This is the project memory for sidecar sequencing. Codex local memory is read-only in this environment, so persistent
+execution decisions are stored here instead.
+
+### Completion estimate
+
+These estimates assume normal RTH testing cadence and no external API/account outage:
+
+| Phase | Target outcome | Realistic estimate |
+|---|---|---:|
+| M1 broker path proof | submitted Alpaca paper orders + cancel/idempotency reconciliation | 1-3 RTH sessions |
+| M2 fillability tuning | materially higher fill probability without breaking RR | 5-10 trading sessions |
+| M2/M3 trading policy + Stage 1-6 review | reduce "executable but unfillable" false positives | 2-4 weeks |
+| M3/M6 monitoring | Notion/performance/order telemetry usable for daily decisions | 1-2 weeks after fills exist |
+| Paper-to-live promotion evidence | stable paper results, incident-free run window, promotion checklist | 4-8 weeks minimum |
+| Full normal operation | analysis + execution + monitoring loop reliable enough for routine use | 8-12 weeks conservative |
+
+The critical path is not code volume; it is live-market evidence. If fill data remains sparse, the timeline stretches.
 
 ---
 
