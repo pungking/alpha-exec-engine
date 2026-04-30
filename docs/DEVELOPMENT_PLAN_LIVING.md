@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-04-30 (KST, execution overlay fallback hardening)
+Last updated: 2026-04-30 (KST, P0 broker reconciliation proof + overlay semantics)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -46,7 +46,7 @@ These estimates assume normal RTH testing cadence and no external API/account ou
 
 | Phase | Target outcome | Realistic estimate |
 |---|---|---:|
-| M1 broker path proof | submitted Alpaca paper orders + cancel/idempotency reconciliation | 1-3 RTH sessions |
+| M1 broker path proof | submitted Alpaca paper orders + cancel/idempotency reconciliation | current canary green; 1-2 scheduled confirmations remain |
 | M2 fillability tuning | materially higher fill probability without breaking RR | 5-10 trading sessions |
 | M2/M3 trading policy + Stage 1-6 review | reduce "executable but unfillable" false positives | 2-4 weeks |
 | M3/M6 monitoring | Notion/performance/order telemetry usable for daily decisions | 1-2 weeks after fills exist |
@@ -61,22 +61,28 @@ The critical path is not code volume; it is live-market evidence. If fill data r
 
 ### What is verified
 
-- Canary order-path verification has passed before, but it is **not considered closed** until the current recurring
-  `payload preview != broker submitted` gap is removed:
-  - required markers: `preflight_pass=true`, `attempted>=1`, `submitted>=1`
-  - current operating issue: payloads can be present while broker submit remains skipped/disabled/dedupe-blocked.
+- Canary order-path verification is green on the latest RTH evidence run:
+  - run: `https://github.com/pungking/alpha-exec-engine/actions/runs/25170624706`
+  - `Preflight: PASS`
+  - `Broker Reality: attempted=2 submitted=2 reason=submit_ok`
+  - broker-aware idempotency released manually canceled INVA/JHG keys and re-submitted with unique retry
+    `client_order_id` values.
 - Duplicate `client_order_id` failure path is mitigated with retry+unique suffix.
 - Broker-aware idempotency reconciliation is implemented:
   - duplicate keys query Alpaca by `client_order_id` in exec mode,
   - canceled/rejected/expired broker orders can release the key,
   - filled orders remain protected to avoid accidental double-entry,
   - releases are recorded in `state/order-idempotency.json.releases`.
-- Broker submit path has a meaningful first pass from the 2026-04-30 RTH run:
+- Broker submit path has a meaningful first pass from the 2026-04-30 RTH runs:
   - `Preflight: PASS`
   - `Broker Reality: attempted=2 submitted=2 reason=submit_ok`
   - Alpaca paper orders were visible to the operator.
 - Execution overlay fallback has been hardened so latest-bars failures can fall through to latest trade/quote and daily
   bar context instead of marking all symbols `data=failed`.
+- Execution overlay fallback was proven on the latest canary:
+  - `Execution Overlay: data=ok`
+  - `missing=0`
+  - INVA/JHG had market snapshots instead of endpoint-wide failure.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
   - `state/last-order-decision-audit.json`
@@ -94,11 +100,12 @@ The critical path is not code volume; it is live-market evidence. If fill data r
 
 ### What is not fully closed
 
-- Execution/paper-trading stabilization is the current P0. The system must prove that sidecar env variables,
-  preflight, idempotency, open-entry guard, broker submit, and Alpaca paper order visibility all agree on the same
-  run before any dashboard expansion work starts.
-- The 2026-04-30 run still showed `Execution Overlay: data=failed`; after the fallback patch, the next RTH run must
-  prove `execution_overlay.data` becomes `ok` or `partial`, or expose a specific endpoint/status failure.
+- Execution/paper-trading stabilization is now in observation mode. The latest RTH canary proved that sidecar env
+  variables, preflight, idempotency, broker submit, and Alpaca paper order visibility can agree on the same run.
+  The remaining P0 question is no longer "can orders be submitted"; it is "do submitted paper orders fill or get
+  rationally canceled/replaced under a stable policy?"
+- Execution overlay v1 is still observe-only. Its labels must be interpreted as fillability diagnostics, not as an
+  execution blocker, until enough paper order outcomes exist.
 - High-price whole-share sizing produced a successful RTH paper submit canary, but the manual canary override layer
   must stay synchronized because profile-specific `DRY_DEFAULT_*` / `DRY_RISK_OFF_*` values can override legacy
   `DRY_*` inputs.
@@ -115,12 +122,14 @@ The critical path is not code volume; it is live-market evidence. If fill data r
 ## 2) Milestones (Living)
 
 ## M1. Execution Reliability (Order Path)
-Status: REOPENED  
+Status: VALIDATED_ON_CANARY
 Priority: P0
 
 - Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
-- Current focus: prove broker-aware idempotency/manual-cancel reconciliation under RTH so manually canceled paper orders do
-  not permanently block a valid same-stage retry, while filled orders remain dedup-protected.
+- Current focus: observe submitted paper orders and collect fill/expire/cancel evidence without repeatedly resubmitting
+  while open entry orders already exist.
+- Broker-aware idempotency/manual-cancel reconciliation is validated on the current canary: manually canceled paper orders
+  released the dedupe keys, while the same Stage6 hash reissued orders with unique broker-safe `client_order_id` suffixes.
 - Done when:
   - repeated canary success with submit > 0 during RTH
   - `state/last-order-decision-audit.json` exists for normal and dedupe runs
@@ -133,7 +142,7 @@ Priority: P0
   - `state/last-order-decision-audit.json`
 
 ## M2. Trading Policy Hardening
-Status: IN_PROGRESS  
+Status: IN_PROGRESS
 Priority: P0
 
 - Goal: production-grade action policy behavior (`ENTRY/HOLD/SCALE/EXIT`).
@@ -150,7 +159,7 @@ Priority: P0
   - `docs/SCALE_UP_CHASE_GUARD_TUNING_PLAN.md`
 
 ## M3. Ops Reporting Automation
-Status: IN_PROGRESS  
+Status: IN_PROGRESS
 Priority: P1
 
 - Goal: daily ops report becomes systemized, auditable, and queryable.
@@ -165,7 +174,7 @@ Priority: P1
   - enforce evidence URL mandatory fields in Notion row schema
 
 ## M4. Knowledge Loop Integration (Notion/Obsidian/NotebookLM)
-Status: IN_PROGRESS  
+Status: IN_PROGRESS
 Priority: P1
 
 - Goal: research/ops loop supports tuning decisions with minimal manual friction.
@@ -181,7 +190,7 @@ Priority: P1
     - NotebookLM = synthesis/QA layer
 
 ## M5. Paper-to-Live Promotion Gate
-Status: PLANNED  
+Status: PLANNED
 Priority: P0
 
 - Goal: objective promotion criteria before real-capital mode.
@@ -194,7 +203,7 @@ Priority: P0
   - promotion checklist + sign-off evidence bundle
 
 ## M6. Stage 7 Performance / Trading Ops Board
-Status: DEFERRED  
+Status: DEFERRED
 Priority: P2 until M1/M2 stabilize; then P1
 
 - Goal: extend existing `7: Performance` into a unified `Performance / Trading Ops` board instead of creating
@@ -227,12 +236,15 @@ Priority: P2 until M1/M2 stabilize; then P1
 ### Next 24h
 
 1. Finish execution stabilization:
-   - verify sidecar Action variables are reflected in actual dry-run environment,
-   - run RTH canary with `preflight_pass=true`,
-   - confirm `attempted>=1 submitted>=1`,
-   - confirm Alpaca paper order appears or exact broker blocking reason is captured.
-2. Use `state/last-order-decision-audit.json` as the primary evidence for why each candidate became payload or skip.
-3. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 is green again.
+   - do not fire another submit canary while current paper entry orders are open,
+   - watch whether submitted orders fill, expire, or require stale cancel/replace,
+   - preserve `state/last-order-decision-audit.json` + Alpaca order status as the primary evidence pair.
+2. Tune fillability only from broker-observed outcomes:
+   - order stayed open because current price never pulled back,
+   - order filled and bracket children opened correctly,
+   - order expired/canceled and idempotency reconciled correctly.
+3. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 has scheduled-run confirmations, not only one
+   manual canary proof.
 
 ### Next 72h
 
@@ -242,7 +254,7 @@ Priority: P2 until M1/M2 stabilize; then P1
    - `last-dry-exec-preview.json`
    - `last-order-decision-audit.json`
    - Alpaca paper order list
-2. Tune adaptive entry only after audit proves the blocking source is entry distance, not env/dedupe/preflight.
+2. Tune adaptive entry only after audit proves the blocking source is fillability/entry distance, not env/dedupe/preflight.
 3. Keep Notion/Obsidian/NotebookLM integration in hold status unless it blocks execution evidence.
 4. Add template/runtime drift check for bridge and sidecar workflow mirrors.
 
@@ -270,6 +282,19 @@ Priority: P2 until M1/M2 stabilize; then P1
 ---
 
 ## 5) Update Log
+
+- 2026-04-30 KST (P0 broker reconciliation proof):
+  - RTH canary `25170624706` completed with `Preflight=PASS`, `attempted=2`, `submitted=2`, `reason=submit_ok`.
+  - Confirmed manual-cancel reconciliation:
+    - original INVA/JHG broker orders were `canceled`,
+    - idempotency keys were released with `broker_terminal:canceled`,
+    - retry submissions used unique broker-safe `client_order_id` suffixes.
+  - Confirmed execution overlay market-data fallback is working in the canary artifact:
+    - `data=ok`,
+    - `missing=0`,
+    - INVA/JHG received current market snapshots.
+  - Reclassified observe-only overlay semantics so a valid pullback-limit order is not labeled `NO_TRADE` merely because
+    chasing current price would have poor RR. Low RR at the original limit remains a true `NO_TRADE`.
 
 - 2026-04-30 KST (Telegram/order-readiness noise control):
   - Fixed dry-run dedupe key volatility by excluding `GUARD_CONTROL_AGE_MIN`; repeated schedules with the same

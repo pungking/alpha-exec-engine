@@ -5930,6 +5930,7 @@ function classifyExecutionOverlayMarket(
       ? Number((((currentPrice - stage6Entry) / stage6Entry) * 100).toFixed(4))
       : null;
   const rrAtCurrent = computeRiskReward(currentPrice, target, stop);
+  const rrAtLimit = computeRiskReward(stage6Entry, target, stop);
   const targetGapPct =
     target != null && currentPrice > 0 ? Number((((target - currentPrice) / currentPrice) * 100).toFixed(4)) : null;
   const aboveVwap = market.latestVwap == null || currentPrice >= market.latestVwap;
@@ -5940,11 +5941,15 @@ function classifyExecutionOverlayMarket(
   ).length;
   const trendConfirmed = Boolean(trendSignalCount > 0 && aboveVwap && aboveSma20 && weeklyOk);
 
-  if (targetGapPct != null && targetGapPct <= policy.targetBufferPct) {
-    return { style: "NO_TRADE", reason: "target_too_close_to_current", currentDistancePct, rrAtCurrent, trendConfirmed };
+  if (rrAtLimit != null && rrAtLimit < policy.minRr) {
+    return { style: "NO_TRADE", reason: "rr_below_floor_at_limit", currentDistancePct, rrAtCurrent, trendConfirmed };
   }
-  if (rrAtCurrent != null && rrAtCurrent < policy.minRr) {
-    return { style: "NO_TRADE", reason: "rr_below_floor_at_current", currentDistancePct, rrAtCurrent, trendConfirmed };
+  if (
+    targetGapPct != null &&
+    targetGapPct <= policy.targetBufferPct &&
+    (currentDistancePct == null || currentDistancePct <= policy.maxAdaptiveDistancePct)
+  ) {
+    return { style: "NO_TRADE", reason: "target_too_close_to_chase", currentDistancePct, rrAtCurrent, trendConfirmed };
   }
   if (currentDistancePct != null && currentDistancePct <= 0) {
     return { style: "PULLBACK_LIMIT", reason: "current_at_or_below_stage6_entry", currentDistancePct, rrAtCurrent, trendConfirmed };
@@ -5961,7 +5966,12 @@ function classifyExecutionOverlayMarket(
   if (currentDistancePct != null && currentDistancePct <= policy.maxPullbackDistancePct) {
     return {
       style: "PULLBACK_LIMIT",
-      reason: trendConfirmed ? "near_entry_keep_limit" : "near_entry_trend_unconfirmed",
+      reason:
+        rrAtCurrent != null && rrAtCurrent < policy.minRr
+          ? "near_entry_chase_rr_below_floor_keep_limit"
+          : trendConfirmed
+            ? "near_entry_keep_limit"
+            : "near_entry_trend_unconfirmed",
       currentDistancePct,
       rrAtCurrent,
       trendConfirmed

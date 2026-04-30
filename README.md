@@ -399,8 +399,11 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `CONFIRMED_ADAPTIVE_ENTRY`: current price is close enough to Stage6 entry, trend is not broken, and RR floor is preserved.
   - `PULLBACK_LIMIT`: Stage6 limit remains valid; keep waiting for the pullback instead of chasing.
   - `WAIT_PULLBACK`: current price is too far above Stage6 entry.
-  - `NO_TRADE`: current price makes RR/target buffer unattractive.
+  - `NO_TRADE`: original Stage6 limit has insufficient RR, or a near-market chase would leave too little target buffer.
   - `DATA_MISSING`: market-data fetch failed or returned no usable latest price.
+- Important nuance: poor RR at the current/chase price does not invalidate a pullback-limit order when RR at the
+  original Stage6 limit is still valid. In that case the overlay keeps `PULLBACK_LIMIT` and records a reason such as
+  `near_entry_chase_rr_below_floor_keep_limit`.
 - Rollout rule: v1 is audit-only. It writes `executionOverlay` into `state/last-dry-exec-preview.json`, decision audit rows, Telegram summary, and `[RUN_SUMMARY]`; it must not change payloads until enough paper-trading evidence proves the policy improves fill rate without degrading RR.
 
 ### Adaptive Conviction Gate
