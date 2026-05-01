@@ -9858,6 +9858,7 @@ async function saveDryExecPreview(
     executionOverlay: dryExec.executionOverlay,
     openOrderMonitor: dryExec.openOrderMonitor,
     openOrderMonitorDetail: formatOpenOrderMonitorDetails(dryExec.openOrderMonitor),
+    openOrderMonitorReprice: dryExec.openOrderMonitorReprice ?? createOpenOrderMonitorRepricePatch(false),
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
