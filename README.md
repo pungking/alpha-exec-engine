@@ -32,7 +32,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Execution overlay v1 adds observe-only current-market context from Alpaca data before broker submit audit (`EXECUTION_OVERLAY_ENABLED=true`).
 - Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
 - Open-order monitor telemetry now prints per-symbol suggested reprice limits, current price, RR-at-limit/current, and age so stale open orders can be reviewed without mutating broker state.
-- Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, RR-safe `REPRICE_CANDIDATE` rows can pass idempotency and stale cancel/replace.
+- Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, every Stage6 actionable symbol with an RR-safe `REPRICE_CANDIDATE` can pass idempotency and stale cancel/replace.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
@@ -424,7 +424,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 ### Open-Order Monitor / Reprice Bridge
 - Purpose: explain why already-submitted open buy entries are not filling. By default it is diagnostic only; live
   cancel/replace requires explicit reprice bridge + stale cleanup envs.
-- Scope: reads current Alpaca open buy orders, matches them by symbol to the current Stage6 actionable rows, and writes `openOrderMonitor` telemetry.
+- Scope: reads current Alpaca open buy orders, matches them by symbol to the current Stage6 actionable rows, and writes `openOrderMonitor` telemetry. This is portfolio-wide logic: there is no hard-coded ticker allowlist, and a single-symbol canary is only evidence for the generic rule.
 - Decision tags:
   - `KEEP`: order is near the limit or current price is already at/below the limit.
   - `WATCH_PULLBACK`: order is valid, but current price remains too far above the limit.

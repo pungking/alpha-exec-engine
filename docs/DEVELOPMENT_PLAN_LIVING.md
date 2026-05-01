@@ -95,8 +95,9 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - the actual blocker is fillability/reprice, not broker submission.
 - Monitor-driven stale reprice bridge is now implemented behind an explicit default-off switch:
   - `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false` by default;
-  - when enabled together with stale cleanup, `REPRICE_CANDIDATE` rows can pass idempotency, preflight, and stale
-    cancel/replace using the monitor's RR-safe suggested limit;
+  - when enabled together with stale cleanup, all Stage6 actionable symbols with `REPRICE_CANDIDATE` rows can pass
+    idempotency, preflight, and stale cancel/replace using the monitor's RR-safe suggested limit;
+  - JHG/INVA canary evidence is not a ticker-specific rule; it is proof for the portfolio-wide candidate loop.
   - send-dedupe is bypassed only for applied monitor-driven reprice candidates.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
@@ -146,6 +147,8 @@ Priority: P0
     live path had no bridge from monitor `REPRICE_CANDIDATE` to stale cancel/replace.
   - JHG was not RR-safe at current price; the suggested reprice stayed conservative, so chasing the market would have
     been the wrong fix.
+  - This diagnosis applies to every actionable symbol, not a fixed ticker set: each candidate must carry its own
+    distance, `rrAtLimit`, `rrAtCurrent`, target-buffer, stale age, and broker-open-order evidence before any replacement.
 - Broker-aware idempotency/manual-cancel reconciliation is validated on the current canary: manually canceled paper orders
   released the dedupe keys, while the same Stage6 hash reissued orders with unique broker-safe `client_order_id` suffixes.
 - Done when:
@@ -313,6 +316,13 @@ Priority: P2 until M1/M2 stabilize; then P1
     - `KEEP/WATCH_PULLBACK/REPRICE_CANDIDATE/CANCEL_CANDIDATE/DATA_MISSING` status.
   - Actual cancel/replace remains disabled by default; this step only produces the evidence needed before enabling
     `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`.
+
+- 2026-05-02 KST (monitor-driven reprice canary):
+  - RTH canary `25221956534` proved the generic reprice path: an RR-safe stale open-entry candidate canceled the prior
+    paper order, submitted a broker-safe retry order, and logged `attempted=1/submitted=1`.
+  - Persisted `openOrderMonitorReprice` into `state/last-dry-exec-preview.json` so future artifacts can be audited
+    structurally, not only via `[RUN_SUMMARY]` text.
+  - Reprice bridge remains default-off after canary; production use requires explicit safety-switch enablement.
 
 - 2026-04-30 KST (P0 broker reconciliation proof):
   - RTH canary `25170624706` completed with `Preflight=PASS`, `attempted=2`, `submitted=2`, `reason=submit_ok`.
