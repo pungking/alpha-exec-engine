@@ -254,6 +254,9 @@ const classifyRow = (row, broker) => {
     return { status: "FILLED", reason: "fill_activity_or_broker_status" };
   }
   if (broker.openOrder) {
+    if (row.openOrderMonitor?.status === "CANCEL_CANDIDATE") {
+      return { status: "OPEN_CANCEL_CANDIDATE", reason: row.openOrderMonitor.reason || "monitor_cancel_candidate" };
+    }
     if (row.openOrderMonitor?.status === "REPRICE_CANDIDATE") {
       const suggestedLimit = toNum(row.openOrderMonitor?.suggestedLimitPrice);
       const openLimit = toNum(broker.openOrder.limitPrice);
@@ -362,6 +365,7 @@ const summarizeRows = (rows, preview, alpaca) => {
   const entryTooFar = count("BLOCKED_ENTRY_DISTANCE");
   const openReprice = count("OPEN_REPRICE_CANDIDATE");
   const openRepricedWaiting = count("OPEN_REPRICED_WAITING");
+  const openCancel = count("OPEN_CANCEL_CANDIDATE");
   const terminalUnfilled = count("TERMINAL_UNFILLED");
   const openWaiting = count("OPEN_WAITING");
 
@@ -385,6 +389,9 @@ const summarizeRows = (rows, preview, alpaca) => {
   }
   if (openReprice > 0) {
     findings.push(`${openReprice} open order(s) are reprice candidates`);
+  }
+  if (openCancel > 0) {
+    findings.push(`${openCancel} open order(s) are cancel candidates`);
   }
   if (openRepricedWaiting > 0) {
     findings.push(`${openRepricedWaiting} open order(s) already repriced and waiting for pullback`);
@@ -410,6 +417,7 @@ const summarizeRows = (rows, preview, alpaca) => {
     openWaiting,
     openRepricedWaiting,
     openReprice,
+    openCancel,
     terminalUnfilled,
     entryTooFar,
     avgOpenCurrentVsLimitPct
@@ -428,7 +436,7 @@ const buildMarkdown = (report) => {
     `- broker: \`available=${report.broker.available} reason=${report.broker.reason} open=${report.summary.openOrderCount} fills=${report.summary.fillActivityCount} attempted/submitted=${report.summary.brokerAttempted}/${report.summary.brokerSubmitted}\``
   );
   lines.push(
-    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
+    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
   );
   if (report.summary.findings.length > 0) {
     lines.push("- findings:");
