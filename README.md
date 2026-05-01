@@ -32,6 +32,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Execution overlay v1 adds observe-only current-market context from Alpaca data before broker submit audit (`EXECUTION_OVERLAY_ENABLED=true`).
 - Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
 - Open-order monitor telemetry now prints per-symbol suggested reprice limits, current price, RR-at-limit/current, and age so stale open orders can be reviewed without mutating broker state.
+- Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, RR-safe `REPRICE_CANDIDATE` rows can pass idempotency and stale cancel/replace.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
@@ -191,6 +192,7 @@ Use `.env.example` as baseline.
 - `ENTRY_OPEN_ORDER_MONITOR_MIN_RR` (default `1.8`; minimum RR preserved for suggested reprice limit)
 - `ENTRY_OPEN_ORDER_MONITOR_TARGET_BUFFER_PCT` (default `1`; minimum target buffer preserved for suggested reprice limit)
 - `ENTRY_OPEN_ORDER_MONITOR_MIN_REPRICE_DELTA_PCT` (default `0.25`; minimum suggested-limit improvement before reprice candidate tag)
+- `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED` (default `false`; when `true` and stale cleanup is enabled, monitor `REPRICE_CANDIDATE` can become a cancel/replace payload)
 - `ALPACA_DATA_BASE_URL` (optional, default `https://data.alpaca.markets`; Alpaca market-data endpoint)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
@@ -419,8 +421,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   `near_entry_chase_rr_below_floor_keep_limit`.
 - Rollout rule: v1 is audit-only. It writes `executionOverlay` into `state/last-dry-exec-preview.json`, decision audit rows, Telegram summary, and `[RUN_SUMMARY]`; it must not change payloads until enough paper-trading evidence proves the policy improves fill rate without degrading RR.
 
-### Open-Order Monitor (observe-only v1)
-- Purpose: explain why already-submitted open buy entries are not filling, without automatically canceling or replacing them.
+### Open-Order Monitor / Reprice Bridge
+- Purpose: explain why already-submitted open buy entries are not filling. By default it is diagnostic only; live
+  cancel/replace requires explicit reprice bridge + stale cleanup envs.
 - Scope: reads current Alpaca open buy orders, matches them by symbol to the current Stage6 actionable rows, and writes `openOrderMonitor` telemetry.
 - Decision tags:
   - `KEEP`: order is near the limit or current price is already at/below the limit.
@@ -428,11 +431,13 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `REPRICE_CANDIDATE`: order is stale enough and a higher suggested limit can preserve RR/target-buffer constraints.
   - `CANCEL_CANDIDATE`: duplicate open entries, low RR at the open limit, thin target buffer near market, or far stale order.
   - `DATA_MISSING`: open order or current-market data is incomplete.
-- Rollout rule: v1 is audit-only. It must not cancel or replace orders. Actual cancel/replace remains controlled by
-  `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false` by default.
+- Rollout rule: monitor diagnostics stay non-mutating unless both switches are explicitly enabled:
+  `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=true` and `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=true`.
+  Reprice still respects `ENTRY_OPEN_ORDER_REPLACE_MIN_DELTA_BPS`,
+  `ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS`, cooldown, and daily-cap guards.
 - Telegram/preview diagnostics include `Open Order Detail`, which shows `limit/current/suggested`, `delta`, `distance`,
   `rrLimit/rrCurrent`, and age for each matched open order. `REPRICE_CANDIDATE` is therefore actionable for manual review,
-  but remains non-mutating until a later, explicitly enabled cancel/replace lane is promoted.
+  and can become a replacement order only when the explicit safety switches are on.
 
 ### Adaptive Conviction Gate
 - Sidecar applies an adaptive conviction floor from:

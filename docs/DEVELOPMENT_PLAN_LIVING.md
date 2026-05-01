@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-01 (KST, open-order monitor observe-only)
+Last updated: 2026-05-01 (KST, P0 fillability / monitor-driven reprice bridge)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -88,6 +88,16 @@ The critical path is not code volume; it is live-market evidence. If fill data r
     age, and reason;
   - idempotency display separates ledger duplicate counts from skip-reason duplicates so "no payload" runs are not
     misread as missing broker visibility.
+- P0 overnight fillability diagnosis is complete for the 2026-04-30 RTH batch:
+  - sidecar submitted INVA/JHG twice and Alpaca accepted the paper orders;
+  - all entry orders ended with `filled_qty=0`; first batch was manually canceled, second batch expired at market close;
+  - later runs correctly avoided duplicate submissions while open orders existed;
+  - the actual blocker is fillability/reprice, not broker submission.
+- Monitor-driven stale reprice bridge is now implemented behind an explicit default-off switch:
+  - `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false` by default;
+  - when enabled together with stale cleanup, `REPRICE_CANDIDATE` rows can pass idempotency, preflight, and stale
+    cancel/replace using the monitor's RR-safe suggested limit;
+  - send-dedupe is bypassed only for applied monitor-driven reprice candidates.
 - `SCALE_UP` chase guard controls are implemented and documented.
 - Order-decision audit is now required evidence for execution diagnosis:
   - `state/last-order-decision-audit.json`
@@ -105,12 +115,10 @@ The critical path is not code volume; it is live-market evidence. If fill data r
 
 ### What is not fully closed
 
-- Execution/paper-trading stabilization is now in observation mode. The latest RTH canary proved that sidecar env
-  variables, preflight, idempotency, broker submit, and Alpaca paper order visibility can agree on the same run.
-  The remaining P0 question is no longer "can orders be submitted"; it is "do submitted paper orders fill or get
-  rationally canceled/replaced under a stable policy?"
-- Execution overlay v1 is still observe-only. Its labels must be interpreted as fillability diagnostics, not as an
-  execution blocker, until enough paper order outcomes exist.
+- Execution/paper-trading stabilization has moved from "can we submit?" to "can we get rational fills without damaging
+  RR?" The latest evidence shows accepted Alpaca orders but zero fills.
+- Execution overlay and open-order monitor remain diagnostic layers by default. Live repricing requires explicit repo
+  variables and must keep stale cleanup, max chase, RR floor, and cooldown caps aligned.
 - High-price whole-share sizing produced a successful RTH paper submit canary, but the manual canary override layer
   must stay synchronized because profile-specific `DRY_DEFAULT_*` / `DRY_RISK_OFF_*` values can override legacy
   `DRY_*` inputs.
@@ -133,10 +141,16 @@ Priority: P0
 - Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
 - Current focus: observe submitted paper orders and collect fill/expire/cancel evidence without repeatedly resubmitting
   while open entry orders already exist.
+- P0 fillability finding:
+  - INVA was RR-safe to reprice upward during the session (`rrAtCurrent` stayed materially above the 1.8 floor), but the
+    live path had no bridge from monitor `REPRICE_CANDIDATE` to stale cancel/replace.
+  - JHG was not RR-safe at current price; the suggested reprice stayed conservative, so chasing the market would have
+    been the wrong fix.
 - Broker-aware idempotency/manual-cancel reconciliation is validated on the current canary: manually canceled paper orders
   released the dedupe keys, while the same Stage6 hash reissued orders with unique broker-safe `client_order_id` suffixes.
 - Done when:
   - repeated canary success with submit > 0 during RTH
+  - at least one stale open order is either filled, safely repriced, or explicitly held with an RR/cap reason
   - `state/last-order-decision-audit.json` exists for normal and dedupe runs
   - Telegram/Step Summary separates preview payloads from actual broker submissions
   - Alpaca paper orders are visible for submitted runs, or the exact blocking reason is recorded

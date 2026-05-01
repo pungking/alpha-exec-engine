@@ -416,6 +416,13 @@ type OpenOrderMonitorSummary = {
   records: Record<string, OpenOrderMonitorDecision>;
 };
 
+type OpenOrderMonitorRepricePatch = {
+  enabled: boolean;
+  applied: number;
+  blocked: number;
+  reasonCounts: Record<string, number>;
+};
+
 type EntrySizingPolicy = {
   highPricePolicy: EntryHighPricePolicy;
   minOneShareMaxNotional: number;
@@ -551,6 +558,7 @@ type DryExecBuildResult = {
   skipped: DryExecSkipReason[];
   skipReasonCounts: Record<string, number>;
   decisionAudit: OrderDecisionAuditRecord[];
+  openOrderMonitorReprice?: OpenOrderMonitorRepricePatch;
   actionIntent: {
     enabled: boolean;
     previewOnly: boolean;
@@ -1272,6 +1280,20 @@ type OrderIdempotencyBrokerResolution = {
   brokerStatus: OrderLifecycleStatus | null;
 };
 
+function shouldPassThroughIdempotencyForOpenOrderReprice(
+  dryExec: DryExecBuildResult,
+  payload: DryExecOrderPayload
+): boolean {
+  if (!isOpenOrderMonitorRepriceLiveEnabled()) return false;
+  const guardCfg = buildOpenEntryOrderGuardConfig();
+  if (!guardCfg.enabled || !guardCfg.staleCancelEnabled) return false;
+  const row = dryExec.decisionAudit.find((entry) => entry.symbol === payload.symbol);
+  const monitor = row?.openOrderMonitor ?? null;
+  if (monitor?.status !== "REPRICE_CANDIDATE") return false;
+  if (monitor.suggestedLimitPrice == null || !Number.isFinite(monitor.suggestedLimitPrice)) return false;
+  return roundToCent(payload.limit_price) === roundToCent(monitor.suggestedLimitPrice);
+}
+
 const STATE_PATH = "state/last-run.json";
 const DRY_EXEC_PREVIEW_PATH = "state/last-dry-exec-preview.json";
 const ORDER_DECISION_AUDIT_PATH = "state/last-order-decision-audit.json";
@@ -1629,6 +1651,7 @@ function printStartupSummary() {
   console.log(`OPEN_ENTRY_RMAX : ${openEntryGuardCfg.replaceMaxChaseBps}`);
   console.log(`OPEN_ENTRY_RCDN : ${openEntryGuardCfg.replaceCooldownMinutes}`);
   console.log(`OPEN_ENTRY_RDAY : ${openEntryGuardCfg.replaceMaxPerSymbolPerDay}`);
+  console.log(`OPEN_REPRICE_MON: ${isOpenOrderMonitorRepriceLiveEnabled()}`);
   console.log(`ENTRY_PRICE_MODE: ${entryPricePolicy.mode}`);
   console.log(`ENTRY_PRICE_CHMAX: ${entryPricePolicy.maxChasePct}`);
   console.log(`ENTRY_PRICE_DISTT: ${entryPricePolicy.distanceTriggerPct}`);
@@ -6533,6 +6556,116 @@ async function applyOpenOrderMonitorToDryExec(dryExec: DryExecBuildResult): Prom
   };
 }
 
+function isOpenOrderMonitorRepriceLiveEnabled(): boolean {
+  return readBoolEnv("ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED", false);
+}
+
+function createOpenOrderMonitorRepricePatch(
+  enabled = isOpenOrderMonitorRepriceLiveEnabled()
+): OpenOrderMonitorRepricePatch {
+  return {
+    enabled,
+    applied: 0,
+    blocked: 0,
+    reasonCounts: {}
+  };
+}
+
+function addOpenOrderMonitorRepriceReason(
+  patch: OpenOrderMonitorRepricePatch,
+  reason: string
+): void {
+  patch.reasonCounts[reason] = (patch.reasonCounts[reason] ?? 0) + 1;
+}
+
+function applyOpenOrderMonitorRepriceToDryExec(dryExec: DryExecBuildResult): DryExecBuildResult {
+  const enabled = isOpenOrderMonitorRepriceLiveEnabled();
+  const patch = createOpenOrderMonitorRepricePatch(enabled);
+  if (!enabled || dryExec.payloads.length === 0) {
+    return { ...dryExec, openOrderMonitorReprice: patch };
+  }
+
+  const guardCfg = buildOpenEntryOrderGuardConfig();
+  if (!guardCfg.enabled || !guardCfg.staleCancelEnabled) {
+    const reason = !guardCfg.enabled ? "open_entry_guard_disabled" : "stale_cancel_disabled";
+    dryExec.payloads.forEach(() => {
+      patch.blocked += 1;
+      addOpenOrderMonitorRepriceReason(patch, reason);
+    });
+    return { ...dryExec, openOrderMonitorReprice: patch };
+  }
+
+  const auditBySymbol = new Map(dryExec.decisionAudit.map((row) => [row.symbol, row]));
+  const payloads = dryExec.payloads.map((payload) => {
+    const monitor = auditBySymbol.get(payload.symbol)?.openOrderMonitor ?? null;
+    if (monitor?.status !== "REPRICE_CANDIDATE") return payload;
+
+    const suggestedLimit = monitor.suggestedLimitPrice;
+    const openLimit = monitor.limitPrice;
+    const openQty = monitor.qty;
+    if (
+      suggestedLimit == null ||
+      openLimit == null ||
+      openQty == null ||
+      !Number.isFinite(suggestedLimit) ||
+      !Number.isFinite(openLimit) ||
+      !Number.isFinite(openQty) ||
+      suggestedLimit <= 0 ||
+      openLimit <= 0 ||
+      openQty < 1
+    ) {
+      patch.blocked += 1;
+      addOpenOrderMonitorRepriceReason(patch, "invalid_monitor_reprice_fields");
+      return payload;
+    }
+
+    const deltaBps = ((suggestedLimit - openLimit) / openLimit) * 10000;
+    if (deltaBps < guardCfg.replaceMinDeltaBps) {
+      patch.blocked += 1;
+      addOpenOrderMonitorRepriceReason(patch, "delta_below_replace_min");
+      return payload;
+    }
+    if (deltaBps > guardCfg.replaceMaxChaseBps) {
+      patch.blocked += 1;
+      addOpenOrderMonitorRepriceReason(patch, "delta_above_replace_max");
+      return payload;
+    }
+
+    const roundedLimit = roundToCent(suggestedLimit);
+    const qty = Math.max(1, Math.floor(openQty));
+    const stop = payload.stop_loss.stop_price;
+    const notional = roundToCent(roundedLimit * qty);
+    const riskDollars = Number.isFinite(stop) ? roundToCent(Math.max(0, (roundedLimit - stop) * qty)) : 0;
+    patch.applied += 1;
+    addOpenOrderMonitorRepriceReason(patch, "monitor_reprice_applied");
+    return {
+      ...payload,
+      limit_price: roundedLimit,
+      notional,
+      client_order_id: makeRetryClientOrderId(payload.client_order_id),
+      entrySizing: {
+        requestedNotional: payload.entrySizing?.requestedNotional ?? payload.notional,
+        notional,
+        qty,
+        riskDollars,
+        highPriceAdjusted: Boolean(payload.entrySizing?.highPriceAdjusted),
+        reason: `open_order_monitor_reprice:${monitor.reason}`
+      }
+    };
+  });
+
+  const nextDryExec: DryExecBuildResult = {
+    ...dryExec,
+    payloads,
+    openOrderMonitorReprice: patch
+  };
+  return {
+    ...nextDryExec,
+    decisionAudit: reconcileDecisionAuditWithDryExec(nextDryExec.decisionAudit, payloads, nextDryExec.skipped),
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
+  };
+}
+
 function parseOpenEntryOrderSnapshot(raw: unknown, nowMs: number): OpenEntryOrderSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const node = raw as Record<string, unknown>;
@@ -7833,6 +7966,11 @@ function buildSimulationMessage(
     `Open Order Monitor: enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} open=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`
   );
   lines.push(`Open Order Detail: ${formatOpenOrderMonitorDetails(dryExec.openOrderMonitor)}`);
+  if (dryExec.openOrderMonitorReprice) {
+    lines.push(
+      `Open Order Reprice: enabled=${dryExec.openOrderMonitorReprice.enabled} applied=${dryExec.openOrderMonitorReprice.applied} blocked=${dryExec.openOrderMonitorReprice.blocked} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitorReprice.reasonCounts)}`
+    );
+  }
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
@@ -10772,6 +10910,19 @@ async function applyOrderIdempotency(
     }
     if (existing) {
       duplicateCount += 1;
+      const monitorRepricePassThrough = shouldPassThroughIdempotencyForOpenOrderReprice(dryExec, payload);
+      if (enforced && monitorRepricePassThrough) {
+        payloads.push(payload);
+        if (persistNewEntries) {
+          existing.lastSeenAt = now;
+          existing.clientOrderId = payload.client_order_id;
+          changed = true;
+        }
+        console.log(
+          `[ORDER_IDEMP] open_order_reprice_pass symbol=${payload.symbol} key=${key.slice(0, 18)} limit=${payload.limit_price.toFixed(2)} brokerStatus=${existing.brokerStatus ?? "N/A"}`
+        );
+        continue;
+      }
       if (enforced) {
         const existingFirstSeen = existing.firstSeenAt || "n/a";
         const existingStage6 = existing.stage6File || "n/a";
@@ -11203,6 +11354,7 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `DAILY_MAX_NOTIONAL=${dailyMaxNotional}`,
     `ORDER_LIFECYCLE_ENABLED=${orderLifecycleEnabled}`,
     `ORDER_LEDGER_TTL_DAYS=${orderLedgerTtlDays}`,
+    `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=${isOpenOrderMonitorRepriceLiveEnabled()}`,
     `REGIME_QUALITY_GUARD_ENABLED=${regimeQualityEnabled}`,
     `REGIME_QUALITY_MIN_SCORE=${regimeQualityMinScore}`,
     `REGIME_HYSTERESIS_ENABLED=${regimeHysteresisEnabled}`,
@@ -11382,6 +11534,8 @@ function printRunSummary(
   const executionOverlaySummary = `enabled:${dryExec.executionOverlay.enabled}|mode:${dryExec.executionOverlay.mode}|data:${dryExec.executionOverlay.dataStatus}|evaluated:${dryExec.executionOverlay.evaluated}|confirmed:${dryExec.executionOverlay.confirmedAdaptiveEntry}|pullback:${dryExec.executionOverlay.pullbackLimit}|wait:${dryExec.executionOverlay.waitPullback}|noTrade:${dryExec.executionOverlay.noTrade}|missing:${dryExec.executionOverlay.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`;
   const openOrderMonitorSummary = `enabled:${dryExec.openOrderMonitor.enabled}|mode:${dryExec.openOrderMonitor.mode}|data:${dryExec.openOrderMonitor.dataStatus}|open:${dryExec.openOrderMonitor.openOrders}|matched:${dryExec.openOrderMonitor.matched}|keep:${dryExec.openOrderMonitor.keep}|watch:${dryExec.openOrderMonitor.watchPullback}|reprice:${dryExec.openOrderMonitor.repriceCandidate}|cancel:${dryExec.openOrderMonitor.cancelCandidate}|missing:${dryExec.openOrderMonitor.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`;
   const openOrderMonitorDetailSummary = formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor);
+  const openOrderReprice = dryExec.openOrderMonitorReprice ?? createOpenOrderMonitorRepricePatch(false);
+  const openOrderMonitorRepriceSummary = `enabled:${openOrderReprice.enabled}|applied:${openOrderReprice.applied}|blocked:${openOrderReprice.blocked}|reasons:${formatSkipReasonCounts(openOrderReprice.reasonCounts)}`;
   const idempotencyTelemetry = buildOrderIdempotencyTelemetry(dryExec);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
@@ -11530,7 +11684,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -11624,9 +11778,11 @@ async function main() {
     `[ACTION_INTENT] enabled=${dryExecBase.actionIntent.enabled} previewOnly=${dryExecBase.actionIntent.previewOnly} allowed=${dryExecBase.actionIntent.allowedActionTypes.join("/")} counts=ENTRY_NEW:${dryExecBase.actionIntent.counts.ENTRY_NEW},HOLD_WAIT:${dryExecBase.actionIntent.counts.HOLD_WAIT},SCALE_UP:${dryExecBase.actionIntent.counts.SCALE_UP},SCALE_DOWN:${dryExecBase.actionIntent.counts.SCALE_DOWN},EXIT_PARTIAL:${dryExecBase.actionIntent.counts.EXIT_PARTIAL},EXIT_FULL:${dryExecBase.actionIntent.counts.EXIT_FULL}`
   );
   const dryExecAfterRegime = applyEntryGuardToDryExec(dryExecBase, regime);
-  const dryExec = await applyExecutionOverlayToDryExec(
+  const dryExecAfterOverlay = await applyExecutionOverlayToDryExec(
     applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl)
   );
+  const dryExecAfterOpenOrderMonitor = await applyOpenOrderMonitorToDryExec(dryExecAfterOverlay);
+  const dryExec = applyOpenOrderMonitorRepriceToDryExec(dryExecAfterOpenOrderMonitor);
   const hfShadow = computeHfShadowSummary(actionable, stage6.sha256, regime, guardControl, dryExec);
   await saveHfShadowSummary(hfShadow);
   const mode = buildRunModeLabel(dryExec, guardControl);
@@ -11648,7 +11804,14 @@ async function main() {
     }
   }
 
-  if (!shouldSend(priorState, stage6, mode) && !forceSendBypassDedupe) {
+  const openOrderRepriceBypassDedupe = (dryExec.openOrderMonitorReprice?.applied ?? 0) > 0;
+  if (openOrderRepriceBypassDedupe) {
+    console.warn(
+      `[OPEN_ORDER_REPRICE] bypassing send dedupe for ${dryExec.openOrderMonitorReprice?.applied ?? 0} monitor-driven replace candidate(s)`
+    );
+  }
+
+  if (!shouldSend(priorState, stage6, mode) && !forceSendBypassDedupe && !openOrderRepriceBypassDedupe) {
     console.log(`[DEDUPE] SKIP send (same hash/mode) sha256=${stage6.sha256.slice(0, 12)} mode=${mode}`);
     await sendHeartbeatOnDedupe(stage6, dryExec, guardControl, mode);
     const dedupePreflight: PreflightResult = {
@@ -11791,7 +11954,6 @@ async function main() {
       `[ORDER_IDEMP] phase=final deferred=true reason=preflight_blocking code=${preflight.code}`
     );
   }
-  finalDryExec = await applyOpenOrderMonitorToDryExec(finalDryExec);
   const postPreflightDryExec = applyPreflightGateToDryExec(finalDryExec, preflight);
   const hfDrift = await updateHfDriftAlert(stage6, postPreflightDryExec, actionable.length);
   const hfAlert = evaluateHfAnomalyAlert(hfShadow, hfDrift);
