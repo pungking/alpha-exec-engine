@@ -118,6 +118,7 @@ HF verification shortcuts:
 - `npm run progress:daily`: print current pending items + evidence completion from tracker/evidence docs.
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
+- `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
 - `npm run ops:health:dry-run`: build dry-run focused health snapshot.
 - `npm run ops:health:market-guard`: build market-guard focused health snapshot.
@@ -666,7 +667,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/fillability-report.json`, `state/fillability-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
@@ -683,6 +684,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Both workflows now generate a dashboard snapshot after run summary:
   - `state/performance-dashboard.json` (chart-ready machine data)
   - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
+  - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
   - `Sim Rows` = cumulative loop rows (history total), `latest snapshot tradeCount` = latest KPI snapshot count.

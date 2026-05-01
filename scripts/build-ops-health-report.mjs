@@ -9,6 +9,7 @@ const FILES = {
   guard: `${STATE_DIR}/last-market-guard.json`,
   guardControl: `${STATE_DIR}/guard-control.json`,
   perf: `${STATE_DIR}/performance-dashboard.json`,
+  fillability: `${STATE_DIR}/fillability-report.json`,
   markerAudit: `${STATE_DIR}/hf-marker-audit.json`
 };
 
@@ -91,10 +92,10 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
@@ -114,6 +115,7 @@ const main = () => {
   const guard = readJson(FILES.guard);
   const guardControl = readJson(FILES.guardControl);
   const perf = readJson(FILES.perf);
+  const fillability = readJson(FILES.fillability);
   const markerAudit = readJson(FILES.markerAudit);
 
   const kind = determineKind(process.env.OPS_HEALTH_KIND, preview, guard);
@@ -127,6 +129,9 @@ const main = () => {
   }
   if (!perf) {
     addCheck(checks, "warn", "perf_dashboard_missing", "state/performance-dashboard.json not found");
+  }
+  if (!fillability) {
+    addCheck(checks, "warn", "fillability_report_missing", "state/fillability-report.json not found");
   }
 
   const payloadCount = toNum(preview?.payloadCount);
@@ -152,6 +157,19 @@ const main = () => {
   const simulationSnapshotTrades = toNum(perf?.simulation?.latestSnapshotTradeCount);
   const simulationRowSnapshotGap = toNum(perf?.simulation?.rowVsSnapshotGap);
   const simulationSnapshotCoveragePct = toNum(perf?.simulation?.snapshotCoveragePct);
+  const fillabilityOverall = short(fillability?.summary?.overall || "", 32) || null;
+  const fillabilityFills = toNum(fillability?.summary?.fillActivityCount);
+  const fillabilityRepricedWaiting = toNum(fillability?.summary?.openRepricedWaiting);
+  const fillabilityOpenReprice = toNum(fillability?.summary?.openReprice);
+
+  if (fillabilityOverall === "warn") {
+    addCheck(
+      checks,
+      "warn",
+      "fillability_warn",
+      short((fillability?.summary?.findings || []).join("; ") || "fillability report returned warn", 320)
+    );
+  }
 
   if (perfGateParsed && simulationRows != null && perfGateParsed.current !== simulationRows) {
     addCheck(
@@ -291,6 +309,7 @@ const main = () => {
       guard: Boolean(guard),
       guardControl: Boolean(guardControl),
       perf: Boolean(perf),
+      fillability: Boolean(fillability),
       markerAudit: Boolean(markerAudit || preview?.hfMarkerAudit)
     },
     metrics: {
@@ -308,6 +327,10 @@ const main = () => {
       simulationSnapshotTrades,
       simulationRowSnapshotGap,
       simulationSnapshotCoveragePct,
+      fillabilityOverall,
+      fillabilityFills,
+      fillabilityRepricedWaiting,
+      fillabilityOpenReprice,
       guardLevel,
       haltNewEntries,
       liveAvailable,

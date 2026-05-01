@@ -16,6 +16,7 @@
     "ops:health": "node scripts/build-ops-health-report.mjs",
     "ops:health:dry-run": "OPS_HEALTH_KIND=dry_run node scripts/build-ops-health-report.mjs",
     "ops:health:market-guard": "OPS_HEALTH_KIND=market_guard node scripts/build-ops-health-report.mjs",
+    "ops:fillability": "node scripts/build-fillability-report.mjs",
     "ops:notion:audit": "node scripts/build-notion-ops-audit.mjs",
     "ops:daily:report": "node scripts/build-ops-daily-report.mjs",
     "ops:daily:notion:sync": "node scripts/sync-notion-ops-daily.mjs",

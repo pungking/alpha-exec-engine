@@ -1573,6 +1573,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build fillability evidence snapshot
+        if: always()
+        run: npm run ops:fillability
+
+      - name: Publish fillability evidence summary
+        if: always()
+        run: |
+          if [[ -f state/fillability-report.md ]]; then
+            cat state/fillability-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Sidecar Fillability Evidence" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/fillability-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1646,6 +1661,8 @@ jobs:
             state/stage6-20trade-loop.csv
             state/performance-dashboard.json
             state/performance-dashboard.md
+            state/fillability-report.json
+            state/fillability-report.md
             state/ops-health-report.json
             state/ops-health-report.md
             state/validation-pack-auto-trigger.json

@@ -142,6 +142,8 @@ Priority: P0
 - Goal: keep `preflight/attempted/submitted` path stable and make every non-submit reason auditable.
 - Current focus: observe submitted paper orders and collect fill/expire/cancel evidence without repeatedly resubmitting
   while open entry orders already exist.
+- Current evidence artifact: `state/fillability-report.json` / `.md` joins Stage6 decisions, order-decision audit,
+  Alpaca open/closed/fill state, and open-order monitor data for every actionable symbol.
 - P0 fillability finding:
   - INVA was RR-safe to reprice upward during the session (`rrAtCurrent` stayed materially above the 1.8 floor), but the
     live path had no bridge from monitor `REPRICE_CANDIDATE` to stale cancel/replace.
@@ -322,6 +324,9 @@ Priority: P2 until M1/M2 stabilize; then P1
     paper order, submitted a broker-safe retry order, and logged `attempted=1/submitted=1`.
   - Persisted `openOrderMonitorReprice` into `state/last-dry-exec-preview.json` so future artifacts can be audited
     structurally, not only via `[RUN_SUMMARY]` text.
+  - Added candidate-wide fillability evidence report (`state/fillability-report.json` / `.md`) to distinguish
+    Stage6 entry-distance blockers, RR-protected open pullback orders, reprice candidates, terminal unfilled orders,
+    and actual fill activity.
   - Reprice bridge remains default-off after canary; production use requires explicit safety-switch enablement.
 
 - 2026-04-30 KST (P0 broker reconciliation proof):
