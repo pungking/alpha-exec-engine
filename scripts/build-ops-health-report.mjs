@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-const STATE_DIR = "state";
+const STATE_DIR = String(process.env.OPS_HEALTH_STATE_DIR || "state").trim() || "state";
 const OUTPUT_JSON = `${STATE_DIR}/ops-health-report.json`;
 const OUTPUT_MD = `${STATE_DIR}/ops-health-report.md`;
 
@@ -95,7 +95,7 @@ const buildMarkdown = (report) => {
     `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)}\``
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
@@ -162,6 +162,8 @@ const main = () => {
   const fillabilityRepricedWaiting = toNum(fillability?.summary?.openRepricedWaiting);
   const fillabilityOpenReprice = toNum(fillability?.summary?.openReprice);
   const fillabilityOpenCancel = toNum(fillability?.summary?.openCancel);
+  const fillabilityEntryTooFar = toNum(fillability?.summary?.entryTooFar);
+  const fillabilityHighPriceSize = toNum(fillability?.summary?.highPriceSizeBlocked);
 
   if (fillabilityOverall === "warn") {
     addCheck(
@@ -169,6 +171,24 @@ const main = () => {
       "warn",
       "fillability_warn",
       short((fillability?.summary?.findings || []).join("; ") || "fillability report returned warn", 320)
+    );
+  }
+
+  if (fillabilityEntryTooFar != null && fillabilityEntryTooFar > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "entry_distance_block",
+      `${fillabilityEntryTooFar} candidate(s) exceeded entry-distance policy; route to Stage6 entry/OTE calibration, not broker-submit debugging`
+    );
+  }
+
+  if (fillabilityHighPriceSize != null && fillabilityHighPriceSize > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "high_price_size_block",
+      `${fillabilityHighPriceSize} candidate(s) exceeded fixed notional sizing; review min_one_share cap/risk settings before enabling higher-price entries`
     );
   }
 
@@ -333,6 +353,8 @@ const main = () => {
       fillabilityRepricedWaiting,
       fillabilityOpenReprice,
       fillabilityOpenCancel,
+      fillabilityEntryTooFar,
+      fillabilityHighPriceSize,
       guardLevel,
       haltNewEntries,
       liveAvailable,

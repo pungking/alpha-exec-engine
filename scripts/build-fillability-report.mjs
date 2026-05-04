@@ -273,6 +273,12 @@ const classifyRow = (row, broker) => {
   if (String(row.reason || "").includes("entry_too_far_from_market")) {
     return { status: "BLOCKED_ENTRY_DISTANCE", reason: row.reason };
   }
+  if (
+    String(row.reason || "").includes("entry_notional_below_limit_price") ||
+    String(row.reason || "").includes("entry_min_one_share_")
+  ) {
+    return { status: "BLOCKED_HIGH_PRICE_SIZE", reason: row.reason };
+  }
   if (String(row.reason || "").includes("idempotency_duplicate")) {
     return { status: "IDEMPOTENCY_HELD", reason: row.reason };
   }
@@ -303,6 +309,10 @@ const buildRows = (records, alpaca) => {
     );
     const activeLimit = openOrder?.limitPrice ?? row?.openOrderMonitor?.limitPrice ?? row?.entryAdjusted;
     const classification = classifyRow(row, { openOrder, latestClosed, fills });
+    const entry = toNum(row?.entryAdjusted);
+    const stop = toNum(row?.stop);
+    const oneShareRiskDollars =
+      entry != null && stop != null && entry > stop ? Number((entry - stop).toFixed(2)) : null;
 
     return {
       symbol,
@@ -342,6 +352,8 @@ const buildRows = (records, alpaca) => {
       brokerClosedStatus: latestClosed?.status || null,
       brokerClosedLimit: latestClosed?.limitPrice ?? null,
       brokerClosedFilledQty: latestClosed?.filledQty ?? null,
+      oneShareNotional: entry,
+      oneShareRiskDollars,
       fillCount: fills.length,
       fillQty: fills.reduce((acc, fill) => acc + (fill.qty || 0), 0),
       avgFillPrice:
@@ -363,6 +375,7 @@ const summarizeRows = (rows, preview, alpaca) => {
       : null;
   const fillRows = rows.filter((row) => row.fillQty > 0);
   const entryTooFar = count("BLOCKED_ENTRY_DISTANCE");
+  const highPriceSizeBlocked = count("BLOCKED_HIGH_PRICE_SIZE");
   const openReprice = count("OPEN_REPRICE_CANDIDATE");
   const openRepricedWaiting = count("OPEN_REPRICED_WAITING");
   const openCancel = count("OPEN_CANCEL_CANDIDATE");
@@ -386,6 +399,10 @@ const summarizeRows = (rows, preview, alpaca) => {
   if (entryTooFar > 0) {
     overall = "warn";
     findings.push(`${entryTooFar} candidate(s) blocked by entry distance`);
+  }
+  if (highPriceSizeBlocked > 0) {
+    overall = "warn";
+    findings.push(`${highPriceSizeBlocked} candidate(s) blocked by high-price sizing`);
   }
   if (openReprice > 0) {
     findings.push(`${openReprice} open order(s) are reprice candidates`);
@@ -420,6 +437,7 @@ const summarizeRows = (rows, preview, alpaca) => {
     openCancel,
     terminalUnfilled,
     entryTooFar,
+    highPriceSizeBlocked,
     avgOpenCurrentVsLimitPct
   };
 };
@@ -436,18 +454,18 @@ const buildMarkdown = (report) => {
     `- broker: \`available=${report.broker.available} reason=${report.broker.reason} open=${report.summary.openOrderCount} fills=${report.summary.fillActivityCount} attempted/submitted=${report.summary.brokerAttempted}/${report.summary.brokerSubmitted}\``
   );
   lines.push(
-    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
+    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
   );
   if (report.summary.findings.length > 0) {
     lines.push("- findings:");
     for (const finding of report.summary.findings) lines.push(`  - ${finding}`);
   }
   lines.push("");
-  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | Monitor | Reason |");
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | OneShareRisk | Monitor | Reason |");
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
   for (const row of report.rows.slice(0, 20)) {
     lines.push(
-      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
+      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${fmt(row.oneShareRiskDollars)} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
     );
   }
   lines.push("");
@@ -482,7 +500,7 @@ const main = async () => {
   fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
   console.log(
-    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} entryTooFar=${summary.entryTooFar} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
+    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
   );
 };
 

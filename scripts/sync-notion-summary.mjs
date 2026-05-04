@@ -321,6 +321,7 @@ const buildDryRunPayload = () => {
   const preflight = preview?.preflight || {};
   const guardControl = preview?.guardControl || {};
   const mode = preview?.mode || {};
+  const brokerSubmission = preview?.brokerSubmission || {};
   const vixLevel = toNumber(regime?.vix);
   const stage6Count = toNumber(stage6Contract?.checked);
   const finalPicksCount = toNumber(stage6Contract?.executable);
@@ -347,6 +348,13 @@ const buildDryRunPayload = () => {
   return {
     engine: "sidecar_dry_run",
     source: "sidecar_dry_run",
+    status: resolveDryRunSnapshotStatus({
+      payloadCount,
+      skippedCount,
+      preflight,
+      mode,
+      brokerSubmission
+    }),
     date: state.lastSentAt || preview?.generatedAt || new Date().toISOString(),
     stage6Count,
     finalPicksCount,
@@ -362,6 +370,22 @@ const buildDryRunPayload = () => {
     topTickers: `${stage6File} (${stage6Hash ? stage6Hash.slice(0, 12) : "N/A"})`,
     summary
   };
+};
+
+const resolveDryRunSnapshotStatus = ({ payloadCount, skippedCount, preflight, mode, brokerSubmission }) => {
+  const preflightCode = String(preflight?.code || "").trim().toUpperCase();
+  const brokerReason = String(brokerSubmission?.reason || "").trim().toLowerCase();
+  const execEnabled = mode?.execEnabled === true;
+  const readOnly = mode?.readOnly === true;
+  const submitted = toNumber(brokerSubmission?.submitted) ?? 0;
+
+  if (preflightCode === "PREFLIGHT_NO_PAYLOAD" || (payloadCount === 0 && skippedCount > 0)) {
+    return "WARN";
+  }
+  if (execEnabled && !readOnly && payloadCount > 0 && submitted === 0 && brokerReason !== "submit_disabled") {
+    return "WARN";
+  }
+  return "Success";
 };
 
 const buildMarketGuardPayload = () => {
@@ -1499,8 +1523,8 @@ const main = async () => {
   const runAttempt = env("GITHUB_RUN_ATTEMPT", "1");
   const runKey = `${config.runKeyPrefix}-${runId}-${runAttempt}`;
   const statusRaw = env("GHA_JOB_STATUS", "success").toLowerCase();
-  const status = statusRaw === "success" ? "Success" : "Partial";
   const payload = config.payloadBuilder();
+  const status = statusRaw === "success" ? payload.status || "Success" : "Partial";
   const eventName = env("GITHUB_EVENT_NAME", "");
   const eventAction = env("GITHUB_EVENT_ACTION", "");
   const triggerType = classifyWorkflowTrigger(eventName);

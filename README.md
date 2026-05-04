@@ -120,6 +120,7 @@ HF verification shortcuts:
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
+- `OPS_HEALTH_STATE_DIR=/path/to/artifact npm run ops:health`: rebuild ops health from a downloaded sidecar artifact without mutating local `state/`.
 - `npm run ops:health:dry-run`: build dry-run focused health snapshot.
 - `npm run ops:health:market-guard`: build market-guard focused health snapshot.
 - `npm run ops:notion:audit`: audit latest Notion Daily Snapshot rows for required fields/duplicate run keys/staleness (`state/notion-ops-audit.json`, `.md`).
@@ -549,6 +550,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
 - Dry-run workflow writes one Notion upsert row per run key: `sidecar-dryrun-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
 - Market-guard workflow writes one upsert row per run key: `sidecar-guard-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}`.
 - Sync script auto-populates extra Daily Snapshot columns (`Source`, `Engine`, `Stage6 File`, `Stage6 Hash`, `Payload Count`, `Skipped Count`, `Guard Level`, `HF Gate`, `HF Live Promotion`, `Action Reason`, `Run Actions`) **only when those columns exist**.
+- Dry-run Notion status is `WARN` when the workflow succeeded but no payload was generated (`PREFLIGHT_NO_PAYLOAD` or all candidates skipped). This prevents "successful workflow" from being mistaken for "orders ready/submitted".
 - Required secret:
   - `NOTION_TOKEN`
 - Required variable:
