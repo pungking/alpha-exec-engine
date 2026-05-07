@@ -1655,6 +1655,8 @@ jobs:
             state/last-run-output.log
             state/order-idempotency.json
             state/order-ledger.json
+            state/portfolio-admission-audit.json
+            state/recommendation-ledger.json
             state/open-entry-replace-guard.json
             state/regime-guard-state.json
             state/stage6-20trade-loop.json

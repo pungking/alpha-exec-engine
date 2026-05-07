@@ -322,6 +322,8 @@ const buildDryRunPayload = () => {
   const guardControl = preview?.guardControl || {};
   const mode = preview?.mode || {};
   const brokerSubmission = preview?.brokerSubmission || {};
+  const portfolioAdmission = preview?.portfolioAdmission || {};
+  const recommendationLedger = preview?.recommendationLedger || {};
   const vixLevel = toNumber(regime?.vix);
   const stage6Count = toNumber(stage6Contract?.checked);
   const finalPicksCount = toNumber(stage6Contract?.executable);
@@ -342,6 +344,8 @@ const buildDryRunPayload = () => {
     `hfGate=${gate}`,
     `hfLivePromotion=${livePromotion}`,
     `hfApplied=${hfGate.applied ?? "N/A"}`,
+    `portfolioAdmission=${portfolioAdmission.checked ?? "N/A"}/${portfolioAdmission.admitted ?? "N/A"}/${portfolioAdmission.rejected ?? "N/A"}`,
+    `recommendationActive=${recommendationLedger.active ?? "N/A"}`,
     `execEnabled=${mode.execEnabled ?? "N/A"}`,
     `readOnly=${mode.readOnly ?? "N/A"}`
   ].join(" ");

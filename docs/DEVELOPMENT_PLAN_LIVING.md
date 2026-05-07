@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-07 (KST, GTSA execution lifecycle integration plan)
+Last updated: 2026-05-07 (KST, portfolio admission + recommendation ledger implementation)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -118,6 +118,16 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - `state/order-decision-audit.jsonl`
   - required purpose: distinguish `payload_ready`, `entry_too_far_from_market`, `dedupe_skip`, `preflight_blocked`,
     `submit_disabled`, `read_only`, `exec_disabled`, and Alpaca rejection/failure paths.
+- Portfolio admission controller is implemented in the sidecar path after execution overlay/open-order monitor and before
+  preflight/broker submit:
+  - enforces active-symbol, open-entry, new-symbol-per-day, sector, fillability, and current-RR gates;
+  - writes `state/portfolio-admission-audit.json`;
+  - keeps monitor-driven same-order replacement from consuming a new open-entry slot.
+- Recommendation lifecycle ledger is implemented:
+  - writes `state/recommendation-ledger.json`;
+  - tracks each candidate as `RECOMMENDED_NEW`, `ADMITTED_FOR_ENTRY`, `OPEN_ORDER`, `FILLED`,
+    `HOLD_MONITOR`, scale/exit candidate, `REJECTED_BY_ADMISSION`, or `EXPIRED_RECOMMENDATION`;
+  - expires stale non-open/non-filled recommendations so daily rotating candidates do not accumulate indefinitely.
 - Notion ingestion path is alive:
   - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
   - HF Tuning Tracker rows are being updated for latest dry-run runs.
@@ -190,11 +200,12 @@ Priority: P0
   - chase guard introduced
   - policy matrix documented
   - high-price one-share sizing policy added behind explicit caps
+  - portfolio admission + recommendation ledger implemented at sidecar layer
 - Remaining:
   - repeat RTH canary after profile-aware manual override sync is pushed
   - 3-trading-day baseline for chase guard
   - compare conservative/balanced variants
-  - implement portfolio admission + recommendation ledger before enabling broader automated scale/exit behavior
+  - validate portfolio admission + recommendation ledger against the next fresh RTH run before enabling broader automated scale/exit behavior
   - consume GTSA only through a reduced deterministic overlay; do not let free-text reasoning mutate order geometry
 - Evidence source:
   - `docs/TRADING_POLICY_MATRIX.md`
@@ -281,6 +292,8 @@ Priority: P2 until M1/M2 stabilize; then P1
 1. Finish execution stabilization:
    - do not fire another submit canary while current paper entry orders are open,
    - watch whether submitted orders fill, expire, or require stale cancel/replace,
+   - confirm portfolio admission does not create extra broker submissions when capacity/fillability gates reject a candidate,
+   - confirm `state/recommendation-ledger.json` reflects open/canceled/expired paper-order status after each run,
    - preserve `state/last-order-decision-audit.json` + Alpaca order status as the primary evidence pair.
 2. Tune fillability only from broker-observed outcomes:
    - order stayed open because current price never pulled back,

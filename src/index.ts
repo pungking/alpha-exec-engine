@@ -127,6 +127,7 @@ type Stage6ContractContext = {
 
 type Stage6CandidateSummary = {
   symbol: string;
+  sector: string | null;
   instrumentType: "common" | "warrant" | "unit" | "right" | "hybrid" | "unknown";
   analysisEligible: boolean | null;
   historyTier: "FULL" | "PROVISIONAL" | "ONBOARDING" | "UNKNOWN";
@@ -423,6 +424,114 @@ type OpenOrderMonitorRepricePatch = {
   reasonCounts: Record<string, number>;
 };
 
+type PortfolioAdmissionDecisionStatus = "ADMITTED" | "REJECTED" | "BYPASSED";
+
+type PortfolioAdmissionRecord = {
+  symbol: string;
+  status: PortfolioAdmissionDecisionStatus;
+  reason: string;
+  detail: string;
+  rank: number;
+  sector: string | null;
+  actionType: LifecycleActionType | null;
+  fillabilityScore: number | null;
+  rrAtCurrent: number | null;
+  effectiveEntryDistancePct: number | null;
+  activeSymbolsBefore: number;
+  openEntryOrdersBefore: number;
+  newSymbolsTodayBefore: number;
+};
+
+type PortfolioAdmissionPolicySummary = {
+  enabled: boolean;
+  enforce: boolean;
+  maxOpenEntryOrders: number;
+  maxNewSymbolsPerDay: number;
+  maxActiveSymbolsTotal: number;
+  maxSectorActiveSymbols: number;
+  pendingOrderTtlMinutes: number;
+  minFillabilityScore: number;
+  minAdmissionRr: number;
+};
+
+type PortfolioAdmissionSummary = PortfolioAdmissionPolicySummary & {
+  checked: number;
+  admitted: number;
+  rejected: number;
+  bypassed: number;
+  activeSymbolsBefore: number;
+  activeSymbolsAfter: number;
+  openEntryOrdersBefore: number;
+  openEntryOrdersAfter: number;
+  newSymbolsTodayBefore: number;
+  newSymbolsTodayAfter: number;
+  reasonCounts: Record<string, number>;
+  records: PortfolioAdmissionRecord[];
+  auditPath: string;
+};
+
+type RecommendationLifecycleStatus =
+  | "RECOMMENDED_NEW"
+  | "ADMITTED_FOR_ENTRY"
+  | "ORDER_PENDING"
+  | "OPEN_ORDER"
+  | "FILLED"
+  | "HOLD_MONITOR"
+  | "SCALE_UP_CANDIDATE"
+  | "SCALE_DOWN_CANDIDATE"
+  | "EXIT_PARTIAL_CANDIDATE"
+  | "EXIT_FULL_CANDIDATE"
+  | "CLOSED"
+  | "EXPIRED_RECOMMENDATION"
+  | "REJECTED_BY_ADMISSION";
+
+type RecommendationLedgerRecord = {
+  symbol: string;
+  sector: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  stage6Hash: string;
+  latestStage6File: string;
+  verdict: string;
+  finalDecision: Stage6CandidateSummary["finalDecision"];
+  decisionReason: string;
+  executionBucket: Stage6CandidateSummary["executionBucket"];
+  executionReason: Stage6CandidateSummary["executionReason"];
+  modelRank: number | null;
+  executionRank: number | null;
+  qualityScore: number | null;
+  executionScore: number | null;
+  entry: number | null;
+  target: number | null;
+  stop: number | null;
+  status: RecommendationLifecycleStatus;
+  statusReason: string;
+  brokerStatus: OrderLifecycleStatus | null;
+  brokerOrderId: string | null;
+  actionType: LifecycleActionType | null;
+  actionReason: string | null;
+  openOrderMonitorStatus: OpenOrderMonitorStatus | null;
+  portfolioAdmissionStatus: PortfolioAdmissionDecisionStatus | null;
+  portfolioAdmissionReason: string | null;
+  updatedAt: string;
+};
+
+type RecommendationLedgerState = {
+  recommendations: Record<string, RecommendationLedgerRecord>;
+  updatedAt: string;
+};
+
+type RecommendationLedgerUpdateSummary = {
+  enabled: boolean;
+  path: string;
+  touched: number;
+  created: number;
+  updated: number;
+  expired: number;
+  active: number;
+  reasonCounts: Record<string, number>;
+};
+
 type EntrySizingPolicy = {
   highPricePolicy: EntryHighPricePolicy;
   minOneShareMaxNotional: number;
@@ -634,6 +743,7 @@ type DryExecBuildResult = {
   entrySizingPolicy: EntrySizingPolicySummary;
   executionOverlay: ExecutionOverlaySummary;
   openOrderMonitor: OpenOrderMonitorSummary;
+  portfolioAdmission: PortfolioAdmissionSummary;
   regime: RegimeSelection;
   idempotency: {
     enabled: boolean;
@@ -1300,6 +1410,8 @@ const ORDER_DECISION_AUDIT_PATH = "state/last-order-decision-audit.json";
 const ORDER_DECISION_AUDIT_HISTORY_PATH = "state/order-decision-audit.jsonl";
 const ORDER_IDEMPOTENCY_PATH = "state/order-idempotency.json";
 const ORDER_LEDGER_PATH = "state/order-ledger.json";
+const RECOMMENDATION_LEDGER_PATH = "state/recommendation-ledger.json";
+const PORTFOLIO_ADMISSION_AUDIT_PATH = "state/portfolio-admission-audit.json";
 const OPEN_ENTRY_REPLACE_GUARD_PATH = "state/open-entry-replace-guard.json";
 const REGIME_GUARD_STATE_PATH = "state/regime-guard-state.json";
 const GUARD_CONTROL_STATE_PATH = "state/guard-control.json";
@@ -2590,6 +2702,20 @@ function buildOpenOrderMonitorPolicy(): OpenOrderMonitorPolicy {
   };
 }
 
+function buildPortfolioAdmissionPolicy(): PortfolioAdmissionPolicySummary {
+  return {
+    enabled: readBoolEnv("PORTFOLIO_ADMISSION_ENABLED", true),
+    enforce: readBoolEnv("PORTFOLIO_ADMISSION_ENFORCE", true),
+    maxOpenEntryOrders: Math.max(1, Math.round(readNonNegativeNumberEnv("PORTFOLIO_MAX_OPEN_ENTRY_ORDERS", 6))),
+    maxNewSymbolsPerDay: Math.max(1, Math.round(readNonNegativeNumberEnv("PORTFOLIO_MAX_NEW_SYMBOLS_PER_DAY", 2))),
+    maxActiveSymbolsTotal: Math.max(1, Math.round(readNonNegativeNumberEnv("PORTFOLIO_MAX_ACTIVE_SYMBOLS_TOTAL", 12))),
+    maxSectorActiveSymbols: Math.max(1, Math.round(readNonNegativeNumberEnv("PORTFOLIO_MAX_SECTOR_ACTIVE_SYMBOLS", 4))),
+    pendingOrderTtlMinutes: Math.max(15, Math.round(readNonNegativeNumberEnv("PORTFOLIO_PENDING_ORDER_TTL_MINUTES", 180))),
+    minFillabilityScore: clamp(readNonNegativeNumberEnv("PORTFOLIO_MIN_FILLABILITY_SCORE", 60), 0, 100),
+    minAdmissionRr: clamp(readNonNegativeNumberEnv("PORTFOLIO_MIN_ADMISSION_RR", 1.8), 0.25, 10)
+  };
+}
+
 function createExecutionOverlaySummary(
   policy: ExecutionOverlayPolicy,
   dataStatus: ExecutionOverlaySummary["dataStatus"] = policy.enabled ? "missing" : "disabled",
@@ -2631,6 +2757,29 @@ function createOpenOrderMonitorSummary(
     dataMissing: 0,
     reasonCounts,
     records
+  };
+}
+
+function createPortfolioAdmissionSummary(
+  policy: PortfolioAdmissionPolicySummary,
+  patch: Partial<PortfolioAdmissionSummary> = {}
+): PortfolioAdmissionSummary {
+  return {
+    ...policy,
+    checked: 0,
+    admitted: 0,
+    rejected: 0,
+    bypassed: 0,
+    activeSymbolsBefore: 0,
+    activeSymbolsAfter: 0,
+    openEntryOrdersBefore: 0,
+    openEntryOrdersAfter: 0,
+    newSymbolsTodayBefore: 0,
+    newSymbolsTodayAfter: 0,
+    reasonCounts: {},
+    records: [],
+    auditPath: PORTFOLIO_ADMISSION_AUDIT_PATH,
+    ...patch
   };
 }
 
@@ -3143,7 +3292,8 @@ function buildOrderReadinessSummary(
   if (dryExec.payloads.length === 0) {
     const overlay = dryExec.executionOverlay;
     const monitor = dryExec.openOrderMonitor;
-    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)}`;
+    const admission = dryExec.portfolioAdmission;
+    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)} portfolio=checked:${admission.checked}|admitted:${admission.admitted}|rejected:${admission.rejected}|reasons:${formatSkipReasonCounts(admission.reasonCounts)}`;
   }
   if (brokerSubmit.attempted === 0) {
     return `NOT_SUBMITTED payloads=${dryExec.payloads.length} reason=${brokerSubmit.reason} skipped=${brokerSubmit.skipped}`;
@@ -3160,6 +3310,21 @@ function createEmptyActionIntentCounts(): Record<LifecycleActionType, number> {
     EXIT_PARTIAL: 0,
     EXIT_FULL: 0
   };
+}
+
+function normalizeLifecycleActionType(raw: unknown): LifecycleActionType | null {
+  const key = String(raw ?? "").trim().toUpperCase();
+  if (
+    key === "ENTRY_NEW" ||
+    key === "HOLD_WAIT" ||
+    key === "SCALE_UP" ||
+    key === "SCALE_DOWN" ||
+    key === "EXIT_PARTIAL" ||
+    key === "EXIT_FULL"
+  ) {
+    return key;
+  }
+  return null;
 }
 
 function isActionTypeAllowed(
@@ -3497,6 +3662,15 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
       const node = item as Record<string, unknown>;
       const symbol = typeof node.symbol === "string" ? node.symbol.trim().toUpperCase() : "";
       if (!symbol) return null;
+      const sectorRaw =
+        typeof node.sector === "string"
+          ? node.sector
+          : typeof node.sectorName === "string"
+            ? node.sectorName
+            : typeof getNestedValue(node, ["profile", "sector"]) === "string"
+              ? String(getNestedValue(node, ["profile", "sector"]))
+              : "";
+      const sector = sectorRaw.trim() ? sectorRaw.trim() : null;
       const verdictRaw = node.verdictFinal ?? node.finalVerdict ?? node.aiVerdict ?? node.verdict;
       const convictionRaw =
         node.convictionScore ??
@@ -3616,6 +3790,7 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
 
       return {
         symbol,
+        sector,
         instrumentType,
         analysisEligible,
         historyTier,
@@ -5798,6 +5973,9 @@ function buildDryExecPayloads(
     },
     executionOverlay: createExecutionOverlaySummary(executionOverlayPolicy),
     openOrderMonitor: createOpenOrderMonitorSummary(buildOpenOrderMonitorPolicy()),
+    portfolioAdmission: createPortfolioAdmissionSummary(buildPortfolioAdmissionPolicy(), {
+      reasonCounts: { not_evaluated_pre_overlay: 1 }
+    }),
     regime,
     idempotency: {
       enabled: false,
@@ -6666,6 +6844,332 @@ function applyOpenOrderMonitorRepriceToDryExec(dryExec: DryExecBuildResult): Dry
   };
 }
 
+function computePortfolioFillabilityScore(row: OrderDecisionAuditRecord): number | null {
+  const overlay = row.executionOverlay;
+  const monitor = row.openOrderMonitor;
+  if (!overlay && !monitor) return null;
+  let score = 50;
+  const effectiveDistance =
+    overlay?.currentDistancePct != null
+      ? Math.max(0, overlay.currentDistancePct)
+      : row.effectiveEntryDistancePct != null
+        ? Math.max(0, row.effectiveEntryDistancePct)
+        : null;
+  if (effectiveDistance != null) {
+    score += Math.max(-35, 20 - effectiveDistance * 5);
+  }
+  const rr = overlay?.rrAtCurrent ?? row.riskRewardAfter ?? row.riskRewardBefore;
+  if (rr != null) {
+    score += Math.max(-25, Math.min(25, (rr - 1.8) * 8));
+  }
+  if (overlay?.style === "CONFIRMED_ADAPTIVE_ENTRY") score += 15;
+  if (overlay?.style === "PULLBACK_LIMIT") score += 5;
+  if (overlay?.style === "WAIT_PULLBACK") score -= 20;
+  if (overlay?.style === "NO_TRADE") score -= 35;
+  if (monitor?.status === "KEEP") score += 8;
+  if (monitor?.status === "REPRICE_CANDIDATE") score += 10;
+  if (monitor?.status === "CANCEL_CANDIDATE") score -= 30;
+  return Number(clamp(score, 0, 100).toFixed(1));
+}
+
+function addPortfolioAdmissionReason(summary: PortfolioAdmissionSummary, reason: string): void {
+  summary.reasonCounts[reason] = (summary.reasonCounts[reason] ?? 0) + 1;
+}
+
+function activeRecommendationSymbols(state: RecommendationLedgerState): Set<string> {
+  const out = new Set<string>();
+  Object.values(state.recommendations).forEach((row) => {
+    if (row?.symbol && isRecommendationActiveStatus(row.status)) out.add(row.symbol);
+  });
+  return out;
+}
+
+function activeRecommendationSectorCounts(state: RecommendationLedgerState): Map<string, number> {
+  const out = new Map<string, number>();
+  Object.values(state.recommendations).forEach((row) => {
+    if (!row?.sector || !isRecommendationActiveStatus(row.status)) return;
+    const sector = row.sector.trim().toUpperCase();
+    if (!sector) return;
+    out.set(sector, (out.get(sector) ?? 0) + 1);
+  });
+  return out;
+}
+
+function countNewActiveSymbolsToday(state: RecommendationLedgerState, dayKey: string): number {
+  let count = 0;
+  Object.values(state.recommendations).forEach((row) => {
+    if (!row?.firstSeenAt || !isRecommendationActiveStatus(row.status)) return;
+    const firstSeenMs = Date.parse(row.firstSeenAt);
+    if (!Number.isFinite(firstSeenMs)) return;
+    if (portfolioAdmissionDayKey(firstSeenMs) === dayKey) count += 1;
+  });
+  return count;
+}
+
+async function savePortfolioAdmissionAudit(
+  stage6: Stage6LoadResult,
+  summary: PortfolioAdmissionSummary
+): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(
+    PORTFOLIO_ADMISSION_AUDIT_PATH,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        stage6Hash: stage6.sha256,
+        stage6File: stage6.fileName,
+        summary
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  console.log(`[STATE] saved ${PORTFOLIO_ADMISSION_AUDIT_PATH}`);
+}
+
+async function applyPortfolioAdmissionToDryExec(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult
+): Promise<DryExecBuildResult> {
+  const policy = buildPortfolioAdmissionPolicy();
+  let summary = createPortfolioAdmissionSummary(policy);
+  if (!policy.enabled) {
+    summary = createPortfolioAdmissionSummary(policy, {
+      bypassed: dryExec.payloads.length,
+      reasonCounts: { disabled: dryExec.payloads.length || 1 }
+    });
+    await savePortfolioAdmissionAudit(stage6, summary);
+    return { ...dryExec, portfolioAdmission: summary };
+  }
+
+  let recommendationLedger = createRecommendationLedgerState();
+  try {
+    recommendationLedger = await loadRecommendationLedgerState();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[PORTFOLIO_ADMISSION] recommendation_ledger_load_failed=${msg.slice(0, 160)}`);
+  }
+
+  let openOrders = createEmptyOpenEntryOrderIndex();
+  try {
+    openOrders = await loadOpenEntryOrderIndex();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[PORTFOLIO_ADMISSION] open_order_load_failed=${msg.slice(0, 160)}`);
+  }
+
+  let heldPositions = new Map<string, HeldPositionSnapshot>();
+  try {
+    heldPositions = await loadHeldPositionSnapshots();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[PORTFOLIO_ADMISSION] held_position_load_failed=${msg.slice(0, 160)}`);
+  }
+
+  const ledgerActiveSymbols = activeRecommendationSymbols(recommendationLedger);
+  const activeSymbols = new Set(ledgerActiveSymbols);
+  openOrders.bySymbol.forEach((_value, symbol) => activeSymbols.add(symbol));
+  heldPositions.forEach((_value, symbol) => activeSymbols.add(symbol));
+  const sectorCounts = activeRecommendationSectorCounts(recommendationLedger);
+  const candidateBySymbol = new Map(stage6.allCandidates.map((row) => [row.symbol, row]));
+  const sectorCountedSymbols = new Set(
+    Object.values(recommendationLedger.recommendations)
+      .filter((row) => isRecommendationActiveStatus(row.status) && Boolean(row.sector))
+      .map((row) => row.symbol)
+  );
+  openOrders.bySymbol.forEach((_value, symbol) => {
+    if (sectorCountedSymbols.has(symbol)) return;
+    const sector = candidateBySymbol.get(symbol)?.sector;
+    if (!sector) return;
+    const key = sector.trim().toUpperCase();
+    if (key) {
+      sectorCounts.set(key, (sectorCounts.get(key) ?? 0) + 1);
+      sectorCountedSymbols.add(symbol);
+    }
+  });
+  heldPositions.forEach((_value, symbol) => {
+    if (sectorCountedSymbols.has(symbol)) return;
+    const sector = candidateBySymbol.get(symbol)?.sector;
+    if (!sector) return;
+    const key = sector.trim().toUpperCase();
+    if (key) {
+      sectorCounts.set(key, (sectorCounts.get(key) ?? 0) + 1);
+      sectorCountedSymbols.add(symbol);
+    }
+  });
+  const todayKey = portfolioAdmissionDayKey();
+  let activeSymbolsCount = activeSymbols.size;
+  let openEntryOrdersCount = openOrders.total;
+  let newSymbolsTodayCount = countNewActiveSymbolsToday(recommendationLedger, todayKey);
+  const activeSymbolsBefore = activeSymbolsCount;
+  const openEntryOrdersBefore = openEntryOrdersCount;
+  const newSymbolsTodayBefore = newSymbolsTodayCount;
+
+  const auditBySymbol = new Map(dryExec.decisionAudit.map((row) => [row.symbol, row]));
+  const admittedPayloads: DryExecOrderPayload[] = [];
+  const rejectedSkips: DryExecSkipReason[] = [];
+  const records: PortfolioAdmissionRecord[] = [];
+
+  dryExec.payloads.forEach((payload, index) => {
+    const audit = auditBySymbol.get(payload.symbol) ?? null;
+    const stage6Row = candidateBySymbol.get(payload.symbol) ?? null;
+    const isExit = isLifecycleExitActionType(payload.actionType);
+    const isNewSymbol = !activeSymbols.has(payload.symbol);
+    const sector = stage6Row?.sector ?? null;
+    const sectorKey = sector ? sector.trim().toUpperCase() : "";
+    const fillabilityScore = audit ? computePortfolioFillabilityScore(audit) : null;
+    const rrAtCurrent = audit?.executionOverlay?.rrAtCurrent ?? audit?.riskRewardAfter ?? null;
+    const effectiveDistance = audit?.effectiveEntryDistancePct ?? audit?.executionOverlay?.currentDistancePct ?? null;
+    const replacesExistingOpenEntry =
+      openOrders.bySymbol.has(payload.symbol) &&
+      payload.entrySizing?.reason?.startsWith("open_order_monitor_reprice:") === true;
+    const addsOpenEntryOrder = !isExit && !replacesExistingOpenEntry;
+
+    const reject = (reason: string, detail: string) => {
+      summary.rejected += 1;
+      addPortfolioAdmissionReason(summary, reason);
+      rejectedSkips.push({
+        symbol: payload.symbol,
+        reason: `portfolio_${reason}`,
+        detail,
+        actionType: isExit ? payload.actionType : "HOLD_WAIT",
+        actionReason: "portfolio_admission_blocked"
+      });
+      records.push({
+        symbol: payload.symbol,
+        status: policy.enforce ? "REJECTED" : "BYPASSED",
+        reason,
+        detail,
+        rank: index + 1,
+        sector,
+        actionType: payload.actionType ?? null,
+        fillabilityScore,
+        rrAtCurrent,
+        effectiveEntryDistancePct: effectiveDistance,
+        activeSymbolsBefore: activeSymbolsCount,
+        openEntryOrdersBefore: openEntryOrdersCount,
+        newSymbolsTodayBefore: newSymbolsTodayCount
+      });
+      if (!policy.enforce) {
+        admittedPayloads.push(payload);
+        summary.bypassed += 1;
+      }
+    };
+
+    summary.checked += 1;
+    if (addsOpenEntryOrder && openEntryOrdersCount >= policy.maxOpenEntryOrders) {
+      reject(
+        "open_entry_capacity_full",
+        `open=${openEntryOrdersCount}|max=${policy.maxOpenEntryOrders}`
+      );
+      return;
+    }
+    if (!isExit && isNewSymbol && newSymbolsTodayCount >= policy.maxNewSymbolsPerDay) {
+      reject(
+        "new_symbol_daily_cap",
+        `newToday=${newSymbolsTodayCount}|max=${policy.maxNewSymbolsPerDay}`
+      );
+      return;
+    }
+    if (!isExit && isNewSymbol && activeSymbolsCount >= policy.maxActiveSymbolsTotal) {
+      reject(
+        "active_symbol_capacity_full",
+        `active=${activeSymbolsCount}|max=${policy.maxActiveSymbolsTotal}`
+      );
+      return;
+    }
+    if (
+      !isExit &&
+      isNewSymbol &&
+      sectorKey &&
+      (sectorCounts.get(sectorKey) ?? 0) >= policy.maxSectorActiveSymbols
+    ) {
+      reject(
+        "sector_capacity_full",
+        `sector=${sectorKey}|active=${sectorCounts.get(sectorKey) ?? 0}|max=${policy.maxSectorActiveSymbols}`
+      );
+      return;
+    }
+    if (!isExit && fillabilityScore != null && fillabilityScore < policy.minFillabilityScore) {
+      reject(
+        "fillability_below_floor",
+        `score=${fillabilityScore.toFixed(1)}|min=${policy.minFillabilityScore.toFixed(1)}`
+      );
+      return;
+    }
+    if (!isExit && rrAtCurrent != null && rrAtCurrent < policy.minAdmissionRr) {
+      reject(
+        "rr_below_admission_floor",
+        `rr=${rrAtCurrent.toFixed(4)}|min=${policy.minAdmissionRr.toFixed(2)}`
+      );
+      return;
+    }
+
+    admittedPayloads.push(payload);
+    summary.admitted += 1;
+    addPortfolioAdmissionReason(summary, isExit ? "exit_action_passthrough" : "admitted");
+    records.push({
+      symbol: payload.symbol,
+      status: "ADMITTED",
+      reason: isExit ? "exit_action_passthrough" : "admitted",
+      detail: `active=${activeSymbolsCount}|open=${openEntryOrdersCount}|newToday=${newSymbolsTodayCount}`,
+      rank: index + 1,
+      sector,
+      actionType: payload.actionType ?? null,
+      fillabilityScore,
+      rrAtCurrent,
+      effectiveEntryDistancePct: effectiveDistance,
+      activeSymbolsBefore: activeSymbolsCount,
+      openEntryOrdersBefore: openEntryOrdersCount,
+      newSymbolsTodayBefore: newSymbolsTodayCount
+    });
+    if (!isExit) {
+      if (addsOpenEntryOrder) openEntryOrdersCount += 1;
+      if (isNewSymbol) {
+        activeSymbols.add(payload.symbol);
+        activeSymbolsCount += 1;
+        newSymbolsTodayCount += 1;
+        if (sectorKey) sectorCounts.set(sectorKey, (sectorCounts.get(sectorKey) ?? 0) + 1);
+      }
+    }
+  });
+
+  summary = {
+    ...summary,
+    records,
+    activeSymbolsBefore,
+    activeSymbolsAfter: activeSymbolsCount,
+    openEntryOrdersBefore,
+    openEntryOrdersAfter: openEntryOrdersCount,
+    newSymbolsTodayBefore,
+    newSymbolsTodayAfter: newSymbolsTodayCount
+  };
+
+  const skipped = [...dryExec.skipped, ...rejectedSkips];
+  const nextDryExec: DryExecBuildResult = {
+    ...dryExec,
+    payloads: policy.enforce ? admittedPayloads : dryExec.payloads,
+    skipped: policy.enforce ? skipped : dryExec.skipped,
+    skipReasonCounts: buildSkipReasonCounts(policy.enforce ? skipped : dryExec.skipped),
+    portfolioAdmission: summary
+  };
+  const reconciled = {
+    ...nextDryExec,
+    decisionAudit: reconcileDecisionAuditWithDryExec(
+      nextDryExec.decisionAudit,
+      nextDryExec.payloads,
+      nextDryExec.skipped
+    ),
+    actionIntent: rebuildActionIntentSummary(nextDryExec)
+  };
+  await savePortfolioAdmissionAudit(stage6, summary);
+  console.log(
+    `[PORTFOLIO_ADMISSION] enabled=${summary.enabled} enforce=${summary.enforce} checked=${summary.checked} admitted=${summary.admitted} rejected=${summary.rejected} active=${summary.activeSymbolsBefore}->${summary.activeSymbolsAfter} open=${summary.openEntryOrdersBefore}->${summary.openEntryOrdersAfter} newToday=${summary.newSymbolsTodayBefore}->${summary.newSymbolsTodayAfter} reasons=${formatSkipReasonCounts(summary.reasonCounts)}`
+  );
+  return reconciled;
+}
+
 function parseOpenEntryOrderSnapshot(raw: unknown, nowMs: number): OpenEntryOrderSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
   const node = raw as Record<string, unknown>;
@@ -6745,6 +7249,432 @@ async function loadOpenEntryOrderIndex(): Promise<OpenEntryOrderIndex> {
     duplicateSymbols,
     bySymbol
   };
+}
+
+function createRecommendationLedgerState(): RecommendationLedgerState {
+  return {
+    recommendations: {},
+    updatedAt: ""
+  };
+}
+
+function normalizeRecommendationLifecycleStatus(raw: unknown): RecommendationLifecycleStatus {
+  const key = String(raw ?? "").trim().toUpperCase();
+  const allowed: RecommendationLifecycleStatus[] = [
+    "RECOMMENDED_NEW",
+    "ADMITTED_FOR_ENTRY",
+    "ORDER_PENDING",
+    "OPEN_ORDER",
+    "FILLED",
+    "HOLD_MONITOR",
+    "SCALE_UP_CANDIDATE",
+    "SCALE_DOWN_CANDIDATE",
+    "EXIT_PARTIAL_CANDIDATE",
+    "EXIT_FULL_CANDIDATE",
+    "CLOSED",
+    "EXPIRED_RECOMMENDATION",
+    "REJECTED_BY_ADMISSION"
+  ];
+  return allowed.includes(key as RecommendationLifecycleStatus)
+    ? (key as RecommendationLifecycleStatus)
+    : "RECOMMENDED_NEW";
+}
+
+function normalizeRecommendationLedgerState(raw: unknown): RecommendationLedgerState {
+  if (!raw || typeof raw !== "object") return createRecommendationLedgerState();
+  const node = raw as Record<string, unknown>;
+  const recommendationsRaw =
+    node.recommendations && typeof node.recommendations === "object"
+      ? (node.recommendations as Record<string, unknown>)
+      : {};
+  const recommendations: Record<string, RecommendationLedgerRecord> = {};
+  for (const [rawSymbol, rawValue] of Object.entries(recommendationsRaw)) {
+    if (!rawValue || typeof rawValue !== "object") continue;
+    const row = rawValue as Record<string, unknown>;
+    const symbol = String(row.symbol ?? rawSymbol ?? "").trim().toUpperCase();
+    if (!symbol) continue;
+    const firstSeenAt =
+      typeof row.firstSeenAt === "string" && row.firstSeenAt.trim()
+        ? row.firstSeenAt
+        : new Date().toISOString();
+    const lastSeenAt =
+      typeof row.lastSeenAt === "string" && row.lastSeenAt.trim() ? row.lastSeenAt : firstSeenAt;
+    recommendations[symbol] = {
+      symbol,
+      sector: typeof row.sector === "string" && row.sector.trim() ? row.sector.trim() : null,
+      firstSeenAt,
+      lastSeenAt,
+      stage6Hash: typeof row.stage6Hash === "string" ? row.stage6Hash : "",
+      latestStage6File: typeof row.latestStage6File === "string" ? row.latestStage6File : "",
+      verdict: typeof row.verdict === "string" ? row.verdict : "N/A",
+      finalDecision:
+        row.finalDecision === "EXECUTABLE_NOW" ||
+          row.finalDecision === "WAIT_PRICE" ||
+          row.finalDecision === "BLOCKED_RISK" ||
+          row.finalDecision === "BLOCKED_EVENT"
+          ? row.finalDecision
+          : "N/A",
+      decisionReason: typeof row.decisionReason === "string" ? row.decisionReason : "n/a",
+      executionBucket:
+        row.executionBucket === "EXECUTABLE" || row.executionBucket === "WATCHLIST"
+          ? row.executionBucket
+          : "N/A",
+      executionReason:
+        row.executionReason === "VALID_EXEC" ||
+          row.executionReason === "WAIT_PULLBACK_TOO_DEEP" ||
+          row.executionReason === "INVALID_GEOMETRY" ||
+          row.executionReason === "INVALID_DATA"
+          ? row.executionReason
+          : "N/A",
+      modelRank: parseFiniteNumber(row.modelRank),
+      executionRank: parseFiniteNumber(row.executionRank),
+      qualityScore: parseFiniteNumber(row.qualityScore),
+      executionScore: parseFiniteNumber(row.executionScore),
+      entry: parseFiniteNumber(row.entry),
+      target: parseFiniteNumber(row.target),
+      stop: parseFiniteNumber(row.stop),
+      status: normalizeRecommendationLifecycleStatus(row.status),
+      statusReason: typeof row.statusReason === "string" ? row.statusReason : "loaded",
+      brokerStatus:
+        row.brokerStatus === "planned" ||
+          row.brokerStatus === "submitted" ||
+          row.brokerStatus === "accepted" ||
+          row.brokerStatus === "partially_filled" ||
+          row.brokerStatus === "filled" ||
+          row.brokerStatus === "canceled" ||
+          row.brokerStatus === "rejected" ||
+          row.brokerStatus === "expired"
+          ? row.brokerStatus
+          : null,
+      brokerOrderId: typeof row.brokerOrderId === "string" && row.brokerOrderId.trim() ? row.brokerOrderId : null,
+      actionType: normalizeLifecycleActionType(row.actionType),
+      actionReason: typeof row.actionReason === "string" && row.actionReason.trim() ? row.actionReason : null,
+      openOrderMonitorStatus:
+        row.openOrderMonitorStatus === "DISABLED" ||
+          row.openOrderMonitorStatus === "NO_OPEN_ORDER" ||
+          row.openOrderMonitorStatus === "KEEP" ||
+          row.openOrderMonitorStatus === "WATCH_PULLBACK" ||
+          row.openOrderMonitorStatus === "REPRICE_CANDIDATE" ||
+          row.openOrderMonitorStatus === "CANCEL_CANDIDATE" ||
+          row.openOrderMonitorStatus === "DATA_MISSING"
+          ? row.openOrderMonitorStatus
+          : null,
+      portfolioAdmissionStatus:
+        row.portfolioAdmissionStatus === "ADMITTED" ||
+          row.portfolioAdmissionStatus === "REJECTED" ||
+          row.portfolioAdmissionStatus === "BYPASSED"
+          ? row.portfolioAdmissionStatus
+          : null,
+      portfolioAdmissionReason:
+        typeof row.portfolioAdmissionReason === "string" && row.portfolioAdmissionReason.trim()
+          ? row.portfolioAdmissionReason
+          : null,
+      updatedAt: typeof row.updatedAt === "string" && row.updatedAt.trim() ? row.updatedAt : lastSeenAt
+    };
+  }
+  return {
+    recommendations,
+    updatedAt: typeof node.updatedAt === "string" ? node.updatedAt : ""
+  };
+}
+
+async function loadRecommendationLedgerState(): Promise<RecommendationLedgerState> {
+  try {
+    const raw = await readFile(RECOMMENDATION_LEDGER_PATH, "utf8");
+    return normalizeRecommendationLedgerState(parseJsonText<unknown>(raw, "recommendation_ledger"));
+  } catch {
+    return createRecommendationLedgerState();
+  }
+}
+
+async function saveRecommendationLedgerState(state: RecommendationLedgerState): Promise<void> {
+  await mkdir("state", { recursive: true });
+  await writeFile(RECOMMENDATION_LEDGER_PATH, JSON.stringify(state, null, 2), "utf8");
+  console.log(`[STATE] saved ${RECOMMENDATION_LEDGER_PATH}`);
+}
+
+function isRecommendationActiveStatus(status: RecommendationLifecycleStatus): boolean {
+  return (
+    status === "RECOMMENDED_NEW" ||
+    status === "ADMITTED_FOR_ENTRY" ||
+    status === "ORDER_PENDING" ||
+    status === "OPEN_ORDER" ||
+    status === "FILLED" ||
+    status === "HOLD_MONITOR" ||
+    status === "SCALE_UP_CANDIDATE" ||
+    status === "SCALE_DOWN_CANDIDATE" ||
+    status === "EXIT_PARTIAL_CANDIDATE" ||
+    status === "EXIT_FULL_CANDIDATE"
+  );
+}
+
+function isRecommendationTerminalStatus(status: RecommendationLifecycleStatus): boolean {
+  return status === "CLOSED" || status === "EXPIRED_RECOMMENDATION" || status === "REJECTED_BY_ADMISSION";
+}
+
+function portfolioAdmissionDayKey(nowMs = Date.now()): string {
+  return toTimeZoneDayKey(nowMs, "America/New_York");
+}
+
+function statusFromLifecycleAction(actionType: LifecycleActionType | null): RecommendationLifecycleStatus | null {
+  if (actionType === "SCALE_UP") return "SCALE_UP_CANDIDATE";
+  if (actionType === "SCALE_DOWN") return "SCALE_DOWN_CANDIDATE";
+  if (actionType === "EXIT_PARTIAL") return "EXIT_PARTIAL_CANDIDATE";
+  if (actionType === "EXIT_FULL") return "EXIT_FULL_CANDIDATE";
+  return null;
+}
+
+function brokerStatusFromOpenOrderMonitor(row: OrderDecisionAuditRecord): OrderLifecycleStatus | null {
+  const rawStatus = row.openOrderMonitor?.orderStatus;
+  if (rawStatus) return mapAlpacaOrderStatusToLifecycleStatus(rawStatus);
+  const monitorStatus = row.openOrderMonitor?.status;
+  if (
+    monitorStatus === "KEEP" ||
+    monitorStatus === "WATCH_PULLBACK" ||
+    monitorStatus === "REPRICE_CANDIDATE" ||
+    monitorStatus === "CANCEL_CANDIDATE"
+  ) {
+    return "accepted";
+  }
+  return null;
+}
+
+function isOpenBrokerLifecycleStatus(status: OrderLifecycleStatus | null): boolean {
+  return status === "submitted" || status === "accepted" || status === "partially_filled";
+}
+
+function deriveRecommendationLifecycle(
+  row: OrderDecisionAuditRecord,
+  payload: DryExecOrderPayload | null,
+  skip: DryExecSkipReason | null,
+  brokerRow: BrokerSubmitOrderResult | null,
+  portfolioRecord: PortfolioAdmissionRecord | null,
+  preflight: PreflightResult,
+  brokerSubmit: BrokerSubmitSummary
+): {
+  status: RecommendationLifecycleStatus;
+  statusReason: string;
+  brokerStatus: OrderLifecycleStatus | null;
+  brokerOrderId: string | null;
+} {
+  const actionStatus = statusFromLifecycleAction(row.actionType ?? payload?.actionType ?? skip?.actionType ?? null);
+  const brokerStatus = brokerRow?.brokerStatus ?? brokerStatusFromOpenOrderMonitor(row);
+  const brokerOrderId = brokerRow?.brokerOrderId ?? row.openOrderMonitor?.orderId ?? null;
+  const skipReason = skip?.reason ?? (row.status === "skipped" ? row.reason.split("[")[0] : "");
+
+  if (brokerStatus === "filled") {
+    return {
+      status: "FILLED",
+      statusReason: "broker_filled",
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  if (isOpenBrokerLifecycleStatus(brokerStatus) || brokerRow?.submitted) {
+    return {
+      status: "OPEN_ORDER",
+      statusReason: brokerRow?.submitted ? "broker_submit_ok" : `broker_open:${brokerStatus ?? "monitor"}`,
+      brokerStatus: brokerStatus ?? "submitted",
+      brokerOrderId
+    };
+  }
+  if (isTerminalOrderStatus(brokerStatus)) {
+    return {
+      status: "EXPIRED_RECOMMENDATION",
+      statusReason: `broker_terminal:${brokerStatus}`,
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  if (portfolioRecord?.status === "REJECTED" || skipReason.startsWith("portfolio_")) {
+    return {
+      status: "REJECTED_BY_ADMISSION",
+      statusReason: portfolioRecord?.reason ?? skipReason,
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  if (actionStatus) {
+    return {
+      status: actionStatus,
+      statusReason: `lifecycle_action:${row.actionType ?? payload?.actionType ?? skip?.actionType ?? "n/a"}`,
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  if (payload) {
+    if (preflight.status === "pass" && !preflight.blocking) {
+      if (brokerSubmit.active && brokerRow?.attempted && !brokerRow.submitted) {
+        return {
+          status: "ORDER_PENDING",
+          statusReason: `broker_submit_attempted:${brokerRow.reason}`,
+          brokerStatus,
+          brokerOrderId
+        };
+      }
+      return {
+        status: "ADMITTED_FOR_ENTRY",
+        statusReason: `admitted_waiting_submit:${brokerSubmit.reason}`,
+        brokerStatus,
+        brokerOrderId
+      };
+    }
+    return {
+      status: "RECOMMENDED_NEW",
+      statusReason: `preflight_not_passed:${preflight.code}`,
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  if (row.finalDecision === "EXECUTABLE_NOW") {
+    return {
+      status: "RECOMMENDED_NEW",
+      statusReason: skipReason || row.reason || "executable_without_payload",
+      brokerStatus,
+      brokerOrderId
+    };
+  }
+  return {
+    status: "HOLD_MONITOR",
+    statusReason: `${row.finalDecision}:${row.decisionReason || skipReason || "monitor"}`,
+    brokerStatus,
+    brokerOrderId
+  };
+}
+
+async function updateRecommendationLedger(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult,
+  brokerSubmit: BrokerSubmitSummary
+): Promise<RecommendationLedgerUpdateSummary> {
+  const enabled = readBoolEnv("RECOMMENDATION_LEDGER_ENABLED", true);
+  if (!enabled) {
+    return {
+      enabled,
+      path: RECOMMENDATION_LEDGER_PATH,
+      touched: 0,
+      created: 0,
+      updated: 0,
+      expired: 0,
+      active: 0,
+      reasonCounts: { disabled: 1 }
+    };
+  }
+
+  const state = await loadRecommendationLedgerState();
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const ttlMinutes = buildPortfolioAdmissionPolicy().pendingOrderTtlMinutes;
+  const candidateBySymbol = new Map(stage6.allCandidates.map((row) => [row.symbol, row]));
+  const payloadBySymbol = new Map(dryExec.payloads.map((payload) => [payload.symbol, payload]));
+  const skipBySymbol = new Map<string, DryExecSkipReason>();
+  dryExec.skipped.forEach((skip) => {
+    if (!skipBySymbol.has(skip.symbol)) skipBySymbol.set(skip.symbol, skip);
+  });
+  const brokerBySymbol = new Map<string, BrokerSubmitOrderResult>();
+  Object.values(brokerSubmit.orders).forEach((row) => {
+    if (!brokerBySymbol.has(row.symbol)) brokerBySymbol.set(row.symbol, row);
+  });
+  const portfolioBySymbol = new Map(dryExec.portfolioAdmission.records.map((row) => [row.symbol, row]));
+
+  let created = 0;
+  let updated = 0;
+  let expired = 0;
+  const reasonCounts: Record<string, number> = {};
+  const touchedSymbols = new Set<string>();
+
+  for (const row of dryExec.decisionAudit) {
+    const symbol = row.symbol;
+    if (!symbol) continue;
+    const payload = payloadBySymbol.get(symbol) ?? null;
+    const skip = skipBySymbol.get(symbol) ?? null;
+    const brokerRow = brokerBySymbol.get(symbol) ?? null;
+    const portfolioRecord = portfolioBySymbol.get(symbol) ?? null;
+    const stage6Row = candidateBySymbol.get(symbol) ?? null;
+    const lifecycle = deriveRecommendationLifecycle(
+      row,
+      payload,
+      skip,
+      brokerRow,
+      portfolioRecord,
+      preflight,
+      brokerSubmit
+    );
+    const existing = state.recommendations[symbol];
+    const next: RecommendationLedgerRecord = {
+      symbol,
+      sector: stage6Row?.sector ?? existing?.sector ?? null,
+      firstSeenAt: existing?.firstSeenAt || now,
+      lastSeenAt: now,
+      stage6Hash: stage6.sha256,
+      latestStage6File: stage6.fileName,
+      verdict: row.verdict,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      executionBucket: row.executionBucket,
+      executionReason: row.executionReason,
+      modelRank: stage6Row?.modelRank ?? existing?.modelRank ?? null,
+      executionRank: stage6Row?.executionRank ?? existing?.executionRank ?? null,
+      qualityScore: stage6Row?.qualityScore ?? existing?.qualityScore ?? null,
+      executionScore: stage6Row?.executionScore ?? existing?.executionScore ?? null,
+      entry: row.entryAdjusted ?? row.entryOriginal,
+      target: row.target,
+      stop: row.stop,
+      status: lifecycle.status,
+      statusReason: lifecycle.statusReason,
+      brokerStatus: lifecycle.brokerStatus,
+      brokerOrderId: lifecycle.brokerOrderId,
+      actionType: row.actionType ?? payload?.actionType ?? skip?.actionType ?? null,
+      actionReason: row.actionReason ?? payload?.actionReason ?? skip?.actionReason ?? null,
+      openOrderMonitorStatus: row.openOrderMonitor?.status ?? null,
+      portfolioAdmissionStatus: portfolioRecord?.status ?? null,
+      portfolioAdmissionReason: portfolioRecord?.reason ?? null,
+      updatedAt: now
+    };
+    state.recommendations[symbol] = next;
+    touchedSymbols.add(symbol);
+    if (existing) {
+      updated += 1;
+    } else {
+      created += 1;
+    }
+    incrementCount(reasonCounts, next.status);
+  }
+
+  Object.values(state.recommendations).forEach((row) => {
+    if (touchedSymbols.has(row.symbol) || isRecommendationTerminalStatus(row.status)) return;
+    if (row.status === "OPEN_ORDER" || row.status === "FILLED") return;
+    const lastSeenMs = Date.parse(row.lastSeenAt || row.updatedAt || row.firstSeenAt);
+    if (!Number.isFinite(lastSeenMs)) return;
+    const staleMinutes = (nowMs - lastSeenMs) / 60000;
+    if (staleMinutes <= ttlMinutes) return;
+    row.status = "EXPIRED_RECOMMENDATION";
+    row.statusReason = `not_seen_for_${Math.round(staleMinutes)}m`;
+    row.updatedAt = now;
+    expired += 1;
+    incrementCount(reasonCounts, row.status);
+  });
+
+  state.updatedAt = now;
+  await saveRecommendationLedgerState(state);
+  const active = Object.values(state.recommendations).filter((row) =>
+    isRecommendationActiveStatus(row.status)
+  ).length;
+  const summary: RecommendationLedgerUpdateSummary = {
+    enabled,
+    path: RECOMMENDATION_LEDGER_PATH,
+    touched: touchedSymbols.size,
+    created,
+    updated,
+    expired,
+    active,
+    reasonCounts
+  };
+  console.log(
+    `[RECOMMENDATION_LEDGER] enabled=${summary.enabled} touched=${summary.touched} created=${summary.created} updated=${summary.updated} expired=${summary.expired} active=${summary.active} reasons=${formatSkipReasonCounts(summary.reasonCounts)} path=${summary.path}`
+  );
+  return summary;
 }
 
 function createOpenEntryReplaceGuardState(): OpenEntryReplaceGuardState {
@@ -7334,6 +8264,7 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   const thresholds = resolveLifecycleHeldConvictionThresholds(cfg.positionLifecycle);
   const baseRow: Stage6CandidateSummary = {
     symbol,
+    sector: "SELFTEST",
     instrumentType: "common",
     analysisEligible: true,
     historyTier: "FULL",
@@ -7971,6 +8902,9 @@ function buildSimulationMessage(
       `Open Order Reprice: enabled=${dryExec.openOrderMonitorReprice.enabled} applied=${dryExec.openOrderMonitorReprice.applied} blocked=${dryExec.openOrderMonitorReprice.blocked} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitorReprice.reasonCounts)}`
     );
   }
+  lines.push(
+    `Portfolio Admission: enabled=${dryExec.portfolioAdmission.enabled} enforce=${dryExec.portfolioAdmission.enforce} checked=${dryExec.portfolioAdmission.checked} admitted=${dryExec.portfolioAdmission.admitted} rejected=${dryExec.portfolioAdmission.rejected} active=${dryExec.portfolioAdmission.activeSymbolsBefore}->${dryExec.portfolioAdmission.activeSymbolsAfter} open=${dryExec.portfolioAdmission.openEntryOrdersBefore}->${dryExec.portfolioAdmission.openEntryOrdersAfter} newToday=${dryExec.portfolioAdmission.newSymbolsTodayBefore}->${dryExec.portfolioAdmission.newSymbolsTodayAfter} reasons=${formatSkipReasonCounts(dryExec.portfolioAdmission.reasonCounts)}`
+  );
   lines.push(
     `HF Soft Gate: enabled=${dryExec.hfSentimentGate.enabled} scoreFloor=${dryExec.hfSentimentGate.scoreFloor} minArticles=${dryExec.hfSentimentGate.minArticleCount} maxNewsAgeH=${dryExec.hfSentimentGate.maxNewsAgeHours} earningsWindow=${dryExec.hfSentimentGate.earningsWindowEnabled} blockD=${dryExec.hfSentimentGate.earningsBlockDays} reduceD=${dryExec.hfSentimentGate.earningsReduceDays} reduceFactor=${dryExec.hfSentimentGate.earningsReduceFactor} reliefMax=${dryExec.hfSentimentGate.positiveReliefMax} tightenMax=${dryExec.hfSentimentGate.negativeTightenMax} applied=${dryExec.hfSentimentGate.applied} relief=${dryExec.hfSentimentGate.reliefCount} tighten=${dryExec.hfSentimentGate.tightenCount} blockedNegative=${dryExec.hfSentimentGate.blockedNegative} earningsBlocked=${dryExec.hfSentimentGate.earningsBlocked} earningsReduced=${dryExec.hfSentimentGate.earningsReduced} netConvDelta=${dryExec.hfSentimentGate.netMinConvictionDelta} sizeReduceEnabled=${dryExec.hfSentimentGate.sizeReductionEnabled} sizeReducePct=${dryExec.hfSentimentGate.sizeReductionPct} sizeReduced=${dryExec.hfSentimentGate.sizeReducedCount} sizeReductionNotional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)}`
   );
@@ -9822,6 +10756,7 @@ async function saveDryExecPreview(
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
     stage6ContractReasonCountsPrimary
   );
+  const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -9859,6 +10794,8 @@ async function saveDryExecPreview(
     openOrderMonitor: dryExec.openOrderMonitor,
     openOrderMonitorDetail: formatOpenOrderMonitorDetails(dryExec.openOrderMonitor),
     openOrderMonitorReprice: dryExec.openOrderMonitorReprice ?? createOpenOrderMonitorRepricePatch(false),
+    portfolioAdmission: dryExec.portfolioAdmission,
+    recommendationLedger,
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
@@ -9916,6 +10853,9 @@ async function saveDryExecPreview(
   );
   console.log(
     `[OPEN_ORDER_MONITOR] enabled=${dryExec.openOrderMonitor.enabled} mode=${dryExec.openOrderMonitor.mode} data=${dryExec.openOrderMonitor.dataStatus} checked=${dryExec.openOrderMonitor.checked} openOrders=${dryExec.openOrderMonitor.openOrders} matched=${dryExec.openOrderMonitor.matched} keep=${dryExec.openOrderMonitor.keep} watch=${dryExec.openOrderMonitor.watchPullback} reprice=${dryExec.openOrderMonitor.repriceCandidate} cancel=${dryExec.openOrderMonitor.cancelCandidate} missing=${dryExec.openOrderMonitor.dataMissing} reasons=${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)} details=${formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor)}`
+  );
+  console.log(
+    `[PORTFOLIO_ADMISSION] enabled=${dryExec.portfolioAdmission.enabled} enforce=${dryExec.portfolioAdmission.enforce} checked=${dryExec.portfolioAdmission.checked} admitted=${dryExec.portfolioAdmission.admitted} rejected=${dryExec.portfolioAdmission.rejected} bypassed=${dryExec.portfolioAdmission.bypassed} active=${dryExec.portfolioAdmission.activeSymbolsBefore}->${dryExec.portfolioAdmission.activeSymbolsAfter} open=${dryExec.portfolioAdmission.openEntryOrdersBefore}->${dryExec.portfolioAdmission.openEntryOrdersAfter} newToday=${dryExec.portfolioAdmission.newSymbolsTodayBefore}->${dryExec.portfolioAdmission.newSymbolsTodayAfter} reasons=${formatSkipReasonCounts(dryExec.portfolioAdmission.reasonCounts)} audit=${dryExec.portfolioAdmission.auditPath}`
   );
   console.log(
     `[STAGE6_CONTRACT] enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
@@ -11196,6 +12136,8 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const entrySizingPolicy = buildEntrySizingPolicy();
   const executionOverlayPolicy = buildExecutionOverlayPolicy();
+  const openOrderMonitorPolicy = buildOpenOrderMonitorPolicy();
+  const portfolioAdmissionPolicy = buildPortfolioAdmissionPolicy();
   const actionableVerdicts = resolveActionableVerdicts();
   const regimeQualityEnabled = readBoolEnv("REGIME_QUALITY_GUARD_ENABLED", true);
   const regimeQualityMinScore = readPositiveNumberEnv("REGIME_QUALITY_MIN_SCORE", 60);
@@ -11275,6 +12217,26 @@ function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardContr
     `EXECUTION_OVERLAY_MAX_PULLBACK_DISTANCE_PCT=${executionOverlayPolicy.maxPullbackDistancePct}`,
     `EXECUTION_OVERLAY_TARGET_BUFFER_PCT=${executionOverlayPolicy.targetBufferPct}`,
     `EXECUTION_OVERLAY_DAILY_LOOKBACK_DAYS=${executionOverlayPolicy.dailyLookbackDays}`,
+    `ENTRY_OPEN_ORDER_MONITOR_ENABLED=${openOrderMonitorPolicy.enabled}`,
+    `ENTRY_OPEN_ORDER_MONITOR_MODE=${openOrderMonitorPolicy.mode}`,
+    `ENTRY_OPEN_ORDER_MONITOR_REPRICE_AFTER_MINUTES=${openOrderMonitorPolicy.repriceAfterMinutes}`,
+    `ENTRY_OPEN_ORDER_MONITOR_CANCEL_AFTER_MINUTES=${openOrderMonitorPolicy.cancelAfterMinutes}`,
+    `ENTRY_OPEN_ORDER_MONITOR_NEAR_LIMIT_PCT=${openOrderMonitorPolicy.nearLimitPct}`,
+    `ENTRY_OPEN_ORDER_MONITOR_REPRICE_DISTANCE_PCT=${openOrderMonitorPolicy.repriceDistancePct}`,
+    `ENTRY_OPEN_ORDER_MONITOR_CANCEL_DISTANCE_PCT=${openOrderMonitorPolicy.cancelDistancePct}`,
+    `ENTRY_OPEN_ORDER_MONITOR_MIN_RR=${openOrderMonitorPolicy.minRr}`,
+    `ENTRY_OPEN_ORDER_MONITOR_TARGET_BUFFER_PCT=${openOrderMonitorPolicy.targetBufferPct}`,
+    `ENTRY_OPEN_ORDER_MONITOR_MIN_REPRICE_DELTA_PCT=${openOrderMonitorPolicy.minRepriceDeltaPct}`,
+    `PORTFOLIO_ADMISSION_ENABLED=${portfolioAdmissionPolicy.enabled}`,
+    `PORTFOLIO_ADMISSION_ENFORCE=${portfolioAdmissionPolicy.enforce}`,
+    `PORTFOLIO_MAX_OPEN_ENTRY_ORDERS=${portfolioAdmissionPolicy.maxOpenEntryOrders}`,
+    `PORTFOLIO_MAX_NEW_SYMBOLS_PER_DAY=${portfolioAdmissionPolicy.maxNewSymbolsPerDay}`,
+    `PORTFOLIO_MAX_ACTIVE_SYMBOLS_TOTAL=${portfolioAdmissionPolicy.maxActiveSymbolsTotal}`,
+    `PORTFOLIO_MAX_SECTOR_ACTIVE_SYMBOLS=${portfolioAdmissionPolicy.maxSectorActiveSymbols}`,
+    `PORTFOLIO_PENDING_ORDER_TTL_MINUTES=${portfolioAdmissionPolicy.pendingOrderTtlMinutes}`,
+    `PORTFOLIO_MIN_FILLABILITY_SCORE=${portfolioAdmissionPolicy.minFillabilityScore}`,
+    `PORTFOLIO_MIN_ADMISSION_RR=${portfolioAdmissionPolicy.minAdmissionRr}`,
+    `RECOMMENDATION_LEDGER_ENABLED=${readBoolEnv("RECOMMENDATION_LEDGER_ENABLED", true)}`,
     `STAGE6_EXEC_BUCKET_ENFORCE=${stage6ExecutionBucketEnforce}`,
     `ACTIONABLE_VERDICTS=${formatActionableVerdicts(actionableVerdicts)}`,
     `POSITION_LIFECYCLE_ENABLED=${cfg.positionLifecycle.enabled}`,
@@ -11537,6 +12499,7 @@ function printRunSummary(
   const openOrderMonitorDetailSummary = formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor);
   const openOrderReprice = dryExec.openOrderMonitorReprice ?? createOpenOrderMonitorRepricePatch(false);
   const openOrderMonitorRepriceSummary = `enabled:${openOrderReprice.enabled}|applied:${openOrderReprice.applied}|blocked:${openOrderReprice.blocked}|reasons:${formatSkipReasonCounts(openOrderReprice.reasonCounts)}`;
+  const portfolioAdmissionSummary = `enabled:${dryExec.portfolioAdmission.enabled}|enforce:${dryExec.portfolioAdmission.enforce}|checked:${dryExec.portfolioAdmission.checked}|admitted:${dryExec.portfolioAdmission.admitted}|rejected:${dryExec.portfolioAdmission.rejected}|bypassed:${dryExec.portfolioAdmission.bypassed}|active:${dryExec.portfolioAdmission.activeSymbolsBefore}->${dryExec.portfolioAdmission.activeSymbolsAfter}|open:${dryExec.portfolioAdmission.openEntryOrdersBefore}->${dryExec.portfolioAdmission.openEntryOrdersAfter}|newToday:${dryExec.portfolioAdmission.newSymbolsTodayBefore}->${dryExec.portfolioAdmission.newSymbolsTodayAfter}|reasons:${formatSkipReasonCounts(dryExec.portfolioAdmission.reasonCounts)}`;
   const idempotencyTelemetry = buildOrderIdempotencyTelemetry(dryExec);
   const hfSoftExplainToken = dryExec.hfSentimentGate.explainLine.replace(/\s+/g, "_");
   const tuningForLog = hfTuningPhase ?? {
@@ -11685,7 +12648,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} portfolio_admission=${portfolioAdmissionSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -11783,7 +12746,8 @@ async function main() {
     applyGuardControlGateToDryExec(dryExecAfterRegime, guardControl)
   );
   const dryExecAfterOpenOrderMonitor = await applyOpenOrderMonitorToDryExec(dryExecAfterOverlay);
-  const dryExec = applyOpenOrderMonitorRepriceToDryExec(dryExecAfterOpenOrderMonitor);
+  const dryExecAfterOpenOrderReprice = applyOpenOrderMonitorRepriceToDryExec(dryExecAfterOpenOrderMonitor);
+  const dryExec = await applyPortfolioAdmissionToDryExec(stage6, dryExecAfterOpenOrderReprice);
   const hfShadow = computeHfShadowSummary(actionable, stage6.sha256, regime, guardControl, dryExec);
   await saveHfShadowSummary(hfShadow);
   const mode = buildRunModeLabel(dryExec, guardControl);

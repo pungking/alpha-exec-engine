@@ -33,6 +33,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
 - Open-order monitor telemetry now prints per-symbol suggested reprice limits, current price, RR-at-limit/current, and age so stale open orders can be reviewed without mutating broker state.
 - Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, every Stage6 actionable symbol with an RR-safe `REPRICE_CANDIDATE` can pass idempotency and stale cancel/replace.
+- Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
+- Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
 - Held-position scale-up includes chase guards (avg-entry distance / intraday surge) to avoid momentum overpay during live adds.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
@@ -64,6 +66,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Optional watchdog workflow (`sidecar-dry-run-watchdog`) can trigger fallback dispatch when scheduled dry-run is stale/missed.
 - Saves dry-exec payload snapshot to `state/last-dry-exec-preview.json`.
 - Saves order decision audit snapshot/history to `state/last-order-decision-audit.json` and `state/order-decision-audit.jsonl`.
+- Saves portfolio admission audit to `state/portfolio-admission-audit.json`.
+- Saves recommendation lifecycle ledger to `state/recommendation-ledger.json`.
 - Persists open-entry stale replace throttle ledger to `state/open-entry-replace-guard.json` (cooldown + per-day cap tracking).
 - Saves HF evidence ledger to `state/hf-evidence-history.jsonl` for zero-credit replay/tuning review.
 - Adds MCP Shadow Data Bus telemetry (Phase-1): Alpaca(read-only), Alpha Vantage, SEC EDGAR, Perplexity, Supabase toggles are recorded in startup/run summary/preview without changing trade path.
@@ -200,6 +204,16 @@ Use `.env.example` as baseline.
 - `ENTRY_OPEN_ORDER_MONITOR_TARGET_BUFFER_PCT` (default `1`; minimum target buffer preserved for suggested reprice limit)
 - `ENTRY_OPEN_ORDER_MONITOR_MIN_REPRICE_DELTA_PCT` (default `0.25`; minimum suggested-limit improvement before reprice candidate tag)
 - `ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED` (default `false`; when `true` and stale cleanup is enabled, monitor `REPRICE_CANDIDATE` can become a cancel/replace payload)
+- `PORTFOLIO_ADMISSION_ENABLED` (default `true`; evaluates portfolio capacity/fillability before broker submit)
+- `PORTFOLIO_ADMISSION_ENFORCE` (default `true`; rejected candidates become skip reasons instead of payloads)
+- `PORTFOLIO_MAX_OPEN_ENTRY_ORDERS` (default `6`; max active open buy-entry orders, excluding monitor-driven replacement of the same open order)
+- `PORTFOLIO_MAX_NEW_SYMBOLS_PER_DAY` (default `2`; max new symbols admitted per New York trading day)
+- `PORTFOLIO_MAX_ACTIVE_SYMBOLS_TOTAL` (default `12`; max tracked active symbols across recommendation ledger, open orders, and held positions)
+- `PORTFOLIO_MAX_SECTOR_ACTIVE_SYMBOLS` (default `4`; sector concentration cap for new symbols)
+- `PORTFOLIO_PENDING_ORDER_TTL_MINUTES` (default `180`; expire stale non-filled/non-open recommendations from the sidecar active set)
+- `PORTFOLIO_MIN_FILLABILITY_SCORE` (default `60`; minimum overlay/monitor-derived execution quality score)
+- `PORTFOLIO_MIN_ADMISSION_RR` (default `1.8`; minimum current RR for admission)
+- `RECOMMENDATION_LEDGER_ENABLED` (default `true`; persists recommendation lifecycle state in `state/recommendation-ledger.json`)
 - `ALPACA_DATA_BASE_URL` (optional, default `https://data.alpaca.markets`; Alpaca market-data endpoint)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)
 - `ACTIONABLE_INCLUDE_SPECULATIVE_BUY` (default `false`; when `true`, actionable verdict set becomes `BUY/STRONG_BUY/SPECULATIVE_BUY`)
@@ -674,7 +688,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/fillability-report.json`, `state/fillability-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/fillability-report.json`, `state/fillability-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
