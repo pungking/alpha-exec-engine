@@ -212,7 +212,8 @@ Use `.env.example` as baseline.
 - `PORTFOLIO_MAX_SECTOR_ACTIVE_SYMBOLS` (default `4`; sector concentration cap for new symbols)
 - `PORTFOLIO_PENDING_ORDER_TTL_MINUTES` (default `180`; expire stale non-filled/non-open recommendations from the sidecar active set)
 - `PORTFOLIO_MIN_FILLABILITY_SCORE` (default `60`; minimum overlay/monitor-derived execution quality score)
-- `PORTFOLIO_MIN_ADMISSION_RR` (default `1.8`; minimum current RR for admission)
+- `PORTFOLIO_MIN_ADMISSION_RR` (default `1.8`; minimum admission RR)
+- Admission RR uses current-price RR only for confirmed adaptive entries; pullback/reprice limit orders use RR at the proposed limit so valid pullback orders are not rejected just because market price has not pulled back yet.
 - `RECOMMENDATION_LEDGER_ENABLED` (default `true`; persists recommendation lifecycle state in `state/recommendation-ledger.json`)
 - `ALPACA_DATA_BASE_URL` (optional, default `https://data.alpaca.markets`; Alpaca market-data endpoint)
 - `STAGE6_EXECUTION_BUCKET_ENFORCE` (default `true`)

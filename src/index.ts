@@ -436,6 +436,7 @@ type PortfolioAdmissionRecord = {
   actionType: LifecycleActionType | null;
   fillabilityScore: number | null;
   rrAtCurrent: number | null;
+  admissionRr: number | null;
   effectiveEntryDistancePct: number | null;
   activeSymbolsBefore: number;
   openEntryOrdersBefore: number;
@@ -6872,6 +6873,14 @@ function computePortfolioFillabilityScore(row: OrderDecisionAuditRecord): number
   return Number(clamp(score, 0, 100).toFixed(1));
 }
 
+function computePortfolioAdmissionRr(row: OrderDecisionAuditRecord | null): number | null {
+  if (!row) return null;
+  if (row.executionOverlay?.style === "CONFIRMED_ADAPTIVE_ENTRY") {
+    return row.executionOverlay.rrAtCurrent ?? row.riskRewardAfter ?? row.riskRewardBefore;
+  }
+  return row.riskRewardAfter ?? row.riskRewardBefore ?? row.executionOverlay?.rrAtCurrent ?? null;
+}
+
 function addPortfolioAdmissionReason(summary: PortfolioAdmissionSummary, reason: string): void {
   summary.reasonCounts[reason] = (summary.reasonCounts[reason] ?? 0) + 1;
 }
@@ -7020,11 +7029,12 @@ async function applyPortfolioAdmissionToDryExec(
     const sectorKey = sector ? sector.trim().toUpperCase() : "";
     const fillabilityScore = audit ? computePortfolioFillabilityScore(audit) : null;
     const rrAtCurrent = audit?.executionOverlay?.rrAtCurrent ?? audit?.riskRewardAfter ?? null;
+    const admissionRr = computePortfolioAdmissionRr(audit);
     const effectiveDistance = audit?.effectiveEntryDistancePct ?? audit?.executionOverlay?.currentDistancePct ?? null;
+    const hasExistingOpenEntry = openOrders.bySymbol.has(payload.symbol);
     const replacesExistingOpenEntry =
-      openOrders.bySymbol.has(payload.symbol) &&
-      payload.entrySizing?.reason?.startsWith("open_order_monitor_reprice:") === true;
-    const addsOpenEntryOrder = !isExit && !replacesExistingOpenEntry;
+      hasExistingOpenEntry && payload.entrySizing?.reason?.startsWith("open_order_monitor_reprice:") === true;
+    const addsOpenEntryOrder = !isExit && !hasExistingOpenEntry;
 
     const reject = (reason: string, detail: string) => {
       summary.rejected += 1;
@@ -7046,6 +7056,7 @@ async function applyPortfolioAdmissionToDryExec(
         actionType: payload.actionType ?? null,
         fillabilityScore,
         rrAtCurrent,
+        admissionRr,
         effectiveEntryDistancePct: effectiveDistance,
         activeSymbolsBefore: activeSymbolsCount,
         openEntryOrdersBefore: openEntryOrdersCount,
@@ -7098,27 +7109,33 @@ async function applyPortfolioAdmissionToDryExec(
       );
       return;
     }
-    if (!isExit && rrAtCurrent != null && rrAtCurrent < policy.minAdmissionRr) {
+    if (!isExit && admissionRr != null && admissionRr < policy.minAdmissionRr) {
       reject(
         "rr_below_admission_floor",
-        `rr=${rrAtCurrent.toFixed(4)}|min=${policy.minAdmissionRr.toFixed(2)}`
+        `rr=${admissionRr.toFixed(4)}|min=${policy.minAdmissionRr.toFixed(2)}`
       );
       return;
     }
 
     admittedPayloads.push(payload);
     summary.admitted += 1;
-    addPortfolioAdmissionReason(summary, isExit ? "exit_action_passthrough" : "admitted");
+    const admissionReason = isExit
+      ? "exit_action_passthrough"
+      : hasExistingOpenEntry && !replacesExistingOpenEntry
+        ? "existing_open_entry_passthrough"
+        : "admitted";
+    addPortfolioAdmissionReason(summary, admissionReason);
     records.push({
       symbol: payload.symbol,
       status: "ADMITTED",
-      reason: isExit ? "exit_action_passthrough" : "admitted",
-      detail: `active=${activeSymbolsCount}|open=${openEntryOrdersCount}|newToday=${newSymbolsTodayCount}`,
+      reason: admissionReason,
+      detail: `active=${activeSymbolsCount}|open=${openEntryOrdersCount}|newToday=${newSymbolsTodayCount}|existingOpen=${hasExistingOpenEntry}`,
       rank: index + 1,
       sector,
       actionType: payload.actionType ?? null,
       fillabilityScore,
       rrAtCurrent,
+      admissionRr,
       effectiveEntryDistancePct: effectiveDistance,
       activeSymbolsBefore: activeSymbolsCount,
       openEntryOrdersBefore: openEntryOrdersCount,
