@@ -89,6 +89,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Step-by-step validation checklist: `docs/P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`
 - Trading action policy matrix: `docs/TRADING_POLICY_MATRIX.md`
 - GTSA execution lifecycle integration: `docs/GTSA_EXECUTION_LIFECYCLE_INTEGRATION_PLAN.md`
+- GTSA source prompt: `docs/prompts/GTSA_Skill_Prompt.md`
 - Living development plan: `docs/DEVELOPMENT_PLAN_LIVING.md`
 
 ## Safety Defaults
