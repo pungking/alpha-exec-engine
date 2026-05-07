@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-07 (KST, P0 cumulative execution-blocker audit)
+Last updated: 2026-05-07 (KST, GTSA execution lifecycle integration plan)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -44,6 +44,9 @@ follow this sequence:
    too far from current market or too idealized.
 4. **Lifecycle policy hardening**: refine `ENTRY_NEW`, `HOLD_WAIT`, `SCALE_UP`, `SCALE_DOWN`, `EXIT_PARTIAL`,
    `EXIT_FULL`, stop timing, take-profit timing, and sector/position concentration limits.
+   GTSA-style strategic reasoning is accepted only as a structured overlay, not as a direct order trigger. The immediate
+   design target is a portfolio admission controller plus recommendation ledger so daily rotating recommendations cannot
+   accumulate into uncontrolled pending orders or unmanaged watch symbols.
 5. **Performance / monitoring layer**: expand Stage 7 only after paper order/fill telemetry is reliable.
 6. **Paper-to-live promotion**: real-capital readiness requires stable paper execution evidence; no shortcut.
 
@@ -130,6 +133,9 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   RR?" The latest evidence shows accepted Alpaca orders but zero fills.
 - Execution overlay and open-order monitor remain diagnostic layers by default. Live repricing requires explicit repo
   variables and must keep stale cleanup, max chase, RR floor, and cooldown caps aligned.
+- Portfolio-level admission is not yet closed. Per-run caps and idempotency reduce duplicate orders, but they do not yet
+  provide a complete cross-day cap on active recommended symbols, open entry orders, sector concentration, or stale
+  unfilled recommendations.
 - High-price whole-share sizing produced a successful RTH paper submit canary, but the manual canary override layer
   must stay synchronized because profile-specific `DRY_DEFAULT_*` / `DRY_RISK_OFF_*` values can override legacy
   `DRY_*` inputs.
@@ -188,9 +194,12 @@ Priority: P0
   - repeat RTH canary after profile-aware manual override sync is pushed
   - 3-trading-day baseline for chase guard
   - compare conservative/balanced variants
+  - implement portfolio admission + recommendation ledger before enabling broader automated scale/exit behavior
+  - consume GTSA only through a reduced deterministic overlay; do not let free-text reasoning mutate order geometry
 - Evidence source:
   - `docs/TRADING_POLICY_MATRIX.md`
   - `docs/SCALE_UP_CHASE_GUARD_TUNING_PLAN.md`
+  - `docs/GTSA_EXECUTION_LIFECYCLE_INTEGRATION_PLAN.md`
 
 ## M3. Ops Reporting Automation
 Status: IN_PROGRESS

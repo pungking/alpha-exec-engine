@@ -38,6 +38,8 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Lifecycle planner auto-generates held-symbol de-risk actions from Stage6 state (`WATCHLIST/BLOCKED/conviction` degradation).
 - Lifecycle planner includes held symbols from full Stage6 universe (not only top picks) to improve held-position coverage.
 - Approval queue gate targets entry-expansion intents (`ENTRY_NEW`, `SCALE_UP`) and does not block de-risk sell intents.
+- GTSA execution lifecycle plan defines how strategic reasoning can be reduced into auditable entry/monitor/scale/exit
+  policy fields without letting free-text analysis directly mutate broker orders.
 - Payload gate enforces total notional cap (`DRY_MAX_TOTAL_NOTIONAL`).
 - Payload JSON is validated/normalized before use (2-decimal rounding, finite/non-negative checks, bracket geometry, `client_order_id` format).
 - Supports regime auto profile switch by VIX (default/risk-off presets).
@@ -86,6 +88,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 ### P3-3 Test Checklist
 - Step-by-step validation checklist: `docs/P3_3_ACTIVE_EXEC_TEST_CHECKLIST.md`
 - Trading action policy matrix: `docs/TRADING_POLICY_MATRIX.md`
+- GTSA execution lifecycle integration: `docs/GTSA_EXECUTION_LIFECYCLE_INTEGRATION_PLAN.md`
 - Living development plan: `docs/DEVELOPMENT_PLAN_LIVING.md`
 
 ## Safety Defaults
