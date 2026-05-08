@@ -132,6 +132,10 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   correction: pullback/reprice limit orders must be judged by RR at the proposed limit, not by current-price RR. Otherwise
   a valid waiting order like INCY can be falsely rejected before the market pulls back. The admission policy now uses
   current RR only for confirmed adaptive entries and proposed-limit RR for pullback/reprice orders.
+- Fresh 2026-05-08 run `25558230451` confirmed the broker path was not the active blocker: Stage6 produced
+  `stage6=0/finalPicks=0`, so sidecar correctly generated no payload and Alpaca submission was not attempted. The
+  sidecar now persists `stage6BlockerSamples` and prints Stage6 blocker samples in Telegram/run summary so a no-order
+  day is attributable to Stage6 gating instead of being mistaken for an Alpaca/order bug.
 - Notion ingestion path is alive:
   - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
   - HF Tuning Tracker rows are being updated for latest dry-run runs.

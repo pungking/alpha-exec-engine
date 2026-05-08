@@ -90,7 +90,20 @@ const normalizeRecords = (audit) => {
   return [];
 };
 
-const classifyRun = ({ preview, records, fillability, stageReasonCounts }) => {
+const normalizeBlockerSamples = (preview) => {
+  if (!Array.isArray(preview?.stage6BlockerSamples)) return [];
+  return preview.stage6BlockerSamples
+    .filter((row) => row && typeof row === "object")
+    .map((row) => ({
+      symbol: short(row.symbol, 16),
+      decision: short(row.finalDecision, 32),
+      reason: short(row.decisionReason, 64),
+      skipHint: short(row.skipHint, 64)
+    }))
+    .filter((row) => row.symbol);
+};
+
+const classifyRun = ({ preview, records, fillability, stageReasonCounts, blockerSamples }) => {
   const payloads = toNum(preview?.payloadCount);
   const skipped = toNum(preview?.skippedCount);
   const submitted = toNum(preview?.brokerSubmission?.submitted);
@@ -103,7 +116,9 @@ const classifyRun = ({ preview, records, fillability, stageReasonCounts }) => {
   if (submitted > 0) return "BROKER_SUBMITTED";
   if (attempted > 0 && submitted === 0) return "BROKER_SUBMIT_FAILED";
   if (payloads > 0) return "PAYLOAD_READY_NOT_SUBMITTED";
-  if (candidates === 0 && Object.keys(stageReasonCounts).length > 0) return "STAGE6_ZERO_EXECUTABLE";
+  if (candidates === 0 && (Object.keys(stageReasonCounts).length > 0 || blockerSamples.length > 0)) {
+    return "STAGE6_ZERO_EXECUTABLE";
+  }
   if (skipped > 0 || Object.keys(skipReasons).length > 0 || fillRows.length > 0) return "SIDECAR_CANDIDATE_BLOCKED";
   if (brokerReason === "dedupe_skip") return "DEDUPE_REPEAT";
   if (records.length === 0) return "NO_DECISION_RECORDS";
@@ -116,10 +131,15 @@ const buildRunRow = (stateDir) => {
   const fillability = readJson(path.join(stateDir, "fillability-report.json")) || {};
   const logText = readText(path.join(stateDir, "last-run-output.log"));
   const records = normalizeRecords(audit);
+  const blockerSamples = normalizeBlockerSamples(preview);
   const stageReasonText = extractLogToken(logText, "stage6_contract_reason_primary");
   const stageSkipHintText = extractLogToken(logText, "stage6_skip_hint_primary");
-  const stageReasonCounts = parseTokenCounts(stageReasonText);
-  const stageSkipHintCounts = parseTokenCounts(stageSkipHintText);
+  const stageReasonCounts = Object.keys(preview?.stage6ContractReasonCountsPrimary || {}).length
+    ? preview.stage6ContractReasonCountsPrimary
+    : parseTokenCounts(stageReasonText);
+  const stageSkipHintCounts = Object.keys(preview?.stage6SkipHintCountsPrimary || {}).length
+    ? preview.stage6SkipHintCountsPrimary
+    : parseTokenCounts(stageSkipHintText);
   const runIdMatch = stateDir.match(/sidecar-state-(\d+)/);
   const mtimeMs = fs.statSync(path.join(stateDir, "last-dry-exec-preview.json")).mtimeMs;
   const generatedAt = preview.generatedAt || preview.timestamp || new Date(mtimeMs).toISOString();
@@ -147,11 +167,17 @@ const buildRunRow = (stateDir) => {
     stageReasonCounts,
     stageSkipHintCounts,
     decisionRecordCount: records.length,
-    decisionSymbols: [...new Set(records.map((row) => String(row?.symbol || "").trim()).filter(Boolean))],
+    decisionSymbols: [
+      ...new Set([
+        ...records.map((row) => String(row?.symbol || "").trim()).filter(Boolean),
+        ...blockerSamples.map((row) => row.symbol)
+      ])
+    ],
+    stage6BlockerSamples: blockerSamples,
     fillabilityOverall: fillability?.summary?.overall || null,
     fillabilityFindings: fillability?.summary?.findings || [],
     fillabilityRows: Array.isArray(fillability?.rows) ? fillability.rows.length : 0,
-    classification: classifyRun({ preview, records, fillability, stageReasonCounts })
+    classification: classifyRun({ preview, records, fillability, stageReasonCounts, blockerSamples })
   };
 };
 
@@ -220,6 +246,7 @@ const buildAudit = () => {
       candidatesExecutable: Math.max(...groupRows.map((row) => row.candidatesExecutable)),
       skipReasons: representative.skipReasons,
       stageReasons: representative.stageReasonCounts,
+      blockerSamples: representative.stage6BlockerSamples,
       symbols: representative.decisionSymbols,
       brokerReason: representative.brokerReason,
       preflight: representative.preflight
@@ -249,12 +276,18 @@ const buildMarkdown = (audit) => {
   lines.push(`- skipReasons: \`${formatCounts(audit.summary.skipReasons)}\``);
   lines.push(`- symbols: \`${formatCounts(audit.summary.symbols)}\``);
   lines.push("");
-  lines.push("| Stage6 | Runs | Class | Candidates | Payload/Skipped | Submitted | Top Blockers | Symbols |");
-  lines.push("| --- | ---: | --- | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Stage6 | Runs | Class | Candidates | Payload/Skipped | Submitted | Top Blockers | Sample | Symbols |");
+  lines.push("| --- | ---: | --- | ---: | ---: | ---: | --- | --- | --- |");
   for (const group of audit.stage6Groups.slice(0, 30)) {
     const blockers = group.classification === "STAGE6_ZERO_EXECUTABLE" ? group.stageReasons : group.skipReasons;
+    const sample = group.blockerSamples?.length
+      ? group.blockerSamples
+          .slice(0, 3)
+          .map((row) => `${row.symbol}:${row.reason || row.skipHint}`)
+          .join(", ")
+      : "none";
     lines.push(
-      `| ${group.stage6HashShort || "N/A"} | ${group.runCount} | ${group.classification} | ${group.candidatesChecked} | ${group.payloadCount}/${group.skippedCount} | ${group.brokerSubmitted} | ${formatCounts(blockers)} | ${group.symbols.join(",") || "none"} |`
+      `| ${group.stage6HashShort || "N/A"} | ${group.runCount} | ${group.classification} | ${group.candidatesChecked} | ${group.payloadCount}/${group.skippedCount} | ${group.brokerSubmitted} | ${formatCounts(blockers)} | ${sample} | ${group.symbols.join(",") || "none"} |`
     );
   }
   lines.push("");

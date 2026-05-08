@@ -187,6 +187,25 @@ type Stage6CandidateSummary = {
   shadowIntel: Stage6ShadowIntelSummary | null;
 };
 
+type Stage6BlockerSample = {
+  symbol: string;
+  verdict: string;
+  finalDecision: Stage6CandidateSummary["finalDecision"];
+  decisionReason: string;
+  skipHint: string;
+  executionBucket: Stage6CandidateSummary["executionBucket"];
+  executionReason: Stage6CandidateSummary["executionReason"];
+  modelRank: number | null;
+  executionScore: number | null;
+  qualityScore: number | null;
+  expectedReturnPct: number | null;
+  earningsDaysToEvent: number | null;
+  entry: string;
+  target: string;
+  stop: string;
+  entryDistancePct: number | null;
+};
+
 type Stage6ShadowIntelSummary = {
   alphaVantage: {
     source: string;
@@ -3204,6 +3223,74 @@ function formatNullableMoney(value: number | null | undefined): string {
 
 function formatNullablePct(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? "N/A" : `${value.toFixed(2)}%`;
+}
+
+function isStage6ExecutableCandidate(row: Stage6CandidateSummary): boolean {
+  return row.finalDecision === "EXECUTABLE_NOW" || row.executionBucket === "EXECUTABLE";
+}
+
+function selectStage6DiagnosticCandidates(stage6: Stage6LoadResult): Stage6CandidateSummary[] {
+  const merged: Stage6CandidateSummary[] = [];
+  const pushUnique = (rows: Stage6CandidateSummary[] | undefined) => {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (!row?.symbol) continue;
+      if (!merged.some((item) => item.symbol === row.symbol)) merged.push(row);
+    }
+  };
+
+  pushUnique(stage6.allCandidates);
+  pushUnique(stage6.modelTopCandidates);
+  pushUnique(stage6.candidates);
+  pushUnique(stage6.contractContext?.modelTop6);
+  pushUnique(stage6.contractContext?.executablePicks);
+  pushUnique(stage6.contractContext?.watchlistTop);
+  return merged;
+}
+
+function buildStage6BlockerSamples(stage6: Stage6LoadResult, maxItems = 8): Stage6BlockerSample[] {
+  return selectStage6DiagnosticCandidates(stage6)
+    .filter((row) => !isStage6ExecutableCandidate(row))
+    .sort((a, b) => {
+      const rankA = a.modelRank ?? Number.POSITIVE_INFINITY;
+      const rankB = b.modelRank ?? Number.POSITIVE_INFINITY;
+      if (rankA !== rankB) return rankA - rankB;
+      const scoreA = a.executionScore ?? Number.NEGATIVE_INFINITY;
+      const scoreB = b.executionScore ?? Number.NEGATIVE_INFINITY;
+      return scoreB - scoreA;
+    })
+    .slice(0, Math.max(0, maxItems))
+    .map((row) => ({
+      symbol: row.symbol,
+      verdict: row.verdict,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      skipHint: mapStage6DecisionReasonToSkip(row.decisionReason),
+      executionBucket: row.executionBucket,
+      executionReason: row.executionReason,
+      modelRank: row.modelRank,
+      executionScore: row.executionScore,
+      qualityScore: row.qualityScore,
+      expectedReturnPct: row.expectedReturnPct,
+      earningsDaysToEvent: row.earningsDaysToEvent,
+      entry: row.entry,
+      target: row.target,
+      stop: row.stop,
+      entryDistancePct: row.entryDistancePct
+    }));
+}
+
+function formatStage6BlockerSamples(samples: Stage6BlockerSample[], maxItems = 6): string {
+  if (samples.length === 0) return "none";
+  const visible = samples.slice(0, maxItems).map((row) => {
+    const rank = row.modelRank == null ? "N/A" : `#${row.modelRank}`;
+    const distance = row.entryDistancePct == null ? "N/A" : `${row.entryDistancePct.toFixed(2)}%`;
+    const er = row.expectedReturnPct == null ? "N/A" : `${row.expectedReturnPct.toFixed(0)}%`;
+    const earnings = row.earningsDaysToEvent == null ? "N/A" : `D-${row.earningsDaysToEvent}`;
+    return `${row.symbol}:${row.finalDecision}/${row.decisionReason}->${row.skipHint}(M${rank},ER=${er},dist=${distance},earn=${earnings})`;
+  });
+  const suffix = samples.length > maxItems ? ` (+${samples.length - maxItems} more)` : "";
+  return `${visible.join(", ")}${suffix}`;
 }
 
 function sanitizeTelemetryToken(value: string, maxLength = 140): string {
@@ -8956,6 +9043,10 @@ function buildSimulationMessage(
   lines.push(
     `Stage6 Contract Gate: enforce=${dryExec.stage6Contract.enforce} checked=${dryExec.stage6Contract.checked} executable=${dryExec.stage6Contract.executable} watchlist=${dryExec.stage6Contract.watchlist} blocked=${dryExec.stage6Contract.blocked}`
   );
+  const stage6BlockerSamples = buildStage6BlockerSamples(result, 8);
+  if (stage6BlockerSamples.length > 0) {
+    lines.push(`Stage6 Blocker Samples: ${formatStage6BlockerSamples(stage6BlockerSamples)}`);
+  }
   if (hfLivePromotion) {
     lines.push(
       `HF Live Promotion: status=${hfLivePromotion.status} reason=${hfLivePromotion.reason} required=${hfLivePromotion.requiredPass}/${hfLivePromotion.requiredTotal} missing=${hfLivePromotion.requiredMissing.length ? hfLivePromotion.requiredMissing.join(",") : "none"} hint=${hfLivePromotion.requiredHintText} payloadPath=${hfLivePromotion.payloadPathSource}/${hfLivePromotion.payloadPathVerifiedAt ?? "n/a"}`
@@ -10773,6 +10864,7 @@ async function saveDryExecPreview(
   const stage6SkipHintCountsPrimary = mapStage6DecisionReasonCountsToSkipCounts(
     stage6ContractReasonCountsPrimary
   );
+  const stage6BlockerSamples = buildStage6BlockerSamples(result, 12);
   const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
   await mkdir("state", { recursive: true });
   const preview = {
@@ -10817,6 +10909,7 @@ async function saveDryExecPreview(
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
     stage6SkipHintCountsPrimary,
+    stage6BlockerSamples,
     idempotency: dryExec.idempotency,
     idempotencyTelemetry: buildOrderIdempotencyTelemetry(dryExec),
     orderLifecycle: ledger,
@@ -12511,6 +12604,10 @@ function printRunSummary(
   );
   const stage6ContractReasonsPrimarySummary = formatSkipReasonCounts(stage6ContractReasonCountsPrimary);
   const stage6SkipHintsPrimarySummary = formatSkipReasonCounts(stage6SkipHintCountsPrimary);
+  const stage6BlockerSamplesSummary = sanitizeTelemetryToken(
+    formatStage6BlockerSamples(buildStage6BlockerSamples(stage6, 4), 4),
+    260
+  );
   const executionOverlaySummary = `enabled:${dryExec.executionOverlay.enabled}|mode:${dryExec.executionOverlay.mode}|data:${dryExec.executionOverlay.dataStatus}|evaluated:${dryExec.executionOverlay.evaluated}|confirmed:${dryExec.executionOverlay.confirmedAdaptiveEntry}|pullback:${dryExec.executionOverlay.pullbackLimit}|wait:${dryExec.executionOverlay.waitPullback}|noTrade:${dryExec.executionOverlay.noTrade}|missing:${dryExec.executionOverlay.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.executionOverlay.reasonCounts)}`;
   const openOrderMonitorSummary = `enabled:${dryExec.openOrderMonitor.enabled}|mode:${dryExec.openOrderMonitor.mode}|data:${dryExec.openOrderMonitor.dataStatus}|open:${dryExec.openOrderMonitor.openOrders}|matched:${dryExec.openOrderMonitor.matched}|keep:${dryExec.openOrderMonitor.keep}|watch:${dryExec.openOrderMonitor.watchPullback}|reprice:${dryExec.openOrderMonitor.repriceCandidate}|cancel:${dryExec.openOrderMonitor.cancelCandidate}|missing:${dryExec.openOrderMonitor.dataMissing}|reasons:${formatSkipReasonCounts(dryExec.openOrderMonitor.reasonCounts)}`;
   const openOrderMonitorDetailSummary = formatOpenOrderMonitorRunDetails(dryExec.openOrderMonitor);
@@ -12665,7 +12762,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} portfolio_admission=${portfolioAdmissionSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} stage6_blocker_sample=${stage6BlockerSamplesSummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} portfolio_admission=${portfolioAdmissionSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
