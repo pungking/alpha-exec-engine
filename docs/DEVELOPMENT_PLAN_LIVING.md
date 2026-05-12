@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-07 (KST, portfolio admission + recommendation ledger implementation)
+Last updated: 2026-05-12 (KST, Stage6 current-entry promotion canary)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -138,6 +138,17 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   day is attributable to Stage6 gating instead of being mistaken for an Alpaca/order bug.
 - Notion ingestion path is alive:
   - Daily Snapshot rows for `sidecar_dry_run` and `sidecar_market_guard` are present.
+
+### 2026-05-12 KST Stage6 current-entry gate precondition
+
+- Fresh webapp run produced `STAGE6_ALPHA_FINAL_2026-05-12_10-51-55.json` with hash `5066d3c17e8e`.
+- Stage6 now emits current-entry structure diagnostics directly from OHLCV/ATR/support context.
+- Local no-upload canary confirmed `INCY` would promote to
+  `EXECUTABLE_NOW/executable_current_recalculated_stop` when both explicit Stage6 flags are enabled:
+  - `VITE_STAGE6_ADAPTIVE_CURRENT_ENTRY_ENABLED=true`
+  - `VITE_STAGE6_CURRENT_ENTRY_STOP_RECALC_ENABLED=true`
+- Sidecar/Alpaca verification remains blocked until an explicit promoted Stage6 canary is intentionally run; payload
+  preview is still not broker proof.
   - HF Tuning Tracker rows are being updated for latest dry-run runs.
   - Performance Dashboard database/schema is accessible and query-ready.
 - Ops automation chain now includes:
