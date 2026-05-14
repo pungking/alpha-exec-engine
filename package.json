@@ -38,7 +38,8 @@
     "replay:hf:fixture:dist": "node dist/src/replay-hf-judgement.js --preview testdata/replay/preview.fixture.json --stage6 testdata/replay/stage6.fixture.json --baseline testdata/replay/baseline.summary.json --out state/replay_fixture_summary.json --strict --expect-no-diff",
     "replay:hf": "npm run build && node dist/src/replay-hf-judgement.js",
     "replay:hf:strict": "npm run build && node dist/src/replay-hf-judgement.js --strict",
-    "replay:hf:fixture": "npm run build && node dist/src/replay-hf-judgement.js --preview testdata/replay/preview.fixture.json --stage6 testdata/replay/stage6.fixture.json --baseline testdata/replay/baseline.summary.json --out state/replay_fixture_summary.json --strict --expect-no-diff"
+    "replay:hf:fixture": "npm run build && node dist/src/replay-hf-judgement.js --preview testdata/replay/preview.fixture.json --stage6 testdata/replay/stage6.fixture.json --baseline testdata/replay/baseline.summary.json --out state/replay_fixture_summary.json --strict --expect-no-diff",
+    "ops:order-state": "node scripts/build-order-state-consistency-report.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

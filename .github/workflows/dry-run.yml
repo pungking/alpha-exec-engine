@@ -1558,6 +1558,21 @@ jobs:
           fs.appendFileSync(summaryPath, lines.join("\n") + "\n");
           NODE
 
+      - name: Build fillability evidence snapshot
+        if: always()
+        run: npm run ops:fillability
+
+      - name: Publish fillability evidence summary
+        if: always()
+        run: |
+          if [[ -f state/fillability-report.md ]]; then
+            cat state/fillability-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Sidecar Fillability Evidence" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/fillability-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build performance dashboard snapshot
         if: always()
         run: npm run dashboard:perf
@@ -1573,18 +1588,18 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
-      - name: Build fillability evidence snapshot
+      - name: Build order state consistency report
         if: always()
-        run: npm run ops:fillability
+        run: npm run ops:order-state
 
-      - name: Publish fillability evidence summary
+      - name: Publish order state consistency summary
         if: always()
         run: |
-          if [[ -f state/fillability-report.md ]]; then
-            cat state/fillability-report.md >> "${GITHUB_STEP_SUMMARY}"
+          if [[ -f state/order-state-consistency-report.md ]]; then
+            cat state/order-state-consistency-report.md >> "${GITHUB_STEP_SUMMARY}"
           else
-            echo "## Sidecar Fillability Evidence" >> "${GITHUB_STEP_SUMMARY}"
-            echo "- status: \`missing state/fillability-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "## Order State Consistency" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/order-state-consistency-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
@@ -1665,6 +1680,8 @@ jobs:
             state/performance-dashboard.md
             state/fillability-report.json
             state/fillability-report.md
+            state/order-state-consistency-report.json
+            state/order-state-consistency-report.md
             state/ops-health-report.json
             state/ops-health-report.md
             state/validation-pack-auto-trigger.json

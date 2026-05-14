@@ -848,6 +848,7 @@ type OrderLedgerUpdateResult = {
   targetStatus: OrderLifecycleStatus | "none";
   upserted: number;
   transitioned: number;
+  reconciled: number;
   unchanged: number;
   pruned: number;
 };
@@ -9095,7 +9096,7 @@ function buildSimulationMessage(
   }
   lines.push(`Order Idempotency: ${buildOrderIdempotencyTelemetry(dryExec).summaryText}`);
   lines.push(
-    `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
+    `Order Lifecycle: enabled=${ledger.enabled} target=${ledger.targetStatus} upserted=${ledger.upserted} transitioned=${ledger.transitioned} reconciled=${ledger.reconciled} unchanged=${ledger.unchanged} pruned=${ledger.pruned}`
   );
   lines.push(
     `Broker Submit: enabled=${brokerSubmit.enabled} active=${brokerSubmit.active} reason=${brokerSubmit.reason} requirePerfGateGo=${brokerSubmit.requirePerfGateGo} requireHfPass=${brokerSubmit.requireHfLivePromotionPass} perfGate=${brokerSubmit.perfGateStatus} perfReason=${brokerSubmit.perfGateReason} hfLive=${brokerSubmit.hfLivePromotionStatus} hfReason=${brokerSubmit.hfLivePromotionReason} attempted=${brokerSubmit.attempted} submitted=${brokerSubmit.submitted} failed=${brokerSubmit.failed} skipped=${brokerSubmit.skipped}`
@@ -12102,6 +12103,83 @@ function pruneOrderLedgerState(state: OrderLedgerState, ttlDays: number): number
   return removed;
 }
 
+function findOrderIdempotencyEntryForLedgerRecord(
+  order: OrderLedgerRecord,
+  idempotencyState: OrderIdempotencyState
+): OrderIdempotencyEntry | null {
+  const direct = idempotencyState.orders[order.idempotencyKey];
+  if (direct) return direct;
+
+  const entries = Object.values(idempotencyState.orders);
+  const clientOrderId = order.clientOrderId.trim();
+  if (clientOrderId) {
+    const byClientOrderId = entries.find((entry) => entry.clientOrderId === clientOrderId);
+    if (byClientOrderId) return byClientOrderId;
+  }
+
+  const brokerOrderId = order.brokerOrderId?.trim();
+  if (brokerOrderId) {
+    const byBrokerOrderId = entries.find((entry) => entry.brokerOrderId === brokerOrderId);
+    if (byBrokerOrderId) return byBrokerOrderId;
+  }
+
+  return null;
+}
+
+function canReconcileOrderLedgerStatus(
+  from: OrderLifecycleStatus,
+  to: OrderLifecycleStatus
+): boolean {
+  if (isTransitionAllowed(from, to)) return true;
+  // Broker evidence can arrive after the payload path has gone idempotency_duplicate/no_payload.
+  // In that case the ledger may still be "planned" even though Alpaca already accepted/filled it.
+  return from === "planned" && (to === "partially_filled" || to === "filled");
+}
+
+function reconcileOrderLedgerWithIdempotency(
+  state: OrderLedgerState,
+  idempotencyState: OrderIdempotencyState,
+  now: string
+): number {
+  let reconciled = 0;
+  for (const order of Object.values(state.orders)) {
+    const entry = findOrderIdempotencyEntryForLedgerRecord(order, idempotencyState);
+    const brokerStatus = entry?.brokerStatus ?? null;
+    if (!entry || !brokerStatus) continue;
+
+    const brokerOrderId = entry.brokerOrderId ?? order.brokerOrderId ?? null;
+    const clientOrderId = entry.clientOrderId ?? order.clientOrderId;
+    const metadataChanged =
+      (brokerOrderId ?? null) !== (order.brokerOrderId ?? null) ||
+      clientOrderId !== order.clientOrderId;
+
+    if (order.status !== brokerStatus && canReconcileOrderLedgerStatus(order.status, brokerStatus)) {
+      order.history.push({
+        at: now,
+        from: order.status,
+        to: brokerStatus,
+        reason: `broker_idempotency_reconcile:${brokerStatus}`,
+        source: "order_idempotency_broker_reconcile"
+      });
+      order.status = brokerStatus;
+      order.statusReason = `broker_idempotency_reconcile:${brokerStatus}`;
+      order.updatedAt = now;
+      order.brokerOrderId = brokerOrderId;
+      order.clientOrderId = clientOrderId;
+      reconciled += 1;
+      continue;
+    }
+
+    if (metadataChanged) {
+      order.brokerOrderId = brokerOrderId;
+      order.clientOrderId = clientOrderId;
+      order.updatedAt = now;
+      reconciled += 1;
+    }
+  }
+  return reconciled;
+}
+
 async function updateOrderLedger(
   stage6: Stage6LoadResult,
   mode: string,
@@ -12115,7 +12193,7 @@ async function updateOrderLedger(
   const targetStatus: OrderLifecycleStatus = hasSubmitted ? "submitted" : "planned";
 
   if (!enabled) {
-    return { enabled, targetStatus: "none", upserted: 0, transitioned: 0, unchanged: 0, pruned: 0 };
+    return { enabled, targetStatus: "none", upserted: 0, transitioned: 0, reconciled: 0, unchanged: 0, pruned: 0 };
   }
 
   const state = await loadOrderLedgerState();
@@ -12123,6 +12201,7 @@ async function updateOrderLedger(
   const pruned = pruneOrderLedgerState(state, ttlDays);
   let upserted = 0;
   let transitioned = 0;
+  let reconciled = 0;
   let unchanged = 0;
   let changed = pruned > 0;
 
@@ -12213,16 +12292,20 @@ async function updateOrderLedger(
     existing.updatedAt = now;
   }
 
+  const idempotencyState = await loadOrderIdempotencyState();
+  reconciled = reconcileOrderLedgerWithIdempotency(state, idempotencyState, now);
+  if (reconciled > 0) changed = true;
+
   if (changed) {
     state.updatedAt = now;
     await saveOrderLedgerState(state);
   }
 
   console.log(
-    `[ORDER_LEDGER] enabled=${enabled} target=${targetStatus} ttlDays=${ttlDays} upserted=${upserted} transitioned=${transitioned} unchanged=${unchanged} pruned=${pruned}`
+    `[ORDER_LEDGER] enabled=${enabled} target=${targetStatus} ttlDays=${ttlDays} upserted=${upserted} transitioned=${transitioned} reconciled=${reconciled} unchanged=${unchanged} pruned=${pruned}`
   );
 
-  return { enabled, targetStatus, upserted, transitioned, unchanged, pruned };
+  return { enabled, targetStatus, upserted, transitioned, reconciled, unchanged, pruned };
 }
 
 function buildRunModeLabel(dryExec: DryExecBuildResult, guardControl: GuardControlGate): string {
@@ -12762,7 +12845,7 @@ function printRunSummary(
     `[STAGE6_CONTRACT_REASON_PRIMARY] raw=${stage6ContractReasonsPrimarySummary} mapped=${stage6SkipHintsPrimarySummary}`
   );
   console.log(
-    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} stage6_blocker_sample=${stage6BlockerSamplesSummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} portfolio_admission=${portfolioAdmissionSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_unchanged=${ledger.unchanged}`
+    `[RUN_SUMMARY] event=${event} stage6=${stage6.fileName} hash=${stage6.sha256.slice(0, 12)} profile=${dryExec.regime.profile} source=${dryExec.regime.source} vix=${formatVix(dryExec.regime.vix)} actionable=${actionableCount} payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length} skip_reasons=${formatSkipReasonCounts(dryExec.skipReasonCounts)} stage6_contract_enforce=${dryExec.stage6Contract.enforce} stage6_contract_checked=${dryExec.stage6Contract.checked} stage6_contract_blocked=${dryExec.stage6Contract.blocked} stage6_contract_reason_primary=${stage6ContractReasonsPrimarySummary} stage6_skip_hint_primary=${stage6SkipHintsPrimarySummary} stage6_blocker_sample=${stage6BlockerSamplesSummary} entry_feas_enforce=${dryExec.entryFeasibility.enforce} entry_feas_checked=${dryExec.entryFeasibility.checked} entry_feas_blocked=${dryExec.entryFeasibility.blocked} entry_price_mode=${dryExec.entryPricePolicy.mode} entry_price_adjusted=${dryExec.entryPricePolicy.adjusted} entry_price_capped=${dryExec.entryPricePolicy.capped} entry_price_avg_chase_pct=${dryExec.entryPricePolicy.avgChasePct.toFixed(4)} entry_price_max_chase_pct=${dryExec.entryPricePolicy.maxChaseAppliedPct.toFixed(4)} entry_high_price_policy=${dryExec.entrySizingPolicy.highPricePolicy} entry_min_one_share_allowed=${dryExec.entrySizingPolicy.minOneShareAllowed} entry_min_one_share_attempts=${dryExec.entrySizingPolicy.minOneShareAttempts} entry_min_one_share_blocked=${dryExec.entrySizingPolicy.minOneShareBlocked} execution_overlay=${executionOverlaySummary} open_order_monitor=${openOrderMonitorSummary} open_order_monitor_detail=${openOrderMonitorDetailSummary} open_order_reprice=${openOrderMonitorRepriceSummary} portfolio_admission=${portfolioAdmissionSummary} hf_soft_enabled=${dryExec.hfSentimentGate.enabled} hf_soft_applied=${dryExec.hfSentimentGate.applied} hf_soft_blocked_negative=${dryExec.hfSentimentGate.blockedNegative} hf_soft_earnings_blocked=${dryExec.hfSentimentGate.earningsBlocked} hf_soft_earnings_reduced=${dryExec.hfSentimentGate.earningsReduced} hf_soft_net_delta=${dryExec.hfSentimentGate.netMinConvictionDelta} hf_soft_size_enabled=${dryExec.hfSentimentGate.sizeReductionEnabled} hf_soft_size_reduced=${dryExec.hfSentimentGate.sizeReducedCount} hf_soft_size_saved_notional=${dryExec.hfSentimentGate.sizeReductionNotionalTotal.toFixed(2)} hf_soft_explain=${hfSoftExplainToken} hf_payload_probe_forced=${hfPayloadProbeSummary} hf_payload_probe_status=${hfPayloadProbeGateSummary} hf_payload_path_sticky=${hfPayloadPathStickySummary} hf_evidence=${hfEvidenceSummaryForRun} hf_drift=${hfDriftSummary} hf_shadow=${hfShadowSummary} hf_shadow_trend=${hfShadowTrendSummary} hf_tuning_phase=${hfTuningPhaseSummary} hf_tuning_advice=${hfTuningAdviceSummary} hf_freeze=${hfFreezeSummary} hf_live_promotion=${hfLivePromotionSummary} hf_next_action=${hfNextActionSummary} hf_daily_verdict=${hfDailyVerdictSummary} hf_alert=${hfAlertSummary} approval_queue=${approvalQueueSummary} shadow_data_bus=${shadowDataBusSummary} shadow_parse=${shadowFieldParsingSummary} action_intent=${actionIntentSummary} broker_submit=${brokerSubmitSummary} idemp_new=${dryExec.idempotency.newCount} idemp_dup=${idempotencyTelemetry.effectiveDuplicateCount} idemp_ledger_dup=${idempotencyTelemetry.ledgerDuplicateCount} idemp_skip_dup=${idempotencyTelemetry.skipDuplicateCount} idemp_released=${dryExec.idempotency.releasedCount} idemp_broker_checked=${dryExec.idempotency.brokerCheckedCount} idemp_broker_released=${dryExec.idempotency.brokerReleasedCount} idemp_broker_held=${dryExec.idempotency.brokerHeldCount} idemp_enforced=${dryExec.idempotency.enforced} preflight=${preflight.status}:${preflight.code} preflight_blocking=${preflight.blocking} preflight_would_block_live=${preflight.wouldBlockLive} ledger_target=${ledger.targetStatus} ledger_upserted=${ledger.upserted} ledger_transitioned=${ledger.transitioned} ledger_reconciled=${ledger.reconciled} ledger_unchanged=${ledger.unchanged}`
   );
 }
 
@@ -12915,6 +12998,7 @@ async function main() {
       targetStatus: "none",
       upserted: 0,
       transitioned: 0,
+      reconciled: 0,
       unchanged: 0,
       pruned: 0
     };

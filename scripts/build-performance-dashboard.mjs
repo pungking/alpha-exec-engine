@@ -2,6 +2,9 @@ import fs from "node:fs";
 
 const STATE_DIR = "state";
 const LOOP_PATH = `${STATE_DIR}/stage6-20trade-loop.json`;
+const ORDER_LEDGER_PATH = `${STATE_DIR}/order-ledger.json`;
+const ORDER_IDEMPOTENCY_PATH = `${STATE_DIR}/order-idempotency.json`;
+const FILLABILITY_PATH = `${STATE_DIR}/fillability-report.json`;
 const OUTPUT_JSON = `${STATE_DIR}/performance-dashboard.json`;
 const OUTPUT_MD = `${STATE_DIR}/performance-dashboard.md`;
 
@@ -29,6 +32,13 @@ const toIso = (value) => {
 
 const short = (value, max = 500) => String(value ?? "").trim().slice(0, max);
 
+const redactAccountNumber = (value) => {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const tail = text.slice(-4);
+  return `****${tail}`;
+};
+
 const sortByIso = (rows, key) =>
   [...rows].sort((a, b) => {
     const ax = Date.parse(a?.[key] || "");
@@ -38,6 +48,14 @@ const sortByIso = (rows, key) =>
     if (!Number.isFinite(bx)) return -1;
     return ax - bx;
   });
+
+const latestIso = (...values) => {
+  const timestamps = values
+    .map((value) => Date.parse(value || ""))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (timestamps.length === 0) return "";
+  return new Date(Math.max(...timestamps)).toISOString();
+};
 
 const normalizeLoopRows = (loop) => {
   const rowsMap = loop && typeof loop.rows === "object" ? loop.rows : {};
@@ -226,6 +244,104 @@ const fetchAlpaca = async (path) => {
   }
 };
 
+const normalizeFillState = (value) => {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (text === "filled") return "filled";
+  if (text === "partially_filled" || text === "open_waiting" || text.startsWith("open_")) return "open";
+  if (text === "submitted" || text === "accepted" || text === "idempotency_held") return "open";
+  if (text === "canceled" || text === "cancelled") return "canceled";
+  if (text === "expired") return "expired";
+  if (text === "rejected") return "rejected";
+  if (text === "terminal_unfilled") return "unfilled_terminal";
+  return text;
+};
+
+const buildStatusBySymbol = () => {
+  const ledger = readJson(ORDER_LEDGER_PATH) || {};
+  const idempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {};
+  const fillability = readJson(FILLABILITY_PATH) || {};
+  const bySymbol = new Map();
+
+  const merge = (symbol, patch) => {
+    if (!symbol) return;
+    const current = bySymbol.get(symbol) || { symbol };
+    bySymbol.set(symbol, {
+      ...current,
+      ...patch,
+      observedAt: latestIso(current.observedAt, patch.observedAt)
+    });
+  };
+
+  for (const row of Object.values(ledger?.orders || {})) {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    merge(symbol, {
+      ledgerStatus: row?.status || null,
+      ledgerReason: row?.statusReason || null,
+      ledgerUpdatedAt: row?.updatedAt || null,
+      observedAt: row?.updatedAt || row?.createdAt || null
+    });
+  }
+
+  for (const row of Object.values(idempotency?.orders || {})) {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    merge(symbol, {
+      idempotencyBrokerStatus: row?.brokerStatus || null,
+      idempotencyBrokerCheckedAt: row?.brokerCheckedAt || null,
+      observedAt: row?.brokerCheckedAt || row?.lastSeenAt || row?.firstSeenAt || null
+    });
+  }
+
+  for (const row of Array.isArray(fillability?.rows) ? fillability.rows : []) {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    merge(symbol, {
+      fillabilityStatus: row?.status || null,
+      fillabilityReason: row?.reason || null,
+      fillQty: toNum(row?.fillQty),
+      avgFillPrice: toNum(row?.avgFillPrice),
+      observedAt: fillability?.generatedAt || null
+    });
+  }
+
+  for (const [symbol, row] of bySymbol) {
+    const normalized = [
+      row.ledgerStatus,
+      row.idempotencyBrokerStatus,
+      row.fillabilityStatus
+    ]
+      .map(normalizeFillState)
+      .filter(Boolean);
+    const unique = [...new Set(normalized)];
+    bySymbol.set(symbol, {
+      ...row,
+      normalizedFillState: unique.length === 1 ? unique[0] : unique.length > 1 ? "mixed" : null,
+      fillStateConsistent: unique.length > 1 ? false : unique.length === 1 ? true : null
+    });
+  }
+
+  return bySymbol;
+};
+
+const derivePositionStatus = ({ qty, currentPrice, stopPrice, targetPrice, unrealizedPlPct }) => {
+  if ((qty ?? 0) <= 0) return "NO_POSITION";
+  if (currentPrice != null && stopPrice != null && currentPrice <= stopPrice) return "STOP_REVIEW";
+  if (currentPrice != null && targetPrice != null && currentPrice >= targetPrice) return "TARGET_REVIEW";
+  if (stopPrice == null && targetPrice == null) return "HOLD_MONITOR_GUARD_MISSING";
+  if (stopPrice == null) return "HOLD_MONITOR_STOP_MISSING";
+  if (targetPrice == null) return "HOLD_MONITOR_TARGET_MISSING";
+  if (unrealizedPlPct != null && unrealizedPlPct <= -3) return "HOLD_MONITOR_DRAWDOWN_WATCH";
+  return "HOLD_MONITOR";
+};
+
+const formatPositionDetails = (positions, limit = 10) =>
+  (positions || [])
+    .slice(0, limit)
+    .map(
+      (row) =>
+        `${row.symbol}:qty=${fmt(row.qty, 3)} cur=${fmt(row.currentPrice)} tp=${fmt(row.targetPrice)} sl=${fmt(row.stopPrice)} uPnL=${fmt(row.unrealizedPl)}(${fmt(row.unrealizedPlPct)}%) status=${row.positionStatus} fill=${row.normalizedFillState || "N/A"}`
+    )
+    .join("; ");
+
 const buildLiveSummary = async () => {
   const accountRes = await fetchAlpaca("/v2/account");
   const positionsRes = await fetchAlpaca("/v2/positions");
@@ -241,6 +357,7 @@ const buildLiveSummary = async () => {
   const account = accountRes.data && typeof accountRes.data === "object" ? accountRes.data : {};
   const positions = Array.isArray(positionsRes.data) ? positionsRes.data : [];
   const openOrders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
+  const statusBySymbol = buildStatusBySymbol();
 
   const orderBySymbol = new Map();
   for (const order of openOrders) {
@@ -271,6 +388,14 @@ const buildLiveSummary = async () => {
     const unrealizedPlPctRaw = toNum(pos?.unrealized_plpc);
     const unrealizedPlPct = unrealizedPlPctRaw != null ? unrealizedPlPctRaw * 100 : null;
     const guard = orderBySymbol.get(symbol) || { stopPrice: null, targetPrice: null };
+    const stateStatus = statusBySymbol.get(symbol) || {};
+    const positionStatus = derivePositionStatus({
+      qty,
+      currentPrice,
+      stopPrice: guard.stopPrice,
+      targetPrice: guard.targetPrice,
+      unrealizedPlPct
+    });
     return {
       symbol,
       qty,
@@ -282,6 +407,14 @@ const buildLiveSummary = async () => {
       costBasis,
       unrealizedPl,
       unrealizedPlPct,
+      positionStatus,
+      ledgerStatus: stateStatus.ledgerStatus || null,
+      idempotencyBrokerStatus: stateStatus.idempotencyBrokerStatus || null,
+      fillabilityStatus: stateStatus.fillabilityStatus || null,
+      normalizedFillState: stateStatus.normalizedFillState || null,
+      fillStateConsistent: stateStatus.fillStateConsistent,
+      fillQty: stateStatus.fillQty ?? null,
+      avgFillPrice: stateStatus.avgFillPrice ?? null,
       holdDays: null
     };
   });
@@ -293,7 +426,8 @@ const buildLiveSummary = async () => {
   return {
     available: true,
     account: {
-      accountNumber: short(account?.account_number || "", 50),
+      accountNumber: redactAccountNumber(account?.account_number || ""),
+      accountNumberRedacted: true,
       status: short(account?.status || "N/A", 40),
       equity: toNum(account?.equity),
       cash: toNum(account?.cash),
@@ -305,7 +439,12 @@ const buildLiveSummary = async () => {
       totalUnrealizedPl,
       totalCostBasis,
       totalMarketValue,
-      totalReturnPct: totalCostBasis > 0 ? (totalUnrealizedPl / totalCostBasis) * 100 : null
+      totalReturnPct: totalCostBasis > 0 ? (totalUnrealizedPl / totalCostBasis) * 100 : null,
+      guardMissingCount: normalizedPositions.filter((row) =>
+        String(row.positionStatus || "").includes("GUARD_MISSING") ||
+        String(row.positionStatus || "").includes("STOP_MISSING")
+      ).length,
+      fillStateMismatchCount: normalizedPositions.filter((row) => row.fillStateConsistent === false).length
     },
     positions: normalizedPositions.sort((a, b) => (b.unrealizedPl || 0) - (a.unrealizedPl || 0))
   };
@@ -349,9 +488,20 @@ const buildMarkdown = ({ generatedAt, simulation, live }) => {
     );
     const topLive = (live.positions || [])
       .slice(0, 5)
-      .map((row) => `${row.symbol}(qty=${fmt(row.qty, 3)} uPnL=${fmt(row.unrealizedPl)} ${fmt(row.unrealizedPlPct)}%)`)
+      .map((row) => `${row.symbol}(qty=${fmt(row.qty, 3)} uPnL=${fmt(row.unrealizedPl)} ${fmt(row.unrealizedPlPct)}% status=${row.positionStatus})`)
       .join(", ");
     lines.push(`- live_positions_top: \`${topLive || "N/A"}\``);
+    lines.push(
+      `- live_position_monitor: \`guardMissing=${live.totals.guardMissingCount} fillStateMismatch=${live.totals.fillStateMismatchCount} details=${formatPositionDetails(live.positions, 5) || "N/A"}\``
+    );
+    lines.push("");
+    lines.push("| Symbol | Qty | Current | Target | Stop | uPnL | uPnL% | Status | Fill State |");
+    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+    for (const row of (live.positions || []).slice(0, 10)) {
+      lines.push(
+        `| ${row.symbol} | ${fmt(row.qty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.targetPrice)} | ${fmt(row.stopPrice)} | ${fmt(row.unrealizedPl)} | ${fmt(row.unrealizedPlPct)}% | ${row.positionStatus} | ${row.normalizedFillState || "N/A"} |`
+      );
+    }
   } else {
     lines.push(`- live_totals: \`N/A (${live?.reason || "not_available"})\``);
   }

@@ -1093,6 +1093,14 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
 
   const liveTotals = live?.totals || {};
   const liveAccount = live?.account || {};
+  const livePositions = Array.isArray(live?.positions) ? live.positions : [];
+  const livePositionDetails = livePositions
+    .slice(0, 10)
+    .map((row) => {
+      const symbol = String(row?.symbol || "N/A").toUpperCase();
+      return `${symbol}:qty=${fmtFixed(row?.qty, 3)} cur=${fmtFixed(row?.currentPrice, 2)} tp=${fmtFixed(row?.targetPrice, 2)} sl=${fmtFixed(row?.stopPrice, 2)} uPnL=${fmtFixed(row?.unrealizedPl, 2)}(${fmtFixed(row?.unrealizedPlPct, 2)}%) status=${row?.positionStatus || "N/A"} fill=${row?.normalizedFillState || "N/A"}`;
+    })
+    .join("; ");
   const liveAvailable = Boolean(live?.available);
   const generatedAt = dashboard?.generatedAt || simulation?.updatedAt || new Date().toISOString();
   const eventName = env("GITHUB_EVENT_NAME", "");
@@ -1116,7 +1124,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `livePositions=${liveTotals?.positionCount ?? "N/A"}`,
     `liveUnrealized=${fmtFixed(liveTotals?.totalUnrealizedPl, 2)}`,
     `liveReturnPct=${fmtFixed(liveTotals?.totalReturnPct, 2)}%`,
-    `equity=${fmtFixed(liveAccount?.equity, 2)}`
+    `equity=${fmtFixed(liveAccount?.equity, 2)}`,
+    `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
+    `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
 
   return {
@@ -1148,7 +1158,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       positionCount: toNumber(liveTotals?.positionCount),
       totalUnrealizedPl: toRoundedNumber(liveTotals?.totalUnrealizedPl, 2),
       totalReturnPct: toRoundedNumber(liveTotals?.totalReturnPct, 2),
-      equity: toRoundedNumber(liveAccount?.equity, 2)
+      equity: toRoundedNumber(liveAccount?.equity, 2),
+      guardMissingCount: toNumber(liveTotals?.guardMissingCount),
+      fillStateMismatchCount: toNumber(liveTotals?.fillStateMismatchCount),
+      positionDetails: shortText(livePositionDetails || "N/A", 1800)
     },
     summary: shortText(summary, 1800),
     hasData: Boolean(simulation && Object.keys(simulation).length > 0)
@@ -1289,6 +1302,17 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Live Equity"], {
     number: () => numberProp(row.live.equity),
     rich_text: () => textProp(row.live.equity ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
+    number: () => numberProp(row.live.guardMissingCount),
+    rich_text: () => textProp(row.live.guardMissingCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Fill State Mismatch", "Fill State Mismatch Count"], {
+    number: () => numberProp(row.live.fillStateMismatchCount),
+    rich_text: () => textProp(row.live.fillStateMismatchCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Position Details", "Position Monitor", "Live Positions Detail"], {
+    rich_text: () => textProp(row.live.positionDetails)
   });
   setPropertyAliases(properties, schema, ["Summary"], {
     rich_text: () => textProp(row.summary)
