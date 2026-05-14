@@ -1588,6 +1588,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build broker child-order reconciliation
+        if: always()
+        run: npm run ops:broker-child-reconcile
+
+      - name: Publish broker child-order reconciliation summary
+        if: always()
+        run: |
+          if [[ -f state/broker-child-order-reconciliation.md ]]; then
+            cat state/broker-child-order-reconciliation.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Broker Child-Order Reconciliation" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/broker-child-order-reconciliation.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build order state consistency report
         if: always()
         run: npm run ops:order-state
@@ -1678,6 +1693,8 @@ jobs:
             state/stage6-20trade-loop.csv
             state/performance-dashboard.json
             state/performance-dashboard.md
+            state/broker-child-order-reconciliation.json
+            state/broker-child-order-reconciliation.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json

@@ -9,6 +9,7 @@ const FILES = {
   guard: `${STATE_DIR}/last-market-guard.json`,
   guardControl: `${STATE_DIR}/guard-control.json`,
   perf: `${STATE_DIR}/performance-dashboard.json`,
+  brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   fillability: `${STATE_DIR}/fillability-report.json`,
   markerAudit: `${STATE_DIR}/hf-marker-audit.json`
 };
@@ -94,10 +95,10 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
   );
   if (report.metrics.livePositionDetails) {
     lines.push(`- live_position_monitor: \`${report.metrics.livePositionDetails}\``);
@@ -120,6 +121,7 @@ const main = () => {
   const guard = readJson(FILES.guard);
   const guardControl = readJson(FILES.guardControl);
   const perf = readJson(FILES.perf);
+  const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const fillability = readJson(FILES.fillability);
   const markerAudit = readJson(FILES.markerAudit);
 
@@ -137,6 +139,14 @@ const main = () => {
   }
   if (!fillability) {
     addCheck(checks, "warn", "fillability_report_missing", "state/fillability-report.json not found");
+  }
+  if (perf && !brokerChildReconciliation) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_child_reconciliation_missing",
+      "state/broker-child-order-reconciliation.json not found; broker child stop/target planner did not run"
+    );
   }
 
   const payloadCount = toNum(preview?.payloadCount);
@@ -169,6 +179,18 @@ const main = () => {
   const fillabilityOpenCancel = toNum(fillability?.summary?.openCancel);
   const fillabilityEntryTooFar = toNum(fillability?.summary?.entryTooFar);
   const fillabilityHighPriceSize = toNum(fillability?.summary?.highPriceSizeBlocked);
+  const brokerChildReconciliationOverall =
+    short(brokerChildReconciliation?.overall || "", 32) || null;
+  const brokerChildReconciliationCriticalCount =
+    toNum(brokerChildReconciliation?.summary?.criticalCount);
+  const brokerChildReconciliationWarningCount =
+    toNum(brokerChildReconciliation?.summary?.warningCount);
+  const brokerChildReconciliationProposedRows =
+    toNum(brokerChildReconciliation?.summary?.proposedActionRows);
+  const brokerChildReconciliationMissingStops =
+    toNum(brokerChildReconciliation?.summary?.missingStopChildren);
+  const brokerChildReconciliationMissingTargets =
+    toNum(brokerChildReconciliation?.summary?.missingTargetChildren);
 
   if (fillabilityOverall === "warn") {
     addCheck(
@@ -194,6 +216,28 @@ const main = () => {
       "warn",
       "high_price_size_block",
       `${fillabilityHighPriceSize} candidate(s) exceeded fixed notional sizing; review min_one_share cap/risk settings before enabling higher-price entries`
+    );
+  }
+
+  if (brokerChildReconciliationCriticalCount != null && brokerChildReconciliationCriticalCount > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "broker_child_reconciliation_critical",
+      `CRITICAL OBSERVE-ONLY: broker child-order reconciliation found ${brokerChildReconciliationCriticalCount} critical held position(s), stopMissing=${brokerChildReconciliationMissingStops ?? "N/A"}, proposedRows=${brokerChildReconciliationProposedRows ?? "N/A"}`
+    );
+  }
+
+  if (
+    brokerChildReconciliationCriticalCount === 0 &&
+    brokerChildReconciliationWarningCount != null &&
+    brokerChildReconciliationWarningCount > 0
+  ) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_child_reconciliation_warn",
+      `broker child-order reconciliation found ${brokerChildReconciliationWarningCount} warning row(s), targetMissing=${brokerChildReconciliationMissingTargets ?? "N/A"}`
     );
   }
 
@@ -384,6 +428,7 @@ const main = () => {
       guard: Boolean(guard),
       guardControl: Boolean(guardControl),
       perf: Boolean(perf),
+      brokerChildReconciliation: Boolean(brokerChildReconciliation),
       fillability: Boolean(fillability),
       markerAudit: Boolean(markerAudit || preview?.hfMarkerAudit)
     },
@@ -409,6 +454,12 @@ const main = () => {
       fillabilityOpenCancel,
       fillabilityEntryTooFar,
       fillabilityHighPriceSize,
+      brokerChildReconciliationOverall,
+      brokerChildReconciliationCriticalCount,
+      brokerChildReconciliationWarningCount,
+      brokerChildReconciliationProposedRows,
+      brokerChildReconciliationMissingStops,
+      brokerChildReconciliationMissingTargets,
       guardLevel,
       haltNewEntries,
       liveAvailable,

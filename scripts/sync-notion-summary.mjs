@@ -1061,6 +1061,7 @@ const fmtFixed = (value, digits = 2) => {
 
 const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
+  const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1127,6 +1128,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `equity=${fmtFixed(liveAccount?.equity, 2)}`,
     `brokerStopMissing=${liveTotals?.brokerStopMissingCount ?? "N/A"}`,
     `brokerTargetMissing=${liveTotals?.brokerTargetMissingCount ?? "N/A"}`,
+    `brokerChildRec=${brokerChildReconciliation?.overall || "N/A"}`,
+    `brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1163,6 +1166,14 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       equity: toRoundedNumber(liveAccount?.equity, 2),
       brokerStopMissingCount: toNumber(liveTotals?.brokerStopMissingCount),
       brokerTargetMissingCount: toNumber(liveTotals?.brokerTargetMissingCount),
+      brokerChildReconcileOverall: shortText(brokerChildReconciliation?.overall || "N/A", 80),
+      brokerChildReconcileCriticalCount: toNumber(brokerChildReconciliation?.summary?.criticalCount),
+      brokerChildReconcileWarningCount: toNumber(brokerChildReconciliation?.summary?.warningCount),
+      brokerChildReconcileProposedRows: toNumber(brokerChildReconciliation?.summary?.proposedActionRows),
+      brokerChildReconcileSummary: shortText(
+        `overall=${brokerChildReconciliation?.overall || "N/A"} stopMissing=${brokerChildReconciliation?.summary?.missingStopChildren ?? "N/A"} targetMissing=${brokerChildReconciliation?.summary?.missingTargetChildren ?? "N/A"} guardMissing=${brokerChildReconciliation?.summary?.guardMetadataMissing ?? "N/A"} proposedRows=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} mode=${brokerChildReconciliation?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
       fillStateMismatchCount: toNumber(liveTotals?.fillStateMismatchCount),
       positionDetails: shortText(livePositionDetails || "N/A", 1800)
@@ -1314,6 +1325,25 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Live Broker Target Missing", "Broker Target Missing Count"], {
     number: () => numberProp(row.live.brokerTargetMissingCount),
     rich_text: () => textProp(row.live.brokerTargetMissingCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Broker Child Reconcile Overall", "Broker Child Reconcile"], {
+    select: () => selectProp(row.live.brokerChildReconcileOverall || "N/A"),
+    rich_text: () => textProp(row.live.brokerChildReconcileOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Broker Child Reconcile Critical", "Broker Child Critical Count"], {
+    number: () => numberProp(row.live.brokerChildReconcileCriticalCount),
+    rich_text: () => textProp(row.live.brokerChildReconcileCriticalCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Broker Child Reconcile Warnings", "Broker Child Warning Count"], {
+    number: () => numberProp(row.live.brokerChildReconcileWarningCount),
+    rich_text: () => textProp(row.live.brokerChildReconcileWarningCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Broker Child Reconcile Actions", "Broker Child Proposed Rows"], {
+    number: () => numberProp(row.live.brokerChildReconcileProposedRows),
+    rich_text: () => textProp(row.live.brokerChildReconcileProposedRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Broker Child Reconcile Summary"], {
+    rich_text: () => textProp(row.live.brokerChildReconcileSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

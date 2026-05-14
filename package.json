@@ -13,6 +13,7 @@
     "progress:daily": "node scripts/progress-daily.mjs",
     "evidence:snippet": "node scripts/evidence-snippet.mjs",
     "dashboard:perf": "node scripts/build-performance-dashboard.mjs",
+    "ops:broker-child-reconcile": "node scripts/build-broker-child-order-reconciliation.mjs",
     "ops:health": "node scripts/build-ops-health-report.mjs",
     "ops:health:dry-run": "OPS_HEALTH_KIND=dry_run node scripts/build-ops-health-report.mjs",
     "ops:health:market-guard": "OPS_HEALTH_KIND=market_guard node scripts/build-ops-health-report.mjs",
