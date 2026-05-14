@@ -278,6 +278,9 @@ const buildStatusBySymbol = () => {
     merge(symbol, {
       ledgerStatus: row?.status || null,
       ledgerReason: row?.statusReason || null,
+      plannedLimitPrice: toNum(row?.limitPrice),
+      plannedTargetPrice: toNum(row?.takeProfitPrice),
+      plannedStopPrice: toNum(row?.stopLossPrice),
       ledgerUpdatedAt: row?.updatedAt || null,
       observedAt: row?.updatedAt || row?.createdAt || null
     });
@@ -322,12 +325,20 @@ const buildStatusBySymbol = () => {
   return bySymbol;
 };
 
-const derivePositionStatus = ({ qty, currentPrice, stopPrice, targetPrice, unrealizedPlPct }) => {
+const derivePositionStatus = ({
+  qty,
+  currentPrice,
+  stopPrice,
+  targetPrice,
+  unrealizedPlPct,
+  brokerStopMissing
+}) => {
   if ((qty ?? 0) <= 0) return "NO_POSITION";
   if (currentPrice != null && stopPrice != null && currentPrice <= stopPrice) return "STOP_REVIEW";
   if (currentPrice != null && targetPrice != null && currentPrice >= targetPrice) return "TARGET_REVIEW";
   if (stopPrice == null && targetPrice == null) return "HOLD_MONITOR_GUARD_MISSING";
   if (stopPrice == null) return "HOLD_MONITOR_STOP_MISSING";
+  if (brokerStopMissing) return "HOLD_MONITOR_BROKER_STOP_MISSING";
   if (targetPrice == null) return "HOLD_MONITOR_TARGET_MISSING";
   if (unrealizedPlPct != null && unrealizedPlPct <= -3) return "HOLD_MONITOR_DRAWDOWN_WATCH";
   return "HOLD_MONITOR";
@@ -389,20 +400,28 @@ const buildLiveSummary = async () => {
     const unrealizedPlPct = unrealizedPlPctRaw != null ? unrealizedPlPctRaw * 100 : null;
     const guard = orderBySymbol.get(symbol) || { stopPrice: null, targetPrice: null };
     const stateStatus = statusBySymbol.get(symbol) || {};
+    const targetPrice = guard.targetPrice ?? stateStatus.plannedTargetPrice ?? null;
+    const stopPrice = guard.stopPrice ?? stateStatus.plannedStopPrice ?? null;
+    const brokerStopMissing = guard.stopPrice == null && stateStatus.plannedStopPrice != null;
     const positionStatus = derivePositionStatus({
       qty,
       currentPrice,
-      stopPrice: guard.stopPrice,
-      targetPrice: guard.targetPrice,
-      unrealizedPlPct
+      stopPrice,
+      targetPrice,
+      unrealizedPlPct,
+      brokerStopMissing
     });
     return {
       symbol,
       qty,
       avgEntry,
       currentPrice,
-      stopPrice: guard.stopPrice,
-      targetPrice: guard.targetPrice,
+      stopPrice,
+      targetPrice,
+      brokerStopPrice: guard.stopPrice,
+      brokerTargetPrice: guard.targetPrice,
+      plannedStopPrice: stateStatus.plannedStopPrice ?? null,
+      plannedTargetPrice: stateStatus.plannedTargetPrice ?? null,
       marketValue,
       costBasis,
       unrealizedPl,
@@ -442,7 +461,8 @@ const buildLiveSummary = async () => {
       totalReturnPct: totalCostBasis > 0 ? (totalUnrealizedPl / totalCostBasis) * 100 : null,
       guardMissingCount: normalizedPositions.filter((row) =>
         String(row.positionStatus || "").includes("GUARD_MISSING") ||
-        String(row.positionStatus || "").includes("STOP_MISSING")
+        String(row.positionStatus || "").includes("STOP_MISSING") ||
+        String(row.positionStatus || "").includes("BROKER_STOP_MISSING")
       ).length,
       fillStateMismatchCount: normalizedPositions.filter((row) => row.fillStateConsistent === false).length
     },

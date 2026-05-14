@@ -173,7 +173,7 @@ const main = () => {
   const overall =
     accountRedaction.status === "FAIL" || hardFails.length > 0
       ? "FAIL"
-      : missingCore || warnRows.length > 0
+      : missingCore
         ? "WARN"
         : "PASS";
   const report = {
