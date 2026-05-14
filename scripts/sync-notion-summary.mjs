@@ -1125,6 +1125,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `liveUnrealized=${fmtFixed(liveTotals?.totalUnrealizedPl, 2)}`,
     `liveReturnPct=${fmtFixed(liveTotals?.totalReturnPct, 2)}%`,
     `equity=${fmtFixed(liveAccount?.equity, 2)}`,
+    `brokerStopMissing=${liveTotals?.brokerStopMissingCount ?? "N/A"}`,
+    `brokerTargetMissing=${liveTotals?.brokerTargetMissingCount ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1159,6 +1161,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       totalUnrealizedPl: toRoundedNumber(liveTotals?.totalUnrealizedPl, 2),
       totalReturnPct: toRoundedNumber(liveTotals?.totalReturnPct, 2),
       equity: toRoundedNumber(liveAccount?.equity, 2),
+      brokerStopMissingCount: toNumber(liveTotals?.brokerStopMissingCount),
+      brokerTargetMissingCount: toNumber(liveTotals?.brokerTargetMissingCount),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
       fillStateMismatchCount: toNumber(liveTotals?.fillStateMismatchCount),
       positionDetails: shortText(livePositionDetails || "N/A", 1800)
@@ -1302,6 +1306,14 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Live Equity"], {
     number: () => numberProp(row.live.equity),
     rich_text: () => textProp(row.live.equity ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Broker Stop Missing", "Broker Stop Missing Count"], {
+    number: () => numberProp(row.live.brokerStopMissingCount),
+    rich_text: () => textProp(row.live.brokerStopMissingCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Live Broker Target Missing", "Broker Target Missing Count"], {
+    number: () => numberProp(row.live.brokerTargetMissingCount),
+    rich_text: () => textProp(row.live.brokerTargetMissingCount ?? "N/A")
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

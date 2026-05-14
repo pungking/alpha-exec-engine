@@ -257,6 +257,67 @@ const normalizeFillState = (value) => {
   return text;
 };
 
+const TERMINAL_ORDER_STATUSES = new Set(["filled", "canceled", "cancelled", "expired", "rejected"]);
+
+const flattenAlpacaOrders = (orders, depth = 0) => {
+  const out = [];
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!order || typeof order !== "object") continue;
+    out.push({ ...order, _nestedDepth: depth });
+    if (Array.isArray(order.legs)) {
+      out.push(...flattenAlpacaOrders(order.legs, depth + 1));
+    }
+  }
+  return out;
+};
+
+const isActiveBrokerOrderStatus = (status) => {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (!normalized) return true;
+  return !TERMINAL_ORDER_STATUSES.has(normalized);
+};
+
+const buildBrokerProtectionBySymbol = (openOrders) => {
+  const flattenedOrders = flattenAlpacaOrders(openOrders);
+  const bySymbol = new Map();
+  for (const order of flattenedOrders) {
+    const symbol = String(order?.symbol || "").toUpperCase();
+    const side = String(order?.side || "").toLowerCase();
+    if (!symbol || side !== "sell" || !isActiveBrokerOrderStatus(order?.status)) continue;
+    const type = String(order?.type || "").toLowerCase();
+    const orderClass = String(order?.order_class || "").toLowerCase();
+    const stop = toNum(order?.stop_price);
+    const limit = toNum(order?.limit_price);
+    const id = short(order?.id || order?.client_order_id || "", 80) || null;
+    const current = bySymbol.get(symbol) || {
+      stopPrice: null,
+      targetPrice: null,
+      stopPresent: false,
+      targetPresent: false,
+      stopOrderIds: [],
+      targetOrderIds: [],
+      sellOrderCount: 0,
+      nestedSellOrderCount: 0,
+      sourceTypes: []
+    };
+    current.sellOrderCount += 1;
+    if ((order?._nestedDepth || 0) > 0) current.nestedSellOrderCount += 1;
+    current.sourceTypes.push(`${type || "unknown"}:${orderClass || "n/a"}`);
+    if (type === "stop" || type === "stop_limit" || type === "trailing_stop" || stop != null) {
+      current.stopPresent = true;
+      current.stopPrice = stop ?? current.stopPrice;
+      if (id) current.stopOrderIds.push(id);
+    }
+    if (type === "limit" && limit != null) {
+      current.targetPresent = true;
+      current.targetPrice = limit;
+      if (id) current.targetOrderIds.push(id);
+    }
+    bySymbol.set(symbol, current);
+  }
+  return { bySymbol, flattenedOrders };
+};
+
 const buildStatusBySymbol = () => {
   const ledger = readJson(ORDER_LEDGER_PATH) || {};
   const idempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {};
@@ -331,7 +392,8 @@ const derivePositionStatus = ({
   stopPrice,
   targetPrice,
   unrealizedPlPct,
-  brokerStopMissing
+  brokerStopMissing,
+  brokerTargetMissing
 }) => {
   if ((qty ?? 0) <= 0) return "NO_POSITION";
   if (currentPrice != null && stopPrice != null && currentPrice <= stopPrice) return "STOP_REVIEW";
@@ -339,6 +401,7 @@ const derivePositionStatus = ({
   if (stopPrice == null && targetPrice == null) return "HOLD_MONITOR_GUARD_MISSING";
   if (stopPrice == null) return "HOLD_MONITOR_STOP_MISSING";
   if (brokerStopMissing) return "HOLD_MONITOR_BROKER_STOP_MISSING";
+  if (brokerTargetMissing) return "HOLD_MONITOR_BROKER_TARGET_MISSING";
   if (targetPrice == null) return "HOLD_MONITOR_TARGET_MISSING";
   if (unrealizedPlPct != null && unrealizedPlPct <= -3) return "HOLD_MONITOR_DRAWDOWN_WATCH";
   return "HOLD_MONITOR";
@@ -356,7 +419,7 @@ const formatPositionDetails = (positions, limit = 10) =>
 const buildLiveSummary = async () => {
   const accountRes = await fetchAlpaca("/v2/account");
   const positionsRes = await fetchAlpaca("/v2/positions");
-  const ordersRes = await fetchAlpaca("/v2/orders?status=open&nested=false&direction=desc&limit=500");
+  const ordersRes = await fetchAlpaca("/v2/orders?status=open&nested=true&direction=desc&limit=500");
 
   if (!accountRes.ok || !positionsRes.ok || !ordersRes.ok) {
     return {
@@ -369,24 +432,8 @@ const buildLiveSummary = async () => {
   const positions = Array.isArray(positionsRes.data) ? positionsRes.data : [];
   const openOrders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
   const statusBySymbol = buildStatusBySymbol();
-
-  const orderBySymbol = new Map();
-  for (const order of openOrders) {
-    const symbol = String(order?.symbol || "").toUpperCase();
-    const side = String(order?.side || "").toLowerCase();
-    if (!symbol || side !== "sell") continue;
-    const type = String(order?.type || "").toLowerCase();
-    const stop = toNum(order?.stop_price);
-    const limit = toNum(order?.limit_price);
-    const current = orderBySymbol.get(symbol) || { stopPrice: null, targetPrice: null };
-    if (type === "stop" || type === "stop_limit" || type === "trailing_stop") {
-      current.stopPrice = stop ?? current.stopPrice;
-    }
-    if (type === "limit") {
-      current.targetPrice = limit ?? current.targetPrice;
-    }
-    orderBySymbol.set(symbol, current);
-  }
+  const brokerProtection = buildBrokerProtectionBySymbol(openOrders);
+  const orderBySymbol = brokerProtection.bySymbol;
 
   const normalizedPositions = positions.map((pos) => {
     const symbol = String(pos?.symbol || "").toUpperCase();
@@ -402,14 +449,16 @@ const buildLiveSummary = async () => {
     const stateStatus = statusBySymbol.get(symbol) || {};
     const targetPrice = guard.targetPrice ?? stateStatus.plannedTargetPrice ?? null;
     const stopPrice = guard.stopPrice ?? stateStatus.plannedStopPrice ?? null;
-    const brokerStopMissing = guard.stopPrice == null && stateStatus.plannedStopPrice != null;
+    const brokerStopMissing = !guard.stopPresent && stateStatus.plannedStopPrice != null;
+    const brokerTargetMissing = !guard.targetPresent && stateStatus.plannedTargetPrice != null;
     const positionStatus = derivePositionStatus({
       qty,
       currentPrice,
       stopPrice,
       targetPrice,
       unrealizedPlPct,
-      brokerStopMissing
+      brokerStopMissing,
+      brokerTargetMissing
     });
     return {
       symbol,
@@ -420,6 +469,15 @@ const buildLiveSummary = async () => {
       targetPrice,
       brokerStopPrice: guard.stopPrice,
       brokerTargetPrice: guard.targetPrice,
+      brokerStopPresent: Boolean(guard.stopPresent),
+      brokerTargetPresent: Boolean(guard.targetPresent),
+      brokerStopMissing,
+      brokerTargetMissing,
+      brokerStopOrderIds: guard.stopOrderIds || [],
+      brokerTargetOrderIds: guard.targetOrderIds || [],
+      brokerSellOrderCount: guard.sellOrderCount || 0,
+      brokerNestedSellOrderCount: guard.nestedSellOrderCount || 0,
+      brokerProtectionSourceTypes: guard.sourceTypes || [],
       plannedStopPrice: stateStatus.plannedStopPrice ?? null,
       plannedTargetPrice: stateStatus.plannedTargetPrice ?? null,
       marketValue,
@@ -459,6 +517,11 @@ const buildLiveSummary = async () => {
       totalCostBasis,
       totalMarketValue,
       totalReturnPct: totalCostBasis > 0 ? (totalUnrealizedPl / totalCostBasis) * 100 : null,
+      openOrderNested: true,
+      openOrderRawCount: openOrders.length,
+      openOrderFlattenedCount: brokerProtection.flattenedOrders.length,
+      brokerStopMissingCount: normalizedPositions.filter((row) => row.brokerStopMissing).length,
+      brokerTargetMissingCount: normalizedPositions.filter((row) => row.brokerTargetMissing).length,
       guardMissingCount: normalizedPositions.filter((row) =>
         String(row.positionStatus || "").includes("GUARD_MISSING") ||
         String(row.positionStatus || "").includes("STOP_MISSING") ||
@@ -512,7 +575,7 @@ const buildMarkdown = ({ generatedAt, simulation, live }) => {
       .join(", ");
     lines.push(`- live_positions_top: \`${topLive || "N/A"}\``);
     lines.push(
-      `- live_position_monitor: \`guardMissing=${live.totals.guardMissingCount} fillStateMismatch=${live.totals.fillStateMismatchCount} details=${formatPositionDetails(live.positions, 5) || "N/A"}\``
+      `- live_position_monitor: \`nestedOrders=${live.totals.openOrderNested} rawOpen=${live.totals.openOrderRawCount} flattened=${live.totals.openOrderFlattenedCount} brokerStopMissing=${live.totals.brokerStopMissingCount} brokerTargetMissing=${live.totals.brokerTargetMissingCount} guardMissing=${live.totals.guardMissingCount} fillStateMismatch=${live.totals.fillStateMismatchCount} details=${formatPositionDetails(live.positions, 5) || "N/A"}\``
     );
     lines.push("");
     lines.push("| Symbol | Qty | Current | Target | Stop | uPnL | uPnL% | Status | Fill State |");

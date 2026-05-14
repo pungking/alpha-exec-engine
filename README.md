@@ -33,6 +33,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Open-order monitor v1 adds observe-only stale/reprice diagnostics for existing open buy entries (`ENTRY_OPEN_ORDER_MONITOR_ENABLED=true`).
 - Open-order monitor telemetry now prints per-symbol suggested reprice limits, current price, RR-at-limit/current, and age so stale open orders can be reviewed without mutating broker state.
 - Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, every Stage6 actionable symbol with an RR-safe `REPRICE_CANDIDATE` can pass idempotency and stale cancel/replace.
+- Performance/ops monitor reads Alpaca open orders with `nested=true` and reports broker-side bracket child protection gaps (`brokerStopMissing`, `brokerTargetMissing`) as observe-only diagnostics; it does not auto-create replacement stop/target orders.
 - Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
 - Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
@@ -717,7 +718,9 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `proxy_preflight` = fallback proxy from `preflight=PREFLIGHT_PASS` rows when realized telemetry is missing
     - `none` = insufficient KPI telemetry
 - Live source (optional, auto-detected):
-  - Alpaca `/v2/account`, `/v2/positions`, `/v2/orders?status=open`
+  - Alpaca `/v2/account`, `/v2/positions`, `/v2/orders?status=open&nested=true`
+  - Nested open-order legs are flattened to verify whether held positions have broker-side sell stop/target children.
+  - Missing planned stop children are surfaced as `CRITICAL OBSERVE-ONLY` in ops health and `brokerStopMissing` in performance/Notion outputs; automatic stop repair remains intentionally disabled until a separate execution-policy approval.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`
@@ -737,6 +740,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `Sim Rows`, `Sim Snapshot Trades`(optional), `Sim Rows vs Snapshot Gap`(optional), `Sim Filled`, `Sim Open`, `Sim Closed`, `Sim Win Rate %`, `Sim Avg Closed Return %`, `Sim Avg Closed R`(number)
     - `Sim Top Winners`, `Sim Top Losers`, `Series`, `Summary`(text)
     - `Live Available`(checkbox), `Live Position Count`, `Live Unrealized PnL`, `Live Return %`, `Live Equity`(number)
+    - `Live Broker Stop Missing` / `Broker Stop Missing Count`, `Live Broker Target Missing` / `Broker Target Missing Count`(number, optional)
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

@@ -97,7 +97,7 @@ const buildMarkdown = (report) => {
     `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
   );
   if (report.metrics.livePositionDetails) {
     lines.push(`- live_position_monitor: \`${report.metrics.livePositionDetails}\``);
@@ -307,6 +307,8 @@ const main = () => {
   const liveAvailable =
     typeof perf?.live?.available === "boolean" ? perf.live.available : null;
   const liveReturnPct = toNum(perf?.live?.totals?.totalReturnPct);
+  const liveBrokerStopMissingCount = toNum(perf?.live?.totals?.brokerStopMissingCount);
+  const liveBrokerTargetMissingCount = toNum(perf?.live?.totals?.brokerTargetMissingCount);
   const liveGuardMissingCount = toNum(perf?.live?.totals?.guardMissingCount);
   const liveFillStateMismatchCount = toNum(perf?.live?.totals?.fillStateMismatchCount);
   const livePositionDetails = Array.isArray(perf?.live?.positions)
@@ -324,6 +326,24 @@ const main = () => {
       "warn",
       "live_return_outlier",
       `live return looks extreme (${fmt(liveReturnPct)}%); verify percent scaling`
+    );
+  }
+
+  if (liveBrokerStopMissingCount != null && liveBrokerStopMissingCount > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "broker_stop_child_missing",
+      `CRITICAL OBSERVE-ONLY: ${liveBrokerStopMissingCount} held position(s) have planned stop metadata but no broker-side stop child found via Alpaca open orders nested=true`
+    );
+  }
+
+  if (liveBrokerTargetMissingCount != null && liveBrokerTargetMissingCount > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_target_child_missing",
+      `${liveBrokerTargetMissingCount} held position(s) have planned target metadata but no broker-side target child found via Alpaca open orders nested=true`
     );
   }
 
@@ -393,6 +413,8 @@ const main = () => {
       haltNewEntries,
       liveAvailable,
       liveReturnPct,
+      liveBrokerStopMissingCount,
+      liveBrokerTargetMissingCount,
       liveGuardMissingCount,
       liveFillStateMismatchCount,
       livePositionDetails: short(livePositionDetails, 1800) || null
