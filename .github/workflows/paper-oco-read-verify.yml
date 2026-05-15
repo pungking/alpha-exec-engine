@@ -36,7 +36,7 @@ jobs:
       ALPACA_BASE_URL: https://paper-api.alpaca.markets
       ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-      PAPER_OCO_SUBMIT_STATE_DIR: state
+      PAPER_OCO_SUBMIT_STATE_DIR: _paper_oco_state
       PAPER_OCO_CANARY_READ_VERIFY: "true"
       PAPER_OCO_CANARY_REQUIRE_MARKET_OPEN: ${{ inputs.require_market_open }}
 
@@ -76,14 +76,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p state
+          rm -rf _paper_oco_state
+          mkdir -p _paper_oco_state
           gh run download "${{ steps.resolve.outputs.run_id }}" \
             --repo "${GITHUB_REPOSITORY}" \
             --name "${{ steps.resolve.outputs.artifact }}" \
-            --dir state
-          test -f state/paper-oco-canary-candidate.json
-          test -f state/paper-oco-canary-approval-gate.json
-          test -f state/paper-oco-canary-submit-gate.json
+            --dir _paper_oco_state
+          test -f _paper_oco_state/paper-oco-canary-candidate.json
+          test -f _paper_oco_state/paper-oco-canary-approval-gate.json
+          test -f _paper_oco_state/paper-oco-canary-submit-gate.json
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -97,7 +98,7 @@ jobs:
           set -euo pipefail
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const report = JSON.parse(fs.readFileSync('state/paper-oco-canary-submit-gate.json', 'utf8'));
+          const report = JSON.parse(fs.readFileSync('_paper_oco_state/paper-oco-canary-submit-gate.json', 'utf8'));
           const failures = [];
           if (report.executionPolicy?.readVerifyEnabled !== true) failures.push('readVerifyEnabled_not_true');
           if (report.brokerMutation?.attempted !== false) failures.push('brokerMutation_attempted_not_false');
@@ -129,8 +130,8 @@ jobs:
             echo "- sourceArtifact: \`${{ steps.resolve.outputs.artifact }}\`"
             echo "- brokerMutation: \`non-mutating GET-only precheck; no POST /v2/orders\`"
             echo ""
-            if [[ -f state/paper-oco-canary-submit-gate.md ]]; then
-              cat state/paper-oco-canary-submit-gate.md
+            if [[ -f _paper_oco_state/paper-oco-canary-submit-gate.md ]]; then
+              cat _paper_oco_state/paper-oco-canary-submit-gate.md
             else
               echo "- status: \`missing state/paper-oco-canary-submit-gate.md\`"
             fi
@@ -142,6 +143,6 @@ jobs:
         with:
           name: paper-oco-read-verify-${{ github.run_id }}
           path: |
-            state/paper-oco-canary-submit-gate.json
-            state/paper-oco-canary-submit-gate.md
+            _paper_oco_state/paper-oco-canary-submit-gate.json
+            _paper_oco_state/paper-oco-canary-submit-gate.md
           if-no-files-found: warn
