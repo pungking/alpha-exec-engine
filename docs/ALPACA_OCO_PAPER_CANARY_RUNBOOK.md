@@ -33,6 +33,9 @@ Outputs:
 - `state/paper-oco-canary-candidate.md`
 - `state/paper-oco-canary-approval-gate.json`
 - `state/paper-oco-canary-approval-gate.md`
+- `state/paper-oco-canary-submit-gate.json`
+- `state/paper-oco-canary-submit-gate.md`
+- `state/paper-oco-canary-submit-ledger.json` is reserved for a future approved broker-mutating implementation
 
 The selector may recommend one lowest-notional eligible `symbol + qty=1` target, but it still sets `executionAllowed=false` and does not emit an Alpaca submit payload.
 
@@ -43,6 +46,28 @@ npm run ops:paper-oco-gate
 ```
 
 It decides whether the selected row is blocked or `READY_FOR_MANUAL_APPROVAL`. It still sets `recommendedAction=DO_NOT_SUBMIT`.
+
+The final submit gate is blocked by default:
+
+```bash
+npm run ops:paper-oco-submit-gate
+```
+
+Default behavior:
+
+- no broker mutation,
+- no Alpaca POST,
+- no auto rollback,
+- no executable row,
+- writes `paper-oco-canary-submit-gate.json/.md`.
+
+Read-only Alpaca precheck can be requested with:
+
+```bash
+PAPER_OCO_CANARY_READ_VERIFY=true npm run ops:paper-oco-submit-gate
+```
+
+Actual paper submit is not implemented in this lane. It remains a separate broker-mutating task that requires a fresh safety warning, exact approval phrase, paper-only environment, idempotency write-before-POST, rollback plan, and post-submit nested visibility capture.
 
 ## Candidate Selection
 
@@ -90,6 +115,26 @@ It returns `manual_approval_required` only if:
 6. `qty=1` and stop/current/target geometry is still valid.
 
 Even then, the decision remains `DO_NOT_SUBMIT` until a separate broker-mutating task is explicitly approved.
+
+## Submit Gate Rule
+
+The submit gate consumes `paper-oco-canary-approval-gate.json`; it does not choose a ticker and does not submit.
+
+Before a future broker-mutating implementation may POST, this gate must prove:
+
+1. confirm the approval gate is `manual_approval_required` / `READY_FOR_MANUAL_APPROVAL`;
+2. confirm selector scope is `portfolio_wide_dynamic_candidates_not_ticker_specific`;
+3. confirm `qty=1` and stop/current/target geometry;
+4. require `ALPHA_ENV=PAPER` and the paper Alpaca base URL;
+5. read-only Alpaca precheck, if requested, is constrained to `ALPHA_ENV=PAPER` and the paper Alpaca base URL;
+6. the future task must require `READ_ONLY=false` and `EXEC_ENABLED=true` only inside the explicitly approved run;
+7. the future task must require the exact approval phrase;
+8. the future task must read Alpaca account, clock, positions, nested open orders, and client-order lookup immediately before submit;
+9. block if market is not open, position qty is missing, existing active sell protection exists, client order id is already used, or the dedicated idempotency ledger has an active entry;
+10. persist `paper-oco-canary-submit-ledger.json` before POST;
+11. after POST, verify nested open orders contain the OCO target parent and stop child.
+
+If post-submit visibility fails, the default rollback behavior is manual review only. Automatic cancel is intentionally not enabled.
 
 ## Proposed Paper Request Shape
 

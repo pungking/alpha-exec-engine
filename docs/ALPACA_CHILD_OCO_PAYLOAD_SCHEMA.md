@@ -115,6 +115,8 @@ Outputs:
 - `state/paper-oco-canary-candidate.md`
 - `state/paper-oco-canary-approval-gate.json`
 - `state/paper-oco-canary-approval-gate.md`
+- `state/paper-oco-canary-submit-gate.json`
+- `state/paper-oco-canary-submit-gate.md`
 
 The validator is intentionally offline and report-only:
 
@@ -169,3 +171,11 @@ npm run ops:paper-oco-gate
 ```
 
 It validates the selected row against safety artifacts and still recommends `DO_NOT_SUBMIT` unless a separate broker-mutating task is explicitly approved.
+
+The final blocked-by-default submit gate is:
+
+```bash
+npm run ops:paper-oco-submit-gate
+```
+
+It does not POST. A future approved paper canary implementation must re-fetch Alpaca paper account/clock/positions/nested open orders, persist a dedicated idempotency ledger before POST, and verify `nested=true` visibility after submit.

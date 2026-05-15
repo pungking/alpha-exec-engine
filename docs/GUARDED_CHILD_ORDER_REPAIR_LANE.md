@@ -23,6 +23,8 @@ It emits:
 - `state/paper-oco-canary-candidate.md`
 - `state/paper-oco-canary-approval-gate.json`
 - `state/paper-oco-canary-approval-gate.md`
+- `state/paper-oco-canary-submit-gate.json`
+- `state/paper-oco-canary-submit-gate.md`
 
 ## Current Safety Policy
 
@@ -54,6 +56,10 @@ symbol path.
 The approval gate consumes that selected row and emits `READY_FOR_MANUAL_APPROVAL` only when all non-mutating preconditions
 are clean. It still returns `recommendedAction=DO_NOT_SUBMIT`.
 
+The submit gate consumes the approval gate output and remains non-mutating. It is the final planned bridge toward a future
+paper OCO POST, but the actual POST still requires a separate scoped approval, paper-only Alpaca endpoint, pre-submit
+nested-order recheck, dedicated idempotency, and post-submit visibility verification.
+
 ## Future Execution Preconditions
 
 Before any broker-mutating repair lane may be built, the following must be true:
@@ -78,6 +84,7 @@ Before any broker-mutating repair lane may be built, the following must be true:
 - `npm run ops:alpaca:oco-response-fixtures` returns `overall=pass` before any future paper OCO canary is considered.
 - `npm run ops:paper-oco-canary` emits at most one selected row with `executionAllowed=false` and `summary.executionReadyRows=0`.
 - `npm run ops:paper-oco-gate` emits `summary.executionReadyRows=0` and either `blocked` or `manual_approval_required`; it never emits an executable payload.
+- `npm run ops:paper-oco-submit-gate` emits no broker mutation by default and records the rollback/idempotency/visibility plan before any separately approved paper canary.
 
 ## Alpaca Payload Schema Fixture
 

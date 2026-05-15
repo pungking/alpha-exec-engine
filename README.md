@@ -40,6 +40,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Alpaca OCO response fixture validator writes `state/alpaca-oco-response-fixture-report.json/.md` to verify the sanitized nested `legs` response shape expected from a future paper OCO canary; it never calls Alpaca.
 - Paper OCO canary candidate selector writes `state/paper-oco-canary-candidate.json/.md` from the full dynamic held-position set; it is not ticker-specific, selects at most one manual target, and never emits an executable broker payload.
 - Paper OCO approval gate writes `state/paper-oco-canary-approval-gate.json/.md` to decide whether the selected row is blocked or ready for separate manual approval; it still recommends `DO_NOT_SUBMIT` and never places orders.
+- Paper OCO submit gate writes `state/paper-oco-canary-submit-gate.json/.md` as the final non-mutating safety boundary before any broker-mutating paper canary. It never POSTs to Alpaca; it records the exact future approval, rollback, idempotency, and nested-visibility requirements.
 - Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
 - Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
@@ -139,6 +140,7 @@ HF verification shortcuts:
 - `npm run ops:alpaca:oco-response-fixtures`: validate sanitized Alpaca OCO nested response fixtures for the future paper canary (`state/alpaca-oco-response-fixture-report.json`, `.md`); no broker endpoint calls.
 - `npm run ops:paper-oco-canary`: build the report-only, portfolio-wide single-symbol OCO canary candidate selector (`state/paper-oco-canary-candidate.json`, `.md`); no broker endpoint calls and no executable payload.
 - `npm run ops:paper-oco-gate`: build the report-only approval decision gate for the selected OCO canary row (`state/paper-oco-canary-approval-gate.json`, `.md`); no broker endpoint calls and recommended action remains `DO_NOT_SUBMIT`.
+- `npm run ops:paper-oco-submit-gate`: build the non-mutating paper OCO submit safety gate (`state/paper-oco-canary-submit-gate.json`, `.md`). It never submits; use `PAPER_OCO_CANARY_READ_VERIFY=true` only for paper-only read prechecks.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
@@ -724,6 +726,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/guarded-child-order-repair-plan.json` / `.md` (report-only repair blueprint; no broker mutation)
   - `state/paper-oco-canary-candidate.json` / `.md` (report-only, dynamic single-symbol paper OCO canary target selector)
   - `state/paper-oco-canary-approval-gate.json` / `.md` (report-only decision gate before any separate broker-mutating canary task)
+  - `state/paper-oco-canary-submit-gate.json` / `.md` (blocked-by-default final paper OCO submit gate with rollback/idempotency/visibility plan)
   - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
@@ -741,6 +744,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Guarded child-order repair plan reduces those diagnostics into future repair intents while keeping `executionAllowed=false` for every row.
   - Paper OCO canary candidate selector chooses at most one lowest-notional eligible row from all current dynamic candidates and keeps `executionAllowed=false`; it is evidence for a generic rule, not a hard-coded ticker path.
   - Paper OCO approval gate checks the selected row against fixture, nested-order, order-state, safe-flag, and geometry preconditions, then returns `READY_FOR_MANUAL_APPROVAL` or blocked while still recommending `DO_NOT_SUBMIT`.
+  - Paper OCO submit gate is the final non-mutating bridge toward a future actual paper canary. It verifies whether the selected row is eligible for a separate approved broker-mutating task and records the position/nested-order/idempotency/rollback/visibility requirements.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`

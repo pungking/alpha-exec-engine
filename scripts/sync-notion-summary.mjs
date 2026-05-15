@@ -1067,6 +1067,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const alpacaOcoResponseFixture = readJson("state/alpaca-oco-response-fixture-report.json") || {};
   const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
   const paperOcoApprovalGate = readJson("state/paper-oco-canary-approval-gate.json") || {};
+  const paperOcoSubmitGate = readJson("state/paper-oco-canary-submit-gate.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1146,6 +1147,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `paperOcoSelected=${paperOcoCanaryCandidate?.summary?.selectedSymbol ?? "N/A"}`,
     `paperOcoGate=${paperOcoApprovalGate?.overall || "N/A"}`,
     `paperOcoDecision=${paperOcoApprovalGate?.decision?.status || "N/A"}`,
+    `paperOcoSubmit=${paperOcoSubmitGate?.overall || "N/A"}`,
+    `paperOcoSubmitDecision=${paperOcoSubmitGate?.decision?.status || "N/A"}`,
+    `paperOcoSubmitSubmitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1228,6 +1232,15 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       paperOcoApprovalGateExecutionReadyRows: toNumber(paperOcoApprovalGate?.summary?.executionReadyRows),
       paperOcoApprovalGateSummary: shortText(
         `overall=${paperOcoApprovalGate?.overall || "N/A"} decision=${paperOcoApprovalGate?.decision?.status || "N/A"} action=${paperOcoApprovalGate?.decision?.recommendedAction || "N/A"} selected=${paperOcoApprovalGate?.summary?.selectedSymbol ?? "N/A"} blockingGates=${paperOcoApprovalGate?.summary?.blockingGates ?? "N/A"} executionReady=${paperOcoApprovalGate?.summary?.executionReadyRows ?? "N/A"} mode=${paperOcoApprovalGate?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      paperOcoSubmitGateOverall: shortText(paperOcoSubmitGate?.overall || "N/A", 80),
+      paperOcoSubmitGateDecision: shortText(paperOcoSubmitGate?.decision?.status || "N/A", 120),
+      paperOcoSubmitGateSelectedSymbol: shortText(paperOcoSubmitGate?.summary?.selectedSymbol || "N/A", 32),
+      paperOcoSubmitGateAttempted: paperOcoSubmitGate?.summary?.brokerMutationAttempted === true,
+      paperOcoSubmitGateSubmitted: paperOcoSubmitGate?.summary?.brokerMutationSubmitted === true,
+      paperOcoSubmitGateSummary: shortText(
+        `overall=${paperOcoSubmitGate?.overall || "N/A"} decision=${paperOcoSubmitGate?.decision?.status || "N/A"} action=${paperOcoSubmitGate?.decision?.recommendedAction || "N/A"} selected=${paperOcoSubmitGate?.summary?.selectedSymbol ?? "N/A"} attempted=${paperOcoSubmitGate?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"} blockingGates=${paperOcoSubmitGate?.summary?.blockingGates ?? "N/A"} mode=${paperOcoSubmitGate?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
@@ -1492,6 +1505,27 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Paper OCO Approval Summary", "Paper OCO Gate Summary"], {
     rich_text: () => textProp(row.live.paperOcoApprovalGateSummary)
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Gate Overall", "Paper OCO Submit Overall"], {
+    select: () => selectProp(row.live.paperOcoSubmitGateOverall || "N/A"),
+    rich_text: () => textProp(row.live.paperOcoSubmitGateOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Decision", "Paper OCO Submit Gate Decision"], {
+    rich_text: () => textProp(row.live.paperOcoSubmitGateDecision || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Selected", "Paper OCO Submit Symbol"], {
+    rich_text: () => textProp(row.live.paperOcoSubmitGateSelectedSymbol || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Attempted", "Paper OCO Submit Gate Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.paperOcoSubmitGateAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.paperOcoSubmitGateAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Submitted", "Paper OCO Submit Gate Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.paperOcoSubmitGateSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.paperOcoSubmitGateSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Submit Summary", "Paper OCO Submit Gate Summary"], {
+    rich_text: () => textProp(row.live.paperOcoSubmitGateSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-15 (KST, paper OCO approval gate)
+Last updated: 2026-05-15 (KST, paper OCO submit gate)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -183,9 +183,15 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - output: `state/paper-oco-canary-approval-gate.json` / `.md`
   - consumes the selected row and validates selector scope, guarded repair state, nested-order evidence, payload/response fixtures, order-state, safe runtime flags, qty, and price geometry.
   - returns `READY_FOR_MANUAL_APPROVAL` only as a non-mutating decision; `recommendedAction` remains `DO_NOT_SUBMIT`.
+- Added blocked-by-default paper OCO submit gate:
+  - `npm run ops:paper-oco-submit-gate`
+  - output: `state/paper-oco-canary-submit-gate.json` / `.md`
+  - does not call Alpaca POST and does not submit.
+  - read-only Alpaca recheck can be requested with `PAPER_OCO_CANARY_READ_VERIFY=true`.
+  - actual paper submit remains a separate future implementation requiring paper-only env, intentional runtime flags, exact approval phrase, pre-submit nested-order recheck, dedicated idempotency ledger, and post-submit nested visibility verification.
 - Safety boundary remains unchanged:
-  - no broker endpoint calls,
-  - no emitted Alpaca repair payload,
+  - scheduled workflow has no broker-mutating OCO submit env,
+  - no emitted Alpaca repair payload in default path,
   - no auto stop/target repair,
   - future repair execution still requires a separate safety-gated task.
 
