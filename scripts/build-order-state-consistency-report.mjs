@@ -97,15 +97,20 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
     const observed = Object.values(states).map((row) => row?.normalized).filter(Boolean);
     const unique = [...new Set(observed)];
     const hasFilledEvidence = observed.includes("filled");
-    const missingFilledSources = hasFilledEvidence
+    const contradictoryFilledSources = hasFilledEvidence
       ? Object.entries(states)
-        .filter(([, row]) => row && row.normalized !== "filled")
+        .filter(([, row]) => row?.normalized && row.normalized !== "filled")
+        .map(([source]) => source)
+      : [];
+    const missingStatusSources = hasFilledEvidence
+      ? Object.entries(states)
+        .filter(([, row]) => row && !row.normalized)
         .map(([source]) => source)
       : [];
     const status =
-      hasFilledEvidence && (unique.length > 1 || missingFilledSources.length > 0)
+      hasFilledEvidence && contradictoryFilledSources.length > 0
         ? "FAIL"
-        : unique.length > 1
+        : unique.length > 1 || missingStatusSources.length > 0
           ? "WARN"
           : unique.length === 1
             ? "PASS"
@@ -121,6 +126,7 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
       reasons: Object.entries(states)
         .filter(([, row]) => row?.reason)
         .map(([source, row]) => `${source}:${short(row.reason, 80)}`)
+        .concat(missingStatusSources.map((source) => `${source}:status_unavailable`))
     };
   });
 };
