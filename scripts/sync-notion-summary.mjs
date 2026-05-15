@@ -1062,6 +1062,7 @@ const fmtFixed = (value, digits = 2) => {
 const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
+  const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1130,6 +1131,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `brokerTargetMissing=${liveTotals?.brokerTargetMissingCount ?? "N/A"}`,
     `brokerChildRec=${brokerChildReconciliation?.overall || "N/A"}`,
     `brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"}`,
+    `guardedRepair=${guardedRepairPlan?.overall || "N/A"}`,
+    `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1172,6 +1175,13 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       brokerChildReconcileProposedRows: toNumber(brokerChildReconciliation?.summary?.proposedActionRows),
       brokerChildReconcileSummary: shortText(
         `overall=${brokerChildReconciliation?.overall || "N/A"} stopMissing=${brokerChildReconciliation?.summary?.missingStopChildren ?? "N/A"} targetMissing=${brokerChildReconciliation?.summary?.missingTargetChildren ?? "N/A"} guardMissing=${brokerChildReconciliation?.summary?.guardMetadataMissing ?? "N/A"} proposedRows=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} mode=${brokerChildReconciliation?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      guardedRepairOverall: shortText(guardedRepairPlan?.overall || "N/A", 80),
+      guardedRepairCandidates: toNumber(guardedRepairPlan?.summary?.candidates),
+      guardedRepairExecutionReadyRows: toNumber(guardedRepairPlan?.summary?.executionReadyRows),
+      guardedRepairSummary: shortText(
+        `overall=${guardedRepairPlan?.overall || "N/A"} candidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"} stopCandidates=${guardedRepairPlan?.summary?.stopRepairCandidates ?? "N/A"} targetCandidates=${guardedRepairPlan?.summary?.targetRepairCandidates ?? "N/A"} blockedReportOnly=${guardedRepairPlan?.summary?.blockedByReportOnly ?? "N/A"} executionReady=${guardedRepairPlan?.summary?.executionReadyRows ?? "N/A"} mode=${guardedRepairPlan?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
@@ -1344,6 +1354,21 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Broker Child Reconcile Summary"], {
     rich_text: () => textProp(row.live.brokerChildReconcileSummary)
+  });
+  setPropertyAliases(properties, schema, ["Guarded Repair Overall", "Guarded Child Repair Overall"], {
+    select: () => selectProp(row.live.guardedRepairOverall || "N/A"),
+    rich_text: () => textProp(row.live.guardedRepairOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guarded Repair Candidates", "Guarded Child Repair Candidates"], {
+    number: () => numberProp(row.live.guardedRepairCandidates),
+    rich_text: () => textProp(row.live.guardedRepairCandidates ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guarded Repair Execution Ready", "Guarded Child Repair Execution Ready"], {
+    number: () => numberProp(row.live.guardedRepairExecutionReadyRows),
+    rich_text: () => textProp(row.live.guardedRepairExecutionReadyRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guarded Repair Summary", "Guarded Child Repair Summary"], {
+    rich_text: () => textProp(row.live.guardedRepairSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

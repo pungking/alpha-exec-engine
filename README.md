@@ -35,6 +35,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Monitor-driven reprice bridge is implemented behind a default-off safety switch (`ENTRY_OPEN_ORDER_REPRICE_FROM_MONITOR_ENABLED=false`); when explicitly enabled with stale cleanup, every Stage6 actionable symbol with an RR-safe `REPRICE_CANDIDATE` can pass idempotency and stale cancel/replace.
 - Performance/ops monitor reads Alpaca open orders with `nested=true` and reports broker-side bracket child protection gaps (`brokerStopMissing`, `brokerTargetMissing`) as observe-only diagnostics; it does not auto-create replacement stop/target orders.
 - Broker child-order reconciliation planner writes `state/broker-child-order-reconciliation.json/.md` as report-only evidence for missing stop/target children and proposed review actions; it never submits repair orders.
+- Guarded child-order repair planner writes `state/guarded-child-order-repair-plan.json/.md` as a non-executable repair blueprint; broker mutation remains disabled and requires separate approval.
 - Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
 - Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
@@ -129,6 +130,7 @@ HF verification shortcuts:
 - `npm run evidence:snippet`: print paste-ready validation/probe evidence snippets from local state files.
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
 - `npm run ops:broker-child-reconcile`: build report-only broker child-order reconciliation (`state/broker-child-order-reconciliation.json`, `.md`) from the nested-order performance snapshot.
+- `npm run ops:guarded-repair-plan`: build the guarded report-only stop/target repair blueprint (`state/guarded-child-order-repair-plan.json`, `.md`).
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
@@ -693,7 +695,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/guarded-child-order-repair-plan.json`, `state/guarded-child-order-repair-plan.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
@@ -711,6 +713,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/performance-dashboard.json` (chart-ready machine data)
   - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
   - `state/broker-child-order-reconciliation.json` / `.md` (report-only broker child stop/target gap planner)
+  - `state/guarded-child-order-repair-plan.json` / `.md` (report-only repair blueprint; no broker mutation)
   - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
@@ -725,6 +728,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Nested open-order legs are flattened to verify whether held positions have broker-side sell stop/target children.
   - Missing planned stop children are surfaced as `CRITICAL OBSERVE-ONLY` in ops health and `brokerStopMissing` in performance/Notion outputs; automatic stop repair remains intentionally disabled until a separate execution-policy approval.
   - Broker child-order reconciliation emits proposed report-only actions such as `REPORT_ONLY_CREATE_STOP_CHILD` and `REPORT_ONLY_CREATE_TARGET_CHILD`; these are not executable instructions.
+  - Guarded child-order repair plan reduces those diagnostics into future repair intents while keeping `executionAllowed=false` for every row.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`
@@ -746,6 +750,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `Live Available`(checkbox), `Live Position Count`, `Live Unrealized PnL`, `Live Return %`, `Live Equity`(number)
     - `Live Broker Stop Missing` / `Broker Stop Missing Count`, `Live Broker Target Missing` / `Broker Target Missing Count`(number, optional)
     - `Broker Child Reconcile Overall`, `Broker Child Reconcile Critical`, `Broker Child Reconcile Actions`, `Broker Child Reconcile Summary`(optional)
+    - `Guarded Repair Overall`, `Guarded Repair Candidates`, `Guarded Repair Execution Ready`, `Guarded Repair Summary`(optional)
 
 ## Policy
 - Version: `stage6-exec-v1.0-rc1`

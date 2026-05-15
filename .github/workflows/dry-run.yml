@@ -1618,6 +1618,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build guarded child-order repair plan
+        if: always()
+        run: npm run ops:guarded-repair-plan
+
+      - name: Publish guarded child-order repair plan summary
+        if: always()
+        run: |
+          if [[ -f state/guarded-child-order-repair-plan.md ]]; then
+            cat state/guarded-child-order-repair-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Guarded Child-Order Repair Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/guarded-child-order-repair-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1695,6 +1710,8 @@ jobs:
             state/performance-dashboard.md
             state/broker-child-order-reconciliation.json
             state/broker-child-order-reconciliation.md
+            state/guarded-child-order-repair-plan.json
+            state/guarded-child-order-repair-plan.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json
