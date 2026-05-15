@@ -92,8 +92,8 @@ const buildGlobalGates = ({ guardedPlan, reconciliation, performance, orderState
     },
     {
       id: "runtime_safe_flags_observed",
-      status: preview?.mode?.readOnly === true && preview?.mode?.execEnabled === false ? "PASS" : "BLOCK",
-      detail: `READ_ONLY=${preview?.mode?.readOnly ?? "N/A"} EXEC_ENABLED=${preview?.mode?.execEnabled ?? "N/A"}`
+      status: preview?.mode?.readOnly === true && preview?.mode?.execEnabled === false ? "PASS" : "WARN",
+      detail: `READ_ONLY=${preview?.mode?.readOnly ?? "N/A"} EXEC_ENABLED=${preview?.mode?.execEnabled ?? "N/A"}; selector is report-only and remains broker-non-mutating`
     },
     {
       id: "paper_canary_is_report_only",

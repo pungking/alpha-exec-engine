@@ -234,3 +234,5 @@ A future OCO paper canary is considered useful only when all are true:
 - No account number or credential leaks into artifacts.
 
 Until then, keep the lane report-only.
+
+- The selector/approval gate is report-only. If the parent sidecar is running in paper execution mode (`READ_ONLY=false`, `EXEC_ENABLED=true`), that runtime state is reported as a warning, not a blocker; actual OCO broker mutation still requires the separate approval/submit lane.

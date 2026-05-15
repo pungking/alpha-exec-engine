@@ -1779,6 +1779,10 @@ jobs:
             state/recommendation-ledger.json
             state/open-entry-replace-guard.json
             state/regime-guard-state.json
+            state/guard-control.json
+            state/last-market-guard.json
+            state/market-guard-state.json
+            state/guard-action-ledger.json
             state/stage6-20trade-loop.json
             state/stage6-20trade-loop.csv
             state/performance-dashboard.json
