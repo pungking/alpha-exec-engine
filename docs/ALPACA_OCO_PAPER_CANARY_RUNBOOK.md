@@ -236,3 +236,7 @@ A future OCO paper canary is considered useful only when all are true:
 Until then, keep the lane report-only.
 
 - The selector/approval gate is report-only. If the parent sidecar is running in paper execution mode (`READ_ONLY=false`, `EXEC_ENABLED=true`), that runtime state is reported as a warning, not a blocker; actual OCO broker mutation still requires the separate approval/submit lane.
+
+## Approved Paper Submit Canary Lane
+
+After the exact approval phrase is captured for the scoped task, run `paper-oco-submit-canary.yml`. This is the only lane that may call `POST /v2/orders` for a one-row paper OCO canary. It must verify read precheck, write `paper-oco-canary-submit-ledger.json` before POST, verify nested open-order visibility after POST, auto-cancel the returned paper order, and verify the ledger terminal state before the run is considered successful.

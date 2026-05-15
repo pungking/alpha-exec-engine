@@ -42,6 +42,7 @@ const toNum = (value) => {
 const asSymbol = (value) => String(value || "").trim().toUpperCase();
 const short = (value, max = 500) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const nowIso = () => new Date().toISOString();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const fmt = (value, digits = 2) => {
   const n = toNum(value);
@@ -93,6 +94,7 @@ const flattenOrders = (orders, depth = 0) => {
 };
 
 const isTerminalStatus = (status) => ["filled", "canceled", "cancelled", "expired", "rejected"].includes(String(status ?? "").trim().toLowerCase());
+const isActiveStatus = (status) => !isTerminalStatus(status);
 
 const classifySellProtection = (orders, symbol) => {
   const target = asSymbol(symbol);
@@ -118,7 +120,7 @@ const classifySellProtection = (orders, symbol) => {
   };
 };
 
-const fetchAlpaca = async (path) => {
+const alpacaRequest = async (method, path, payload = null) => {
   const baseUrl = String(process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
   const keyId = String(process.env.ALPACA_KEY_ID || "").trim();
   const secret = String(process.env.ALPACA_SECRET_KEY || "").trim();
@@ -126,10 +128,13 @@ const fetchAlpaca = async (path) => {
   if (!keyId || !secret) return { ok: false, status: null, data: null, reason: "alpaca_credentials_missing" };
   try {
     const response = await fetch(`${baseUrl}${path}`, {
+      method,
       headers: {
         "APCA-API-KEY-ID": keyId,
-        "APCA-API-SECRET-KEY": secret
-      }
+        "APCA-API-SECRET-KEY": secret,
+        ...(payload ? { "Content-Type": "application/json" } : {})
+      },
+      ...(payload ? { body: JSON.stringify(payload) } : {})
     });
     const text = await response.text();
     let data = null;
@@ -144,7 +149,22 @@ const fetchAlpaca = async (path) => {
   }
 };
 
+const fetchAlpaca = (path) => alpacaRequest("GET", path);
+const postAlpaca = (path, payload) => alpacaRequest("POST", path, payload);
+const deleteAlpaca = (path) => alpacaRequest("DELETE", path);
+
 const findPosition = (positions, symbol) => (Array.isArray(positions) ? positions : []).find((row) => asSymbol(row?.symbol) === asSymbol(symbol)) || null;
+
+const findOrderByClientId = (orders, clientOrderId) => {
+  const target = String(clientOrderId || "").trim();
+  if (!target) return null;
+  return flattenOrders(orders).find((order) => String(order?.client_order_id || "").trim() === target) || null;
+};
+
+const findActiveOrderByClientId = (orders, clientOrderId) => {
+  const order = findOrderByClientId(orders, clientOrderId);
+  return order && isActiveStatus(order.status) ? order : null;
+};
 
 const buildPayloadPreview = (selected) => {
   const symbol = asSymbol(selected?.symbol);
@@ -168,11 +188,39 @@ const buildPayloadPreview = (selected) => {
   };
 };
 
+const readLedger = () => readJson(LEDGER_PATH) || { schemaVersion: 1, generatedAt: nowIso(), entries: {} };
+
+const writeLedger = (ledger) => writeJson(LEDGER_PATH, { ...ledger, updatedAt: nowIso() });
+
+const ledgerStatusIsActive = (status) => new Set(["submit_started", "submitted", "accepted", "new", "partially_filled", "visibility_pass", "cancel_started"]).has(String(status || ""));
+
 const loadActiveLedgerDuplicate = (idempotencyKey) => {
-  const ledger = readJson(LEDGER_PATH);
+  const ledger = readLedger();
   const entry = ledger?.entries?.[idempotencyKey] || null;
-  const active = new Set(["submit_started", "submitted", "accepted", "new", "partially_filled", "visibility_pass"]);
-  return { entry, duplicate: Boolean(entry && active.has(String(entry.status || ""))) };
+  return { entry, duplicate: Boolean(entry && ledgerStatusIsActive(entry.status)) };
+};
+
+const updateLedgerEntry = (idempotencyKey, patch) => {
+  const ledger = readLedger();
+  const prior = ledger.entries[idempotencyKey] || { idempotencyKey, history: [] };
+  const entry = {
+    ...prior,
+    ...patch,
+    updatedAt: nowIso(),
+    history: [
+      ...(Array.isArray(prior.history) ? prior.history : []),
+      {
+        at: nowIso(),
+        status: patch.status || prior.status || "unknown",
+        reason: patch.reason || null,
+        brokerOrderId: patch.brokerOrderId || prior.brokerOrderId || null,
+        terminal: patch.terminal ?? prior.terminal ?? false
+      }
+    ].slice(-20)
+  };
+  ledger.entries[idempotencyKey] = entry;
+  writeLedger(ledger);
+  return entry;
 };
 
 const validateStaticInputs = ({ approvalGate, candidate, selected, payload, idempotencyKey, gates }) => {
@@ -193,12 +241,19 @@ const validateStaticInputs = ({ approvalGate, candidate, selected, payload, idem
   addGate(gates, "idempotency_not_duplicate", !duplicate ? "PASS" : "BLOCK", duplicate ? `ledger already has active entry status=${entry.status}` : "no active submit-ledger duplicate");
 };
 
-const validateEnvForReadVerify = ({ gates, readVerifyEnabled }) => {
+const validateEnvForBrokerAccess = ({ gates, readVerifyEnabled, submitEnabled, approvalPhraseProvided, autoCancelEnabled }) => {
   const baseUrl = String(process.env.ALPACA_BASE_URL || "").trim().replace(/\/+$/, "");
-  const brokerReadRequested = readVerifyEnabled;
-  addGate(gates, "actual_submit_not_implemented", "PASS", "this gate never calls POST /v2/orders; actual paper submit requires a separate approved implementation task");
-  addGate(gates, "paper_read_environment_only", !brokerReadRequested || String(process.env.ALPHA_ENV || "").trim().toUpperCase() === "PAPER" ? "PASS" : "BLOCK", `ALPHA_ENV=${process.env.ALPHA_ENV || "N/A"}`);
-  addGate(gates, "paper_read_base_url_only", !brokerReadRequested || baseUrl === PAPER_BASE_URL ? "PASS" : "BLOCK", `ALPACA_BASE_URL=${baseUrl || "N/A"}`);
+  const env = String(process.env.ALPHA_ENV || "").trim().toUpperCase();
+  addGate(gates, "paper_environment_only", !readVerifyEnabled && !submitEnabled ? "PASS" : env === "PAPER" ? "PASS" : "BLOCK", `ALPHA_ENV=${process.env.ALPHA_ENV || "N/A"}`);
+  addGate(gates, "paper_base_url_only", !readVerifyEnabled && !submitEnabled ? "PASS" : baseUrl === PAPER_BASE_URL ? "PASS" : "BLOCK", `ALPACA_BASE_URL=${baseUrl || "N/A"}`);
+  if (submitEnabled) {
+    addGate(gates, "actual_submit_explicitly_enabled", "PASS", "PAPER_OCO_CANARY_SUBMIT_ENABLED=true");
+    addGate(gates, "approval_phrase_present", approvalPhraseProvided ? "PASS" : "BLOCK", `approvalPhraseProvided=${approvalPhraseProvided}`);
+    addGate(gates, "read_precheck_required_for_submit", readVerifyEnabled ? "PASS" : "BLOCK", `PAPER_OCO_CANARY_READ_VERIFY=${readVerifyEnabled}`);
+    addGate(gates, "auto_cancel_required", autoCancelEnabled ? "PASS" : "BLOCK", `PAPER_OCO_CANARY_AUTO_CANCEL=${autoCancelEnabled}`);
+  } else {
+    addGate(gates, "actual_submit_disabled", "PASS", "no POST /v2/orders unless PAPER_OCO_CANARY_SUBMIT_ENABLED=true and approval phrase matches");
+  }
 };
 
 const runReadPrecheck = async ({ selected, payload, gates }) => {
@@ -239,6 +294,140 @@ const runReadPrecheck = async ({ selected, payload, gates }) => {
   return result;
 };
 
+const verifyNestedVisibility = async ({ symbol, clientOrderId }) => {
+  const ordersRes = await fetchAlpaca(`/v2/orders?status=open&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=50`);
+  const orders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
+  const matched = findOrderByClientId(orders, clientOrderId);
+  const protection = classifySellProtection(orders, symbol);
+  const pass = ordersRes.ok && matched && protection.hasStop && protection.hasTarget;
+  return {
+    ok: Boolean(pass),
+    status: ordersRes.status,
+    reason: ordersRes.reason,
+    matchedOrder: sanitizeBrokerObject(matched),
+    matchedOrderId: matched?.id || null,
+    protection,
+    data: sanitizeBrokerObject(orders)
+  };
+};
+
+const verifyRollbackTerminal = async ({ symbol, clientOrderId }) => {
+  const ordersRes = await fetchAlpaca(`/v2/orders?status=open&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=50`);
+  const orders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
+  const activeOrder = findActiveOrderByClientId(orders, clientOrderId);
+  return {
+    ok: ordersRes.ok && !activeOrder,
+    status: ordersRes.status,
+    reason: ordersRes.reason,
+    activeOrder: sanitizeBrokerObject(activeOrder),
+    data: sanitizeBrokerObject(orders)
+  };
+};
+
+const runApprovedPaperSubmit = async ({ selected, payload, idempotencyKey, preflight, gates }) => {
+  const symbol = asSymbol(selected?.symbol);
+  const clientOrderId = String(payload?.client_order_id || "").trim();
+  const brokerMutation = { attempted: false, submitted: false, status: null, reason: null, response: null };
+  const rollback = { attempted: false, ok: false, status: null, reason: null, response: null, terminalVerified: false, terminalCheck: null };
+  const postSubmitVisibility = { attempted: false, ok: false, reason: "not_run", matchedOrder: null, protection: null };
+
+  updateLedgerEntry(idempotencyKey, {
+    status: "submit_started",
+    reason: "approved_paper_oco_canary_submit_started",
+    terminal: false,
+    symbol,
+    clientOrderId,
+    selected: sanitizeBrokerObject(selected),
+    payloadPreview: sanitizeBrokerObject(payload),
+    preflight: sanitizeBrokerObject(preflight)
+  });
+
+  brokerMutation.attempted = true;
+  const postRes = await postAlpaca("/v2/orders", payload);
+  brokerMutation.status = postRes.status;
+  brokerMutation.reason = postRes.reason;
+  brokerMutation.response = sanitizeBrokerObject(postRes.data);
+
+  if (!postRes.ok) {
+    updateLedgerEntry(idempotencyKey, {
+      status: "submit_rejected",
+      reason: postRes.reason,
+      terminal: true,
+      brokerResponse: sanitizeBrokerObject(postRes.data)
+    });
+    addGate(gates, "broker_post_order", "BLOCK", `POST /v2/orders failed status=${postRes.status ?? "N/A"} reason=${postRes.reason}`);
+    return { brokerMutation, postSubmitVisibility, rollback, terminalLedgerStatus: "submit_rejected" };
+  }
+
+  brokerMutation.submitted = true;
+  const brokerOrderId = postRes.data?.id || null;
+  updateLedgerEntry(idempotencyKey, {
+    status: "submitted",
+    reason: "paper_oco_canary_post_accepted",
+    terminal: false,
+    brokerOrderId,
+    brokerStatus: postRes.data?.status || null,
+    brokerResponse: sanitizeBrokerObject(postRes.data)
+  });
+  addGate(gates, "broker_post_order", "PASS", `POST /v2/orders accepted status=${postRes.status ?? "N/A"}`);
+
+  await sleep(Number(process.env.PAPER_OCO_CANARY_VISIBILITY_DELAY_MS || 1500));
+  postSubmitVisibility.attempted = true;
+  const visibility = await verifyNestedVisibility({ symbol, clientOrderId });
+  Object.assign(postSubmitVisibility, visibility);
+  addGate(gates, "post_submit_nested_visibility", visibility.ok ? "PASS" : "BLOCK", `ok=${visibility.ok} stop=${visibility.protection?.stopOrderCount ?? "N/A"} target=${visibility.protection?.targetOrderCount ?? "N/A"}`);
+  updateLedgerEntry(idempotencyKey, {
+    status: visibility.ok ? "visibility_pass" : "visibility_failed",
+    reason: visibility.reason,
+    terminal: false,
+    brokerOrderId: brokerOrderId || visibility.matchedOrderId || null,
+    visibility: sanitizeBrokerObject(visibility)
+  });
+
+  const cancelId = brokerOrderId || visibility.matchedOrderId;
+  rollback.attempted = true;
+  if (!cancelId) {
+    rollback.reason = "missing_broker_order_id_for_cancel";
+    addGate(gates, "rollback_cancel_requested", "BLOCK", rollback.reason);
+    updateLedgerEntry(idempotencyKey, {
+      status: "cancel_failed_missing_order_id",
+      reason: rollback.reason,
+      terminal: false
+    });
+    return { brokerMutation, postSubmitVisibility, rollback, terminalLedgerStatus: "cancel_failed_missing_order_id" };
+  }
+
+  updateLedgerEntry(idempotencyKey, {
+    status: "cancel_started",
+    reason: "auto_cancel_after_visibility_check",
+    terminal: false,
+    brokerOrderId: cancelId
+  });
+  const cancelRes = await deleteAlpaca(`/v2/orders/${encodeURIComponent(cancelId)}`);
+  rollback.status = cancelRes.status;
+  rollback.reason = cancelRes.reason;
+  rollback.response = sanitizeBrokerObject(cancelRes.data);
+  rollback.ok = cancelRes.ok || cancelRes.status === 204;
+  addGate(gates, "rollback_cancel_requested", rollback.ok ? "PASS" : "BLOCK", `status=${cancelRes.status ?? "N/A"} reason=${cancelRes.reason}`);
+
+  await sleep(Number(process.env.PAPER_OCO_CANARY_CANCEL_VERIFY_DELAY_MS || 1500));
+  const terminalCheck = await verifyRollbackTerminal({ symbol, clientOrderId });
+  rollback.terminalCheck = terminalCheck;
+  rollback.terminalVerified = terminalCheck.ok;
+  addGate(gates, "rollback_terminal_verified", terminalCheck.ok ? "PASS" : "BLOCK", `activeOrder=${terminalCheck.activeOrder ? "yes" : "no"} reason=${terminalCheck.reason}`);
+
+  const terminalStatus = rollback.ok && terminalCheck.ok ? "rollback_cancelled_terminal" : "rollback_cancel_not_terminal";
+  updateLedgerEntry(idempotencyKey, {
+    status: terminalStatus,
+    reason: rollback.reason,
+    terminal: rollback.ok && terminalCheck.ok,
+    brokerOrderId: cancelId,
+    rollback: sanitizeBrokerObject(rollback)
+  });
+
+  return { brokerMutation, postSubmitVisibility, rollback, terminalLedgerStatus: terminalStatus };
+};
+
 const buildMarkdown = (report) => {
   const lines = [];
   lines.push("## Paper OCO Canary Submit Gate");
@@ -248,7 +437,9 @@ const buildMarkdown = (report) => {
   lines.push(`- selected: \`${report.selected?.symbol || "N/A"} qty=${report.selected?.canaryQty ?? "N/A"} stop=${fmt(report.selected?.plannedStopPrice)} target=${fmt(report.selected?.plannedTargetPrice)}\``);
   lines.push(`- brokerMutationAttempted: \`${report.brokerMutation.attempted}\``);
   lines.push(`- brokerMutationSubmitted: \`${report.brokerMutation.submitted}\``);
-  lines.push("- safety: `submit gate is non-mutating; no POST /v2/orders is implemented in this lane` ");
+  lines.push(`- rollback: \`attempted=${report.rollback?.attempted ?? false} ok=${report.rollback?.ok ?? false} terminal=${report.rollback?.terminalVerified ?? false}\``);
+  lines.push(`- idempotency: \`duplicate=${report.idempotency.duplicate} terminal=${report.idempotency.terminal ?? false} status=${report.idempotency.existingStatus || report.idempotency.terminalStatus || "N/A"}\``);
+  lines.push(`- safety: \`${report.executionPolicy.mode}; target=${report.executionPolicy.targetEnvironment}; autoRollback=${report.executionPolicy.autoRollbackEnabled}\``);
   lines.push("- gates:");
   for (const gate of report.gates) lines.push(`  - [${gate.status}] ${gate.id}: ${short(gate.detail, 220)}`);
   lines.push("- rollback_plan:");
@@ -260,6 +451,9 @@ const buildMarkdown = (report) => {
 const main = async () => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const readVerifyEnabled = boolEnv("PAPER_OCO_CANARY_READ_VERIFY", false);
+  const submitEnabled = boolEnv("PAPER_OCO_CANARY_SUBMIT_ENABLED", false);
+  const autoCancelEnabled = boolEnv("PAPER_OCO_CANARY_AUTO_CANCEL", true);
+  const approvalPhraseProvided = process.env.PAPER_OCO_CANARY_APPROVAL_PHRASE === REQUIRED_APPROVAL_PHRASE;
   const approvalGate = readJson(APPROVAL_GATE_PATH);
   const candidate = readJson(CANDIDATE_PATH);
   const approvalSelected = approvalGate?.selected || null;
@@ -276,10 +470,9 @@ const main = async () => {
   const idempotencyKey = selected?.idempotencyKeyPreview || `paper-oco-canary:${asSymbol(selected?.symbol)}:qty=${selected?.canaryQty}:stop=${selected?.plannedStopPrice}:target=${selected?.plannedTargetPrice}`;
   const gates = [];
   const preflight = { readVerifyEnabled, broker: null };
-  const brokerMutation = { attempted: false, submitted: false, status: null, reason: "not_implemented_without_separate_approval", response: null };
 
   validateStaticInputs({ approvalGate, candidate, selected, payload, idempotencyKey, gates });
-  validateEnvForReadVerify({ gates, readVerifyEnabled });
+  validateEnvForBrokerAccess({ gates, readVerifyEnabled, submitEnabled, approvalPhraseProvided, autoCancelEnabled });
 
   const brokerReadEnvOk =
     !readVerifyEnabled ||
@@ -291,13 +484,36 @@ const main = async () => {
   } else if (readVerifyEnabled) {
     addGate(gates, "broker_read_precheck_not_run", "WARN", "broker read precheck skipped because ALPHA_ENV/ALPACA_BASE_URL are not paper-only");
   } else {
-    addGate(gates, "broker_read_precheck_not_run", "WARN", "set PAPER_OCO_CANARY_READ_VERIFY=true for non-mutating Alpaca position/open-order precheck");
+    addGate(gates, "broker_read_precheck_not_run", submitEnabled ? "BLOCK" : "WARN", "set PAPER_OCO_CANARY_READ_VERIFY=true for non-mutating Alpaca position/open-order precheck");
   }
 
-  const blockingGates = gates.filter((gate) => gate.status === "BLOCK");
-  const overall = blockingGates.length > 0 ? "blocked" : "ready_but_not_approved";
-  const decisionStatus = blockingGates.length > 0 ? "DO_NOT_SUBMIT_BLOCKED" : "READY_FOR_APPROVAL_BUT_NOT_SUBMITTED";
-  const approvalPhraseProvided = process.env.PAPER_OCO_CANARY_APPROVAL_PHRASE === REQUIRED_APPROVAL_PHRASE;
+  let brokerMutation = { attempted: false, submitted: false, status: null, reason: submitEnabled ? "blocked_before_submit" : "submit_not_requested", response: null };
+  let postSubmitVisibility = null;
+  let rollback = { attempted: false, ok: false, status: null, reason: submitEnabled ? "blocked_before_submit" : "submit_not_requested", response: null, terminalVerified: false };
+  let terminalLedgerStatus = null;
+
+  let blockingGates = gates.filter((gate) => gate.status === "BLOCK");
+  if (submitEnabled && blockingGates.length === 0) {
+    const result = await runApprovedPaperSubmit({ selected, payload, idempotencyKey, preflight, gates });
+    brokerMutation = result.brokerMutation;
+    postSubmitVisibility = result.postSubmitVisibility;
+    rollback = result.rollback;
+    terminalLedgerStatus = result.terminalLedgerStatus;
+    blockingGates = gates.filter((gate) => gate.status === "BLOCK");
+  }
+
+  const ledgerEntry = readLedger()?.entries?.[idempotencyKey] || null;
+  const submittedAndTerminal = brokerMutation.submitted === true && rollback?.terminalVerified === true && ledgerEntry?.terminal === true;
+  const overall = blockingGates.length > 0
+    ? (brokerMutation.submitted ? "submitted_with_blocking_followup" : "blocked")
+    : submitEnabled
+      ? (submittedAndTerminal ? "submitted_visibility_verified_rollback_terminal" : "submitted_not_terminal")
+      : "ready_but_not_approved";
+  const decisionStatus = blockingGates.length > 0
+    ? (brokerMutation.submitted ? "SUBMITTED_REVIEW_BLOCKERS" : "DO_NOT_SUBMIT_BLOCKED")
+    : submitEnabled
+      ? (submittedAndTerminal ? "SUBMIT_ROLLBACK_VERIFIED" : "SUBMIT_REVIEW_REQUIRED")
+      : "READY_FOR_APPROVAL_BUT_NOT_SUBMITTED";
 
   const report = {
     generatedAt: nowIso(),
@@ -308,15 +524,15 @@ const main = async () => {
       submitLedger: fs.existsSync(LEDGER_PATH)
     },
     executionPolicy: {
-      mode: "submit_gate_non_mutating",
+      mode: submitEnabled ? "paper_oco_canary_submit_approved" : "submit_gate_non_mutating",
       brokerMutationAllowedByDefault: false,
-      brokerMutationImplemented: false,
-      brokerMutationRequested: false,
+      brokerMutationImplemented: true,
+      brokerMutationRequested: submitEnabled,
       readVerifyEnabled,
       approvalPhraseProvided,
       requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE,
       targetEnvironment: "PAPER",
-      autoRollbackEnabled: false
+      autoRollbackEnabled: autoCancelEnabled
     },
     selected: selected
       ? {
@@ -329,42 +545,51 @@ const main = async () => {
         executionAllowed: selected.executionAllowed
       }
       : null,
-    payloadPreview: payload,
+    payloadPreview: sanitizeBrokerObject(payload),
     idempotency: {
       ledgerPath: LEDGER_PATH,
       key: idempotencyKey,
       duplicate: loadActiveLedgerDuplicate(idempotencyKey).duplicate,
-      existingStatus: loadActiveLedgerDuplicate(idempotencyKey).entry?.status || null,
+      existingStatus: ledgerEntry?.status || null,
+      terminalStatus: terminalLedgerStatus,
+      terminal: ledgerEntry?.terminal === true,
       writeBeforeSubmitRequiredInFutureTask: true
     },
     decision: {
       status: decisionStatus,
-      recommendedAction: "DO_NOT_SUBMIT",
+      recommendedAction: submitEnabled ? "REVIEW_CANARY_RESULT" : "DO_NOT_SUBMIT",
       requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE,
-      nextAction: "actual paper OCO submit remains a separate broker-mutating implementation task; this gate only proves whether the selected row is eligible for that request"
+      nextAction: submitEnabled
+        ? "inspect nested visibility, rollback, and terminal idempotency before any broader repair lane"
+        : "actual paper OCO submit requires broker-mutating approval phrase and paper-only env"
     },
     preflight,
     brokerMutation,
-    postSubmitVisibility: null,
+    postSubmitVisibility,
+    rollback,
     gates,
     summary: {
       blockingGates: blockingGates.length,
-      brokerMutationAttempted: false,
-      brokerMutationSubmitted: false,
+      brokerMutationAttempted: brokerMutation.attempted === true,
+      brokerMutationSubmitted: brokerMutation.submitted === true,
       selectedSymbol: selected?.symbol || null,
-      clientOrderId: payload?.client_order_id || null
+      clientOrderId: payload?.client_order_id || null,
+      rollbackTerminal: rollback?.terminalVerified === true,
+      ledgerTerminal: ledgerEntry?.terminal === true
     },
     rollbackPlan: [
-      "No automatic rollback is enabled in this lane.",
-      "A future broker-mutating paper canary must capture the POST response and nested open-order visibility immediately after submit.",
-      "If post-submit visibility fails in that future task, cancel the returned Alpaca paper order manually or through a separately approved cancel task.",
-      "Do not submit a second OCO canary for the same symbol until the dedicated idempotency ledger and nested open orders confirm the first attempt is terminal."
+      "Auto-cancel is required for this canary lane and must be verified terminal in the submit ledger.",
+      "If rollback terminal verification fails, manually cancel the returned Alpaca paper order id or client_order_id immediately.",
+      "Do not submit a second OCO canary for the same symbol until the dedicated idempotency ledger confirms the prior attempt is terminal.",
+      "Do not promote this lane beyond one dynamically selected paper row without a separate approval and scale-up task."
     ]
   };
 
   writeJson(OUTPUT_JSON, report);
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
-  console.log(`[PAPER_OCO_SUBMIT_GATE] saved json=${OUTPUT_JSON} md=${OUTPUT_MD} overall=${overall} selected=${selected?.symbol || "none"} attempted=false submitted=false`);
+  console.log(`[PAPER_OCO_SUBMIT_GATE] saved json=${OUTPUT_JSON} md=${OUTPUT_MD} overall=${overall} selected=${selected?.symbol || "none"} attempted=${report.summary.brokerMutationAttempted} submitted=${report.summary.brokerMutationSubmitted}`);
+
+  if (submitEnabled && !submittedAndTerminal) process.exitCode = 1;
 };
 
 main().catch((error) => {
@@ -376,7 +601,9 @@ main().catch((error) => {
     selected: null,
     error: short(error?.stack || error?.message || error, 2000),
     brokerMutation: { attempted: false, submitted: false, reason: "script_error" },
+    rollback: { attempted: false, ok: false, reason: "script_error", terminalVerified: false },
     gates: [{ id: "script_error", status: "BLOCK", detail: short(error?.message || error, 320) }],
+    idempotency: { terminal: false },
     rollbackPlan: ["Do not submit; inspect script error."]
   };
   writeJson(OUTPUT_JSON, report);

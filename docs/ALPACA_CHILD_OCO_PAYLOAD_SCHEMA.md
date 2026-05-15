@@ -186,7 +186,20 @@ Use `paper-oco-read-verify.yml` for the safe pre-submit check. It downloads a pr
 
 - `brokerMutationAttempted=false`
 - `brokerMutationSubmitted=false`
-- `executionPolicy.brokerMutationImplemented=false`
+- `executionPolicy.brokerMutationRequested=false`
 - payload preview remains `order_class=oco` without submitting it
 
 This workflow must not run the full sidecar order-submit path and must not call `POST /v2/orders`.
+
+### Approved One-Row Paper Submit Canary
+
+Use `paper-oco-submit-canary.yml` only after the exact approval phrase is supplied for the current scoped task. The workflow downloads a prior `sidecar-dry-run` state artifact, re-runs the submit gate with:
+
+- `ALPHA_ENV=PAPER`
+- `ALPACA_BASE_URL=https://paper-api.alpaca.markets`
+- `PAPER_OCO_CANARY_READ_VERIFY=true`
+- `PAPER_OCO_CANARY_SUBMIT_ENABLED=true`
+- `PAPER_OCO_CANARY_AUTO_CANCEL=true`
+- `PAPER_OCO_CANARY_APPROVAL_PHRASE=CONFIRM LIVE EXECUTION`
+
+The lane may submit exactly one dynamically selected canary row with `qty=1`, verifies `nested=true` visibility, then cancels the returned paper order and requires the submit ledger to end in a terminal rollback state. It must not be used for multiple symbols or live endpoints.

@@ -1,32 +1,36 @@
-name: paper-oco-read-verify
+name: paper-oco-submit-canary
 
 on:
   workflow_dispatch:
     inputs:
+      confirm_live_execution:
+        description: "Required exact phrase: CONFIRM LIVE EXECUTION"
+        required: true
+        type: string
       source_run_id:
         description: "sidecar-dry-run run id to read state from (blank = latest successful dry-run)"
         required: false
         default: ""
         type: string
       require_market_open:
-        description: "Require Alpaca paper clock.is_open for the read precheck gate"
+        description: "Require Alpaca paper clock.is_open before POST"
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
-          - "false"
           - "true"
+          - "false"
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: paper-oco-read-verify-${{ github.ref }}
+  group: paper-oco-submit-canary-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  read-verify:
+  submit-canary:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -38,9 +42,23 @@ jobs:
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       PAPER_OCO_SUBMIT_STATE_DIR: _paper_oco_state
       PAPER_OCO_CANARY_READ_VERIFY: "true"
+      PAPER_OCO_CANARY_SUBMIT_ENABLED: "true"
+      PAPER_OCO_CANARY_AUTO_CANCEL: "true"
       PAPER_OCO_CANARY_REQUIRE_MARKET_OPEN: ${{ inputs.require_market_open }}
+      PAPER_OCO_CANARY_APPROVAL_PHRASE: ${{ inputs.confirm_live_execution }}
+      PAPER_OCO_CANARY_VISIBILITY_DELAY_MS: "1500"
+      PAPER_OCO_CANARY_CANCEL_VERIFY_DELAY_MS: "1500"
 
     steps:
+      - name: Verify approval phrase
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm_live_execution }}" != "CONFIRM LIVE EXECUTION" ]]; then
+            echo "Exact approval phrase missing; refusing paper broker mutation." >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -89,10 +107,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Run non-mutating Alpaca paper read precheck
+      - name: Submit one approved paper OCO canary and rollback
         run: npm run ops:paper-oco-submit-gate
 
-      - name: Verify read precheck remained non-mutating
+      - name: Verify submit, visibility, rollback, and terminal ledger
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -100,24 +119,29 @@ jobs:
           import fs from 'node:fs';
           const report = JSON.parse(fs.readFileSync('_paper_oco_state/paper-oco-canary-submit-gate.json', 'utf8'));
           const failures = [];
-          if (report.executionPolicy?.readVerifyEnabled !== true) failures.push('readVerifyEnabled_not_true');
-          if (report.brokerMutation?.attempted !== false) failures.push('brokerMutation_attempted_not_false');
-          if (report.brokerMutation?.submitted !== false) failures.push('brokerMutation_submitted_not_false');
-          if (report.payloadPreview?.order_class !== 'oco') failures.push('payloadPreview_order_class_not_oco');
-          if (report.executionPolicy?.targetEnvironment !== 'PAPER') failures.push('targetEnvironment_not_paper');
-          if (report.executionPolicy?.brokerMutationRequested !== false) failures.push('brokerMutationRequested_not_false');
-          if (failures.length) {
-            console.error(`paper OCO read precheck safety verification failed: ${failures.join(',')}`);
-            process.exit(1);
-          }
+          if (report.executionPolicy?.brokerMutationRequested !== true) failures.push('brokerMutationRequested_not_true');
+          if (report.brokerMutation?.attempted !== true) failures.push('brokerMutation_attempted_not_true');
+          if (report.brokerMutation?.submitted !== true) failures.push('brokerMutation_submitted_not_true');
+          if (report.postSubmitVisibility?.ok !== true) failures.push('nested_visibility_not_ok');
+          if (report.rollback?.ok !== true) failures.push('rollback_cancel_not_ok');
+          if (report.rollback?.terminalVerified !== true) failures.push('rollback_terminal_not_verified');
+          if (report.idempotency?.terminal !== true) failures.push('idempotency_terminal_not_true');
+          if (report.selected?.canaryQty !== 1) failures.push('canaryQty_not_one');
           console.log(JSON.stringify({
             overall: report.overall,
             decision: report.decision?.status,
             selectedSymbol: report.summary?.selectedSymbol,
             brokerMutationAttempted: report.summary?.brokerMutationAttempted,
             brokerMutationSubmitted: report.summary?.brokerMutationSubmitted,
-            readVerifyEnabled: report.executionPolicy?.readVerifyEnabled
+            postSubmitVisibility: report.postSubmitVisibility?.ok,
+            rollbackTerminal: report.summary?.rollbackTerminal,
+            ledgerTerminal: report.summary?.ledgerTerminal,
+            clientOrderId: report.summary?.clientOrderId
           }, null, 2));
+          if (failures.length) {
+            console.error(`paper OCO canary verification failed: ${failures.join(',')}`);
+            process.exit(1);
+          }
           NODE
 
       - name: Publish summary
@@ -125,24 +149,25 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Paper OCO Read Verify"
+            echo "## Paper OCO Submit Canary"
             echo "- sourceRun: \`${{ steps.resolve.outputs.run_id }}\`"
             echo "- sourceArtifact: \`${{ steps.resolve.outputs.artifact }}\`"
-            echo "- brokerMutation: \`non-mutating GET-only precheck; no POST /v2/orders\`"
+            echo "- brokerMutation: \`approved one-row PAPER OCO canary with auto-cancel rollback\`"
             echo ""
             if [[ -f _paper_oco_state/paper-oco-canary-submit-gate.md ]]; then
               cat _paper_oco_state/paper-oco-canary-submit-gate.md
             else
-              echo "- status: \`missing state/paper-oco-canary-submit-gate.md\`"
+              echo "- status: \`missing _paper_oco_state/paper-oco-canary-submit-gate.md\`"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload read verify artifact
+      - name: Upload submit canary artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: paper-oco-read-verify-${{ github.run_id }}
+          name: paper-oco-submit-canary-${{ github.run_id }}
           path: |
             _paper_oco_state/paper-oco-canary-submit-gate.json
             _paper_oco_state/paper-oco-canary-submit-gate.md
+            _paper_oco_state/paper-oco-canary-submit-ledger.json
           if-no-files-found: warn
