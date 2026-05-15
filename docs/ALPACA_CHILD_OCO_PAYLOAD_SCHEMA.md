@@ -179,3 +179,14 @@ npm run ops:paper-oco-submit-gate
 ```
 
 It does not POST. A future approved paper canary implementation must re-fetch Alpaca paper account/clock/positions/nested open orders, persist a dedicated idempotency ledger before POST, and verify `nested=true` visibility after submit.
+
+### Non-Mutating Paper Read Verify
+
+Use `paper-oco-read-verify.yml` for the safe pre-submit check. It downloads a prior `sidecar-dry-run` state artifact, sets `PAPER_OCO_CANARY_READ_VERIFY=true`, calls only Alpaca paper `GET` endpoints, and asserts:
+
+- `brokerMutationAttempted=false`
+- `brokerMutationSubmitted=false`
+- `executionPolicy.brokerMutationImplemented=false`
+- payload preview remains `order_class=oco` without submitting it
+
+This workflow must not run the full sidecar order-submit path and must not call `POST /v2/orders`.
