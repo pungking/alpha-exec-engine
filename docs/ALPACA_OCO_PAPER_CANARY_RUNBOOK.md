@@ -31,8 +31,18 @@ Outputs:
 
 - `state/paper-oco-canary-candidate.json`
 - `state/paper-oco-canary-candidate.md`
+- `state/paper-oco-canary-approval-gate.json`
+- `state/paper-oco-canary-approval-gate.md`
 
 The selector may recommend one lowest-notional eligible `symbol + qty=1` target, but it still sets `executionAllowed=false` and does not emit an Alpaca submit payload.
+
+The approval gate is also report-only:
+
+```bash
+npm run ops:paper-oco-gate
+```
+
+It decides whether the selected row is blocked or `READY_FOR_MANUAL_APPROVAL`. It still sets `recommendedAction=DO_NOT_SUBMIT`.
 
 ## Candidate Selection
 
@@ -65,6 +75,21 @@ Default selection, when no symbol is requested:
 5. choose the lowest `canaryQty * currentPrice` candidate to minimize paper canary blast radius.
 
 The selected row is still `SELECTED_PENDING_SAFETY_APPROVAL`, never executable.
+
+## Approval Gate Rule
+
+The approval gate consumes only the selector output and current safety artifacts. It does not select a ticker by itself.
+
+It returns `manual_approval_required` only if:
+
+1. exactly one selected candidate exists;
+2. selector scope is portfolio-wide;
+3. selector, guarded repair plan, payload fixture, OCO response fixture, order-state, and runtime safe flags pass;
+4. broker child reconciliation confirms both stop and target children are missing;
+5. selected row remains `executionAllowed=false`;
+6. `qty=1` and stop/current/target geometry is still valid.
+
+Even then, the decision remains `DO_NOT_SUBMIT` until a separate broker-mutating task is explicitly approved.
 
 ## Proposed Paper Request Shape
 

@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-15 (KST, generic paper OCO canary selector)
+Last updated: 2026-05-15 (KST, paper OCO approval gate)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -178,6 +178,11 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - output: `state/paper-oco-canary-candidate.json` / `.md`
   - scope is portfolio-wide and dynamic; BZ/QFIN are only current artifact examples, not hard-coded targets.
   - the selector chooses at most one lowest-notional eligible `symbol + qty=1` row and keeps `executionAllowed=false`.
+- Added report-only paper OCO approval gate:
+  - `npm run ops:paper-oco-gate`
+  - output: `state/paper-oco-canary-approval-gate.json` / `.md`
+  - consumes the selected row and validates selector scope, guarded repair state, nested-order evidence, payload/response fixtures, order-state, safe runtime flags, qty, and price geometry.
+  - returns `READY_FOR_MANUAL_APPROVAL` only as a non-mutating decision; `recommendedAction` remains `DO_NOT_SUBMIT`.
 - Safety boundary remains unchanged:
   - no broker endpoint calls,
   - no emitted Alpaca repair payload,

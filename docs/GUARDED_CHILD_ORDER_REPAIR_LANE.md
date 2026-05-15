@@ -21,6 +21,8 @@ It emits:
 - `state/alpaca-oco-response-fixture-report.md`
 - `state/paper-oco-canary-candidate.json`
 - `state/paper-oco-canary-candidate.md`
+- `state/paper-oco-canary-approval-gate.json`
+- `state/paper-oco-canary-approval-gate.md`
 
 ## Current Safety Policy
 
@@ -49,6 +51,9 @@ The paper OCO canary selector is also report-only. It scans all current repair c
 `SELECTED_PENDING_SAFETY_APPROVAL`; that is a manual-test target, not an execution instruction. There is no hard-coded
 symbol path.
 
+The approval gate consumes that selected row and emits `READY_FOR_MANUAL_APPROVAL` only when all non-mutating preconditions
+are clean. It still returns `recommendedAction=DO_NOT_SUBMIT`.
+
 ## Future Execution Preconditions
 
 Before any broker-mutating repair lane may be built, the following must be true:
@@ -72,6 +77,7 @@ Before any broker-mutating repair lane may be built, the following must be true:
 - `npm run ops:alpaca:payload-fixtures` returns `overall=pass` before any future paper fixture submit is considered.
 - `npm run ops:alpaca:oco-response-fixtures` returns `overall=pass` before any future paper OCO canary is considered.
 - `npm run ops:paper-oco-canary` emits at most one selected row with `executionAllowed=false` and `summary.executionReadyRows=0`.
+- `npm run ops:paper-oco-gate` emits `summary.executionReadyRows=0` and either `blocked` or `manual_approval_required`; it never emits an executable payload.
 
 ## Alpaca Payload Schema Fixture
 

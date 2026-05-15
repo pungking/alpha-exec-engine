@@ -113,6 +113,8 @@ Outputs:
 - `state/alpaca-oco-response-fixture-report.md`
 - `state/paper-oco-canary-candidate.json`
 - `state/paper-oco-canary-candidate.md`
+- `state/paper-oco-canary-approval-gate.json`
+- `state/paper-oco-canary-approval-gate.md`
 
 The validator is intentionally offline and report-only:
 
@@ -159,3 +161,11 @@ npm run ops:paper-oco-canary
 ```
 
 It scans all current guarded repair candidates, selects at most one lowest-notional `symbol + qty=1` candidate, and keeps `executionAllowed=false`. It must not be interpreted as a ticker-specific lane.
+
+The non-mutating approval gate is:
+
+```bash
+npm run ops:paper-oco-gate
+```
+
+It validates the selected row against safety artifacts and still recommends `DO_NOT_SUBMIT` unless a separate broker-mutating task is explicitly approved.

@@ -1678,6 +1678,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build paper OCO canary approval gate
+        if: always()
+        run: npm run ops:paper-oco-gate
+
+      - name: Publish paper OCO canary approval gate summary
+        if: always()
+        run: |
+          if [[ -f state/paper-oco-canary-approval-gate.md ]]; then
+            cat state/paper-oco-canary-approval-gate.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Paper OCO Canary Approval Gate" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/paper-oco-canary-approval-gate.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1763,6 +1778,8 @@ jobs:
             state/alpaca-oco-response-fixture-report.md
             state/paper-oco-canary-candidate.json
             state/paper-oco-canary-candidate.md
+            state/paper-oco-canary-approval-gate.json
+            state/paper-oco-canary-approval-gate.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json
