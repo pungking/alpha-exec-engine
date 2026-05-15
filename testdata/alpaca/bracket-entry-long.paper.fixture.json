@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "alpaca-paper-fixture-v1",
+  "fixtureType": "bracket_entry_long",
+  "description": "Project-safe Alpaca paper fixture for a long entry bracket order. This mirrors the current sidecar broker submit lane after notional-to-qty conversion.",
+  "docs": {
+    "sourceUrl": "https://docs.alpaca.markets/us/docs/orders-at-alpaca#bracket-orders",
+    "verifiedAt": "2026-05-15T00:00:00.000Z"
+  },
+  "reference": {
+    "entryPrice": 21.25,
+    "positionSide": "long",
+    "expectedParentSide": "buy",
+    "expectedChildSide": "sell"
+  },
+  "payload": {
+    "symbol": "BZ",
+    "side": "buy",
+    "type": "limit",
+    "time_in_force": "day",
+    "order_class": "bracket",
+    "limit_price": "21.25",
+    "qty": "1",
+    "take_profit": {
+      "limit_price": "24.50"
+    },
+    "stop_loss": {
+      "stop_price": "20.10"
+    },
+    "client_order_id": "fixture_bracket_bz_0001"
+  }
+}

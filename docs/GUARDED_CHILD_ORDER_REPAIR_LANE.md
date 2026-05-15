@@ -15,6 +15,8 @@ It emits:
 
 - `state/guarded-child-order-repair-plan.json`
 - `state/guarded-child-order-repair-plan.md`
+- `state/alpaca-order-payload-schema-report.json`
+- `state/alpaca-order-payload-schema-report.md`
 
 ## Current Safety Policy
 
@@ -43,7 +45,7 @@ Even valid candidates are marked `CANDIDATE_BLOCKED_REPORT_ONLY` until a future 
 
 Before any broker-mutating repair lane may be built, the following must be true:
 
-1. Exact broker child/OCO payload semantics are verified from Alpaca official docs or captured paper fixtures.
+1. Exact broker child/OCO payload semantics are verified from Alpaca official docs and captured paper fixtures.
 2. A deterministic repair idempotency key is persisted before broker submission.
 3. The lane verifies position quantity, current position side, market/session rules, and open child order state immediately before submission.
 4. The lane blocks if current price has already crossed planned stop or target.
@@ -59,3 +61,14 @@ Before any broker-mutating repair lane may be built, the following must be true:
 - `executionPolicy.autoRepairEnabled=false`.
 - `summary.executionReadyRows=0`.
 - ops health reports candidate rows as report-only, not executable.
+- `npm run ops:alpaca:payload-fixtures` returns `overall=pass` before any future paper fixture submit is considered.
+
+## Alpaca Payload Schema Fixture
+
+The official bracket/OCO payload schema and offline paper fixtures are documented in:
+
+- `docs/ALPACA_CHILD_OCO_PAYLOAD_SCHEMA.md`
+- `testdata/alpaca/bracket-entry-long.paper.fixture.json`
+- `testdata/alpaca/oco-exit-long-repair.paper.fixture.json`
+
+This schema fixture is still non-mutating. It only verifies the shape of a future paper test and does not enable repair execution.

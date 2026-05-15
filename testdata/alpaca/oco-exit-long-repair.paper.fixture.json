@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "alpaca-paper-fixture-v1",
+  "fixtureType": "oco_exit_long_repair",
+  "description": "Project-safe Alpaca paper fixture for a report-only future repair of missing stop/target protection on an existing long position.",
+  "docs": {
+    "sourceUrl": "https://docs.alpaca.markets/us/docs/orders-at-alpaca#oco-orders",
+    "verifiedAt": "2026-05-15T00:00:00.000Z"
+  },
+  "reference": {
+    "positionSide": "long",
+    "currentPrice": 21.80,
+    "positionQty": "1",
+    "expectedExitSide": "sell"
+  },
+  "payload": {
+    "symbol": "BZ",
+    "side": "sell",
+    "type": "limit",
+    "time_in_force": "day",
+    "order_class": "oco",
+    "qty": "1",
+    "take_profit": {
+      "limit_price": "24.50"
+    },
+    "stop_loss": {
+      "stop_price": "20.10"
+    },
+    "client_order_id": "fixture_oco_bz_repair_0001"
+  }
+}

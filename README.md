@@ -36,6 +36,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Performance/ops monitor reads Alpaca open orders with `nested=true` and reports broker-side bracket child protection gaps (`brokerStopMissing`, `brokerTargetMissing`) as observe-only diagnostics; it does not auto-create replacement stop/target orders.
 - Broker child-order reconciliation planner writes `state/broker-child-order-reconciliation.json/.md` as report-only evidence for missing stop/target children and proposed review actions; it never submits repair orders.
 - Guarded child-order repair planner writes `state/guarded-child-order-repair-plan.json/.md` as a non-executable repair blueprint; broker mutation remains disabled and requires separate approval.
+- Alpaca bracket/OCO payload fixture validator writes `state/alpaca-order-payload-schema-report.json/.md` to keep future child-repair payloads aligned with official Alpaca schema before any paper submit test.
 - Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
 - Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
@@ -131,6 +132,7 @@ HF verification shortcuts:
 - `npm run dashboard:perf`: build simulation/live dashboard snapshot (`state/performance-dashboard.json`, `.md`).
 - `npm run ops:broker-child-reconcile`: build report-only broker child-order reconciliation (`state/broker-child-order-reconciliation.json`, `.md`) from the nested-order performance snapshot.
 - `npm run ops:guarded-repair-plan`: build the guarded report-only stop/target repair blueprint (`state/guarded-child-order-repair-plan.json`, `.md`).
+- `npm run ops:alpaca:payload-fixtures`: validate offline Alpaca bracket/OCO paper fixtures against official-schema project rules (`state/alpaca-order-payload-schema-report.json`, `.md`); no broker endpoint calls.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.

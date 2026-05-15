@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-12 (KST, Stage6 current-entry promotion canary)
+Last updated: 2026-05-15 (KST, Alpaca bracket/OCO fixture validation)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -155,6 +155,24 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - Notion data-quality audit (`ops:notion:audit`)
   - consolidated ops daily artifact report (`ops:daily:report`)
   - root workflow publication/artifact wiring (`mcp-ops-daily`)
+
+### 2026-05-15 KST Alpaca child/OCO repair precondition
+
+- Official Alpaca docs review locked the next repair-lane payload boundary:
+  - bracket entry orders use `order_class=bracket` with `take_profit.limit_price` and `stop_loss.stop_price`;
+  - OCO repair candidates for existing long positions use `order_class=oco`, `side=sell`, `type=limit`, and `qty`;
+  - `nested=true` order reads remain the correct source for broker child-order reconciliation;
+  - notional repair payloads are disallowed by project policy because repair/replace behavior must be qty-based.
+- Added offline paper fixtures and validator:
+  - `testdata/alpaca/bracket-entry-long.paper.fixture.json`
+  - `testdata/alpaca/oco-exit-long-repair.paper.fixture.json`
+  - `npm run ops:alpaca:payload-fixtures`
+  - output: `state/alpaca-order-payload-schema-report.json` / `.md`.
+- Safety boundary remains unchanged:
+  - no broker endpoint calls,
+  - no emitted Alpaca repair payload,
+  - no auto stop/target repair,
+  - future repair execution still requires a separate safety-gated task.
 
 ### What is not fully closed
 
@@ -319,7 +337,10 @@ Priority: P2 until M1/M2 stabilize; then P1
    - order filled and bracket children opened correctly,
    - order expired/canceled and idempotency reconciled correctly.
    - open-order monitor emits `KEEP/WATCH_PULLBACK/REPRICE_CANDIDATE/CANCEL_CANDIDATE` before any automatic action.
-3. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 has scheduled-run confirmations, not only one
+3. Keep child-order repair in report-only mode:
+   - use `ops:broker-child-reconcile`, `ops:guarded-repair-plan`, and `ops:alpaca:payload-fixtures` as the evidence chain,
+   - do not submit OCO repair orders until a sanitized Alpaca paper fixture has proven the payload and the approval gate is explicitly completed.
+4. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 has scheduled-run confirmations, not only one
    manual canary proof.
 
 ### Next 72h

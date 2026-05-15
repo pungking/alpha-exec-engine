@@ -1633,6 +1633,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Validate Alpaca bracket/OCO payload fixtures
+        if: always()
+        run: npm run ops:alpaca:payload-fixtures
+
+      - name: Publish Alpaca payload fixture summary
+        if: always()
+        run: |
+          if [[ -f state/alpaca-order-payload-schema-report.md ]]; then
+            cat state/alpaca-order-payload-schema-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Alpaca Order Payload Schema Fixtures" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/alpaca-order-payload-schema-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1712,6 +1727,8 @@ jobs:
             state/broker-child-order-reconciliation.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
+            state/alpaca-order-payload-schema-report.json
+            state/alpaca-order-payload-schema-report.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json
