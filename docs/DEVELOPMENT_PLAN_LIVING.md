@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-15 (KST, Alpaca bracket/OCO fixture validation)
+Last updated: 2026-05-15 (KST, Alpaca OCO paper canary runbook)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -168,6 +168,11 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - `testdata/alpaca/oco-exit-long-repair.paper.fixture.json`
   - `npm run ops:alpaca:payload-fixtures`
   - output: `state/alpaca-order-payload-schema-report.json` / `.md`.
+- Added future OCO paper canary runbook and nested response fixture validator:
+  - `docs/ALPACA_OCO_PAPER_CANARY_RUNBOOK.md`
+  - `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
+  - `npm run ops:alpaca:oco-response-fixtures`
+  - output: `state/alpaca-oco-response-fixture-report.json` / `.md`.
 - Safety boundary remains unchanged:
   - no broker endpoint calls,
   - no emitted Alpaca repair payload,
@@ -338,7 +343,8 @@ Priority: P2 until M1/M2 stabilize; then P1
    - order expired/canceled and idempotency reconciled correctly.
    - open-order monitor emits `KEEP/WATCH_PULLBACK/REPRICE_CANDIDATE/CANCEL_CANDIDATE` before any automatic action.
 3. Keep child-order repair in report-only mode:
-   - use `ops:broker-child-reconcile`, `ops:guarded-repair-plan`, and `ops:alpaca:payload-fixtures` as the evidence chain,
+   - use `ops:broker-child-reconcile`, `ops:guarded-repair-plan`, `ops:alpaca:payload-fixtures`, and
+     `ops:alpaca:oco-response-fixtures` as the evidence chain,
    - do not submit OCO repair orders until a sanitized Alpaca paper fixture has proven the payload and the approval gate is explicitly completed.
 4. Keep Stage 7 Trading Ops board deferred; no frontend expansion until M1 has scheduled-run confirmations, not only one
    manual canary proof.

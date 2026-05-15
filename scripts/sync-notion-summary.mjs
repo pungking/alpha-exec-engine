@@ -1064,6 +1064,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const alpacaPayloadSchema = readJson("state/alpaca-order-payload-schema-report.json") || {};
+  const alpacaOcoResponseFixture = readJson("state/alpaca-oco-response-fixture-report.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1136,6 +1137,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
     `alpacaPayloadSchema=${alpacaPayloadSchema?.overall || "N/A"}`,
     `alpacaFixtureFail=${alpacaPayloadSchema?.summary?.failCount ?? "N/A"}`,
+    `alpacaOcoResponse=${alpacaOcoResponseFixture?.overall || "N/A"}`,
+    `alpacaOcoFail=${alpacaOcoResponseFixture?.summary?.failCount ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1193,6 +1196,14 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       alpacaPayloadSchemaWarnCount: toNumber(alpacaPayloadSchema?.summary?.warnCount),
       alpacaPayloadSchemaSummary: shortText(
         `overall=${alpacaPayloadSchema?.overall || "N/A"} fixtures=${alpacaPayloadSchema?.summary?.fixtureCount ?? "N/A"} pass=${alpacaPayloadSchema?.summary?.passCount ?? "N/A"} warn=${alpacaPayloadSchema?.summary?.warnCount ?? "N/A"} fail=${alpacaPayloadSchema?.summary?.failCount ?? "N/A"} bracket=${alpacaPayloadSchema?.summary?.bracketEntryLongCount ?? "N/A"} ocoRepair=${alpacaPayloadSchema?.summary?.ocoExitLongRepairCount ?? "N/A"} mode=${alpacaPayloadSchema?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      alpacaOcoResponseOverall: shortText(alpacaOcoResponseFixture?.overall || "N/A", 80),
+      alpacaOcoResponseFixtureCount: toNumber(alpacaOcoResponseFixture?.summary?.fixtureCount),
+      alpacaOcoResponseFailCount: toNumber(alpacaOcoResponseFixture?.summary?.failCount),
+      alpacaOcoResponseWarnCount: toNumber(alpacaOcoResponseFixture?.summary?.warnCount),
+      alpacaOcoResponseSummary: shortText(
+        `overall=${alpacaOcoResponseFixture?.overall || "N/A"} fixtures=${alpacaOcoResponseFixture?.summary?.fixtureCount ?? "N/A"} pass=${alpacaOcoResponseFixture?.summary?.passCount ?? "N/A"} warn=${alpacaOcoResponseFixture?.summary?.warnCount ?? "N/A"} fail=${alpacaOcoResponseFixture?.summary?.failCount ?? "N/A"} nestedOco=${alpacaOcoResponseFixture?.summary?.nestedOcoLongCount ?? "N/A"} mode=${alpacaOcoResponseFixture?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
@@ -1399,6 +1410,25 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Alpaca Payload Schema Summary", "Alpaca Fixture Summary"], {
     rich_text: () => textProp(row.live.alpacaPayloadSchemaSummary)
+  });
+  setPropertyAliases(properties, schema, ["Alpaca OCO Response Overall", "Alpaca OCO Fixture Overall"], {
+    select: () => selectProp(row.live.alpacaOcoResponseOverall || "N/A"),
+    rich_text: () => textProp(row.live.alpacaOcoResponseOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Alpaca OCO Response Fixture Count", "Alpaca OCO Fixture Count"], {
+    number: () => numberProp(row.live.alpacaOcoResponseFixtureCount),
+    rich_text: () => textProp(row.live.alpacaOcoResponseFixtureCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Alpaca OCO Response Failures", "Alpaca OCO Fixture Failures"], {
+    number: () => numberProp(row.live.alpacaOcoResponseFailCount),
+    rich_text: () => textProp(row.live.alpacaOcoResponseFailCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Alpaca OCO Response Warnings", "Alpaca OCO Fixture Warnings"], {
+    number: () => numberProp(row.live.alpacaOcoResponseWarnCount),
+    rich_text: () => textProp(row.live.alpacaOcoResponseWarnCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Alpaca OCO Response Summary", "Alpaca OCO Fixture Summary"], {
+    rich_text: () => textProp(row.live.alpacaOcoResponseSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "alpaca-paper-response-fixture-v1",
+  "fixtureType": "oco_repair_nested_open_long",
+  "description": "Sanitized example of the nested open-order response expected after a future report-only-approved OCO repair paper canary for an existing long position.",
+  "docs": {
+    "sourceUrls": [
+      "https://docs.alpaca.markets/us/docs/orders-at-alpaca#oco-orders",
+      "https://docs.alpaca.markets/us/reference/getallorders-1"
+    ],
+    "verifiedAt": "2026-05-15T00:00:00.000Z"
+  },
+  "requestFixtureRef": "testdata/alpaca/oco-exit-long-repair.paper.fixture.json",
+  "capturePlan": {
+    "method": "GET",
+    "path": "/v2/orders?status=open&nested=true&symbols=BZ&direction=desc&limit=50",
+    "source": "paper-api.alpaca.markets",
+    "redactionRequired": true
+  },
+  "reference": {
+    "symbol": "BZ",
+    "positionSide": "long",
+    "expectedExitSide": "sell",
+    "qty": "1",
+    "takeProfitLimitPrice": "24.50",
+    "stopLossStopPrice": "20.10"
+  },
+  "response": [
+    {
+      "id": "paper_oco_parent_redacted_0001",
+      "client_order_id": "fixture_oco_bz_repair_0001",
+      "created_at": "2026-05-15T14:31:00.000Z",
+      "updated_at": "2026-05-15T14:31:00.000Z",
+      "submitted_at": "2026-05-15T14:31:00.000Z",
+      "symbol": "BZ",
+      "asset_class": "us_equity",
+      "qty": "1",
+      "filled_qty": "0",
+      "side": "sell",
+      "type": "limit",
+      "time_in_force": "day",
+      "limit_price": "24.50",
+      "stop_price": null,
+      "order_class": "oco",
+      "order_type": "limit",
+      "status": "new",
+      "extended_hours": false,
+      "legs": [
+        {
+          "id": "paper_oco_stop_child_redacted_0001",
+          "client_order_id": "fixture_oco_bz_repair_0001_stop",
+          "parent_order_id": "paper_oco_parent_redacted_0001",
+          "created_at": "2026-05-15T14:31:00.000Z",
+          "updated_at": "2026-05-15T14:31:00.000Z",
+          "submitted_at": "2026-05-15T14:31:00.000Z",
+          "symbol": "BZ",
+          "asset_class": "us_equity",
+          "qty": "1",
+          "filled_qty": "0",
+          "side": "sell",
+          "type": "stop",
+          "time_in_force": "day",
+          "limit_price": null,
+          "stop_price": "20.10",
+          "order_class": "oco",
+          "order_type": "stop",
+          "status": "new",
+          "extended_hours": false,
+          "legs": null
+        }
+      ]
+    }
+  ]
+}

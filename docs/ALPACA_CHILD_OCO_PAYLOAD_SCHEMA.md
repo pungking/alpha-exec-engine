@@ -109,6 +109,8 @@ Outputs:
 
 - `state/alpaca-order-payload-schema-report.json`
 - `state/alpaca-order-payload-schema-report.md`
+- `state/alpaca-oco-response-fixture-report.json`
+- `state/alpaca-oco-response-fixture-report.md`
 
 The validator is intentionally offline and report-only:
 
@@ -129,3 +131,21 @@ Before any actual repair submit lane is implemented, all of this must be true:
 6. A deterministic repair idempotency key is persisted before broker submission.
 7. The execution approval gate is completed for the exact file/module/environment.
 8. Defaults remain `EXEC_ENABLED=false` and `READ_ONLY=true`.
+
+## OCO Paper Canary Runbook and Response Fixture
+
+The future paper canary procedure is documented separately:
+
+- `docs/ALPACA_OCO_PAPER_CANARY_RUNBOOK.md`
+
+The expected sanitized nested response shape is validated by:
+
+```bash
+npm run ops:alpaca:oco-response-fixtures
+```
+
+Input:
+
+- `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
+
+The response fixture models the post-submit `GET /v2/orders?status=open&nested=true&symbols=<SYMBOL>` check, where the OCO take-profit order is the parent and the stop-loss order appears under `legs`.

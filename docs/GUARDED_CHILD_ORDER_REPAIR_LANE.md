@@ -17,6 +17,8 @@ It emits:
 - `state/guarded-child-order-repair-plan.md`
 - `state/alpaca-order-payload-schema-report.json`
 - `state/alpaca-order-payload-schema-report.md`
+- `state/alpaca-oco-response-fixture-report.json`
+- `state/alpaca-oco-response-fixture-report.md`
 
 ## Current Safety Policy
 
@@ -62,13 +64,16 @@ Before any broker-mutating repair lane may be built, the following must be true:
 - `summary.executionReadyRows=0`.
 - ops health reports candidate rows as report-only, not executable.
 - `npm run ops:alpaca:payload-fixtures` returns `overall=pass` before any future paper fixture submit is considered.
+- `npm run ops:alpaca:oco-response-fixtures` returns `overall=pass` before any future paper OCO canary is considered.
 
 ## Alpaca Payload Schema Fixture
 
 The official bracket/OCO payload schema and offline paper fixtures are documented in:
 
 - `docs/ALPACA_CHILD_OCO_PAYLOAD_SCHEMA.md`
+- `docs/ALPACA_OCO_PAPER_CANARY_RUNBOOK.md`
 - `testdata/alpaca/bracket-entry-long.paper.fixture.json`
 - `testdata/alpaca/oco-exit-long-repair.paper.fixture.json`
+- `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
 
 This schema fixture is still non-mutating. It only verifies the shape of a future paper test and does not enable repair execution.
