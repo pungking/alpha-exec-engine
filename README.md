@@ -38,6 +38,7 @@ Execution/simulation sidecar for `US_Alpha_Seeker`.
 - Guarded child-order repair planner writes `state/guarded-child-order-repair-plan.json/.md` as a non-executable repair blueprint; broker mutation remains disabled and requires separate approval.
 - Alpaca bracket/OCO payload fixture validator writes `state/alpaca-order-payload-schema-report.json/.md` to keep future child-repair payloads aligned with official Alpaca schema before any paper submit test.
 - Alpaca OCO response fixture validator writes `state/alpaca-oco-response-fixture-report.json/.md` to verify the sanitized nested `legs` response shape expected from a future paper OCO canary; it never calls Alpaca.
+- Paper OCO canary candidate selector writes `state/paper-oco-canary-candidate.json/.md` from the full dynamic held-position set; it is not ticker-specific, selects at most one manual target, and never emits an executable broker payload.
 - Portfolio admission controller caps active/open/new symbols before broker submit and rejects low-fillability / low-RR candidates without mutating broker state.
 - Recommendation ledger tracks every Stage6/sidecar candidate lifecycle from recommendation to admission, open order, fill, rejection, hold monitor, or expiry.
 - Dedupe heartbeat uses a compact runtime/mode signature plus idempotency/open-order summary instead of dumping the full mode label to Telegram.
@@ -135,6 +136,7 @@ HF verification shortcuts:
 - `npm run ops:guarded-repair-plan`: build the guarded report-only stop/target repair blueprint (`state/guarded-child-order-repair-plan.json`, `.md`).
 - `npm run ops:alpaca:payload-fixtures`: validate offline Alpaca bracket/OCO paper fixtures against official-schema project rules (`state/alpaca-order-payload-schema-report.json`, `.md`); no broker endpoint calls.
 - `npm run ops:alpaca:oco-response-fixtures`: validate sanitized Alpaca OCO nested response fixtures for the future paper canary (`state/alpaca-oco-response-fixture-report.json`, `.md`); no broker endpoint calls.
+- `npm run ops:paper-oco-canary`: build the report-only, portfolio-wide single-symbol OCO canary candidate selector (`state/paper-oco-canary-candidate.json`, `.md`); no broker endpoint calls and no executable payload.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
@@ -699,7 +701,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/guarded-child-order-repair-plan.json`, `state/guarded-child-order-repair-plan.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/guarded-child-order-repair-plan.json`, `state/guarded-child-order-repair-plan.md`, `state/alpaca-order-payload-schema-report.json`, `state/alpaca-order-payload-schema-report.md`, `state/alpaca-oco-response-fixture-report.json`, `state/alpaca-oco-response-fixture-report.md`, `state/paper-oco-canary-candidate.json`, `state/paper-oco-canary-candidate.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
@@ -718,6 +720,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/performance-dashboard.md` (human-readable summary appended to Step Summary)
   - `state/broker-child-order-reconciliation.json` / `.md` (report-only broker child stop/target gap planner)
   - `state/guarded-child-order-repair-plan.json` / `.md` (report-only repair blueprint; no broker mutation)
+  - `state/paper-oco-canary-candidate.json` / `.md` (report-only, dynamic single-symbol paper OCO canary target selector)
   - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
@@ -733,6 +736,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Missing planned stop children are surfaced as `CRITICAL OBSERVE-ONLY` in ops health and `brokerStopMissing` in performance/Notion outputs; automatic stop repair remains intentionally disabled until a separate execution-policy approval.
   - Broker child-order reconciliation emits proposed report-only actions such as `REPORT_ONLY_CREATE_STOP_CHILD` and `REPORT_ONLY_CREATE_TARGET_CHILD`; these are not executable instructions.
   - Guarded child-order repair plan reduces those diagnostics into future repair intents while keeping `executionAllowed=false` for every row.
+  - Paper OCO canary candidate selector chooses at most one lowest-notional eligible row from all current dynamic candidates and keeps `executionAllowed=false`; it is evidence for a generic rule, not a hard-coded ticker path.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`

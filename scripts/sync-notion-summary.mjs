@@ -1065,6 +1065,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const alpacaPayloadSchema = readJson("state/alpaca-order-payload-schema-report.json") || {};
   const alpacaOcoResponseFixture = readJson("state/alpaca-oco-response-fixture-report.json") || {};
+  const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1139,6 +1140,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `alpacaFixtureFail=${alpacaPayloadSchema?.summary?.failCount ?? "N/A"}`,
     `alpacaOcoResponse=${alpacaOcoResponseFixture?.overall || "N/A"}`,
     `alpacaOcoFail=${alpacaOcoResponseFixture?.summary?.failCount ?? "N/A"}`,
+    `paperOcoCanary=${paperOcoCanaryCandidate?.overall || "N/A"}`,
+    `paperOcoEligible=${paperOcoCanaryCandidate?.summary?.eligible ?? "N/A"}`,
+    `paperOcoSelected=${paperOcoCanaryCandidate?.summary?.selectedSymbol ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1204,6 +1208,15 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       alpacaOcoResponseWarnCount: toNumber(alpacaOcoResponseFixture?.summary?.warnCount),
       alpacaOcoResponseSummary: shortText(
         `overall=${alpacaOcoResponseFixture?.overall || "N/A"} fixtures=${alpacaOcoResponseFixture?.summary?.fixtureCount ?? "N/A"} pass=${alpacaOcoResponseFixture?.summary?.passCount ?? "N/A"} warn=${alpacaOcoResponseFixture?.summary?.warnCount ?? "N/A"} fail=${alpacaOcoResponseFixture?.summary?.failCount ?? "N/A"} nestedOco=${alpacaOcoResponseFixture?.summary?.nestedOcoLongCount ?? "N/A"} mode=${alpacaOcoResponseFixture?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      paperOcoCanaryOverall: shortText(paperOcoCanaryCandidate?.overall || "N/A", 80),
+      paperOcoCanaryEligible: toNumber(paperOcoCanaryCandidate?.summary?.eligible),
+      paperOcoCanarySelectedSymbol: shortText(paperOcoCanaryCandidate?.summary?.selectedSymbol || "N/A", 32),
+      paperOcoCanarySelectedQty: toNumber(paperOcoCanaryCandidate?.summary?.selectedCanaryQty),
+      paperOcoCanaryExecutionReadyRows: toNumber(paperOcoCanaryCandidate?.summary?.executionReadyRows),
+      paperOcoCanarySummary: shortText(
+        `overall=${paperOcoCanaryCandidate?.overall || "N/A"} scope=${paperOcoCanaryCandidate?.scope || "N/A"} rows=${paperOcoCanaryCandidate?.summary?.rows ?? "N/A"} eligible=${paperOcoCanaryCandidate?.summary?.eligible ?? "N/A"} selected=${paperOcoCanaryCandidate?.summary?.selectedSymbol ?? "N/A"} qty=${paperOcoCanaryCandidate?.summary?.selectedCanaryQty ?? "N/A"} executionReady=${paperOcoCanaryCandidate?.summary?.executionReadyRows ?? "N/A"} mode=${paperOcoCanaryCandidate?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
@@ -1429,6 +1442,28 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Alpaca OCO Response Summary", "Alpaca OCO Fixture Summary"], {
     rich_text: () => textProp(row.live.alpacaOcoResponseSummary)
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Overall", "Paper OCO Canary"], {
+    select: () => selectProp(row.live.paperOcoCanaryOverall || "N/A"),
+    rich_text: () => textProp(row.live.paperOcoCanaryOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Eligible", "Paper OCO Eligible"], {
+    number: () => numberProp(row.live.paperOcoCanaryEligible),
+    rich_text: () => textProp(row.live.paperOcoCanaryEligible ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Selected", "Paper OCO Selected Symbol"], {
+    rich_text: () => textProp(row.live.paperOcoCanarySelectedSymbol || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Selected Qty", "Paper OCO Selected Qty"], {
+    number: () => numberProp(row.live.paperOcoCanarySelectedQty),
+    rich_text: () => textProp(row.live.paperOcoCanarySelectedQty ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Execution Ready", "Paper OCO Execution Ready"], {
+    number: () => numberProp(row.live.paperOcoCanaryExecutionReadyRows),
+    rich_text: () => textProp(row.live.paperOcoCanaryExecutionReadyRows ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Paper OCO Canary Summary"], {
+    rich_text: () => textProp(row.live.paperOcoCanarySummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

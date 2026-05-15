@@ -1663,6 +1663,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build paper OCO canary candidate selector
+        if: always()
+        run: npm run ops:paper-oco-canary
+
+      - name: Publish paper OCO canary candidate summary
+        if: always()
+        run: |
+          if [[ -f state/paper-oco-canary-candidate.md ]]; then
+            cat state/paper-oco-canary-candidate.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Paper OCO Canary Candidate Selector" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/paper-oco-canary-candidate.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1746,6 +1761,8 @@ jobs:
             state/alpaca-order-payload-schema-report.md
             state/alpaca-oco-response-fixture-report.json
             state/alpaca-oco-response-fixture-report.md
+            state/paper-oco-canary-candidate.json
+            state/paper-oco-canary-candidate.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json

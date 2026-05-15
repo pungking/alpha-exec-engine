@@ -19,6 +19,8 @@ It emits:
 - `state/alpaca-order-payload-schema-report.md`
 - `state/alpaca-oco-response-fixture-report.json`
 - `state/alpaca-oco-response-fixture-report.md`
+- `state/paper-oco-canary-candidate.json`
+- `state/paper-oco-canary-candidate.md`
 
 ## Current Safety Policy
 
@@ -43,6 +45,10 @@ The planner classifies held positions from the broker-child reconciliation outpu
 
 Even valid candidates are marked `CANDIDATE_BLOCKED_REPORT_ONLY` until a future execution lane is explicitly approved.
 
+The paper OCO canary selector is also report-only. It scans all current repair candidates and may mark one row as
+`SELECTED_PENDING_SAFETY_APPROVAL`; that is a manual-test target, not an execution instruction. There is no hard-coded
+symbol path.
+
 ## Future Execution Preconditions
 
 Before any broker-mutating repair lane may be built, the following must be true:
@@ -65,6 +71,7 @@ Before any broker-mutating repair lane may be built, the following must be true:
 - ops health reports candidate rows as report-only, not executable.
 - `npm run ops:alpaca:payload-fixtures` returns `overall=pass` before any future paper fixture submit is considered.
 - `npm run ops:alpaca:oco-response-fixtures` returns `overall=pass` before any future paper OCO canary is considered.
+- `npm run ops:paper-oco-canary` emits at most one selected row with `executionAllowed=false` and `summary.executionReadyRows=0`.
 
 ## Alpaca Payload Schema Fixture
 

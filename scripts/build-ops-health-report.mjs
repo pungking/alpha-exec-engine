@@ -13,6 +13,7 @@ const FILES = {
   guardedRepairPlan: `${STATE_DIR}/guarded-child-order-repair-plan.json`,
   alpacaPayloadSchema: `${STATE_DIR}/alpaca-order-payload-schema-report.json`,
   alpacaOcoResponseFixture: `${STATE_DIR}/alpaca-oco-response-fixture-report.json`,
+  paperOcoCanaryCandidate: `${STATE_DIR}/paper-oco-canary-candidate.json`,
   fillability: `${STATE_DIR}/fillability-report.json`,
   markerAudit: `${STATE_DIR}/hf-marker-audit.json`
 };
@@ -98,10 +99,10 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
   );
   if (report.metrics.livePositionDetails) {
     lines.push(`- live_position_monitor: \`${report.metrics.livePositionDetails}\``);
@@ -128,6 +129,7 @@ const main = () => {
   const guardedRepairPlan = readJson(FILES.guardedRepairPlan);
   const alpacaPayloadSchema = readJson(FILES.alpacaPayloadSchema);
   const alpacaOcoResponseFixture = readJson(FILES.alpacaOcoResponseFixture);
+  const paperOcoCanaryCandidate = readJson(FILES.paperOcoCanaryCandidate);
   const fillability = readJson(FILES.fillability);
   const markerAudit = readJson(FILES.markerAudit);
 
@@ -176,6 +178,14 @@ const main = () => {
       "warn",
       "alpaca_oco_response_fixture_missing",
       "state/alpaca-oco-response-fixture-report.json not found; future OCO paper canary response shape is not validated"
+    );
+  }
+  if (alpacaOcoResponseFixture && !paperOcoCanaryCandidate) {
+    addCheck(
+      checks,
+      "warn",
+      "paper_oco_canary_candidate_missing",
+      "state/paper-oco-canary-candidate.json not found; future OCO paper canary target selection is not audited"
     );
   }
 
@@ -234,6 +244,13 @@ const main = () => {
   const alpacaOcoResponseFixtureCount = toNum(alpacaOcoResponseFixture?.summary?.fixtureCount);
   const alpacaOcoResponseFailCount = toNum(alpacaOcoResponseFixture?.summary?.failCount);
   const alpacaOcoResponseWarnCount = toNum(alpacaOcoResponseFixture?.summary?.warnCount);
+  const paperOcoCanaryOverall = short(paperOcoCanaryCandidate?.overall || "", 48) || null;
+  const paperOcoCanaryRows = toNum(paperOcoCanaryCandidate?.summary?.rows);
+  const paperOcoCanaryEligible = toNum(paperOcoCanaryCandidate?.summary?.eligible);
+  const paperOcoCanaryExecutionReadyRows = toNum(paperOcoCanaryCandidate?.summary?.executionReadyRows);
+  const paperOcoCanarySelectedSymbol = short(paperOcoCanaryCandidate?.summary?.selectedSymbol || "", 24) || null;
+  const paperOcoCanaryBrokerMutationAllowed =
+    paperOcoCanaryCandidate?.executionPolicy?.brokerMutationAllowed === true;
 
   if (fillabilityOverall === "warn") {
     addCheck(
@@ -343,6 +360,31 @@ const main = () => {
       "warn",
       "alpaca_oco_response_fixture_warn",
       `Alpaca OCO response fixture validation has ${alpacaOcoResponseWarnCount} warning(s); review before paper canary`
+    );
+  }
+
+  if (paperOcoCanaryBrokerMutationAllowed || (paperOcoCanaryExecutionReadyRows != null && paperOcoCanaryExecutionReadyRows > 0)) {
+    addCheck(
+      checks,
+      "fail",
+      "paper_oco_canary_selector_unsafe",
+      `paper OCO canary selector must remain report-only; brokerMutationAllowed=${paperOcoCanaryBrokerMutationAllowed} executionReady=${paperOcoCanaryExecutionReadyRows ?? "N/A"}`
+    );
+  }
+
+  if (paperOcoCanaryOverall === "manual_selection_ready") {
+    addCheck(
+      checks,
+      "warn",
+      "paper_oco_canary_manual_selection_ready",
+      `paper OCO canary selector found ${paperOcoCanaryEligible ?? "N/A"} eligible dynamic candidate(s); selected=${paperOcoCanarySelectedSymbol || "N/A"} remains blocked pending separate approval`
+    );
+  } else if (paperOcoCanaryOverall === "blocked" || paperOcoCanaryOverall === "requested_symbol_blocked") {
+    addCheck(
+      checks,
+      "warn",
+      "paper_oco_canary_blocked",
+      `paper OCO canary selector overall=${paperOcoCanaryOverall}; no symbol should be submitted`
     );
   }
 
@@ -537,6 +579,7 @@ const main = () => {
       guardedRepairPlan: Boolean(guardedRepairPlan),
       alpacaPayloadSchema: Boolean(alpacaPayloadSchema),
       alpacaOcoResponseFixture: Boolean(alpacaOcoResponseFixture),
+      paperOcoCanaryCandidate: Boolean(paperOcoCanaryCandidate),
       fillability: Boolean(fillability),
       markerAudit: Boolean(markerAudit || preview?.hfMarkerAudit)
     },
@@ -581,6 +624,11 @@ const main = () => {
       alpacaOcoResponseFixtureCount,
       alpacaOcoResponseFailCount,
       alpacaOcoResponseWarnCount,
+      paperOcoCanaryOverall,
+      paperOcoCanaryRows,
+      paperOcoCanaryEligible,
+      paperOcoCanaryExecutionReadyRows,
+      paperOcoCanarySelectedSymbol,
       guardLevel,
       haltNewEntries,
       liveAvailable,

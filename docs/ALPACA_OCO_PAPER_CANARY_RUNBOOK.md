@@ -4,6 +4,8 @@
 
 This runbook defines the **future** Alpaca paper canary for attaching OCO protection to an existing long paper position that has planned target/stop metadata but no broker-side child orders.
 
+The canary is portfolio-wide by design. BZ/QFIN are only current examples from the latest artifacts; the selector must work for any future symbol that becomes a filled/held position with missing broker-side protection.
+
 This document does not enable execution. The current implementation remains report-only.
 
 ## Safety Boundary
@@ -18,6 +20,19 @@ GUARDED_CHILD_REPAIR_MODE=report_only
 ```
 
 The OCO paper canary is a broker-mutating action. It must not be run automatically. It requires a separate safety-gated task and a single manually selected paper target row.
+
+The current code only builds the report-only candidate selector:
+
+```bash
+npm run ops:paper-oco-canary
+```
+
+Outputs:
+
+- `state/paper-oco-canary-candidate.json`
+- `state/paper-oco-canary-candidate.md`
+
+The selector may recommend one lowest-notional eligible `symbol + qty=1` target, but it still sets `executionAllowed=false` and does not emit an Alpaca submit payload.
 
 ## Candidate Selection
 
@@ -34,6 +49,22 @@ A position can be considered for a future OCO paper canary only if all condition
 9. `GET /v2/orders?status=open&nested=true&symbols=<SYMBOL>` immediately before submit confirms no active sell stop/limit child already protects the same quantity.
 
 If any condition fails, do not submit OCO. Keep report-only and write the blocker to ops health.
+
+## Candidate Selection Rule
+
+The selector must consider every row in `guarded-child-order-repair-plan.json` with `readiness=CANDIDATE_BLOCKED_REPORT_ONLY`.
+
+It must not contain a ticker allowlist. It may accept `PAPER_OCO_CANARY_SYMBOL=<SYMBOL>` as a manual filter, but that filter only selects from the current dynamic eligible set.
+
+Default selection, when no symbol is requested:
+
+1. require valid current price, stop, target, and whole-share qty;
+2. require both stop and target broker children to be missing;
+3. require payload fixture and nested response fixture validation to pass;
+4. require order-state consistency to have no symbol-level failure;
+5. choose the lowest `canaryQty * currentPrice` candidate to minimize paper canary blast radius.
+
+The selected row is still `SELECTED_PENDING_SAFETY_APPROVAL`, never executable.
 
 ## Proposed Paper Request Shape
 

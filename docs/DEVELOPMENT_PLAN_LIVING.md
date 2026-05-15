@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-15 (KST, Alpaca OCO paper canary runbook)
+Last updated: 2026-05-15 (KST, generic paper OCO canary selector)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -173,6 +173,11 @@ The critical path is not code volume; it is live-market evidence. If fill data r
   - `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
   - `npm run ops:alpaca:oco-response-fixtures`
   - output: `state/alpaca-oco-response-fixture-report.json` / `.md`.
+- Added generic report-only paper OCO canary selector:
+  - `npm run ops:paper-oco-canary`
+  - output: `state/paper-oco-canary-candidate.json` / `.md`
+  - scope is portfolio-wide and dynamic; BZ/QFIN are only current artifact examples, not hard-coded targets.
+  - the selector chooses at most one lowest-notional eligible `symbol + qty=1` row and keeps `executionAllowed=false`.
 - Safety boundary remains unchanged:
   - no broker endpoint calls,
   - no emitted Alpaca repair payload,

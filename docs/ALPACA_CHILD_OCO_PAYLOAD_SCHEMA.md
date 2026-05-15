@@ -111,6 +111,8 @@ Outputs:
 - `state/alpaca-order-payload-schema-report.md`
 - `state/alpaca-oco-response-fixture-report.json`
 - `state/alpaca-oco-response-fixture-report.md`
+- `state/paper-oco-canary-candidate.json`
+- `state/paper-oco-canary-candidate.md`
 
 The validator is intentionally offline and report-only:
 
@@ -149,3 +151,11 @@ Input:
 - `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
 
 The response fixture models the post-submit `GET /v2/orders?status=open&nested=true&symbols=<SYMBOL>` check, where the OCO take-profit order is the parent and the stop-loss order appears under `legs`.
+
+The generic report-only canary target selector is:
+
+```bash
+npm run ops:paper-oco-canary
+```
+
+It scans all current guarded repair candidates, selects at most one lowest-notional `symbol + qty=1` candidate, and keeps `executionAllowed=false`. It must not be interpreted as a ticker-specific lane.
