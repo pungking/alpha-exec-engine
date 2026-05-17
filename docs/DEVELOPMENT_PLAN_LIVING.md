@@ -557,3 +557,7 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `npm run ops:persistent-oco-plan`
   - output: `state/persistent-oco-repair-plan.json` / `.md`
   - report-only, paper-only, one dynamic row, `autoCancel=false`, no POST until a separate exact-approval persistent repair task.
+- Added non-mutating persistent OCO repair visibility:
+  - `scripts/build-ops-health-report.mjs` now includes persistent repair plan safety status, selected dynamic row, and attempted/submitted guard metrics.
+  - `scripts/sync-notion-summary.mjs` now syncs persistent repair status/selection/attempted/submitted fields to the Performance Dashboard when matching Notion columns exist.
+  - Added `.github/workflows/persistent-oco-repair-plan-verify.yml` to rebuild the planner from a sidecar artifact and prove `brokerMutationAttempted=false` / `brokerMutationSubmitted=false` without broker POST calls.

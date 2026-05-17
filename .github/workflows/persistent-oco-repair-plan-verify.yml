@@ -1,0 +1,151 @@
+name: persistent-oco-repair-plan-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "sidecar-dry-run run id to read state from (blank = latest successful dry-run)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: persistent-oco-repair-plan-verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GH_TOKEN: ${{ github.token }}
+      PERSISTENT_OCO_REPAIR_STATE_DIR: _persistent_oco_state
+      OPS_HEALTH_STATE_DIR: _persistent_oco_state
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve source sidecar run
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="${{ inputs.source_run_id }}"
+          if [[ -z "${run_id}" ]]; then
+            run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow dry-run.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          fi
+          if [[ -z "${run_id}" || "${run_id}" == "null" ]]; then
+            echo "No successful sidecar-dry-run run found" >&2
+            exit 1
+          fi
+          artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("sidecar-state-")) | .name' | head -n 1)"
+          if [[ -z "${artifact}" ]]; then
+            echo "No non-expired sidecar-state artifact found for run ${run_id}" >&2
+            exit 1
+          fi
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved source sidecar run ${run_id} artifact ${artifact}"
+
+      - name: Download source sidecar state artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _persistent_oco_state
+          mkdir -p _persistent_oco_state
+          gh run download "${{ steps.resolve.outputs.run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ steps.resolve.outputs.artifact }}" \
+            --dir _persistent_oco_state
+          test -f _persistent_oco_state/broker-child-order-reconciliation.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build persistent OCO repair plan
+        run: npm run ops:persistent-oco-plan
+
+      - name: Build ops health snapshot
+        run: npm run ops:health:dry-run
+
+      - name: Verify persistent OCO plan remained non-mutating
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const plan = JSON.parse(fs.readFileSync('_persistent_oco_state/persistent-oco-repair-plan.json', 'utf8'));
+          const ops = JSON.parse(fs.readFileSync('_persistent_oco_state/ops-health-report.json', 'utf8'));
+          const failures = [];
+          if (plan.executionPolicy?.targetEnvironment !== 'PAPER') failures.push('targetEnvironment_not_paper');
+          if (plan.executionPolicy?.brokerMutationAllowed !== false) failures.push('brokerMutationAllowed_not_false');
+          if (plan.executionPolicy?.autoCancel !== false) failures.push('autoCancel_not_false');
+          if (plan.executionPolicy?.oneRowOnly !== true) failures.push('oneRowOnly_not_true');
+          if (plan.summary?.brokerMutationAttempted !== false) failures.push('brokerMutationAttempted_not_false');
+          if (plan.summary?.brokerMutationSubmitted !== false) failures.push('brokerMutationSubmitted_not_false');
+          if (plan.selectedCandidate && plan.scope !== 'portfolio_wide_dynamic_persistent_protection_candidate_not_ticker_specific') {
+            failures.push('scope_not_portfolio_wide_dynamic');
+          }
+          if (ops.metrics?.persistentOcoRepairAttempted !== false) failures.push('ops_attempted_not_false');
+          if (ops.metrics?.persistentOcoRepairSubmitted !== false) failures.push('ops_submitted_not_false');
+          if (failures.length) {
+            console.error(`persistent OCO repair plan verification failed: ${failures.join(',')}`);
+            process.exit(1);
+          }
+          console.log(JSON.stringify({
+            overall: plan.overall,
+            selectedSymbol: plan.summary?.selectedSymbol,
+            eligible: plan.summary?.eligible,
+            attempted: plan.summary?.brokerMutationAttempted,
+            submitted: plan.summary?.brokerMutationSubmitted,
+            opsOverall: ops.overall
+          }, null, 2));
+          NODE
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Persistent OCO Repair Plan Verify"
+            echo "- sourceRun: \`${{ steps.resolve.outputs.run_id }}\`"
+            echo "- sourceArtifact: \`${{ steps.resolve.outputs.artifact }}\`"
+            echo "- brokerMutation: \`non-mutating report-only planner; no POST /v2/orders\`"
+            echo ""
+            if [[ -f _persistent_oco_state/persistent-oco-repair-plan.md ]]; then
+              cat _persistent_oco_state/persistent-oco-repair-plan.md
+            else
+              echo "- status: \`missing persistent OCO repair plan\`"
+            fi
+            echo ""
+            if [[ -f _persistent_oco_state/ops-health-report.md ]]; then
+              cat _persistent_oco_state/ops-health-report.md
+            else
+              echo "- status: \`missing ops health report\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload persistent OCO repair verify artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-oco-repair-plan-verify-${{ github.run_id }}
+          path: |
+            _persistent_oco_state/persistent-oco-repair-plan.json
+            _persistent_oco_state/persistent-oco-repair-plan.md
+            _persistent_oco_state/ops-health-report.json
+            _persistent_oco_state/ops-health-report.md
+          if-no-files-found: warn

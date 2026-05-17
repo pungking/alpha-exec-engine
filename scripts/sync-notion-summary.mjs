@@ -1063,6 +1063,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
+  const persistentOcoRepairPlan = readJson("state/persistent-oco-repair-plan.json") || {};
   const alpacaPayloadSchema = readJson("state/alpaca-order-payload-schema-report.json") || {};
   const alpacaOcoResponseFixture = readJson("state/alpaca-oco-response-fixture-report.json") || {};
   const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
@@ -1138,6 +1139,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"}`,
     `guardedRepair=${guardedRepairPlan?.overall || "N/A"}`,
     `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
+    `persistentOcoRepair=${persistentOcoRepairPlan?.overall || "N/A"}`,
+    `persistentOcoEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"}`,
+    `persistentOcoSelected=${persistentOcoRepairPlan?.summary?.selectedSymbol ?? "N/A"}`,
+    `persistentOcoSubmitted=${persistentOcoRepairPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
     `alpacaPayloadSchema=${alpacaPayloadSchema?.overall || "N/A"}`,
     `alpacaFixtureFail=${alpacaPayloadSchema?.summary?.failCount ?? "N/A"}`,
     `alpacaOcoResponse=${alpacaOcoResponseFixture?.overall || "N/A"}`,
@@ -1199,6 +1204,19 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       guardedRepairExecutionReadyRows: toNumber(guardedRepairPlan?.summary?.executionReadyRows),
       guardedRepairSummary: shortText(
         `overall=${guardedRepairPlan?.overall || "N/A"} candidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"} stopCandidates=${guardedRepairPlan?.summary?.stopRepairCandidates ?? "N/A"} targetCandidates=${guardedRepairPlan?.summary?.targetRepairCandidates ?? "N/A"} blockedReportOnly=${guardedRepairPlan?.summary?.blockedByReportOnly ?? "N/A"} executionReady=${guardedRepairPlan?.summary?.executionReadyRows ?? "N/A"} mode=${guardedRepairPlan?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      persistentOcoRepairOverall: shortText(persistentOcoRepairPlan?.overall || "N/A", 80),
+      persistentOcoRepairEligible: toNumber(persistentOcoRepairPlan?.summary?.eligible),
+      persistentOcoRepairSelectedSymbol: shortText(
+        persistentOcoRepairPlan?.summary?.selectedSymbol || "N/A",
+        32
+      ),
+      persistentOcoRepairSelectedQty: toNumber(persistentOcoRepairPlan?.summary?.selectedRepairQty),
+      persistentOcoRepairAttempted: persistentOcoRepairPlan?.summary?.brokerMutationAttempted === true,
+      persistentOcoRepairSubmitted: persistentOcoRepairPlan?.summary?.brokerMutationSubmitted === true,
+      persistentOcoRepairSummary: shortText(
+        `overall=${persistentOcoRepairPlan?.overall || "N/A"} scope=${persistentOcoRepairPlan?.scope || "N/A"} rows=${persistentOcoRepairPlan?.summary?.rows ?? "N/A"} eligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} selected=${persistentOcoRepairPlan?.summary?.selectedSymbol ?? "N/A"} qty=${persistentOcoRepairPlan?.summary?.selectedRepairQty ?? "N/A"} attempted=${persistentOcoRepairPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${persistentOcoRepairPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${persistentOcoRepairPlan?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       alpacaPayloadSchemaOverall: shortText(alpacaPayloadSchema?.overall || "N/A", 80),
@@ -1428,6 +1446,32 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Guarded Repair Summary", "Guarded Child Repair Summary"], {
     rich_text: () => textProp(row.live.guardedRepairSummary)
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Overall", "Persistent OCO Overall"], {
+    select: () => selectProp(row.live.persistentOcoRepairOverall || "N/A"),
+    rich_text: () => textProp(row.live.persistentOcoRepairOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Eligible", "Persistent OCO Eligible"], {
+    number: () => numberProp(row.live.persistentOcoRepairEligible),
+    rich_text: () => textProp(row.live.persistentOcoRepairEligible ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Selected", "Persistent OCO Selected Symbol"], {
+    rich_text: () => textProp(row.live.persistentOcoRepairSelectedSymbol || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Selected Qty", "Persistent OCO Selected Qty"], {
+    number: () => numberProp(row.live.persistentOcoRepairSelectedQty),
+    rich_text: () => textProp(row.live.persistentOcoRepairSelectedQty ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Attempted", "Persistent OCO Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.persistentOcoRepairAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.persistentOcoRepairAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Submitted", "Persistent OCO Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.persistentOcoRepairSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.persistentOcoRepairSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Repair Summary", "Persistent OCO Summary"], {
+    rich_text: () => textProp(row.live.persistentOcoRepairSummary)
   });
   setPropertyAliases(properties, schema, ["Alpaca Payload Schema Overall", "Alpaca Order Payload Schema"], {
     select: () => selectProp(row.live.alpacaPayloadSchemaOverall || "N/A"),
