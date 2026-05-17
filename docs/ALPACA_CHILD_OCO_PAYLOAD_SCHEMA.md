@@ -203,3 +203,21 @@ Use `paper-oco-submit-canary.yml` only after the exact approval phrase is suppli
 - `PAPER_OCO_CANARY_APPROVAL_PHRASE=CONFIRM LIVE EXECUTION`
 
 The lane may submit exactly one dynamically selected canary row with `qty=1`, verifies `nested=true` visibility, then cancels the returned paper order and requires the submit ledger to end in a terminal rollback state. It must not be used for multiple symbols or live endpoints.
+
+### Canary Result Reporting and Persistent Repair Planning
+
+After an approved canary submit run, build the separate result report with:
+
+```bash
+npm run ops:paper-oco-result
+```
+
+The report records submit, nested visibility, rollback, and terminal idempotency status without exposing account numbers. `paper-oco-canary-result-sync.yml` can backfill the result into Notion from a prior `paper-oco-submit-canary` artifact without making any broker calls.
+
+Persistent protection is planned separately:
+
+```bash
+npm run ops:persistent-oco-plan
+```
+
+That planner is report-only. It selects at most one dynamic paper candidate, sets `autoCancel=false`, and emits an OCO payload preview. It must not submit or leave broker orders unless a separate paper-only approval task is run with the exact approval phrase.

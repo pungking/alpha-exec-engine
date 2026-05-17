@@ -46,7 +46,10 @@
     "ops:alpaca:oco-response-fixtures": "node scripts/validate-alpaca-oco-response-fixtures.mjs",
     "ops:paper-oco-canary": "node scripts/build-paper-oco-canary-candidate.mjs",
     "ops:paper-oco-gate": "node scripts/build-paper-oco-canary-approval-gate.mjs",
-    "ops:paper-oco-submit-gate": "node scripts/run-paper-oco-canary-submit.mjs"
+    "ops:paper-oco-submit-gate": "node scripts/run-paper-oco-canary-submit.mjs",
+    "ops:paper-oco-result": "node scripts/build-paper-oco-canary-result-report.mjs",
+    "sync:notion:paper-oco-result": "node scripts/sync-paper-oco-canary-result.mjs",
+    "ops:persistent-oco-plan": "node scripts/build-persistent-oco-repair-plan.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

@@ -240,3 +240,9 @@ Until then, keep the lane report-only.
 ## Approved Paper Submit Canary Lane
 
 After the exact approval phrase is captured for the scoped task, run `paper-oco-submit-canary.yml`. This is the only lane that may call `POST /v2/orders` for a one-row paper OCO canary. It must verify read precheck, write `paper-oco-canary-submit-ledger.json` before POST, verify nested open-order visibility after POST, auto-cancel the returned paper order, and verify the ledger terminal state before the run is considered successful.
+
+## Result Sync and Persistent Repair Planning
+
+After an approved submit canary run, execute `npm run ops:paper-oco-result` or `paper-oco-canary-result-sync.yml` to create a separate result record. The result is pass only when broker submit, nested visibility, rollback cancel, rollback terminal verification, and terminal idempotency ledger checks all pass.
+
+Persistent child-order repair is a separate lane from canary rollback testing. `npm run ops:persistent-oco-plan` is report-only and selects at most one dynamic paper candidate with `autoCancel=false`. It does not call Alpaca. A future persistent submit must be a separate paper-only, one-row task with exact approval, fresh read precheck, idempotency write-before-POST, nested visibility verification, and no auto-cancel.

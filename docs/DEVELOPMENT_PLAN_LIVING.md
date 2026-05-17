@@ -543,3 +543,17 @@ Priority: P2 until M1/M2 stabilize; then P1
   - Missing-evidence-property failure now includes override values and schema candidate hints for faster DB alignment.
   - Step Summary now includes resolved evidence property names (`evidenceUrlProperty`, `evidenceLinksProperty`).
   - `mcp-ops-daily.yml` default fallback for links property set to `Run Actions` (can be overridden by repo variable).
+
+## 2026-05-17 - Paper OCO Canary Result and Persistent Repair Planning
+
+- Added paper OCO canary result reporting:
+  - `npm run ops:paper-oco-result`
+  - output: `state/paper-oco-canary-result-report.json` / `.md`
+  - pass requires: broker submit attempted/submitted, nested visibility, rollback cancel, rollback terminal verification, and terminal submit ledger.
+- Added Notion backfill workflow for canary result records:
+  - `.github/workflows/paper-oco-canary-result-sync.yml`
+  - consumes a prior `paper-oco-submit-canary-*` artifact and syncs a separate Automation Incident Log row without broker calls.
+- Added persistent OCO repair planner:
+  - `npm run ops:persistent-oco-plan`
+  - output: `state/persistent-oco-repair-plan.json` / `.md`
+  - report-only, paper-only, one dynamic row, `autoCancel=false`, no POST until a separate exact-approval persistent repair task.

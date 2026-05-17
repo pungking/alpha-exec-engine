@@ -110,6 +110,19 @@ jobs:
       - name: Submit one approved paper OCO canary and rollback
         run: npm run ops:paper-oco-submit-gate
 
+      - name: Build paper OCO canary result report
+        if: always()
+        run: npm run ops:paper-oco-result
+
+      - name: Sync paper OCO canary result to Notion
+        if: always()
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_AUTOMATION_INCIDENT_LOG: ${{ vars.NOTION_DB_AUTOMATION_INCIDENT_LOG }}
+          NOTION_PAPER_OCO_CANARY_RESULT_SYNC_ENABLED: "true"
+          NOTION_PAPER_OCO_CANARY_RESULT_SYNC_REQUIRED: "false"
+        run: npm run sync:notion:paper-oco-result
+
       - name: Verify submit, visibility, rollback, and terminal ledger
         if: always()
         shell: bash
@@ -170,4 +183,6 @@ jobs:
             _paper_oco_state/paper-oco-canary-submit-gate.json
             _paper_oco_state/paper-oco-canary-submit-gate.md
             _paper_oco_state/paper-oco-canary-submit-ledger.json
+            _paper_oco_state/paper-oco-canary-result-report.json
+            _paper_oco_state/paper-oco-canary-result-report.md
           if-no-files-found: warn

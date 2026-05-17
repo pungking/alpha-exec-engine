@@ -1,0 +1,99 @@
+name: paper-oco-canary-result-sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      submit_run_id:
+        description: "paper-oco-submit-canary run id to sync"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  result-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GH_TOKEN: ${{ github.token }}
+      PAPER_OCO_RESULT_STATE_DIR: _paper_oco_state
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve submit canary artifact
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_id="${{ inputs.submit_run_id }}"
+          artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("paper-oco-submit-canary-")) | .name' | head -n 1)"
+          if [[ -z "${artifact}" ]]; then
+            echo "No paper-oco-submit-canary artifact found for run ${run_id}" >&2
+            exit 1
+          fi
+          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download submit canary artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf _paper_oco_state
+          mkdir -p _paper_oco_state
+          gh run download "${{ steps.resolve.outputs.run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ steps.resolve.outputs.artifact }}" \
+            --dir _paper_oco_state
+          test -f _paper_oco_state/paper-oco-canary-submit-gate.json
+          test -f _paper_oco_state/paper-oco-canary-submit-ledger.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build paper OCO canary result report
+        run: npm run ops:paper-oco-result
+
+      - name: Sync paper OCO canary result to Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_AUTOMATION_INCIDENT_LOG: ${{ vars.NOTION_DB_AUTOMATION_INCIDENT_LOG }}
+          NOTION_PAPER_OCO_CANARY_RESULT_SYNC_ENABLED: "true"
+          NOTION_PAPER_OCO_CANARY_RESULT_SYNC_REQUIRED: "false"
+        run: npm run sync:notion:paper-oco-result
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Paper OCO Canary Result Sync"
+            echo "- sourceSubmitRun: \`${{ steps.resolve.outputs.run_id }}\`"
+            echo "- sourceArtifact: \`${{ steps.resolve.outputs.artifact }}\`"
+            echo ""
+            if [[ -f _paper_oco_state/paper-oco-canary-result-report.md ]]; then
+              cat _paper_oco_state/paper-oco-canary-result-report.md
+            else
+              echo "- status: \`missing result report\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload result sync artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-oco-canary-result-sync-${{ github.run_id }}
+          path: |
+            _paper_oco_state/paper-oco-canary-result-report.json
+            _paper_oco_state/paper-oco-canary-result-report.md
+          if-no-files-found: warn

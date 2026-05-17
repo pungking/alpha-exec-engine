@@ -1708,6 +1708,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build persistent OCO repair plan
+        if: always()
+        run: npm run ops:persistent-oco-plan
+
+      - name: Publish persistent OCO repair plan summary
+        if: always()
+        run: |
+          if [[ -f state/persistent-oco-repair-plan.md ]]; then
+            cat state/persistent-oco-repair-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Persistent OCO Repair Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/persistent-oco-repair-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1802,6 +1817,8 @@ jobs:
             state/paper-oco-canary-submit-gate.json
             state/paper-oco-canary-submit-gate.md
             state/paper-oco-canary-submit-ledger.json
+            state/persistent-oco-repair-plan.json
+            state/persistent-oco-repair-plan.md
             state/fillability-report.json
             state/fillability-report.md
             state/order-state-consistency-report.json
