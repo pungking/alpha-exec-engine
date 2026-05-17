@@ -7120,6 +7120,8 @@ async function applyPortfolioAdmissionToDryExec(
     const admissionRr = computePortfolioAdmissionRr(audit);
     const effectiveDistance = audit?.effectiveEntryDistancePct ?? audit?.executionOverlay?.currentDistancePct ?? null;
     const hasExistingOpenEntry = openOrders.bySymbol.has(payload.symbol);
+    const hasHeldPosition = heldPositions.has(payload.symbol);
+    const isScaleUp = payload.actionType === "SCALE_UP";
     const replacesExistingOpenEntry =
       hasExistingOpenEntry && payload.entrySizing?.reason?.startsWith("open_order_monitor_reprice:") === true;
     const addsOpenEntryOrder = !isExit && !hasExistingOpenEntry;
@@ -7161,6 +7163,13 @@ async function applyPortfolioAdmissionToDryExec(
       reject(
         "open_entry_capacity_full",
         `open=${openEntryOrdersCount}|max=${policy.maxOpenEntryOrders}`
+      );
+      return;
+    }
+    if (!isExit && hasHeldPosition && !isScaleUp) {
+      reject(
+        "held_symbol_entry_blocked",
+        `symbol=${payload.symbol}|held=true|action=${payload.actionType ?? "ENTRY_NEW"}`
       );
       return;
     }

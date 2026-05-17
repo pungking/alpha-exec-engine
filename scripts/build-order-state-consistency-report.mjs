@@ -39,6 +39,18 @@ const normalizeFillState = (value) => {
   return text;
 };
 
+const normalizeFillabilityState = (value) => {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (text === "filled") return "filled";
+  if (text.startsWith("open_")) return "open";
+  if (text === "terminal_unfilled") return "unfilled_terminal";
+  if (text === "idempotency_held") return "open";
+  if (text === "payload_ready_no_broker_match") return "planned";
+  if (text === "no_active_order" || text.startsWith("blocked_")) return null;
+  return normalizeFillState(text);
+};
+
 const latestBySymbol = (rows, mapper) => {
   const out = new Map();
   for (const raw of rows) {
@@ -68,7 +80,7 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
   const fillabilityBySymbol = latestBySymbol(Array.isArray(fillability?.rows) ? fillability.rows : [], (row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
     status: row?.status || null,
-    normalized: normalizeFillState(row?.status),
+    normalized: normalizeFillabilityState(row?.status),
     at: fillability?.generatedAt || null,
     reason: row?.reason || null
   }));
