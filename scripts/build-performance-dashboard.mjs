@@ -257,6 +257,18 @@ const normalizeFillState = (value) => {
   return text;
 };
 
+const normalizeFillabilityState = (value) => {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (text === "filled") return "filled";
+  if (text.startsWith("open_")) return "open";
+  if (text === "terminal_unfilled") return "unfilled_terminal";
+  if (text === "idempotency_held") return "open";
+  if (text === "payload_ready_no_broker_match") return "planned";
+  if (text === "no_active_order" || text.startsWith("blocked_")) return null;
+  return normalizeFillState(text);
+};
+
 const TERMINAL_ORDER_STATUSES = new Set(["filled", "canceled", "cancelled", "expired", "rejected"]);
 
 const flattenAlpacaOrders = (orders, depth = 0) => {
@@ -369,12 +381,10 @@ const buildStatusBySymbol = () => {
 
   for (const [symbol, row] of bySymbol) {
     const normalized = [
-      row.ledgerStatus,
-      row.idempotencyBrokerStatus,
-      row.fillabilityStatus
-    ]
-      .map(normalizeFillState)
-      .filter(Boolean);
+      normalizeFillState(row.ledgerStatus),
+      normalizeFillState(row.idempotencyBrokerStatus),
+      normalizeFillabilityState(row.fillabilityStatus)
+    ].filter(Boolean);
     const unique = [...new Set(normalized)];
     bySymbol.set(symbol, {
       ...row,

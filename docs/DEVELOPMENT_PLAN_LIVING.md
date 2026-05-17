@@ -564,4 +564,4 @@ Priority: P2 until M1/M2 stabilize; then P1
 - 2026-05-17 UTC/KST follow-up:
   - Manual `safe_default` dry-run on head `59ddb5b` exposed a real admission/state issue: an already-held symbol could still be admitted as a fresh entry payload when lifecycle scale-up was not active.
   - Portfolio admission now blocks same-symbol fresh entries for held positions unless the payload action is an explicit `SCALE_UP`.
-  - Order-state consistency now treats fillability `BLOCKED_*` / `NO_ACTIVE_ORDER` rows as non-fill-state evidence, while preserving `PAYLOAD_READY_NO_BROKER_MATCH` as planned-order evidence so duplicate-entry risks still fail.
+  - Performance dashboard and order-state consistency now treat fillability `BLOCKED_*` / `NO_ACTIVE_ORDER` rows as non-fill-state evidence, while preserving `PAYLOAD_READY_NO_BROKER_MATCH` as planned-order evidence so duplicate-entry risks still fail.
