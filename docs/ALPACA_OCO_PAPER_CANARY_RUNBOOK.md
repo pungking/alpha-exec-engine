@@ -246,3 +246,15 @@ After the exact approval phrase is captured for the scoped task, run `paper-oco-
 After an approved submit canary run, execute `npm run ops:paper-oco-result` or `paper-oco-canary-result-sync.yml` to create a separate result record. The result is pass only when broker submit, nested visibility, rollback cancel, rollback terminal verification, and terminal idempotency ledger checks all pass.
 
 Persistent child-order repair is a separate lane from canary rollback testing. `npm run ops:persistent-oco-plan` is report-only and selects at most one dynamic paper candidate with `autoCancel=false`. It does not call Alpaca. A future persistent submit must be a separate paper-only, one-row task with exact approval, fresh read precheck, idempotency write-before-POST, nested visibility verification, and no auto-cancel.
+
+## Approved Persistent Protective OCO Repair Lane
+
+After the exact approval phrase is captured for the scoped task, run `persistent-oco-repair-submit.yml`. This is the only lane that may call `POST /v2/orders` to leave one paper protective OCO open for the dynamically selected persistent repair row. It must remain `PAPER` only, one row only, no auto-cancel, and must verify:
+
+- fresh read precheck against Alpaca paper account, clock, position, and nested open orders,
+- idempotency ledger write before POST,
+- nested open-order visibility after POST,
+- selected symbol appears in broker child-order reconciliation with stop and target present,
+- manual rollback instructions are emitted with the client order id.
+
+This lane is not a live-trading promotion. It is a paper-only persistence proof. Broader repair automation requires a separate approval and scale-up task.

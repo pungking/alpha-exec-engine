@@ -221,3 +221,21 @@ npm run ops:persistent-oco-plan
 ```
 
 That planner is report-only. It selects at most one dynamic paper candidate, sets `autoCancel=false`, and emits an OCO payload preview. It must not submit or leave broker orders unless a separate paper-only approval task is run with the exact approval phrase.
+
+### Approved Persistent Protective OCO Repair Submit
+
+Use `persistent-oco-repair-submit.yml` only after the exact approval phrase is supplied for the current scoped task. The workflow downloads a prior `sidecar-dry-run` state artifact and runs:
+
+```bash
+npm run ops:persistent-oco-submit
+```
+
+with:
+
+- `ALPHA_ENV=PAPER`
+- `ALPACA_BASE_URL=https://paper-api.alpaca.markets`
+- `PERSISTENT_OCO_REPAIR_READ_VERIFY=true`
+- `PERSISTENT_OCO_REPAIR_SUBMIT_ENABLED=true`
+- `PERSISTENT_OCO_REPAIR_APPROVAL_PHRASE=CONFIRM LIVE EXECUTION`
+
+This lane differs from the canary rollback lane: it leaves exactly one dynamically selected paper OCO repair order open (`autoCancel=false`) and emits a manual rollback plan. Completion requires nested visibility and post-submit broker child reconciliation to show stop and target present for the selected symbol.
