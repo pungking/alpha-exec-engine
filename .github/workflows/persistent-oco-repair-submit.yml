@@ -12,6 +12,16 @@ on:
         required: false
         default: ""
         type: string
+      source_verify_run_id:
+        description: "persistent-oco-repair-open-verify run id to rebuild a fresh dynamic repair plan from broker reconciliation"
+        required: false
+        default: ""
+        type: string
+      expected_symbol:
+        description: "Optional safety check: selected dynamic row must match this symbol before broker mutation"
+        required: false
+        default: ""
+        type: string
       require_market_open:
         description: "Require Alpaca paper clock.is_open before POST"
         required: false
@@ -71,22 +81,37 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          run_id="${{ inputs.source_run_id }}"
-          if [[ -z "${run_id}" ]]; then
-            run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow dry-run.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          verify_run_id="${{ inputs.source_verify_run_id }}"
+          if [[ -n "${verify_run_id}" ]]; then
+            artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${verify_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("persistent-oco-repair-open-verify-")) | .name' | head -n 1)"
+            if [[ -z "${artifact}" ]]; then
+              echo "No non-expired persistent open-verify artifact found for run ${verify_run_id}" >&2
+              exit 1
+            fi
+            echo "source_kind=open_verify" >> "${GITHUB_OUTPUT}"
+            echo "run_id=${verify_run_id}" >> "${GITHUB_OUTPUT}"
+            echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
+            echo "Resolved source open-verify run ${verify_run_id} artifact ${artifact}"
+            exit 0
           fi
-          if [[ -z "${run_id}" || "${run_id}" == "null" ]]; then
+
+          sidecar_run_id="${{ inputs.source_run_id }}"
+          if [[ -z "${sidecar_run_id}" ]]; then
+            sidecar_run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow dry-run.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          fi
+          if [[ -z "${sidecar_run_id}" || "${sidecar_run_id}" == "null" ]]; then
             echo "No successful sidecar-dry-run run found" >&2
             exit 1
           fi
-          artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("sidecar-state-")) | .name' | head -n 1)"
+          artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${sidecar_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("sidecar-state-")) | .name' | head -n 1)"
           if [[ -z "${artifact}" ]]; then
-            echo "No non-expired sidecar-state artifact found for run ${run_id}" >&2
+            echo "No non-expired sidecar-state artifact found for run ${sidecar_run_id}" >&2
             exit 1
           fi
-          echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          echo "source_kind=sidecar" >> "${GITHUB_OUTPUT}"
+          echo "run_id=${sidecar_run_id}" >> "${GITHUB_OUTPUT}"
           echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
-          echo "Resolved source sidecar run ${run_id} artifact ${artifact}"
+          echo "Resolved source sidecar run ${sidecar_run_id} artifact ${artifact}"
 
       - name: Download source sidecar state artifact
         shell: bash
@@ -98,11 +123,52 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --name "${{ steps.resolve.outputs.artifact }}" \
             --dir state
-          test -f state/persistent-oco-repair-plan.json
+          if [[ "${{ steps.resolve.outputs.source_kind }}" == "open_verify" ]]; then
+            test -f state/broker-child-order-reconciliation.json
+          else
+            test -f state/persistent-oco-repair-plan.json
+          fi
           test -f state/broker-child-order-reconciliation.json
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      - name: Rebuild dynamic persistent repair plan from open-verify reconciliation
+        if: ${{ steps.resolve.outputs.source_kind == 'open_verify' }}
+        run: npm run ops:persistent-oco-plan
+
+      - name: Verify selected dynamic repair row before broker mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const expected = String(`${{ inputs.expected_symbol }}` || '').trim().toUpperCase();
+          const plan = JSON.parse(fs.readFileSync('state/persistent-oco-repair-plan.json', 'utf8'));
+          const selected = String(plan.selectedCandidate?.symbol || '').trim().toUpperCase();
+          const failures = [];
+          if (plan.scope !== 'portfolio_wide_dynamic_persistent_protection_candidate_not_ticker_specific') failures.push('selector_scope_not_dynamic');
+          if (plan.overall !== 'manual_approval_required') failures.push(`plan_overall_${plan.overall || 'missing'}`);
+          if (!selected) failures.push('selected_symbol_missing');
+          if (expected && selected !== expected) failures.push(`selected_${selected}_does_not_match_expected_${expected}`);
+          if (plan.selectedCandidate?.executionAllowed !== false) failures.push('selected_execution_allowed_not_false');
+          if (Number(plan.selectedCandidate?.repairQty) !== 1) failures.push('repair_qty_not_one');
+          console.log(JSON.stringify({
+            sourceKind: '${{ steps.resolve.outputs.source_kind }}',
+            overall: plan.overall,
+            scope: plan.scope,
+            expectedSymbol: expected || null,
+            selectedSymbol: selected || null,
+            repairQty: plan.selectedCandidate?.repairQty ?? null,
+            readiness: plan.selectedCandidate?.readiness ?? null,
+            brokerMutationAttempted: plan.summary?.brokerMutationAttempted,
+            brokerMutationSubmitted: plan.summary?.brokerMutationSubmitted
+          }, null, 2));
+          if (failures.length) {
+            console.error(`selected dynamic repair row verification failed: ${failures.join(',')}`);
+            process.exit(1);
+          }
+          NODE
 
       - name: Submit one persistent paper OCO repair and leave open
         run: npm run ops:persistent-oco-submit
@@ -169,7 +235,9 @@ jobs:
           {
             echo "## Persistent OCO Repair Submit"
             echo "- sourceRun: \`${{ steps.resolve.outputs.run_id }}\`"
+            echo "- sourceKind: \`${{ steps.resolve.outputs.source_kind }}\`"
             echo "- sourceArtifact: \`${{ steps.resolve.outputs.artifact }}\`"
+            echo "- expectedSymbol: \`${{ inputs.expected_symbol || 'N/A' }}\`"
             echo "- brokerMutation: \`approved one-row PAPER persistent OCO repair; no auto-cancel\`"
             echo ""
             if [[ -f state/persistent-oco-repair-submit-report.md ]]; then
