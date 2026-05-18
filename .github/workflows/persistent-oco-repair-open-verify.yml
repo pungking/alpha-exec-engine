@@ -110,10 +110,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf _persistent_submit_state
+          mkdir -p _persistent_submit_state
           gh run download "${{ steps.resolve.outputs.submit_run_id }}" \
             --repo "${GITHUB_REPOSITORY}" \
             --name "${{ steps.resolve.outputs.submit_artifact }}" \
-            --dir state
+            --dir _persistent_submit_state
+          cp _persistent_submit_state/persistent-oco-repair-submit-report.json state/
+          cp _persistent_submit_state/persistent-oco-repair-submit-ledger.json state/
           test -f state/persistent-oco-repair-submit-report.json
           test -f state/persistent-oco-repair-submit-ledger.json
 
