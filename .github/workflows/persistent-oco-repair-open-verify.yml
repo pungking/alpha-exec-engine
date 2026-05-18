@@ -1,0 +1,220 @@
+name: persistent-oco-repair-open-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_submit_run_id:
+        description: "persistent-oco-repair-submit run id to read state from (blank = latest successful submit)"
+        required: false
+        default: ""
+        type: string
+      source_sidecar_run_id:
+        description: "sidecar-dry-run run id to restore base state from (blank = latest successful dry-run)"
+        required: false
+        default: ""
+        type: string
+      require_market_open:
+        description: "Require Alpaca paper clock.is_open for open-order verification"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: persistent-oco-repair-open-verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-open-protection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GH_TOKEN: ${{ github.token }}
+      ALPHA_ENV: PAPER
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      PERSISTENT_OCO_REPAIR_VERIFY_STATE_DIR: state
+      PERSISTENT_OCO_REPAIR_VERIFY_REQUIRE_MARKET_OPEN: ${{ inputs.require_market_open }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve source runs
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          submit_run_id="${{ inputs.source_submit_run_id }}"
+          if [[ -z "${submit_run_id}" ]]; then
+            submit_run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow persistent-oco-repair-submit.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          fi
+          if [[ -z "${submit_run_id}" || "${submit_run_id}" == "null" ]]; then
+            echo "No successful persistent-oco-repair-submit run found" >&2
+            exit 1
+          fi
+          submit_artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${submit_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("persistent-oco-repair-submit-")) | .name' | head -n 1)"
+          if [[ -z "${submit_artifact}" ]]; then
+            echo "No non-expired persistent submit artifact found for run ${submit_run_id}" >&2
+            exit 1
+          fi
+
+          sidecar_run_id="${{ inputs.source_sidecar_run_id }}"
+          if [[ -z "${sidecar_run_id}" ]]; then
+            sidecar_run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow dry-run.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          fi
+          if [[ -z "${sidecar_run_id}" || "${sidecar_run_id}" == "null" ]]; then
+            echo "No successful sidecar-dry-run run found" >&2
+            exit 1
+          fi
+          sidecar_artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${sidecar_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("sidecar-state-")) | .name' | head -n 1)"
+          if [[ -z "${sidecar_artifact}" ]]; then
+            echo "No non-expired sidecar-state artifact found for run ${sidecar_run_id}" >&2
+            exit 1
+          fi
+
+          echo "submit_run_id=${submit_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "submit_artifact=${submit_artifact}" >> "${GITHUB_OUTPUT}"
+          echo "sidecar_run_id=${sidecar_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "sidecar_artifact=${sidecar_artifact}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved persistent submit run ${submit_run_id} artifact ${submit_artifact}"
+          echo "Resolved sidecar run ${sidecar_run_id} artifact ${sidecar_artifact}"
+
+      - name: Download base sidecar state artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf state
+          mkdir -p state
+          gh run download "${{ steps.resolve.outputs.sidecar_run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ steps.resolve.outputs.sidecar_artifact }}" \
+            --dir state
+          test -f state/last-dry-exec-preview.json
+
+      - name: Overlay persistent submit artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "${{ steps.resolve.outputs.submit_run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ steps.resolve.outputs.submit_artifact }}" \
+            --dir state
+          test -f state/persistent-oco-repair-submit-report.json
+          test -f state/persistent-oco-repair-submit-ledger.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify persistent OCO remains open with GET-only broker reads
+        run: npm run ops:persistent-oco-open-verify
+
+      - name: Rebuild live performance dashboard
+        if: always()
+        run: npm run dashboard:perf
+
+      - name: Rebuild broker child reconciliation
+        if: always()
+        run: npm run ops:broker-child-reconcile
+
+      - name: Verify dashboard and reconciliation reflect selected protection
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const openVerify = JSON.parse(fs.readFileSync('state/persistent-oco-repair-open-verify.json', 'utf8'));
+          const recon = JSON.parse(fs.readFileSync('state/broker-child-order-reconciliation.json', 'utf8'));
+          const perf = JSON.parse(fs.readFileSync('state/performance-dashboard.json', 'utf8'));
+          const symbol = openVerify.selected?.symbol;
+          const selectedRecon = Array.isArray(recon.rows) ? recon.rows.find((row) => row.symbol === symbol) : null;
+          const selectedPerf = Array.isArray(perf.live?.positions) ? perf.live.positions.find((row) => row.symbol === symbol) : null;
+          const failures = [];
+          if (openVerify.overall !== 'pass') failures.push('open_verify_not_pass');
+          if (openVerify.summary?.brokerMutationAttempted !== false) failures.push('open_verify_attempted_not_false');
+          if (openVerify.summary?.brokerMutationSubmitted !== false) failures.push('open_verify_submitted_not_false');
+          if (!selectedRecon) failures.push('selected_recon_missing');
+          if (selectedRecon && selectedRecon.brokerStopPresent !== true) failures.push('selected_recon_stop_missing');
+          if (selectedRecon && selectedRecon.brokerTargetPresent !== true) failures.push('selected_recon_target_missing');
+          if (!selectedPerf) failures.push('selected_perf_missing');
+          if (selectedPerf && selectedPerf.brokerStopPresent !== true) failures.push('selected_perf_stop_missing');
+          if (selectedPerf && selectedPerf.brokerTargetPresent !== true) failures.push('selected_perf_target_missing');
+          console.log(JSON.stringify({
+            overall: openVerify.overall,
+            selectedSymbol: symbol,
+            protection: openVerify.protection,
+            selectedRecon: selectedRecon ? {
+              protectionStatus: selectedRecon.protectionStatus,
+              severity: selectedRecon.severity,
+              brokerStopPresent: selectedRecon.brokerStopPresent,
+              brokerTargetPresent: selectedRecon.brokerTargetPresent
+            } : null,
+            selectedPerf: selectedPerf ? {
+              positionStatus: selectedPerf.positionStatus,
+              brokerStopPresent: selectedPerf.brokerStopPresent,
+              brokerTargetPresent: selectedPerf.brokerTargetPresent,
+              brokerStopPrice: selectedPerf.brokerStopPrice,
+              brokerTargetPrice: selectedPerf.brokerTargetPrice
+            } : null,
+            reconSummary: recon.summary,
+            perfTotals: perf.live?.totals
+          }, null, 2));
+          if (failures.length) {
+            console.error(`persistent OCO open verify failed: ${failures.join(',')}`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Persistent OCO Open Verify"
+            echo "- submitRun: \`${{ steps.resolve.outputs.submit_run_id }}\`"
+            echo "- submitArtifact: \`${{ steps.resolve.outputs.submit_artifact }}\`"
+            echo "- sidecarRun: \`${{ steps.resolve.outputs.sidecar_run_id }}\`"
+            echo "- sidecarArtifact: \`${{ steps.resolve.outputs.sidecar_artifact }}\`"
+            echo "- brokerMutation: \`GET-only verification; no POST/DELETE\`"
+            echo ""
+            if [[ -f state/persistent-oco-repair-open-verify.md ]]; then
+              cat state/persistent-oco-repair-open-verify.md
+            else
+              echo "- status: \`missing state/persistent-oco-repair-open-verify.md\`"
+            fi
+            echo ""
+            if [[ -f state/broker-child-order-reconciliation.md ]]; then
+              cat state/broker-child-order-reconciliation.md
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload persistent OCO open verify artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-oco-repair-open-verify-${{ github.run_id }}
+          path: |
+            state/persistent-oco-repair-open-verify.json
+            state/persistent-oco-repair-open-verify.md
+            state/persistent-oco-repair-submit-report.json
+            state/persistent-oco-repair-submit-ledger.json
+            state/performance-dashboard.json
+            state/performance-dashboard.md
+            state/broker-child-order-reconciliation.json
+            state/broker-child-order-reconciliation.md
+          if-no-files-found: warn

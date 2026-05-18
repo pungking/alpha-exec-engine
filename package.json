@@ -50,7 +50,8 @@
     "ops:paper-oco-result": "node scripts/build-paper-oco-canary-result-report.mjs",
     "sync:notion:paper-oco-result": "node scripts/sync-paper-oco-canary-result.mjs",
     "ops:persistent-oco-plan": "node scripts/build-persistent-oco-repair-plan.mjs",
-    "ops:persistent-oco-submit": "node scripts/run-persistent-oco-repair-submit.mjs"
+    "ops:persistent-oco-submit": "node scripts/run-persistent-oco-repair-submit.mjs",
+    "ops:persistent-oco-open-verify": "node scripts/verify-persistent-oco-repair-open.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
