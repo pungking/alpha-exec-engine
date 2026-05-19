@@ -430,6 +430,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Symbol-agnostic runtime guard
+        run: npm run ops:safety:symbol-agnostic
+
       - name: HF Verify gate (validation pack)
         id: hf_verify_gate
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}

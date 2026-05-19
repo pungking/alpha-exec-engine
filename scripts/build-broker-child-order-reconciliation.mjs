@@ -39,35 +39,44 @@ const classifyPosition = (position) => {
   const brokerTargetPresent = position?.brokerTargetPresent === true;
   const hasOpenPosition = qty > 0;
   const guardMetadataMissing = hasOpenPosition && plannedStopPrice == null && plannedTargetPrice == null;
+  const stopGeometryInvalid = hasOpenPosition && currentPrice != null && plannedStopPrice != null && plannedStopPrice >= currentPrice;
+  const targetGeometryInvalid = hasOpenPosition && currentPrice != null && plannedTargetPrice != null && plannedTargetPrice <= currentPrice;
+  const targetStopGeometryInvalid = hasOpenPosition && plannedStopPrice != null && plannedTargetPrice != null && plannedTargetPrice <= plannedStopPrice;
+  const guardGeometryInvalid = stopGeometryInvalid || targetGeometryInvalid || targetStopGeometryInvalid;
   const stopChildMissing = hasOpenPosition && plannedStopPrice != null && !brokerStopPresent;
   const targetChildMissing = hasOpenPosition && plannedTargetPrice != null && !brokerTargetPresent;
 
   const proposedActions = [];
   if (guardMetadataMissing) proposedActions.push("REPORT_ONLY_REVIEW_GUARD_METADATA");
-  if (stopChildMissing) proposedActions.push("REPORT_ONLY_CREATE_STOP_CHILD");
-  if (targetChildMissing) proposedActions.push("REPORT_ONLY_CREATE_TARGET_CHILD");
+  if (guardGeometryInvalid) proposedActions.push("REPORT_ONLY_REVIEW_INVALID_GUARD_GEOMETRY");
+  if (!guardGeometryInvalid && stopChildMissing) proposedActions.push("REPORT_ONLY_CREATE_STOP_CHILD");
+  if (!guardGeometryInvalid && targetChildMissing) proposedActions.push("REPORT_ONLY_CREATE_TARGET_CHILD");
   if (proposedActions.length === 0) proposedActions.push("NO_ACTION");
 
-  const severity = stopChildMissing ? "critical" : targetChildMissing || guardMetadataMissing ? "warn" : "pass";
+  const severity = guardGeometryInvalid || stopChildMissing ? "critical" : targetChildMissing || guardMetadataMissing ? "warn" : "pass";
   const protectionStatus = !hasOpenPosition
     ? "NO_POSITION"
     : guardMetadataMissing
       ? "GUARD_METADATA_MISSING"
-      : stopChildMissing && targetChildMissing
-        ? "STOP_AND_TARGET_CHILD_MISSING"
-        : stopChildMissing
-          ? "STOP_CHILD_MISSING"
-          : targetChildMissing
-            ? "TARGET_CHILD_MISSING"
-            : "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED";
+      : guardGeometryInvalid
+        ? "INVALID_GUARD_GEOMETRY_REVIEW"
+        : stopChildMissing && targetChildMissing
+          ? "STOP_AND_TARGET_CHILD_MISSING"
+          : stopChildMissing
+            ? "STOP_CHILD_MISSING"
+            : targetChildMissing
+              ? "TARGET_CHILD_MISSING"
+              : "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED";
 
-  const reason = stopChildMissing
-    ? "planned stop exists but no active Alpaca sell stop child was found in nested open orders"
-    : targetChildMissing
-      ? "planned target exists but no active Alpaca sell target child was found in nested open orders"
-      : guardMetadataMissing
-        ? "held position has no planned stop/target metadata in sidecar state"
-        : "no report-only broker child reconciliation action required";
+  const reason = guardGeometryInvalid
+    ? "planned stop/current/target geometry is invalid; block repair and route to root-cause review"
+    : stopChildMissing
+      ? "planned stop exists but no active Alpaca sell stop child was found in nested open orders"
+      : targetChildMissing
+        ? "planned target exists but no active Alpaca sell target child was found in nested open orders"
+        : guardMetadataMissing
+          ? "held position has no planned stop/target metadata in sidecar state"
+          : "no report-only broker child reconciliation action required";
 
   return {
     symbol,
@@ -84,6 +93,10 @@ const classifyPosition = (position) => {
     normalizedFillState: position?.normalizedFillState || null,
     positionStatus: position?.positionStatus || null,
     guardMetadataMissing,
+    guardGeometryInvalid,
+    stopGeometryInvalid,
+    targetGeometryInvalid,
+    targetStopGeometryInvalid,
     stopChildMissing,
     targetChildMissing,
     protectionStatus,
@@ -107,6 +120,7 @@ const summarize = (rows) => {
     missingStopChildren: rows.filter((row) => row.stopChildMissing).length,
     missingTargetChildren: rows.filter((row) => row.targetChildMissing).length,
     guardMetadataMissing: rows.filter((row) => row.guardMetadataMissing).length,
+    guardGeometryInvalid: rows.filter((row) => row.guardGeometryInvalid).length,
     noActionRows: rows.filter((row) => row.proposedActions.length === 1 && row.proposedActions[0] === "NO_ACTION").length
   };
 };
@@ -121,7 +135,7 @@ const buildMarkdown = (report) => {
     `- source: \`performanceDashboard=${report.files.performanceDashboard ? "ok" : "missing"} nested=${report.source.openOrderNested ?? "N/A"} rawOpen=${report.source.openOrderRawCount ?? "N/A"} flattenedOpen=${report.source.openOrderFlattenedCount ?? "N/A"}\``
   );
   lines.push(
-    `- summary: \`positions=${report.summary.positionsChecked} critical=${report.summary.criticalCount} warnings=${report.summary.warningCount} stopMissing=${report.summary.missingStopChildren} targetMissing=${report.summary.missingTargetChildren} guardMissing=${report.summary.guardMetadataMissing} proposedRows=${report.summary.proposedActionRows}\``
+    `- summary: \`positions=${report.summary.positionsChecked} critical=${report.summary.criticalCount} warnings=${report.summary.warningCount} stopMissing=${report.summary.missingStopChildren} targetMissing=${report.summary.missingTargetChildren} guardMissing=${report.summary.guardMetadataMissing} invalidGeometry=${report.summary.guardGeometryInvalid} proposedRows=${report.summary.proposedActionRows}\``
   );
   lines.push("- safety: `report-only; no broker mutation; auto repair disabled` ");
   lines.push("| Symbol | Severity | Protection | Qty | Current | Planned Stop | Planned Target | Broker Stop | Broker Target | Actions | Reason |");
