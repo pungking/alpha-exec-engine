@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_SUBMIT_STATE_DIR || process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const PLAN_PATH = `${STATE_DIR}/persistent-oco-repair-plan.json`;
@@ -7,6 +8,7 @@ const OUTPUT_JSON = `${STATE_DIR}/persistent-oco-repair-submit-report.json`;
 const OUTPUT_MD = `${STATE_DIR}/persistent-oco-repair-submit-report.md`;
 const REQUIRED_APPROVAL_PHRASE = "CONFIRM LIVE EXECUTION";
 const PAPER_BASE_URL = "https://paper-api.alpaca.markets";
+const PERSISTENT_REPAIR_TIME_IN_FORCE = "gtc";
 
 const nowIso = () => new Date().toISOString();
 const short = (v, n = 500) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -130,15 +132,27 @@ const intQty = (v) => {
   if (n == null || n <= 0 || !Number.isInteger(n)) return null;
   return String(n);
 };
+const payloadFingerprint = ({ symbol, qty, stop, target }) => {
+  const source = `${symbol}|${PERSISTENT_REPAIR_TIME_IN_FORCE}|${qty}|${stop}|${target}`;
+  return createHash("sha256").update(source).digest("hex").slice(0, 8);
+};
+const fallbackClientOrderId = ({ symbol, qty, stop, target }) => {
+  const fingerprint = payloadFingerprint({ symbol, qty, stop, target });
+  return `persistent_oco_${symbol.toLowerCase()}_${PERSISTENT_REPAIR_TIME_IN_FORCE}_${fingerprint}_q${qty}`
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, 48);
+};
 const buildPayload = (selected) => {
   const p = selected?.payloadPreview && typeof selected.payloadPreview === "object" ? selected.payloadPreview : {};
   const symbol = sym(p.symbol || selected?.symbol);
   const qty = intQty(p.qty ?? selected?.repairQty);
   const target = price(p.take_profit?.limit_price ?? selected?.plannedTargetPrice);
   const stop = price(p.stop_loss?.stop_price ?? selected?.plannedStopPrice);
-  const clientOrderId = String(p.client_order_id || `persistent_oco_${symbol.toLowerCase()}_q${qty || "1"}`).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48);
+  const previewTimeInForce = String(p.time_in_force || "").trim().toLowerCase();
+  const previewClientOrderId = previewTimeInForce === PERSISTENT_REPAIR_TIME_IN_FORCE ? p.client_order_id : null;
+  const clientOrderId = String(previewClientOrderId || fallbackClientOrderId({ symbol, qty: qty || "1", stop, target })).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48);
   if (!symbol || !qty || !target || !stop) return null;
-  return { symbol, side: "sell", type: "limit", time_in_force: "day", order_class: "oco", qty, take_profit: { limit_price: target }, stop_loss: { stop_price: stop }, client_order_id: clientOrderId };
+  return { symbol, side: "sell", type: "limit", time_in_force: PERSISTENT_REPAIR_TIME_IN_FORCE, order_class: "oco", qty, take_profit: { limit_price: target }, stop_loss: { stop_price: stop }, client_order_id: clientOrderId };
 };
 
 const runReadPrecheck = async ({ selected, payload, gates }) => {
@@ -187,7 +201,7 @@ const buildMarkdown = (report) => {
   lines.push(`- brokerMutation: \`attempted=${report.brokerMutation.attempted} submitted=${report.brokerMutation.submitted} status=${report.brokerMutation.status ?? "N/A"}\``);
   lines.push(`- visibility: \`ok=${report.postSubmitVisibility?.ok ?? false} persistentOpen=${report.postSubmitVisibility?.persistentOpen ?? false} stop=${report.postSubmitVisibility?.protection?.stopOrderCount ?? "N/A"} target=${report.postSubmitVisibility?.protection?.targetOrderCount ?? "N/A"}\``);
   lines.push(`- idempotency: \`duplicate=${report.idempotency.duplicate} status=${report.idempotency.status || "N/A"} terminal=${report.idempotency.terminal}\``);
-  lines.push(`- safety: \`${report.executionPolicy.mode}; target=${report.executionPolicy.targetEnvironment}; autoCancel=${report.executionPolicy.autoCancelEnabled}\``);
+  lines.push(`- safety: \`${report.executionPolicy.mode}; target=${report.executionPolicy.targetEnvironment}; autoCancel=${report.executionPolicy.autoCancelEnabled}; tif=${report.executionPolicy.timeInForce || "N/A"}\``);
   lines.push("- gates:");
   for (const gate of report.gates) lines.push(`  - [${gate.status}] ${gate.id}: ${short(gate.detail, 220)}`);
   lines.push("- manual_rollback_plan:");
@@ -201,7 +215,7 @@ const main = async () => {
   const plan = readJson(PLAN_PATH);
   const selected = plan?.selectedCandidate || null;
   const payload = buildPayload(selected);
-  const idempotencyKey = selected?.idempotencyKeyPreview || `persistent-oco-repair:${sym(selected?.symbol)}:qty=${selected?.repairQty}:stop=${selected?.plannedStopPrice}:target=${selected?.plannedTargetPrice}`;
+  const idempotencyKey = selected?.idempotencyKeyPreview || `persistent-oco-repair:${sym(selected?.symbol)}:tif=${PERSISTENT_REPAIR_TIME_IN_FORCE}:qty=${selected?.repairQty}:stop=${selected?.plannedStopPrice}:target=${selected?.plannedTargetPrice}`;
   const readVerifyEnabled = boolEnv("PERSISTENT_OCO_REPAIR_READ_VERIFY", false);
   const submitEnabled = boolEnv("PERSISTENT_OCO_REPAIR_SUBMIT_ENABLED", false);
   const approvalPhraseProvided = process.env.PERSISTENT_OCO_REPAIR_APPROVAL_PHRASE === REQUIRED_APPROVAL_PHRASE;
@@ -216,6 +230,7 @@ const main = async () => {
   addGate(gates, "repair_qty_one", num(selected?.repairQty) === 1 ? "PASS" : "BLOCK", `repairQty=${selected?.repairQty ?? "N/A"}`);
   addGate(gates, "payload_shape_ready", payload ? "PASS" : "BLOCK", payload ? "OCO payload can be built from selected persistent row" : "selected row lacks symbol/qty/stop/target");
   addGate(gates, "payload_is_oco_exit", payload?.order_class === "oco" && payload?.side === "sell" && payload?.type === "limit" && payload?.qty === "1" ? "PASS" : "BLOCK", `order_class=${payload?.order_class || "N/A"} side=${payload?.side || "N/A"} type=${payload?.type || "N/A"} qty=${payload?.qty || "N/A"}`);
+  addGate(gates, "persistent_payload_time_in_force_gtc", payload?.time_in_force === PERSISTENT_REPAIR_TIME_IN_FORCE ? "PASS" : "BLOCK", `time_in_force=${payload?.time_in_force || "N/A"} required=${PERSISTENT_REPAIR_TIME_IN_FORCE}; DAY would expire after the trading day`);
   addGate(gates, "payload_no_notional_no_extended_hours", payload && payload.notional === undefined && payload.extended_hours === undefined ? "PASS" : "BLOCK", "persistent OCO repair must not use notional or extended_hours");
   addGate(gates, "price_geometry_valid", num(selected?.plannedStopPrice) != null && num(selected?.currentPrice) != null && num(selected?.plannedTargetPrice) != null && num(selected?.plannedStopPrice) < num(selected?.currentPrice) && num(selected?.currentPrice) < num(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${selected?.currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
   addGate(gates, "idempotency_key_present", idempotencyKey && !idempotencyKey.includes("undefined") ? "PASS" : "BLOCK", `idempotencyKey=${idempotencyKey || "N/A"}`);
@@ -275,7 +290,7 @@ const main = async () => {
     generatedAt: nowIso(),
     overall,
     files: { plan: Boolean(plan), submitLedger: fs.existsSync(LEDGER_PATH) },
-    executionPolicy: { mode: submitEnabled ? "persistent_oco_repair_submit_approved" : "persistent_oco_repair_submit_gate_non_mutating", brokerMutationAllowedByDefault: false, brokerMutationRequested: submitEnabled, approvalPhraseProvided, requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE, targetEnvironment: "PAPER", autoCancelEnabled: false, oneRowOnly: true },
+    executionPolicy: { mode: submitEnabled ? "persistent_oco_repair_submit_approved" : "persistent_oco_repair_submit_gate_non_mutating", brokerMutationAllowedByDefault: false, brokerMutationRequested: submitEnabled, approvalPhraseProvided, requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE, targetEnvironment: "PAPER", autoCancelEnabled: false, oneRowOnly: true, timeInForce: PERSISTENT_REPAIR_TIME_IN_FORCE, expirationPolicy: "gtc_required_for_persistent_protection_day_orders_expire_after_market_close" },
     selected: selected ? { symbol: selected.symbol || null, repairQty: selected.repairQty ?? null, currentPrice: selected.currentPrice ?? null, plannedStopPrice: selected.plannedStopPrice ?? null, plannedTargetPrice: selected.plannedTargetPrice ?? null, readiness: selected.readiness || null, executionAllowed: selected.executionAllowed } : null,
     payloadPreview: sanitize(payload),
     idempotency: { ledgerPath: LEDGER_PATH, key: idempotencyKey, duplicate: activeLedgerDuplicate(idempotencyKey), status: ledgerEntry?.status || ledgerStatus, terminal: ledgerEntry?.terminal === true },

@@ -27,7 +27,7 @@
   "response": [
     {
       "id": "paper_oco_parent_redacted_0001",
-      "client_order_id": "fixture_oco_bz_repair_0001",
+      "client_order_id": "fixture_oco_bz_repair_gtc_0001",
       "created_at": "2026-05-15T14:31:00.000Z",
       "updated_at": "2026-05-15T14:31:00.000Z",
       "submitted_at": "2026-05-15T14:31:00.000Z",
@@ -37,7 +37,7 @@
       "filled_qty": "0",
       "side": "sell",
       "type": "limit",
-      "time_in_force": "day",
+      "time_in_force": "gtc",
       "limit_price": "24.50",
       "stop_price": null,
       "order_class": "oco",
@@ -47,7 +47,7 @@
       "legs": [
         {
           "id": "paper_oco_stop_child_redacted_0001",
-          "client_order_id": "fixture_oco_bz_repair_0001_stop",
+          "client_order_id": "fixture_oco_bz_repair_gtc_0001_stop",
           "parent_order_id": "paper_oco_parent_redacted_0001",
           "created_at": "2026-05-15T14:31:00.000Z",
           "updated_at": "2026-05-15T14:31:00.000Z",
@@ -58,7 +58,7 @@
           "filled_qty": "0",
           "side": "sell",
           "type": "stop",
-          "time_in_force": "day",
+          "time_in_force": "gtc",
           "limit_price": null,
           "stop_price": "20.10",
           "order_class": "oco",

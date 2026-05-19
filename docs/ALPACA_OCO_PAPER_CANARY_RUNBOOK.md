@@ -145,7 +145,7 @@ For a long position, the future paper request must be qty-based and opposite-sid
   "symbol": "BZ",
   "side": "sell",
   "type": "limit",
-  "time_in_force": "day",
+  "time_in_force": "gtc",
   "order_class": "oco",
   "qty": "1",
   "take_profit": { "limit_price": "24.50" },
@@ -160,6 +160,7 @@ Rules:
 - `qty` must be less than or equal to the current open long quantity.
 - `side=sell` for long protection.
 - `type=limit` because Alpaca OCO uses the take-profit order as the parent limit order.
+- `time_in_force=gtc` is required for persistent protective repair. `day` is reserved for rollback canaries only and must not be used for no-auto-cancel protection.
 - Stop must be below current price and below take-profit base by at least Alpaca's threshold.
 - Do not use extended-hours advanced orders.
 
@@ -245,7 +246,7 @@ After the exact approval phrase is captured for the scoped task, run `paper-oco-
 
 After an approved submit canary run, execute `npm run ops:paper-oco-result` or `paper-oco-canary-result-sync.yml` to create a separate result record. The result is pass only when broker submit, nested visibility, rollback cancel, rollback terminal verification, and terminal idempotency ledger checks all pass.
 
-Persistent child-order repair is a separate lane from canary rollback testing. `npm run ops:persistent-oco-plan` is report-only and selects at most one dynamic paper candidate with `autoCancel=false`. It does not call Alpaca. A future persistent submit must be a separate paper-only, one-row task with exact approval, fresh read precheck, idempotency write-before-POST, nested visibility verification, and no auto-cancel.
+Persistent child-order repair is a separate lane from canary rollback testing. `npm run ops:persistent-oco-plan` is report-only and selects at most one dynamic paper candidate with `autoCancel=false` and `time_in_force=gtc`. It does not call Alpaca. A future persistent submit must be a separate paper-only, one-row task with exact approval, fresh read precheck, idempotency write-before-POST, nested visibility verification, GTC payload validation, and no auto-cancel.
 
 ## Approved Persistent Protective OCO Repair Lane
 
@@ -258,3 +259,7 @@ After the exact approval phrase is captured for the scoped task, run `persistent
 - manual rollback instructions are emitted with the client order id.
 
 This lane is not a live-trading promotion. It is a paper-only persistence proof. Broader repair automation requires a separate approval and scale-up task.
+
+### DAY Expiry Regression Guard
+
+If a prior no-auto-cancel repair used `time_in_force=day`, it can pass nested visibility during RTH and still expire after the trading day. Treat that as a failed persistence proof, not a broker child-order reconciliation bug. The persistent lane must rebuild the payload as GTC and uses TIF-aware client-order/idempotency keys so expired DAY proof orders do not block a corrected GTC repair.

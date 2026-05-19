@@ -196,6 +196,7 @@ const validateOcoExitLongRepair = (fixture, errors, warnings) => {
   if (payload?.order_class !== "oco") errors.push("order_class:oco_required_for_repair_fixture");
   if (payload?.side !== "sell") errors.push("side:sell_required_to_exit_long_position");
   if (payload?.type !== "limit") errors.push("type:oco_must_always_be_limit");
+  if (payload?.time_in_force !== "gtc") errors.push("time_in_force:gtc_required_for_persistent_repair_fixture");
   validateLongGeometry({ payload, reference: fixture.reference, errors, warnings, requireCurrentPrice: true });
 };
 

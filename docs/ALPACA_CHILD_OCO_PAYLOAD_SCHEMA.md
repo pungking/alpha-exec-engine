@@ -58,12 +58,12 @@ This is the only currently designed shape for future guarded child repair of a l
   "symbol": "BZ",
   "side": "sell",
   "type": "limit",
-  "time_in_force": "day",
+  "time_in_force": "gtc",
   "order_class": "oco",
   "qty": "1",
   "take_profit": { "limit_price": "24.50" },
   "stop_loss": { "stop_price": "20.10" },
-  "client_order_id": "fixture_oco_bz_repair_0001"
+  "client_order_id": "fixture_oco_bz_repair_gtc_0001"
 }
 ```
 
@@ -72,6 +72,7 @@ Required project checks:
 - `order_class=oco`.
 - `side=sell` when protecting an existing long position.
 - `type=limit`.
+- `time_in_force=gtc` for persistent protective repair. `day` is only acceptable for short-lived rollback canaries because it expires after the trading day.
 - `qty` is present and is a positive whole-share value.
 - `notional` is not present.
 - `take_profit.limit_price` is above current price.
@@ -237,5 +238,10 @@ with:
 - `PERSISTENT_OCO_REPAIR_READ_VERIFY=true`
 - `PERSISTENT_OCO_REPAIR_SUBMIT_ENABLED=true`
 - `PERSISTENT_OCO_REPAIR_APPROVAL_PHRASE=CONFIRM LIVE EXECUTION`
+- `time_in_force=gtc` in the broker payload
 
 This lane differs from the canary rollback lane: it leaves exactly one dynamically selected paper OCO repair order open (`autoCancel=false`) and emits a manual rollback plan. Completion requires nested visibility and post-submit broker child reconciliation to show stop and target present for the selected symbol.
+
+### DAY Expiry Failure Mode
+
+Persistent repair OCO orders must not use `time_in_force=day`. A prior paper proof showed that `day` OCO repairs can be visible during RTH and then disappear after market close, causing the next broker reconciliation to report `STOP_AND_TARGET_CHILD_MISSING` again. The persistent lane now treats non-`gtc` repair payloads as invalid and uses a TIF-aware idempotency/client-order-id key so a former DAY order does not block a corrected GTC repair.

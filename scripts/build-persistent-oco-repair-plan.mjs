@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const RECON_PATH = `${STATE_DIR}/broker-child-order-reconciliation.json`;
 const OUTPUT_JSON = `${STATE_DIR}/persistent-oco-repair-plan.json`;
 const OUTPUT_MD = `${STATE_DIR}/persistent-oco-repair-plan.md`;
+const PERSISTENT_REPAIR_TIME_IN_FORCE = "gtc";
 
 const readJson = (path) => {
   if (!fs.existsSync(path)) return null;
@@ -30,6 +32,16 @@ const qtyString = (value) => {
   const n = toNum(value);
   if (n == null || n <= 0) return null;
   return String(Math.trunc(n));
+};
+const payloadFingerprint = ({ symbol, repairQty, plannedStop, plannedTarget }) => {
+  const source = `${symbol}|${PERSISTENT_REPAIR_TIME_IN_FORCE}|${repairQty}|${plannedStop}|${plannedTarget}`;
+  return createHash("sha256").update(source).digest("hex").slice(0, 8);
+};
+const clientOrderId = ({ symbol, repairQty, plannedStop, plannedTarget }) => {
+  const fingerprint = payloadFingerprint({ symbol, repairQty, plannedStop, plannedTarget });
+  return `persistent_oco_${symbol.toLowerCase()}_${PERSISTENT_REPAIR_TIME_IN_FORCE}_${fingerprint}_q${repairQty}`
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, 48);
 };
 
 const maxQty = Math.max(1, Math.trunc(Number(process.env.PERSISTENT_OCO_REPAIR_MAX_QTY || "1") || 1));
@@ -59,12 +71,12 @@ const candidates = rows
         symbol,
         side: "sell",
         type: "limit",
-        time_in_force: "day",
+        time_in_force: PERSISTENT_REPAIR_TIME_IN_FORCE,
         order_class: "oco",
         qty: qtyString(repairQty),
         take_profit: { limit_price: priceString(plannedTarget) },
         stop_loss: { stop_price: priceString(plannedStop) },
-        client_order_id: `persistent_oco_${symbol.toLowerCase()}_q${repairQty}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 48)
+        client_order_id: clientOrderId({ symbol, repairQty, plannedStop, plannedTarget })
       }
       : null;
     return {
@@ -85,7 +97,7 @@ const candidates = rows
       executionAllowed: false,
       autoCancel: false,
       payloadPreview,
-      idempotencyKeyPreview: payloadPreview ? `persistent-oco-repair:${symbol}:qty=${repairQty}:stop=${plannedStop}:target=${plannedTarget}` : null,
+      idempotencyKeyPreview: payloadPreview ? `persistent-oco-repair:${symbol}:tif=${PERSISTENT_REPAIR_TIME_IN_FORCE}:qty=${repairQty}:stop=${plannedStop}:target=${plannedTarget}` : null,
       reason: blockers.length ? `blocked:${blockers.join(",")}` : "paper-only persistent OCO repair candidate; broker mutation requires separate exact approval"
     };
   })
@@ -110,6 +122,8 @@ const report = {
     brokerMutationAllowed: false,
     autoCancel: false,
     oneRowOnly: true,
+    timeInForce: PERSISTENT_REPAIR_TIME_IN_FORCE,
+    expirationPolicy: "gtc_required_for_persistent_protection_day_orders_expire_after_market_close",
     maxQty,
     requiredApprovalPhrase: "CONFIRM LIVE EXECUTION"
   },
@@ -134,7 +148,7 @@ const md = [
   `- overall: \`${String(report.overall).toUpperCase()}\``,
   `- scope: \`${report.scope}\``,
   `- selected: \`${selected ? `${selected.symbol} qty=${selected.repairQty} stop=${selected.plannedStopPrice} target=${selected.plannedTargetPrice}` : "N/A"}\``,
-  "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; no POST unless separately approved`",
+  "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; GTC required; no POST unless separately approved`",
   "- rows:",
   ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
   ""

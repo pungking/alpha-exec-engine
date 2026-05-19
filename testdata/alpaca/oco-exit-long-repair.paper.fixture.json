@@ -16,7 +16,7 @@
     "symbol": "BZ",
     "side": "sell",
     "type": "limit",
-    "time_in_force": "day",
+    "time_in_force": "gtc",
     "order_class": "oco",
     "qty": "1",
     "take_profit": {
@@ -25,6 +25,6 @@
     "stop_loss": {
       "stop_price": "20.10"
     },
-    "client_order_id": "fixture_oco_bz_repair_0001"
+    "client_order_id": "fixture_oco_bz_repair_gtc_0001"
   }
 }

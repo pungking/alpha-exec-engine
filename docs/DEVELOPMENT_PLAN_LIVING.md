@@ -565,3 +565,32 @@ Priority: P2 until M1/M2 stabilize; then P1
   - Manual `safe_default` dry-run on head `59ddb5b` exposed a real admission/state issue: an already-held symbol could still be admitted as a fresh entry payload when lifecycle scale-up was not active.
   - Portfolio admission now blocks same-symbol fresh entries for held positions unless the payload action is an explicit `SCALE_UP`.
   - Performance dashboard and order-state consistency now treat fillability `BLOCKED_*` / `NO_ACTIVE_ORDER` rows as non-fill-state evidence, while preserving `PAYLOAD_READY_NO_BROKER_MATCH` as planned-order evidence so duplicate-entry risks still fail.
+
+## 2026-05-19 - Persistent Protective OCO GTC Hardening
+
+- Diagnosed the first persistent protective OCO proof failure mode:
+  - QFIN/BZ/ACAD no-auto-cancel paper OCO repairs were visible during RTH but disappeared after market close.
+  - Root cause classification: `time_in_force=day` was incompatible with the intended persistent protection proof.
+- Hardened persistent repair payload generation:
+  - `npm run ops:persistent-oco-plan` now emits `time_in_force=gtc` for persistent OCO repair payload previews.
+  - persistent repair idempotency keys include `tif=gtc` so expired DAY proof orders do not block corrected GTC repairs.
+  - persistent repair client order IDs include `gtc` plus a deterministic payload fingerprint.
+- Hardened approved submit verification:
+  - `npm run ops:persistent-oco-submit` rebuilds/overrides persistent payloads as GTC and blocks non-GTC payloads via `persistent_payload_time_in_force_gtc`.
+  - `.github/workflows/persistent-oco-repair-submit.yml` asserts selected dynamic rows and submitted payloads use GTC before/after broker mutation.
+- Updated offline Alpaca fixtures and docs:
+  - `testdata/alpaca/oco-exit-long-repair.paper.fixture.json`
+  - `testdata/alpaca/oco-repair-nested-open.paper-response.fixture.json`
+  - `docs/ALPACA_CHILD_OCO_PAYLOAD_SCHEMA.md`
+  - `docs/ALPACA_OCO_PAPER_CANARY_RUNBOOK.md`
+- Validation commands:
+  - `node --check scripts/build-persistent-oco-repair-plan.mjs`
+  - `node --check scripts/run-persistent-oco-repair-submit.mjs`
+  - `node --check scripts/validate-alpaca-order-payload-fixtures.mjs`
+  - `node --check scripts/validate-alpaca-oco-response-fixtures.mjs`
+  - `npm run ops:alpaca:payload-fixtures`
+  - `npm run ops:alpaca:oco-response-fixtures`
+  - `npm run build`
+- Next broker-mutating step remains separately gated:
+  - During RTH, submit one corrected GTC persistent repair row at a time only after the exact approval phrase and scoped symbol are supplied.
+  - After market close / next pre-RTH, run GET-only open verification to prove GTC persistence.

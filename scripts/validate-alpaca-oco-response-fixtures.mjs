@@ -193,6 +193,7 @@ const validateFixture = (filePath) => {
     requireEqualString(parent.side, reference.expectedExitSide || "sell", "parent.side", errors);
     requireEqualString(parent.type || parent.order_type, "limit", "parent.type", errors);
     requireEqualString(parent.order_class, "oco", "parent.order_class", errors);
+    requireEqualString(parent.time_in_force, "gtc", "parent.time_in_force", errors);
     if (!sameNumber(parent.qty, reference.qty)) errors.push("parent.qty:does_not_match_reference_qty");
     if (!sameNumber(parent.limit_price, reference.takeProfitLimitPrice)) {
       errors.push("parent.limit_price:does_not_match_reference_take_profit");
@@ -209,6 +210,7 @@ const validateFixture = (filePath) => {
     requireEqualString(child.side, reference.expectedExitSide || "sell", "child.side", errors);
     const childType = String(child.type || child.order_type || "").toLowerCase();
     if (childType !== "stop" && childType !== "stop_limit") errors.push(`child.type:must_be_stop_or_stop_limit(${childType || "missing"})`);
+    requireEqualString(child.time_in_force, "gtc", "child.time_in_force", errors);
     if (!sameNumber(child.qty, reference.qty)) errors.push("child.qty:does_not_match_reference_qty");
     if (!sameNumber(child.stop_price, reference.stopLossStopPrice)) {
       errors.push("child.stop_price:does_not_match_reference_stop_loss");

@@ -153,6 +153,7 @@ jobs:
           if (expected && selected !== expected) failures.push(`selected_${selected}_does_not_match_expected_${expected}`);
           if (plan.selectedCandidate?.executionAllowed !== false) failures.push('selected_execution_allowed_not_false');
           if (Number(plan.selectedCandidate?.repairQty) !== 1) failures.push('repair_qty_not_one');
+          if (plan.selectedCandidate?.payloadPreview?.time_in_force !== 'gtc') failures.push(`persistent_payload_tif_${plan.selectedCandidate?.payloadPreview?.time_in_force || 'missing'}_not_gtc`);
           console.log(JSON.stringify({
             sourceKind: '${{ steps.resolve.outputs.source_kind }}',
             overall: plan.overall,
@@ -160,6 +161,7 @@ jobs:
             expectedSymbol: expected || null,
             selectedSymbol: selected || null,
             repairQty: plan.selectedCandidate?.repairQty ?? null,
+            timeInForce: plan.selectedCandidate?.payloadPreview?.time_in_force ?? null,
             readiness: plan.selectedCandidate?.readiness ?? null,
             brokerMutationAttempted: plan.summary?.brokerMutationAttempted,
             brokerMutationSubmitted: plan.summary?.brokerMutationSubmitted
@@ -199,6 +201,8 @@ jobs:
           if (report.executionPolicy?.autoCancelEnabled !== false) failures.push('autoCancel_not_false');
           if (report.brokerMutation?.attempted !== true) failures.push('brokerMutation_attempted_not_true');
           if (report.brokerMutation?.submitted !== true) failures.push('brokerMutation_submitted_not_true');
+          if (report.payloadPreview?.time_in_force !== 'gtc') failures.push(`payload_time_in_force_${report.payloadPreview?.time_in_force || 'missing'}_not_gtc`);
+          if (report.executionPolicy?.timeInForce !== 'gtc') failures.push(`execution_policy_tif_${report.executionPolicy?.timeInForce || 'missing'}_not_gtc`);
           if (report.postSubmitVisibility?.ok !== true) failures.push('nested_visibility_not_ok');
           if (report.postSubmitVisibility?.persistentOpen !== true) failures.push('persistent_open_not_true');
           if (report.idempotency?.status !== 'persistent_visible_open') failures.push('idempotency_not_persistent_visible_open');
@@ -214,6 +218,7 @@ jobs:
             brokerMutationSubmitted: report.summary?.brokerMutationSubmitted,
             persistentOpen: report.summary?.persistentOpen,
             ledgerStatus: report.summary?.ledgerStatus,
+            timeInForce: report.payloadPreview?.time_in_force,
             selectedRecon: selectedRecon ? {
               protectionStatus: selectedRecon.protectionStatus,
               brokerStopPresent: selectedRecon.brokerStopPresent,
