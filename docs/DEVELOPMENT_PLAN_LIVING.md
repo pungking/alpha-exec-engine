@@ -594,3 +594,24 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Next broker-mutating step remains separately gated:
   - During RTH, submit one corrected GTC persistent repair row at a time only after the exact approval phrase and scoped symbol are supplied.
   - After market close / next pre-RTH, run GET-only open verification to prove GTC persistence.
+
+## 2026-05-19 - Persistent OCO Multi GET-Only Verification and Replanner Guardrails
+
+- Added multi-submit persistent OCO open verification:
+  - `npm run ops:persistent-oco-open-verify:multi`
+  - `.github/workflows/persistent-oco-repair-open-verify-multi.yml`
+  - output: `state/persistent-oco-repair-open-verify-multi.json` / `.md`
+  - verifies multiple prior persistent submit artifacts together with Alpaca paper GET-only reads.
+  - required invariants: `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`, parent client order visible, stop child visible, target child visible, active protection `time_in_force=gtc`.
+- Strengthened ops/Notion visibility:
+  - `scripts/build-ops-health-report.mjs` now reads multi-verify status, symbols, pass/fail counts, and fails if the verifier ever indicates broker mutation.
+  - `scripts/sync-notion-summary.mjs` maps multi-verify overall/reports/pass/fail/symbols/summary to Performance Dashboard columns when those columns exist.
+- Strengthened persistent repair selector safety:
+  - persistent planner rows now expose `geometry`, `brokerStopPresent`, `brokerTargetPresent`, `brokerSellOrderCount`, and `safetyDecision`.
+  - planner blocks inconsistent rows where both children are marked missing while active sell orders exist.
+  - invalid geometry remains `do_not_submit`; ACAD-like rows must not be forced into repair.
+- Next sidecar/RTH observation criteria:
+  - QFIN/BZ repaired rows should remain `BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED` with stop and target present.
+  - `persistent-oco-repair-plan` should remain `blocked_no_eligible_row` unless a genuinely unprotected filled position with valid geometry appears.
+  - no duplicate OCO should be generated for already protected rows.
+  - post-close/pre-RTH multi GET-only verification is the proof that GTC fixed the prior DAY-expiry failure mode.

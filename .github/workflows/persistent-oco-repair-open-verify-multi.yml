@@ -1,0 +1,232 @@
+name: persistent-oco-repair-open-verify-multi
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_submit_run_ids:
+        description: "Comma-separated persistent-oco-repair-submit run ids to verify together"
+        required: true
+        type: string
+      source_sidecar_run_id:
+        description: "sidecar-dry-run run id to restore base state from (blank = latest successful dry-run)"
+        required: false
+        default: ""
+        type: string
+      require_market_open:
+        description: "Require Alpaca paper clock.is_open for multi open-order verification"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: persistent-oco-repair-open-verify-multi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-open-protection-multi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      GH_TOKEN: ${{ github.token }}
+      ALPHA_ENV: PAPER
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      PERSISTENT_OCO_REPAIR_VERIFY_STATE_DIR: state
+      PERSISTENT_OCO_MULTI_SUBMIT_DIR: state/persistent-oco-submit-reports
+      PERSISTENT_OCO_REPAIR_VERIFY_REQUIRE_MARKET_OPEN: ${{ inputs.require_market_open }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve source sidecar run
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          sidecar_run_id="${{ inputs.source_sidecar_run_id }}"
+          if [[ -z "${sidecar_run_id}" ]]; then
+            sidecar_run_id="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow dry-run.yml --status success --limit 20 --json databaseId --jq '.[0].databaseId')"
+          fi
+          if [[ -z "${sidecar_run_id}" || "${sidecar_run_id}" == "null" ]]; then
+            echo "No successful sidecar-dry-run run found" >&2
+            exit 1
+          fi
+          sidecar_artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${sidecar_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("sidecar-state-")) | .name' | head -n 1)"
+          if [[ -z "${sidecar_artifact}" ]]; then
+            echo "No non-expired sidecar-state artifact found for run ${sidecar_run_id}" >&2
+            exit 1
+          fi
+          echo "sidecar_run_id=${sidecar_run_id}" >> "${GITHUB_OUTPUT}"
+          echo "sidecar_artifact=${sidecar_artifact}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved sidecar run ${sidecar_run_id} artifact ${sidecar_artifact}"
+
+      - name: Download base sidecar state artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf state
+          mkdir -p state
+          gh run download "${{ steps.resolve.outputs.sidecar_run_id }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "${{ steps.resolve.outputs.sidecar_artifact }}" \
+            --dir state
+          test -f state/last-dry-exec-preview.json
+
+      - name: Download persistent submit artifacts
+        id: downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p state/persistent-oco-submit-reports
+          raw_ids="${{ inputs.source_submit_run_ids }}"
+          clean_ids=""
+          IFS=',' read -ra ids <<< "${raw_ids}"
+          for raw_id in "${ids[@]}"; do
+            submit_run_id="$(echo "${raw_id}" | xargs)"
+            if [[ -z "${submit_run_id}" ]]; then
+              continue
+            fi
+            submit_artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${submit_run_id}/artifacts" --jq '.artifacts[] | select(.expired == false) | select(.name | startswith("persistent-oco-repair-submit-")) | .name' | head -n 1)"
+            if [[ -z "${submit_artifact}" ]]; then
+              echo "No non-expired persistent submit artifact found for run ${submit_run_id}" >&2
+              exit 1
+            fi
+            target="state/persistent-oco-submit-reports/${submit_run_id}"
+            mkdir -p "${target}"
+            gh run download "${submit_run_id}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --name "${submit_artifact}" \
+              --dir "${target}"
+            test -f "${target}/persistent-oco-repair-submit-report.json"
+            test -f "${target}/persistent-oco-repair-submit-ledger.json"
+            clean_ids="${clean_ids}${clean_ids:+,}${submit_run_id}"
+            echo "Downloaded persistent submit run ${submit_run_id} artifact ${submit_artifact}"
+          done
+          if [[ -z "${clean_ids}" ]]; then
+            echo "source_submit_run_ids resolved to empty list" >&2
+            exit 1
+          fi
+          echo "submit_run_ids=${clean_ids}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify multiple persistent OCO repairs remain open with GET-only broker reads
+        run: npm run ops:persistent-oco-open-verify:multi
+
+      - name: Rebuild live performance dashboard
+        if: always()
+        run: npm run dashboard:perf
+
+      - name: Rebuild broker child reconciliation
+        if: always()
+        run: npm run ops:broker-child-reconcile
+
+      - name: Rebuild persistent OCO repair planner
+        if: always()
+        run: npm run ops:persistent-oco-plan
+
+      - name: Rebuild ops health report
+        if: always()
+        run: npm run ops:health
+
+      - name: Verify multi report is read-only and reflected by ops outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const multi = JSON.parse(fs.readFileSync('state/persistent-oco-repair-open-verify-multi.json', 'utf8'));
+          const recon = JSON.parse(fs.readFileSync('state/broker-child-order-reconciliation.json', 'utf8'));
+          const perf = JSON.parse(fs.readFileSync('state/performance-dashboard.json', 'utf8'));
+          const ops = JSON.parse(fs.readFileSync('state/ops-health-report.json', 'utf8'));
+          const failures = [];
+          if (multi.overall !== 'pass') failures.push('multi_verify_not_pass');
+          if (multi.summary?.brokerMutationAttempted !== false) failures.push('multi_attempted_not_false');
+          if (multi.summary?.brokerMutationSubmitted !== false) failures.push('multi_submitted_not_false');
+          for (const row of multi.rows || []) {
+            const selectedRecon = Array.isArray(recon.rows) ? recon.rows.find((item) => item.symbol === row.symbol) : null;
+            const selectedPerf = Array.isArray(perf.live?.positions) ? perf.live.positions.find((item) => item.symbol === row.symbol) : null;
+            if (!selectedRecon) failures.push(`${row.symbol}:recon_missing`);
+            if (selectedRecon && selectedRecon.brokerStopPresent !== true) failures.push(`${row.symbol}:recon_stop_missing`);
+            if (selectedRecon && selectedRecon.brokerTargetPresent !== true) failures.push(`${row.symbol}:recon_target_missing`);
+            if (!selectedPerf) failures.push(`${row.symbol}:perf_missing`);
+            if (selectedPerf && selectedPerf.brokerStopPresent !== true) failures.push(`${row.symbol}:perf_stop_missing`);
+            if (selectedPerf && selectedPerf.brokerTargetPresent !== true) failures.push(`${row.symbol}:perf_target_missing`);
+          }
+          if (ops.metrics?.persistentOcoOpenVerifyMultiOverall !== 'pass') failures.push('ops_multi_metric_not_pass');
+          console.log(JSON.stringify({
+            multi: multi.summary,
+            reconSummary: recon.summary,
+            perfTotals: perf.live?.totals,
+            opsMulti: {
+              overall: ops.metrics?.persistentOcoOpenVerifyMultiOverall,
+              symbols: ops.metrics?.persistentOcoOpenVerifyMultiSymbols,
+              passCount: ops.metrics?.persistentOcoOpenVerifyMultiPassCount,
+              failCount: ops.metrics?.persistentOcoOpenVerifyMultiFailCount
+            }
+          }, null, 2));
+          if (failures.length) {
+            console.error(`persistent OCO multi open verify failed: ${failures.join(',')}`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Persistent OCO Multi Open Verify"
+            echo "- submitRuns: \`${{ steps.downloads.outputs.submit_run_ids }}\`"
+            echo "- sidecarRun: \`${{ steps.resolve.outputs.sidecar_run_id }}\`"
+            echo "- sidecarArtifact: \`${{ steps.resolve.outputs.sidecar_artifact }}\`"
+            echo "- brokerMutation: \`GET-only multi verification; no POST/DELETE\`"
+            echo ""
+            if [[ -f state/persistent-oco-repair-open-verify-multi.md ]]; then
+              cat state/persistent-oco-repair-open-verify-multi.md
+            else
+              echo "- status: \`missing state/persistent-oco-repair-open-verify-multi.md\`"
+            fi
+            echo ""
+            if [[ -f state/ops-health-report.md ]]; then
+              cat state/ops-health-report.md
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload persistent OCO multi open verify artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistent-oco-repair-open-verify-multi-${{ github.run_id }}
+          path: |
+            state/persistent-oco-repair-open-verify-multi.json
+            state/persistent-oco-repair-open-verify-multi.md
+            state/persistent-oco-submit-reports/**/persistent-oco-repair-submit-report.json
+            state/persistent-oco-submit-reports/**/persistent-oco-repair-submit-ledger.json
+            state/performance-dashboard.json
+            state/performance-dashboard.md
+            state/broker-child-order-reconciliation.json
+            state/broker-child-order-reconciliation.md
+            state/persistent-oco-repair-plan.json
+            state/persistent-oco-repair-plan.md
+            state/ops-health-report.json
+            state/ops-health-report.md
+          if-no-files-found: warn

@@ -141,6 +141,7 @@ HF verification shortcuts:
 - `npm run ops:paper-oco-canary`: build the report-only, portfolio-wide single-symbol OCO canary candidate selector (`state/paper-oco-canary-candidate.json`, `.md`); no broker endpoint calls and no executable payload.
 - `npm run ops:paper-oco-gate`: build the report-only approval decision gate for the selected OCO canary row (`state/paper-oco-canary-approval-gate.json`, `.md`); no broker endpoint calls and recommended action remains `DO_NOT_SUBMIT`.
 - `npm run ops:paper-oco-submit-gate`: build the non-mutating paper OCO submit safety gate (`state/paper-oco-canary-submit-gate.json`, `.md`). It never submits; use `PAPER_OCO_CANARY_READ_VERIFY=true` only for paper-only read prechecks.
+- `npm run ops:persistent-oco-open-verify:multi`: verify multiple previously approved persistent OCO submit artifacts with Alpaca paper `GET` calls only (`state/persistent-oco-repair-open-verify-multi.json`, `.md`); no POST/DELETE and no auto-cancel.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
@@ -727,6 +728,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/paper-oco-canary-candidate.json` / `.md` (report-only, dynamic single-symbol paper OCO canary target selector)
   - `state/paper-oco-canary-approval-gate.json` / `.md` (report-only decision gate before any separate broker-mutating canary task)
   - `state/paper-oco-canary-submit-gate.json` / `.md` (blocked-by-default final paper OCO submit gate with rollback/idempotency/visibility plan)
+  - `state/persistent-oco-repair-open-verify-multi.json` / `.md` (GET-only multi-submit persistent OCO visibility proof; no broker mutation)
   - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
@@ -745,6 +747,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - Paper OCO canary candidate selector chooses at most one lowest-notional eligible row from all current dynamic candidates and keeps `executionAllowed=false`; it is evidence for a generic rule, not a hard-coded ticker path.
   - Paper OCO approval gate checks the selected row against fixture, nested-order, order-state, safe-flag, and geometry preconditions, then returns `READY_FOR_MANUAL_APPROVAL` or blocked while still recommending `DO_NOT_SUBMIT`.
   - Paper OCO submit gate is the final non-mutating bridge toward a future actual paper canary. It verifies whether the selected row is eligible for a separate approved broker-mutating task and records the position/nested-order/idempotency/rollback/visibility requirements.
+  - Persistent OCO multi open verify reads one or more approved persistent submit artifacts and re-checks their parent/stop/target visibility with `nested=true`; it must report `brokerMutationAttempted=false` and `brokerMutationSubmitted=false`.
   - When Alpaca credentials are unavailable, live section is marked `N/A` and run continues.
 - Manual build:
   - `npm run dashboard:perf`

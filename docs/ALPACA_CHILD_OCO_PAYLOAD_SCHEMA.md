@@ -242,6 +242,25 @@ with:
 
 This lane differs from the canary rollback lane: it leaves exactly one dynamically selected paper OCO repair order open (`autoCancel=false`) and emits a manual rollback plan. Completion requires nested visibility and post-submit broker child reconciliation to show stop and target present for the selected symbol.
 
+### Multi-Submit GET-Only Persistent Open Verification
+
+Use `persistent-oco-repair-open-verify-multi.yml` or:
+
+```bash
+npm run ops:persistent-oco-open-verify:multi
+```
+
+to verify multiple already-approved persistent repair submit artifacts together. This lane is read-only:
+
+- calls only Alpaca paper `GET` endpoints,
+- requires `ALPHA_ENV=PAPER` and `ALPACA_BASE_URL=https://paper-api.alpaca.markets`,
+- reads prior `persistent-oco-repair-submit-report.json` and submit ledgers,
+- checks parent `client_order_id` visibility plus active stop and target children,
+- checks all active sell protection legs are `time_in_force=gtc`,
+- emits `brokerMutationAttempted=false` and `brokerMutationSubmitted=false`.
+
+The multi verifier is the preferred post-close / pre-RTH proof for confirming that GTC protective OCO repairs survived the DAY expiry failure mode. It is not a submit lane and must not be used to repair additional symbols.
+
 ### DAY Expiry Failure Mode
 
 Persistent repair OCO orders must not use `time_in_force=day`. A prior paper proof showed that `day` OCO repairs can be visible during RTH and then disappear after market close, causing the next broker reconciliation to report `STOP_AND_TARGET_CHILD_MISSING` again. The persistent lane now treats non-`gtc` repair payloads as invalid and uses a TIF-aware idempotency/client-order-id key so a former DAY order does not block a corrected GTC repair.

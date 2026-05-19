@@ -1064,6 +1064,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const persistentOcoRepairPlan = readJson("state/persistent-oco-repair-plan.json") || {};
+  const persistentOcoOpenVerifyMulti = readJson("state/persistent-oco-repair-open-verify-multi.json") || {};
   const alpacaPayloadSchema = readJson("state/alpaca-order-payload-schema-report.json") || {};
   const alpacaOcoResponseFixture = readJson("state/alpaca-oco-response-fixture-report.json") || {};
   const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
@@ -1143,6 +1144,8 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `persistentOcoEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"}`,
     `persistentOcoSelected=${persistentOcoRepairPlan?.summary?.selectedSymbol ?? "N/A"}`,
     `persistentOcoSubmitted=${persistentOcoRepairPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+    `persistentOcoMultiVerify=${persistentOcoOpenVerifyMulti?.overall || "N/A"}`,
+    `persistentOcoMultiSymbols=${Array.isArray(persistentOcoOpenVerifyMulti?.summary?.symbols) ? persistentOcoOpenVerifyMulti.summary.symbols.join(",") : "N/A"}`,
     `alpacaPayloadSchema=${alpacaPayloadSchema?.overall || "N/A"}`,
     `alpacaFixtureFail=${alpacaPayloadSchema?.summary?.failCount ?? "N/A"}`,
     `alpacaOcoResponse=${alpacaOcoResponseFixture?.overall || "N/A"}`,
@@ -1217,6 +1220,20 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       persistentOcoRepairSubmitted: persistentOcoRepairPlan?.summary?.brokerMutationSubmitted === true,
       persistentOcoRepairSummary: shortText(
         `overall=${persistentOcoRepairPlan?.overall || "N/A"} scope=${persistentOcoRepairPlan?.scope || "N/A"} rows=${persistentOcoRepairPlan?.summary?.rows ?? "N/A"} eligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} selected=${persistentOcoRepairPlan?.summary?.selectedSymbol ?? "N/A"} qty=${persistentOcoRepairPlan?.summary?.selectedRepairQty ?? "N/A"} attempted=${persistentOcoRepairPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${persistentOcoRepairPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${persistentOcoRepairPlan?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      persistentOcoOpenVerifyMultiOverall: shortText(persistentOcoOpenVerifyMulti?.overall || "N/A", 80),
+      persistentOcoOpenVerifyMultiReports: toNumber(persistentOcoOpenVerifyMulti?.summary?.reports),
+      persistentOcoOpenVerifyMultiPassCount: toNumber(persistentOcoOpenVerifyMulti?.summary?.passCount),
+      persistentOcoOpenVerifyMultiFailCount: toNumber(persistentOcoOpenVerifyMulti?.summary?.failCount),
+      persistentOcoOpenVerifyMultiSymbols: shortText(
+        Array.isArray(persistentOcoOpenVerifyMulti?.summary?.symbols)
+          ? persistentOcoOpenVerifyMulti.summary.symbols.join(",")
+          : "N/A",
+        120
+      ),
+      persistentOcoOpenVerifyMultiSummary: shortText(
+        `overall=${persistentOcoOpenVerifyMulti?.overall || "N/A"} reports=${persistentOcoOpenVerifyMulti?.summary?.reports ?? "N/A"} pass=${persistentOcoOpenVerifyMulti?.summary?.passCount ?? "N/A"} fail=${persistentOcoOpenVerifyMulti?.summary?.failCount ?? "N/A"} symbols=${Array.isArray(persistentOcoOpenVerifyMulti?.summary?.symbols) ? persistentOcoOpenVerifyMulti.summary.symbols.join(",") : "N/A"} attempted=${persistentOcoOpenVerifyMulti?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${persistentOcoOpenVerifyMulti?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${persistentOcoOpenVerifyMulti?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       alpacaPayloadSchemaOverall: shortText(alpacaPayloadSchema?.overall || "N/A", 80),
@@ -1472,6 +1489,28 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Persistent OCO Repair Summary", "Persistent OCO Summary"], {
     rich_text: () => textProp(row.live.persistentOcoRepairSummary)
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Overall", "Persistent OCO Open Verify Overall"], {
+    select: () => selectProp(row.live.persistentOcoOpenVerifyMultiOverall || "N/A"),
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Reports", "Persistent OCO Open Verify Reports"], {
+    number: () => numberProp(row.live.persistentOcoOpenVerifyMultiReports),
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiReports ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Pass", "Persistent OCO Open Verify Pass"], {
+    number: () => numberProp(row.live.persistentOcoOpenVerifyMultiPassCount),
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiPassCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Fail", "Persistent OCO Open Verify Fail"], {
+    number: () => numberProp(row.live.persistentOcoOpenVerifyMultiFailCount),
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiFailCount ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Symbols", "Persistent OCO Open Verify Symbols"], {
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiSymbols || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Persistent OCO Multi Verify Summary", "Persistent OCO Open Verify Summary"], {
+    rich_text: () => textProp(row.live.persistentOcoOpenVerifyMultiSummary)
   });
   setPropertyAliases(properties, schema, ["Alpaca Payload Schema Overall", "Alpaca Order Payload Schema"], {
     select: () => selectProp(row.live.alpacaPayloadSchemaOverall || "N/A"),

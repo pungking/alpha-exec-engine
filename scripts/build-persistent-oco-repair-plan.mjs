@@ -55,14 +55,20 @@ const candidates = rows
     const plannedTarget = toNum(row?.plannedTargetPrice);
     const current = toNum(row?.currentPrice);
     const bothMissing = row?.stopChildMissing === true && row?.targetChildMissing === true;
+    const brokerSellOrderCount = toNum(row?.brokerSellOrderCount) ?? 0;
+    const brokerStopPresent = row?.brokerStopPresent === true;
+    const brokerTargetPresent = row?.brokerTargetPresent === true;
     const filled = String(row?.normalizedFillState || "").toLowerCase() === "filled";
     const guardOk = row?.guardMetadataMissing !== true;
-    const geometryOk = plannedStop != null && current != null && plannedTarget != null && plannedStop < current && current < plannedTarget;
+    const stopBelowCurrent = plannedStop != null && current != null && plannedStop < current;
+    const targetAboveCurrent = plannedTarget != null && current != null && current < plannedTarget;
+    const geometryOk = stopBelowCurrent && targetAboveCurrent;
     const repairQty = qty != null ? Math.min(Math.trunc(qty), maxQty) : null;
     const blockers = [];
     if (!symbol) blockers.push("missing_symbol");
     if (!filled) blockers.push("position_not_filled");
     if (!bothMissing) blockers.push("requires_stop_and_target_missing");
+    if (bothMissing && brokerSellOrderCount > 0) blockers.push("broker_sell_order_count_conflicts_with_missing_children");
     if (!guardOk) blockers.push("guard_metadata_missing");
     if (!geometryOk) blockers.push("invalid_stop_current_target_geometry");
     if (!repairQty || repairQty < 1) blockers.push("invalid_repair_qty");
@@ -90,7 +96,14 @@ const candidates = rows
       plannedTargetPrice: plannedTarget,
       stopChildMissing: row?.stopChildMissing === true,
       targetChildMissing: row?.targetChildMissing === true,
-      brokerSellOrderCount: row?.brokerSellOrderCount ?? null,
+      brokerStopPresent,
+      brokerTargetPresent,
+      brokerSellOrderCount,
+      geometry: {
+        stopBelowCurrent,
+        targetAboveCurrent,
+        valid: geometryOk
+      },
       normalizedFillState: row?.normalizedFillState || null,
       blockers,
       readiness: blockers.length === 0 ? "PERSISTENT_REPAIR_READY_FOR_APPROVAL" : "BLOCKED",
@@ -98,7 +111,10 @@ const candidates = rows
       autoCancel: false,
       payloadPreview,
       idempotencyKeyPreview: payloadPreview ? `persistent-oco-repair:${symbol}:tif=${PERSISTENT_REPAIR_TIME_IN_FORCE}:qty=${repairQty}:stop=${plannedStop}:target=${plannedTarget}` : null,
-      reason: blockers.length ? `blocked:${blockers.join(",")}` : "paper-only persistent OCO repair candidate; broker mutation requires separate exact approval"
+      reason: blockers.length ? `blocked:${blockers.join(",")}` : "paper-only persistent OCO repair candidate; broker mutation requires separate exact approval",
+      safetyDecision: blockers.length === 0
+        ? "eligible_for_manual_approval_only"
+        : "do_not_submit"
     };
   })
   .filter((row) => row.symbol);
@@ -150,7 +166,7 @@ const md = [
   `- selected: \`${selected ? `${selected.symbol} qty=${selected.repairQty} stop=${selected.plannedStopPrice} target=${selected.plannedTargetPrice}` : "N/A"}\``,
   "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; GTC required; no POST unless separately approved`",
   "- rows:",
-  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
+  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} geometry=${row.geometry.valid ? "valid" : "invalid"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
   ""
 ].join("\n");
 
