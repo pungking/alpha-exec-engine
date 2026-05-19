@@ -54,6 +54,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify runtime selector remains symbol-agnostic
+        run: npm run ops:safety:symbol-agnostic
+
       - name: Resolve source sidecar run
         id: resolve
         shell: bash

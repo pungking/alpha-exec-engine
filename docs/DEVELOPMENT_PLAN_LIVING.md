@@ -615,3 +615,13 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `persistent-oco-repair-plan` should remain `blocked_no_eligible_row` unless a genuinely unprotected filled position with valid geometry appears.
   - no duplicate OCO should be generated for already protected rows.
   - post-close/pre-RTH multi GET-only verification is the proof that GTC fixed the prior DAY-expiry failure mode.
+
+## 2026-05-20 - Runtime Symbol-Agnostic Safety Check
+
+- Clarified OCO repair scope: QFIN/BZ/ACAD/TSLA are current proof/evidence symbols only, not target-specific runtime behavior.
+- Added runtime hard-code guard:
+  - `npm run ops:safety:symbol-agnostic`
+  - output: `state/symbol-agnostic-runtime-check.json` / `.md`
+  - scans `src`, `scripts`, and `.github/workflows` for current proof symbols.
+  - docs and test fixtures may keep example symbols; runtime code and workflows must remain dynamic.
+- Wired the guard into persistent OCO submit/open-verify workflows so approved repairs and GET-only verifiers fail before broker interaction if runtime symbol hard-coding appears.

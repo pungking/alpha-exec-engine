@@ -142,6 +142,7 @@ HF verification shortcuts:
 - `npm run ops:paper-oco-gate`: build the report-only approval decision gate for the selected OCO canary row (`state/paper-oco-canary-approval-gate.json`, `.md`); no broker endpoint calls and recommended action remains `DO_NOT_SUBMIT`.
 - `npm run ops:paper-oco-submit-gate`: build the non-mutating paper OCO submit safety gate (`state/paper-oco-canary-submit-gate.json`, `.md`). It never submits; use `PAPER_OCO_CANARY_READ_VERIFY=true` only for paper-only read prechecks.
 - `npm run ops:persistent-oco-open-verify:multi`: verify multiple previously approved persistent OCO submit artifacts with Alpaca paper `GET` calls only (`state/persistent-oco-repair-open-verify-multi.json`, `.md`); no POST/DELETE and no auto-cancel.
+- `npm run ops:safety:symbol-agnostic`: fail if runtime scripts/workflows hard-code current proof symbols such as QFIN/BZ/ACAD/TSLA/JHG/INVA; docs and test fixtures may still contain examples.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
