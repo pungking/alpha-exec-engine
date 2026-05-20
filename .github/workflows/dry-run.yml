@@ -1782,6 +1782,8 @@ jobs:
           path: |
             state/last-run.json
             state/last-dry-exec-preview.json
+            state/symbol-agnostic-runtime-check.json
+            state/symbol-agnostic-runtime-check.md
             state/last-order-decision-audit.json
             state/order-decision-audit.jsonl
             state/hf-marker-audit.json
