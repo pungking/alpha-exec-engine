@@ -648,3 +648,6 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `npm run ops:fillability` now exposes high-price sizing diagnostics for `entry_notional_below_limit_price`.
   - report-only fields include requested notional, one-share notional, one-share risk dollars, configured one-share caps, and whether `ENTRY_HIGH_PRICE_POLICY=min_one_share` would fit those caps.
   - changing `ENTRY_HIGH_PRICE_POLICY` remains an execution-policy decision; diagnostics do not alter order creation defaults.
+- Manual canary workflow support:
+  - `.github/workflows/dry-run.yml` now supports `run_portfolio_min_fillability_score` for `workflow_dispatch` only.
+  - This keeps repository defaults unchanged while allowing a safe read-only canary to determine whether `portfolio_fillability_below_floor` is the final blocker after one-share sizing and max-total-notional caps are satisfied.
