@@ -11802,11 +11802,15 @@ async function resolveOrderIdempotencyBrokerResolution(
     };
   }
   if (!lookup.found) {
+    const hasBrokerMetadata = Boolean(existing.brokerOrderId || existing.brokerStatus);
+    const releaseMissingPreviewReservation = !hasBrokerMetadata;
     return {
       checked: true,
-      release: policy.releaseOnMissingBrokerOrder,
-      holdReason: policy.releaseOnMissingBrokerOrder ? "" : lookup.reason,
-      releaseReason: "broker_order_missing",
+      release: policy.releaseOnMissingBrokerOrder || releaseMissingPreviewReservation,
+      holdReason: policy.releaseOnMissingBrokerOrder || releaseMissingPreviewReservation ? "" : lookup.reason,
+      releaseReason: releaseMissingPreviewReservation
+        ? "broker_order_missing_without_broker_metadata"
+        : "broker_order_missing",
       brokerOrderId,
       brokerStatus
     };
@@ -11859,6 +11863,7 @@ async function applyOrderIdempotency(
   const brokerReconcilePolicy = buildOrderIdempotencyBrokerReconcilePolicy();
   const brokerReconcileActive = brokerReconcilePolicy.enabled && enforced && cfg.execEnabled && !cfg.readOnly;
   const persistNewEntries = options?.persistNewEntries ?? true;
+  const persistEffective = persistNewEntries && enforced;
   const phase = options?.phase ?? "final";
 
   if (!enabled) {
@@ -11889,7 +11894,7 @@ async function applyOrderIdempotency(
   let brokerCheckedCount = 0;
   let brokerReleasedCount = 0;
   let brokerHeldCount = 0;
-  let changed = persistNewEntries && pruned > 0;
+  let changed = persistEffective && pruned > 0;
   const todayKey = toTimeZoneDayKey(Date.now(), idempotencyTimeZone);
 
   for (const payload of dryExec.payloads) {
@@ -11974,7 +11979,7 @@ async function applyOrderIdempotency(
       const monitorRepricePassThrough = shouldPassThroughIdempotencyForOpenOrderReprice(dryExec, payload);
       if (enforced && monitorRepricePassThrough) {
         payloads.push(payload);
-        if (persistNewEntries) {
+        if (persistEffective) {
           existing.lastSeenAt = now;
           existing.clientOrderId = payload.client_order_id;
           changed = true;
@@ -12000,7 +12005,7 @@ async function applyOrderIdempotency(
 
     newCount += 1;
     payloads.push(payload);
-    if (persistNewEntries) {
+    if (persistEffective) {
       state.orders[key] = {
         symbol: payload.symbol,
         side: payload.side,
@@ -12021,7 +12026,7 @@ async function applyOrderIdempotency(
     await saveOrderIdempotencyState(state);
   }
   console.log(
-    `[ORDER_IDEMP] phase=${phase} enabled=${enabled} enforce=${enforced} persist=${persistNewEntries} ttlDays=${ttlDays} resetDaily=${entryResetDaily} tz=${idempotencyTimeZone} brokerRecon=${brokerReconcileActive} brokerChecked=${brokerCheckedCount} brokerReleased=${brokerReleasedCount} brokerHeld=${brokerHeldCount} released=${releasedCount} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
+    `[ORDER_IDEMP] phase=${phase} enabled=${enabled} enforce=${enforced} persist=${persistEffective} persistRequested=${persistNewEntries} ttlDays=${ttlDays} resetDaily=${entryResetDaily} tz=${idempotencyTimeZone} brokerRecon=${brokerReconcileActive} brokerChecked=${brokerCheckedCount} brokerReleased=${brokerReleasedCount} brokerHeld=${brokerHeldCount} released=${releasedCount} new=${newCount} duplicate=${duplicateCount} pruned=${pruned}`
   );
 
   const nextDryExec: DryExecBuildResult = {
