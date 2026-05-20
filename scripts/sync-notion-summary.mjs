@@ -1070,6 +1070,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
   const paperOcoApprovalGate = readJson("state/paper-oco-canary-approval-gate.json") || {};
   const paperOcoSubmitGate = readJson("state/paper-oco-canary-submit-gate.json") || {};
+  const openOrderRepriceProposal = readJson("state/open-order-reprice-proposal.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1158,6 +1159,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `paperOcoSubmit=${paperOcoSubmitGate?.overall || "N/A"}`,
     `paperOcoSubmitDecision=${paperOcoSubmitGate?.decision?.status || "N/A"}`,
     `paperOcoSubmitSubmitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+    `openRepriceProposal=${openOrderRepriceProposal?.overall || "N/A"}`,
+    `openRepriceReady=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"}`,
+    `openRepriceRiskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"}`,
+    `openRepriceSubmitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1276,6 +1281,17 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       paperOcoSubmitGateSubmitted: paperOcoSubmitGate?.summary?.brokerMutationSubmitted === true,
       paperOcoSubmitGateSummary: shortText(
         `overall=${paperOcoSubmitGate?.overall || "N/A"} decision=${paperOcoSubmitGate?.decision?.status || "N/A"} action=${paperOcoSubmitGate?.decision?.recommendedAction || "N/A"} selected=${paperOcoSubmitGate?.summary?.selectedSymbol ?? "N/A"} attempted=${paperOcoSubmitGate?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"} blockingGates=${paperOcoSubmitGate?.summary?.blockingGates ?? "N/A"} mode=${paperOcoSubmitGate?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      openOrderRepriceProposalOverall: shortText(openOrderRepriceProposal?.overall || "N/A", 80),
+      openOrderRepriceRows: toNumber(openOrderRepriceProposal?.summary?.rows),
+      openOrderRepriceReady: toNumber(openOrderRepriceProposal?.summary?.readyForApproval),
+      openOrderRepriceWaitingPolicy: toNumber(openOrderRepriceProposal?.summary?.waitingPolicy),
+      openOrderRepriceRiskBreaches: toNumber(openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches),
+      openOrderRepriceAttempted: openOrderRepriceProposal?.summary?.brokerMutationAttempted === true,
+      openOrderRepriceSubmitted: openOrderRepriceProposal?.summary?.brokerMutationSubmitted === true,
+      openOrderRepriceSummary: shortText(
+        `overall=${openOrderRepriceProposal?.overall || "N/A"} rows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"} ready=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"} waitPolicy=${openOrderRepriceProposal?.summary?.waitingPolicy ?? "N/A"} riskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"} attempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"} reportOnly=${openOrderRepriceProposal?.executionPolicy?.reportOnly ?? "N/A"}`,
         500
       ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
@@ -1609,6 +1625,29 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Paper OCO Submit Summary", "Paper OCO Submit Gate Summary"], {
     rich_text: () => textProp(row.live.paperOcoSubmitGateSummary)
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Proposal Overall", "Open Order Reprice Overall"], {
+    select: () => selectProp(row.live.openOrderRepriceProposalOverall || "N/A"),
+    rich_text: () => textProp(row.live.openOrderRepriceProposalOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Ready", "Open Order Reprice Ready"], {
+    number: () => numberProp(row.live.openOrderRepriceReady),
+    rich_text: () => textProp(row.live.openOrderRepriceReady ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Risk Breaches", "Open Order Reprice Risk Breaches"], {
+    number: () => numberProp(row.live.openOrderRepriceRiskBreaches),
+    rich_text: () => textProp(row.live.openOrderRepriceRiskBreaches ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Attempted", "Open Order Reprice Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.openOrderRepriceAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.openOrderRepriceAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Submitted", "Open Order Reprice Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.openOrderRepriceSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.openOrderRepriceSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Open Reprice Summary", "Open Order Reprice Summary"], {
+    rich_text: () => textProp(row.live.openOrderRepriceSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),

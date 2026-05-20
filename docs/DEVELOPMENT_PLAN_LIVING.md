@@ -652,3 +652,27 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `.github/workflows/dry-run.yml` now supports `run_verify_mode=safe_min_one_share_admission_probe` for `workflow_dispatch` only.
   - The preset keeps `READ_ONLY=true`, `EXEC_ENABLED=false`, and `LIVE_ORDER_SUBMIT_ENABLED=false` while applying `ENTRY_HIGH_PRICE_POLICY=min_one_share`, `DRY_MAX_TOTAL_NOTIONAL=300`, and `PORTFOLIO_MIN_FILLABILITY_SCORE=50` for that one run.
   - This avoids GitHub's 25-input `workflow_dispatch` limit and keeps repository defaults unchanged while allowing a safe read-only canary to determine whether `portfolio_fillability_below_floor` is the final blocker after one-share sizing and max-total-notional caps are satisfied.
+
+## 2026-05-20 - Risk-Capped Open-Order Reprice Proposal
+
+- Added report-only open-order reprice planning for stale/persistent open entries:
+  - `npm run ops:open-order-reprice-proposal`
+  - output: `state/open-order-reprice-proposal.json` / `.md`
+  - wired into `.github/workflows/dry-run.yml` after order-state consistency and before ops health.
+- The proposal is symbol-agnostic and reads current sidecar evidence from:
+  - `state/last-dry-exec-preview.json`
+  - `state/fillability-report.json`
+  - `state/order-state-consistency-report.json`
+- Safety invariant:
+  - report-only only; `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - no replace is considered ready unless ledger consistency passes, duplicate open count is clean, broker order is still open, RR remains above floor, and risk dollars stay within `ENTRY_MAX_RISK_DOLLARS_PER_TRADE`.
+- Reprice price discipline:
+  - current/suggested chase is not used directly.
+  - max candidate price is capped by `plannedStop + maxRiskDollarsPerTrade / qty`.
+  - rows that would breach risk at the current/suggested price are surfaced as ops warnings instead of mutating broker orders.
+- Ops health now surfaces:
+  - `openRepriceProposal`, `openRepriceReady`, `openRepriceRiskBreaches`, `openRepriceAttempted`, `openRepriceSubmitted`.
+- Current ADBE proof case:
+  - existing limit stayed at `$245.12`.
+  - current/suggested near-market reprice exceeded the `$25` max-risk cap.
+  - risk-capped limit was approximately `$247.44`, so the correct behavior is no automatic replace and continued report-only monitoring unless a separate guarded replace approval is later requested.

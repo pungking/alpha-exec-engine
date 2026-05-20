@@ -1635,6 +1635,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build open-order risk-capped reprice proposal
+        if: always()
+        run: npm run ops:open-order-reprice-proposal
+
+      - name: Publish open-order risk-capped reprice proposal summary
+        if: always()
+        run: |
+          if [[ -f state/open-order-reprice-proposal.md ]]; then
+            cat state/open-order-reprice-proposal.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Open Order Risk-Capped Reprice Proposal" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/open-order-reprice-proposal.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build guarded child-order repair plan
         if: always()
         run: npm run ops:guarded-repair-plan
