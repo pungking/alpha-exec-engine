@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
 
 const STATE_DIR = String(process.env.PAPER_OCO_SUBMIT_STATE_DIR || "state").trim() || "state";
 const APPROVAL_GATE_PATH = `${STATE_DIR}/paper-oco-canary-approval-gate.json`;
@@ -64,6 +65,17 @@ const qtyString = (value) => {
 
 const addGate = (gates, id, status, detail) => {
   gates.push({ id, status, detail: short(detail, 360) });
+};
+
+const guardRiskDetail = (risk) => {
+  if (!risk || typeof risk !== "object") return "missing guardMetadataRisk";
+  const blockers = Array.isArray(risk.blockers) ? risk.blockers : [];
+  return `status=${risk.status || "N/A"} ageMin=${risk.ageMin ?? "N/A"}/${risk.maxAgeMin ?? "N/A"} stopDist=${risk.stopDistancePct ?? "N/A"}% targetDist=${risk.targetDistancePct ?? "N/A"}% blockers=${blockers.join(",") || "none"}`;
+};
+
+const guardRiskBlocked = (risk) => {
+  if (!risk || typeof risk !== "object") return true;
+  return risk.status === "BLOCK" || (Array.isArray(risk.blockers) && risk.blockers.length > 0);
 };
 
 const sanitizeScalar = (key, value) => {
@@ -237,6 +249,9 @@ const validateStaticInputs = ({ approvalGate, candidate, selected, payload, idem
   addGate(gates, "payload_preview_is_oco_exit", payload?.order_class === "oco" && payload?.side === "sell" && payload?.type === "limit" && payload?.qty === "1" ? "PASS" : "BLOCK", `order_class=${payload?.order_class || "N/A"} side=${payload?.side || "N/A"} type=${payload?.type || "N/A"} qty=${payload?.qty || "N/A"}`);
   addGate(gates, "payload_preview_no_notional_no_extended_hours", payload && payload.notional === undefined && payload.extended_hours === undefined ? "PASS" : "BLOCK", "OCO canary must not use notional or extended_hours");
   addGate(gates, "price_geometry_valid", toNum(selected?.plannedStopPrice) != null && toNum(selected?.currentPrice) != null && toNum(selected?.plannedTargetPrice) != null && toNum(selected?.plannedStopPrice) < toNum(selected?.currentPrice) && toNum(selected?.currentPrice) < toNum(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${selected?.currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
+  const selectedRisk = selected?.guardMetadataRisk || null;
+  addGate(gates, "selected_guard_metadata_fresh", selectedRisk && selectedRisk.stale !== true ? "PASS" : "BLOCK", guardRiskDetail(selectedRisk));
+  addGate(gates, "selected_guard_not_near_breached", !guardRiskBlocked(selectedRisk) ? "PASS" : "BLOCK", guardRiskDetail(selectedRisk));
   addGate(gates, "idempotency_key_present", idempotencyKey && !idempotencyKey.includes("undefined") ? "PASS" : "BLOCK", `idempotencyKey=${idempotencyKey || "N/A"}`);
   addGate(gates, "idempotency_not_duplicate", !duplicate ? "PASS" : "BLOCK", duplicate ? `ledger already has active entry status=${entry.status}` : "no active submit-ledger duplicate");
 };
@@ -274,10 +289,19 @@ const runReadPrecheck = async ({ selected, payload, gates }) => {
   const position = positionsRes.ok ? findPosition(positionsRes.data, symbol) : null;
   const positionQty = toNum(position?.qty);
   const currentPrice = toNum(position?.current_price ?? selected?.currentPrice);
+  const liveGuardRisk = evaluateGuardMetadataRisk({
+    generatedAt: selected?.guardMetadataRisk?.generatedAt,
+    currentPrice,
+    plannedStopPrice: selected?.plannedStopPrice,
+    plannedTargetPrice: selected?.plannedTargetPrice
+  });
   result.position = { ok: positionsRes.ok, status: positionsRes.status, reason: positionsRes.reason, row: sanitizeBrokerObject(position) };
+  result.guardMetadataRisk = liveGuardRisk;
   addGate(gates, "selected_symbol_still_held", positionsRes.ok && positionQty != null && positionQty >= 1 ? "PASS" : "BLOCK", `symbol=${symbol} positionQty=${positionQty ?? "N/A"}`);
   addGate(gates, "live_position_qty_covers_canary", positionQty != null && positionQty >= toNum(selected?.canaryQty) ? "PASS" : "BLOCK", `positionQty=${positionQty ?? "N/A"} canaryQty=${selected?.canaryQty ?? "N/A"}`);
   addGate(gates, "live_price_geometry_valid", currentPrice != null && toNum(selected?.plannedStopPrice) < currentPrice && currentPrice < toNum(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
+  addGate(gates, "pre_submit_guard_metadata_fresh", liveGuardRisk.stale !== true ? "PASS" : "BLOCK", guardRiskDetail(liveGuardRisk));
+  addGate(gates, "pre_submit_guard_not_near_breached", !guardRiskBlocked(liveGuardRisk) ? "PASS" : "BLOCK", guardRiskDetail(liveGuardRisk));
 
   const ordersRes = await fetchAlpaca(`/v2/orders?status=open&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=50`);
   const openOrders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
@@ -542,7 +566,8 @@ const main = async () => {
         plannedStopPrice: selected.plannedStopPrice ?? null,
         plannedTargetPrice: selected.plannedTargetPrice ?? null,
         readiness: selected.readiness || null,
-        executionAllowed: selected.executionAllowed
+        executionAllowed: selected.executionAllowed,
+        guardMetadataRisk: selected.guardMetadataRisk || null
       }
       : null,
     payloadPreview: sanitizeBrokerObject(payload),

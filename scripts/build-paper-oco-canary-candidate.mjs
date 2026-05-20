@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
 
 const STATE_DIR = String(process.env.PAPER_OCO_CANARY_STATE_DIR || "state").trim() || "state";
 const GUARDED_PLAN_PATH = `${STATE_DIR}/guarded-child-order-repair-plan.json`;
@@ -109,7 +110,7 @@ const buildGlobalGates = ({ guardedPlan, reconciliation, performance, orderState
   return gates;
 };
 
-const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, orderStateRow, stage6Hash }) => {
+const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, orderStateRow, stage6Hash, sourceGeneratedAt }) => {
   const symbol = asSymbol(repairRow?.symbol);
   const qty = toNum(repairRow?.qty ?? performanceRow?.qty) ?? 0;
   const currentPrice = toNum(repairRow?.currentPrice ?? reconciliationRow?.currentPrice ?? performanceRow?.currentPrice);
@@ -151,6 +152,13 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
   if (orderStateRow?.status === "FAIL") blockers.push("order_state_symbol_failure");
   if (orderStateRow?.status === "WARN") warnings.push("order_state_symbol_warning");
   if (performanceRow?.positionStatus === "HOLD_MONITOR_GUARD_MISSING") blockers.push("missing_position_guard_metadata");
+  const guardMetadataRisk = evaluateGuardMetadataRisk({
+    generatedAt: sourceGeneratedAt,
+    currentPrice,
+    plannedStopPrice,
+    plannedTargetPrice
+  });
+  blockers.push(...guardMetadataRisk.blockers);
   if (reconciliationRow?.severity && reconciliationRow.severity !== "critical") {
     warnings.push(`source_severity_${reconciliationRow.severity}`);
   }
@@ -180,6 +188,7 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
     targetMissing,
     brokerStopPresent,
     brokerTargetPresent,
+    guardMetadataRisk,
     canaryNotional: canaryQty > 0 && currentPrice != null ? canaryQty * currentPrice : null,
     orderStateStatus: orderStateRow?.status || null,
     positionStatus: performanceRow?.positionStatus || null,
@@ -230,11 +239,11 @@ const buildMarkdown = (report) => {
       `- selected_candidate: \`${row.symbol} qty=${row.canaryQty} current=${fmt(row.currentPrice)} stop=${fmt(row.plannedStopPrice)} target=${fmt(row.plannedTargetPrice)} notional=${fmt(row.canaryNotional)}\``
     );
   }
-  lines.push("| Symbol | Readiness | Qty | Current | Stop | Target | StopDist% | TargetDist% | Blockers | Warnings |");
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Symbol | Readiness | Qty | Current | Stop | Target | StopDist% | TargetDist% | GuardRisk | Blockers | Warnings |");
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.readiness} | ${fmt(row.canaryQty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${fmt(row.stopDistancePct)} | ${fmt(row.targetDistancePct)} | ${short(row.blockers.join(","), 220) || "none"} | ${short(row.warnings.join(","), 180) || "none"} |`
+      `| ${row.symbol || "N/A"} | ${row.readiness} | ${fmt(row.canaryQty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${fmt(row.stopDistancePct)} | ${fmt(row.targetDistancePct)} | ${row.guardMetadataRisk?.status || "N/A"} | ${short(row.blockers.join(","), 220) || "none"} | ${short(row.warnings.join(","), 180) || "none"} |`
     );
   }
   lines.push("");
@@ -268,7 +277,8 @@ const main = () => {
       reconciliationRow: reconciliationBySymbol.get(asSymbol(row?.symbol)),
       performanceRow: performanceBySymbol.get(asSymbol(row?.symbol)),
       orderStateRow: orderStateBySymbol.get(asSymbol(row?.symbol)),
-      stage6Hash
+      stage6Hash,
+      sourceGeneratedAt: reconciliation?.generatedAt || guardedPlan?.generatedAt || performance?.generatedAt || null
     }))
     .map((row) => {
       if (globalBlockers.length === 0) return row;
@@ -345,7 +355,10 @@ const main = () => {
       selectedCanaryQty: selectedCandidate?.canaryQty ?? null,
       executionReadyRows: selectedRows.filter((row) => row.executionAllowed === true).length,
       brokerMutationAllowed: false,
-      requestedSymbolFound: requestedSymbol ? rows.some((row) => row.symbol === requestedSymbol) : null
+      requestedSymbolFound: requestedSymbol ? rows.some((row) => row.symbol === requestedSymbol) : null,
+      guardMetadataStale: selectedRows.filter((row) => row.guardMetadataRisk?.stale).length,
+      guardMetadataBreached: selectedRows.filter((row) => row.guardMetadataRisk?.stopBreached || row.guardMetadataRisk?.targetBreached).length,
+      guardMetadataNearBreached: selectedRows.filter((row) => row.guardMetadataRisk?.nearStopBreach || row.guardMetadataRisk?.nearTargetBreach).length
     },
     selectedCandidate,
     rows: selectedRows

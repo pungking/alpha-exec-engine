@@ -625,3 +625,26 @@ Priority: P2 until M1/M2 stabilize; then P1
   - scans `src`, `scripts`, and `.github/workflows` for current proof symbols.
   - docs and test fixtures may keep example symbols; runtime code and workflows must remain dynamic.
 - Wired the guard into persistent OCO submit/open-verify workflows so approved repairs and GET-only verifiers fail before broker interaction if runtime symbol hard-coding appears.
+
+## 2026-05-20 - OCO Repair Guard Metadata Risk Gate
+
+- Added guard metadata risk evaluation for repair candidates:
+  - `scripts/lib/guard-metadata-risk.mjs`
+  - blocks stale guard metadata, already-breached stop/target, and near-breach stop/target before a protective OCO can be approved.
+- Extended repair planning and paper canary selectors:
+  - `npm run ops:persistent-oco-plan`
+  - `npm run ops:paper-oco-canary`
+  - `npm run ops:paper-oco-gate`
+  - selected rows now carry `guardMetadataRisk`; summaries expose stale/breached/near-breach counts.
+- Hardened broker-mutating submit lanes:
+  - `npm run ops:paper-oco-submit-gate`
+  - `npm run ops:persistent-oco-submit`
+  - static selected-row gates now require `selected_guard_metadata_fresh` and `selected_guard_not_near_breached`.
+  - read-verify submit prechecks add `pre_submit_guard_metadata_fresh` and `pre_submit_guard_not_near_breached` using live Alpaca position current price before any POST.
+- Safety invariant:
+  - no broker mutation is allowed when guard metadata is stale, stop/target is already breached, or the current price is within the configured near-breach threshold.
+  - default thresholds are `OCO_REPAIR_GUARD_METADATA_MAX_AGE_MIN=30` and `OCO_REPAIR_GUARD_NEAR_BREACH_PCT=1`.
+- New-order non-submission track:
+  - `npm run ops:fillability` now exposes high-price sizing diagnostics for `entry_notional_below_limit_price`.
+  - report-only fields include requested notional, one-share notional, one-share risk dollars, configured one-share caps, and whether `ENTRY_HIGH_PRICE_POLICY=min_one_share` would fit those caps.
+  - changing `ENTRY_HIGH_PRICE_POLICY` remains an execution-policy decision; diagnostics do not alter order creation defaults.

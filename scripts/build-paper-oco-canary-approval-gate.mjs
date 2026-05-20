@@ -47,6 +47,16 @@ const addGate = (gates, id, status, detail) => {
   gates.push({ id, status, detail: short(detail, 320) });
 };
 
+const guardRiskStatus = (risk) => {
+  if (!risk || typeof risk !== "object") return { stale: true, blocked: true, detail: "missing guardMetadataRisk" };
+  const blockers = Array.isArray(risk.blockers) ? risk.blockers : [];
+  return {
+    stale: risk.stale === true,
+    blocked: blockers.length > 0 || risk.status === "BLOCK",
+    detail: `status=${risk.status || "N/A"} ageMin=${risk.ageMin ?? "N/A"}/${risk.maxAgeMin ?? "N/A"} stopDist=${risk.stopDistancePct ?? "N/A"}% targetDist=${risk.targetDistancePct ?? "N/A"}% blockers=${blockers.join(",") || "none"}`
+  };
+};
+
 const buildGates = ({ candidate, guardedPlan, reconciliation, orderState, payloadSchema, ocoResponse, preview }) => {
   const gates = [];
   const selected = candidate?.selectedCandidate || null;
@@ -73,6 +83,9 @@ const buildGates = ({ candidate, guardedPlan, reconciliation, orderState, payloa
   addGate(gates, "runtime_safe_flags_observed", preview?.mode?.readOnly === true && preview?.mode?.execEnabled === false ? "PASS" : "WARN", `READ_ONLY=${preview?.mode?.readOnly ?? "N/A"} EXEC_ENABLED=${preview?.mode?.execEnabled ?? "N/A"}; approval gate is report-only and remains broker-non-mutating`);
   addGate(gates, "whole_share_canary_qty", toNum(selected?.canaryQty) === 1 ? "PASS" : "BLOCK", `canaryQty=${selected?.canaryQty ?? "N/A"}`);
   addGate(gates, "price_geometry_valid", toNum(selected?.plannedStopPrice) != null && toNum(selected?.currentPrice) != null && toNum(selected?.plannedTargetPrice) != null && toNum(selected?.plannedStopPrice) < toNum(selected?.currentPrice) && toNum(selected?.currentPrice) < toNum(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${selected?.currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
+  const selectedRisk = guardRiskStatus(selected?.guardMetadataRisk);
+  addGate(gates, "selected_guard_metadata_fresh", !selectedRisk.stale ? "PASS" : "BLOCK", selectedRisk.detail);
+  addGate(gates, "selected_guard_not_near_breached", !selectedRisk.blocked ? "PASS" : "BLOCK", selectedRisk.detail);
   addGate(gates, "approval_not_granted_in_this_lane", "BLOCK", `future broker order placement still requires exact phrase ${REQUIRED_APPROVAL_PHRASE} in a separate scoped task`);
   return gates;
 };
@@ -153,7 +166,8 @@ const main = () => {
         plannedStopPrice: selected.plannedStopPrice ?? null,
         plannedTargetPrice: selected.plannedTargetPrice ?? null,
         readiness: selected.readiness || null,
-        executionAllowed: selected.executionAllowed
+        executionAllowed: selected.executionAllowed,
+        guardMetadataRisk: selected.guardMetadataRisk || null
       }
       : null,
     decision: {

@@ -248,6 +248,11 @@ const calcDistancePct = (current, limit) => {
   return ((currentNum - limitNum) / limitNum) * 100;
 };
 
+const parseReasonNumber = (reason, key) => {
+  const match = String(reason || "").match(new RegExp(`${key}=(-?\\d+(?:\\.\\d+)?)`));
+  return match ? toNum(match[1]) : null;
+};
+
 const classifyRow = (row, broker) => {
   const fillQty = broker.fills.reduce((acc, fill) => acc + (fill.qty || 0), 0);
   if (fillQty > 0 || (broker.openOrder?.filledQty || 0) > 0 || broker.latestClosed?.status === "filled") {
@@ -288,7 +293,7 @@ const classifyRow = (row, broker) => {
   return { status: "NO_ACTIVE_ORDER", reason: row.reason || "no_payload_or_broker_match" };
 };
 
-const buildRows = (records, alpaca) => {
+const buildRows = (records, alpaca, preview = {}) => {
   const openBySymbol = bySymbol(alpaca.openOrders.filter((order) => order.side === "buy" && OPEN_STATUSES.has(order.status)));
   const closedBySymbol = bySymbol(alpaca.closedOrders.filter((order) => order.side === "buy"));
   const fillsBySymbol = bySymbol(alpaca.fills);
@@ -313,6 +318,17 @@ const buildRows = (records, alpaca) => {
     const stop = toNum(row?.stop);
     const oneShareRiskDollars =
       entry != null && stop != null && entry > stop ? Number((entry - stop).toFixed(2)) : null;
+    const highPricePolicy = String(preview?.entrySizingPolicy?.highPricePolicy || "").trim() || null;
+    const minOneShareMaxNotional = toNum(preview?.entrySizingPolicy?.minOneShareMaxNotional);
+    const maxRiskDollarsPerTrade = toNum(preview?.entrySizingPolicy?.maxRiskDollarsPerTrade);
+    const requestedNotional = toNum(row?.requestedNotional) ?? parseReasonNumber(row?.reason, "notional");
+    const minOneShareFeasibleUnderCaps =
+      classification.status === "BLOCKED_HIGH_PRICE_SIZE" &&
+      entry != null &&
+      (minOneShareMaxNotional == null || minOneShareMaxNotional <= 0 || entry <= minOneShareMaxNotional) &&
+      (maxRiskDollarsPerTrade == null ||
+        maxRiskDollarsPerTrade <= 0 ||
+        (oneShareRiskDollars != null && oneShareRiskDollars <= maxRiskDollarsPerTrade));
 
     return {
       symbol,
@@ -354,6 +370,15 @@ const buildRows = (records, alpaca) => {
       brokerClosedFilledQty: latestClosed?.filledQty ?? null,
       oneShareNotional: entry,
       oneShareRiskDollars,
+      requestedNotional,
+      highPricePolicy,
+      minOneShareMaxNotional,
+      maxRiskDollarsPerTrade,
+      minOneShareFeasibleUnderCaps,
+      highPricePolicyChangeWouldAllow:
+        classification.status === "BLOCKED_HIGH_PRICE_SIZE" &&
+        highPricePolicy === "skip" &&
+        minOneShareFeasibleUnderCaps === true,
       fillCount: fills.length,
       fillQty: fills.reduce((acc, fill) => acc + (fill.qty || 0), 0),
       avgFillPrice:
@@ -403,6 +428,12 @@ const summarizeRows = (rows, preview, alpaca) => {
   if (highPriceSizeBlocked > 0) {
     overall = "warn";
     findings.push(`${highPriceSizeBlocked} candidate(s) blocked by high-price sizing`);
+    const feasible = rows.filter((row) => row.highPricePolicyChangeWouldAllow).length;
+    if (feasible > 0) {
+      findings.push(
+        `${feasible} high-price candidate(s) would fit configured one-share notional/risk caps if ENTRY_HIGH_PRICE_POLICY=min_one_share`
+      );
+    }
   }
   if (openReprice > 0) {
     findings.push(`${openReprice} open order(s) are reprice candidates`);
@@ -438,6 +469,7 @@ const summarizeRows = (rows, preview, alpaca) => {
     terminalUnfilled,
     entryTooFar,
     highPriceSizeBlocked,
+    highPricePolicyChangeWouldAllow: rows.filter((row) => row.highPricePolicyChangeWouldAllow).length,
     avgOpenCurrentVsLimitPct
   };
 };
@@ -454,18 +486,18 @@ const buildMarkdown = (report) => {
     `- broker: \`available=${report.broker.available} reason=${report.broker.reason} open=${report.summary.openOrderCount} fills=${report.summary.fillActivityCount} attempted/submitted=${report.summary.brokerAttempted}/${report.summary.brokerSubmitted}\``
   );
   lines.push(
-    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
+    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${report.summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
   );
   if (report.summary.findings.length > 0) {
     lines.push("- findings:");
     for (const finding of report.summary.findings) lines.push(`  - ${finding}`);
   }
   lines.push("");
-  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | OneShareRisk | Monitor | Reason |");
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | OneShareRisk | OneShareCaps | Monitor | Reason |");
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |");
   for (const row of report.rows.slice(0, 20)) {
     lines.push(
-      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${fmt(row.oneShareRiskDollars)} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
+      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${fmt(row.oneShareRiskDollars)} | ${row.highPricePolicyChangeWouldAllow ? "would_allow_min_one_share" : "N/A"} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
     );
   }
   lines.push("");
@@ -479,7 +511,7 @@ const main = async () => {
   const records = readDecisionRecords(preview, audit);
   const symbols = [...new Set(records.map((row) => String(row?.symbol || "").trim().toUpperCase()).filter(Boolean))];
   const alpaca = await fetchAlpacaSnapshot(symbols);
-  const rows = buildRows(records, alpaca);
+  const rows = buildRows(records, alpaca, preview);
   const summary = summarizeRows(rows, preview, alpaca);
   const report = {
     generatedAt: new Date().toISOString(),
@@ -500,7 +532,7 @@ const main = async () => {
   fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
   console.log(
-    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
+    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
   );
 };
 

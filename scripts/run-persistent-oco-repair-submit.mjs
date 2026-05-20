@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_SUBMIT_STATE_DIR || process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const PLAN_PATH = `${STATE_DIR}/persistent-oco-repair-plan.json`;
@@ -35,6 +36,16 @@ const writeJson = (path, value) => {
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const addGate = (gates, id, status, detail) => gates.push({ id, status, detail: short(detail, 360) });
+
+const guardRiskDetail = (risk) => {
+  if (!risk || typeof risk !== "object") return "missing guardMetadataRisk";
+  const blockers = Array.isArray(risk.blockers) ? risk.blockers : [];
+  return `status=${risk.status || "N/A"} ageMin=${risk.ageMin ?? "N/A"}/${risk.maxAgeMin ?? "N/A"} stopDist=${risk.stopDistancePct ?? "N/A"}% targetDist=${risk.targetDistancePct ?? "N/A"}% blockers=${blockers.join(",") || "none"}`;
+};
+const guardRiskBlocked = (risk) => {
+  if (!risk || typeof risk !== "object") return true;
+  return risk.status === "BLOCK" || (Array.isArray(risk.blockers) && risk.blockers.length > 0);
+};
 
 const redactScalar = (key, value) => {
   const k = String(key || "").toLowerCase();
@@ -167,9 +178,17 @@ const runReadPrecheck = async ({ selected, payload, gates }) => {
   const position = Array.isArray(positions.data) ? positions.data.find((row) => sym(row?.symbol) === symbol) : null;
   const positionQty = num(position?.qty);
   const currentPrice = num(position?.current_price ?? selected?.currentPrice);
+  const liveGuardRisk = evaluateGuardMetadataRisk({
+    generatedAt: selected?.guardMetadataRisk?.generatedAt,
+    currentPrice,
+    plannedStopPrice: selected?.plannedStopPrice,
+    plannedTargetPrice: selected?.plannedTargetPrice
+  });
   addGate(gates, "selected_symbol_still_held", positions.ok && positionQty != null && positionQty >= 1 ? "PASS" : "BLOCK", `symbol=${symbol} positionQty=${positionQty ?? "N/A"}`);
   addGate(gates, "live_position_qty_covers_repair", positionQty != null && positionQty >= num(selected?.repairQty) ? "PASS" : "BLOCK", `positionQty=${positionQty ?? "N/A"} repairQty=${selected?.repairQty ?? "N/A"}`);
   addGate(gates, "live_price_geometry_valid", currentPrice != null && num(selected?.plannedStopPrice) < currentPrice && currentPrice < num(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
+  addGate(gates, "pre_submit_guard_metadata_fresh", liveGuardRisk.stale !== true ? "PASS" : "BLOCK", guardRiskDetail(liveGuardRisk));
+  addGate(gates, "pre_submit_guard_not_near_breached", !guardRiskBlocked(liveGuardRisk) ? "PASS" : "BLOCK", guardRiskDetail(liveGuardRisk));
   const orders = await getAlpaca(`/v2/orders?status=open&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=50`);
   const openOrders = Array.isArray(orders.data) ? orders.data : [];
   const protection = classifyProtection(openOrders, symbol);
@@ -178,7 +197,7 @@ const runReadPrecheck = async ({ selected, payload, gates }) => {
   const clientOrderId = String(payload?.client_order_id || "").trim();
   const client = clientOrderId ? await getAlpaca(`/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`) : { ok: false, status: null, data: null, reason: "client_order_id_missing" };
   addGate(gates, "client_order_id_not_already_used", client.status === 404 ? "PASS" : "BLOCK", `status=${client.status ?? "N/A"} reason=${client.reason}`);
-  return { account: { ok: account.ok, status: account.status, reason: account.reason, data: sanitize(account.data) }, clock: { ok: clock.ok, status: clock.status, reason: clock.reason, data: sanitize(clock.data) }, position: { ok: positions.ok, status: positions.status, reason: positions.reason, row: sanitize(position) }, nestedOpenOrders: { ok: orders.ok, status: orders.status, reason: orders.reason, data: sanitize(openOrders) }, existingClientOrder: { ok: client.ok, status: client.status, reason: client.reason, data: sanitize(client.data) }, protection };
+  return { account: { ok: account.ok, status: account.status, reason: account.reason, data: sanitize(account.data) }, clock: { ok: clock.ok, status: clock.status, reason: clock.reason, data: sanitize(clock.data) }, position: { ok: positions.ok, status: positions.status, reason: positions.reason, row: sanitize(position) }, guardMetadataRisk: liveGuardRisk, nestedOpenOrders: { ok: orders.ok, status: orders.status, reason: orders.reason, data: sanitize(openOrders) }, existingClientOrder: { ok: client.ok, status: client.status, reason: client.reason, data: sanitize(client.data) }, protection };
 };
 
 const verifyVisibility = async ({ symbol, clientOrderId }) => {
@@ -233,6 +252,9 @@ const main = async () => {
   addGate(gates, "persistent_payload_time_in_force_gtc", payload?.time_in_force === PERSISTENT_REPAIR_TIME_IN_FORCE ? "PASS" : "BLOCK", `time_in_force=${payload?.time_in_force || "N/A"} required=${PERSISTENT_REPAIR_TIME_IN_FORCE}; DAY would expire after the trading day`);
   addGate(gates, "payload_no_notional_no_extended_hours", payload && payload.notional === undefined && payload.extended_hours === undefined ? "PASS" : "BLOCK", "persistent OCO repair must not use notional or extended_hours");
   addGate(gates, "price_geometry_valid", num(selected?.plannedStopPrice) != null && num(selected?.currentPrice) != null && num(selected?.plannedTargetPrice) != null && num(selected?.plannedStopPrice) < num(selected?.currentPrice) && num(selected?.currentPrice) < num(selected?.plannedTargetPrice) ? "PASS" : "BLOCK", `stop=${selected?.plannedStopPrice ?? "N/A"} current=${selected?.currentPrice ?? "N/A"} target=${selected?.plannedTargetPrice ?? "N/A"}`);
+  const selectedRisk = selected?.guardMetadataRisk || null;
+  addGate(gates, "selected_guard_metadata_fresh", selectedRisk && selectedRisk.stale !== true ? "PASS" : "BLOCK", guardRiskDetail(selectedRisk));
+  addGate(gates, "selected_guard_not_near_breached", !guardRiskBlocked(selectedRisk) ? "PASS" : "BLOCK", guardRiskDetail(selectedRisk));
   addGate(gates, "idempotency_key_present", idempotencyKey && !idempotencyKey.includes("undefined") ? "PASS" : "BLOCK", `idempotencyKey=${idempotencyKey || "N/A"}`);
   addGate(gates, "idempotency_not_duplicate", !activeLedgerDuplicate(idempotencyKey) ? "PASS" : "BLOCK", activeLedgerDuplicate(idempotencyKey) ? "persistent submit-ledger already has active duplicate" : "no active persistent submit-ledger duplicate");
 
@@ -291,7 +313,7 @@ const main = async () => {
     overall,
     files: { plan: Boolean(plan), submitLedger: fs.existsSync(LEDGER_PATH) },
     executionPolicy: { mode: submitEnabled ? "persistent_oco_repair_submit_approved" : "persistent_oco_repair_submit_gate_non_mutating", brokerMutationAllowedByDefault: false, brokerMutationRequested: submitEnabled, approvalPhraseProvided, requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE, targetEnvironment: "PAPER", autoCancelEnabled: false, oneRowOnly: true, timeInForce: PERSISTENT_REPAIR_TIME_IN_FORCE, expirationPolicy: "gtc_required_for_persistent_protection_day_orders_expire_after_market_close" },
-    selected: selected ? { symbol: selected.symbol || null, repairQty: selected.repairQty ?? null, currentPrice: selected.currentPrice ?? null, plannedStopPrice: selected.plannedStopPrice ?? null, plannedTargetPrice: selected.plannedTargetPrice ?? null, readiness: selected.readiness || null, executionAllowed: selected.executionAllowed } : null,
+    selected: selected ? { symbol: selected.symbol || null, repairQty: selected.repairQty ?? null, currentPrice: selected.currentPrice ?? null, plannedStopPrice: selected.plannedStopPrice ?? null, plannedTargetPrice: selected.plannedTargetPrice ?? null, readiness: selected.readiness || null, executionAllowed: selected.executionAllowed, guardMetadataRisk: selected.guardMetadataRisk || null } : null,
     payloadPreview: sanitize(payload),
     idempotency: { ledgerPath: LEDGER_PATH, key: idempotencyKey, duplicate: activeLedgerDuplicate(idempotencyKey), status: ledgerEntry?.status || ledgerStatus, terminal: ledgerEntry?.terminal === true },
     decision: { status: success ? "PERSISTENT_SUBMIT_VISIBLE_OPEN" : blocking.length ? "DO_NOT_SUBMIT_BLOCKED" : submitEnabled ? "SUBMIT_REVIEW_REQUIRED" : "READY_FOR_APPROVAL_BUT_NOT_SUBMITTED", recommendedAction: success ? "MONITOR_OPEN_PROTECTION_OR_MANUAL_ROLLBACK_IF_NEEDED" : "REVIEW_BEFORE_RETRY", requiredApprovalPhrase: REQUIRED_APPROVAL_PHRASE },
