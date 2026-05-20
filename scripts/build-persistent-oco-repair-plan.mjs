@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const RECON_PATH = `${STATE_DIR}/broker-child-order-reconciliation.json`;
@@ -63,6 +64,12 @@ const candidates = rows
     const stopBelowCurrent = plannedStop != null && current != null && plannedStop < current;
     const targetAboveCurrent = plannedTarget != null && current != null && current < plannedTarget;
     const geometryOk = stopBelowCurrent && targetAboveCurrent;
+    const guardMetadataRisk = evaluateGuardMetadataRisk({
+      generatedAt: recon?.generatedAt,
+      currentPrice: current,
+      plannedStopPrice: plannedStop,
+      plannedTargetPrice: plannedTarget
+    });
     const repairQty = qty != null ? Math.min(Math.trunc(qty), maxQty) : null;
     const blockers = [];
     if (!symbol) blockers.push("missing_symbol");
@@ -71,6 +78,7 @@ const candidates = rows
     if (bothMissing && brokerSellOrderCount > 0) blockers.push("broker_sell_order_count_conflicts_with_missing_children");
     if (!guardOk) blockers.push("guard_metadata_missing");
     if (!geometryOk) blockers.push("invalid_stop_current_target_geometry");
+    blockers.push(...guardMetadataRisk.blockers);
     if (!repairQty || repairQty < 1) blockers.push("invalid_repair_qty");
     const payloadPreview = blockers.length === 0
       ? {
@@ -99,6 +107,14 @@ const candidates = rows
       brokerStopPresent,
       brokerTargetPresent,
       brokerSellOrderCount,
+      plannedStopSource: row?.plannedStopSource || null,
+      plannedTargetSource: row?.plannedTargetSource || null,
+      plannedStage6Hash: row?.plannedStage6Hash || null,
+      plannedStage6File: row?.plannedStage6File || null,
+      plannedLedgerKey: row?.plannedLedgerKey || null,
+      plannedLedgerUpdatedAt: row?.plannedLedgerUpdatedAt || null,
+      currentPriceSource: "alpaca_position_current_price",
+      guardMetadataRisk,
       geometry: {
         stopBelowCurrent,
         targetAboveCurrent,
@@ -150,6 +166,9 @@ const report = {
     eligible: eligible.length,
     selectedSymbol: selected?.symbol || null,
     selectedRepairQty: selected?.repairQty ?? null,
+    guardMetadataStale: candidates.filter((row) => row.guardMetadataRisk?.stale).length,
+    guardMetadataBreached: candidates.filter((row) => row.guardMetadataRisk?.stopBreached || row.guardMetadataRisk?.targetBreached).length,
+    guardMetadataNearBreached: candidates.filter((row) => row.guardMetadataRisk?.nearStopBreach || row.guardMetadataRisk?.nearTargetBreach).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false
   },
@@ -166,7 +185,7 @@ const md = [
   `- selected: \`${selected ? `${selected.symbol} qty=${selected.repairQty} stop=${selected.plannedStopPrice} target=${selected.plannedTargetPrice}` : "N/A"}\``,
   "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; GTC required; no POST unless separately approved`",
   "- rows:",
-  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} geometry=${row.geometry.valid ? "valid" : "invalid"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
+  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} geometry=${row.geometry.valid ? "valid" : "invalid"} guardRisk=${row.guardMetadataRisk?.status || "N/A"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
   ""
 ].join("\n");
 

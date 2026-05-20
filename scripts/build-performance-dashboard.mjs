@@ -354,6 +354,11 @@ const buildStatusBySymbol = () => {
       plannedLimitPrice: toNum(row?.limitPrice),
       plannedTargetPrice: toNum(row?.takeProfitPrice),
       plannedStopPrice: toNum(row?.stopLossPrice),
+      plannedStopSource: toNum(row?.stopLossPrice) != null ? "order_ledger" : null,
+      plannedTargetSource: toNum(row?.takeProfitPrice) != null ? "order_ledger" : null,
+      plannedStage6Hash: row?.stage6Hash || null,
+      plannedStage6File: row?.stage6File || null,
+      plannedLedgerKey: row?.idempotencyKey || null,
       ledgerUpdatedAt: row?.updatedAt || null,
       observedAt: row?.updatedAt || row?.createdAt || null
     });
@@ -459,6 +464,8 @@ const buildLiveSummary = async () => {
     const stateStatus = statusBySymbol.get(symbol) || {};
     const targetPrice = guard.targetPrice ?? stateStatus.plannedTargetPrice ?? null;
     const stopPrice = guard.stopPrice ?? stateStatus.plannedStopPrice ?? null;
+    const stopPriceSource = guard.stopPrice != null ? "broker_stop_child" : stateStatus.plannedStopSource || null;
+    const targetPriceSource = guard.targetPrice != null ? "broker_target_child" : stateStatus.plannedTargetSource || null;
     const brokerStopMissing = !guard.stopPresent && stateStatus.plannedStopPrice != null;
     const brokerTargetMissing = !guard.targetPresent && stateStatus.plannedTargetPrice != null;
     const positionStatus = derivePositionStatus({
@@ -490,6 +497,14 @@ const buildLiveSummary = async () => {
       brokerProtectionSourceTypes: guard.sourceTypes || [],
       plannedStopPrice: stateStatus.plannedStopPrice ?? null,
       plannedTargetPrice: stateStatus.plannedTargetPrice ?? null,
+      plannedStopSource: stateStatus.plannedStopSource || null,
+      plannedTargetSource: stateStatus.plannedTargetSource || null,
+      plannedStage6Hash: stateStatus.plannedStage6Hash || null,
+      plannedStage6File: stateStatus.plannedStage6File || null,
+      plannedLedgerKey: stateStatus.plannedLedgerKey || null,
+      plannedLedgerUpdatedAt: stateStatus.ledgerUpdatedAt || null,
+      stopPriceSource,
+      targetPriceSource,
       marketValue,
       costBasis,
       unrealizedPl,
