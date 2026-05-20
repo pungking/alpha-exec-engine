@@ -41,6 +41,16 @@ const readJson = (path) => {
   }
 };
 
+const writeJson = (path, payload) => {
+  fs.mkdirSync(path.split("/").slice(0, -1).join("/") || ".", { recursive: true });
+  fs.writeFileSync(path, JSON.stringify(payload, null, 2));
+};
+
+const writeText = (path, text) => {
+  fs.mkdirSync(path.split("/").slice(0, -1).join("/") || ".", { recursive: true });
+  fs.writeFileSync(path, text);
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const notionHeaders = (token) => ({
@@ -1303,6 +1313,135 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   };
 };
 
+const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
+  "Open Reprice Proposal Overall": {
+    select: {
+      options: [
+        { name: "no_open_orders", color: "gray" },
+        { name: "report_only_no_ready_reprice", color: "yellow" },
+        { name: "report_only_ready_for_manual_approval", color: "orange" },
+        { name: "report_only_blocked", color: "red" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Open Reprice Ready": { number: { format: "number" } },
+  "Open Reprice Risk Breaches": { number: { format: "number" } },
+  "Open Reprice Attempted": { checkbox: {} },
+  "Open Reprice Submitted": { checkbox: {} },
+  "Open Reprice Summary": { rich_text: {} }
+};
+
+const notionSchemaPayloadType = (payload) => {
+  for (const type of ["select", "number", "checkbox", "rich_text"]) {
+    if (Object.prototype.hasOwnProperty.call(payload || {}, type)) return type;
+  }
+  return "";
+};
+
+const redactId = (value) => {
+  const raw = String(value || "").replaceAll("-", "");
+  if (raw.length <= 8) return raw || "N/A";
+  return `${raw.slice(0, 4)}...${raw.slice(-4)}`;
+};
+
+const writePerformanceSchemaReport = (report) => {
+  writeJson("state/notion-performance-dashboard-schema-report.json", report);
+  const lines = [
+    "## Notion Performance Dashboard Schema",
+    `- generatedAt: \`${report.generatedAt}\``,
+    `- status: \`${report.status}\``,
+    `- enabled: \`${report.enabled}\``,
+    `- database: \`${report.databaseId}\``,
+    `- missingBefore: \`${report.missingBefore.join(",") || "none"}\``,
+    `- added: \`${report.added.join(",") || "none"}\``,
+    `- alreadyPresent: \`${report.alreadyPresent.join(",") || "none"}\``,
+    `- mismatched: \`${report.mismatched.map((row) => `${row.name}:${row.actualType}->${row.expectedType}`).join(",") || "none"}\``,
+    `- error: \`${report.error || "none"}\``,
+    ""
+  ];
+  writeText("state/notion-performance-dashboard-schema-report.md", `${lines.join("\n")}\n`);
+};
+
+const ensurePerformanceOpenRepriceSchema = async ({ notionToken, databaseId, schema }) => {
+  const enabled = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_ENABLED", true);
+  const required = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_REQUIRED", false);
+  const generatedAt = new Date().toISOString();
+  const desiredEntries = Object.entries(PERFORMANCE_OPEN_REPRICE_PROPERTIES);
+  const missingEntries = desiredEntries.filter(([name]) => !schema?.[name]);
+  const alreadyPresent = desiredEntries
+    .filter(([name]) => Boolean(schema?.[name]))
+    .map(([name]) => name);
+  const mismatched = desiredEntries
+    .filter(([name, payload]) => Boolean(schema?.[name]) && schema?.[name]?.type !== notionSchemaPayloadType(payload))
+    .map(([name, payload]) => ({
+      name,
+      expectedType: notionSchemaPayloadType(payload),
+      actualType: schema?.[name]?.type || "unknown"
+    }));
+
+  const baseReport = {
+    generatedAt,
+    enabled,
+    required,
+    databaseId: redactId(databaseId),
+    missingBefore: missingEntries.map(([name]) => name),
+    added: [],
+    alreadyPresent,
+    mismatched,
+    status: "skipped",
+    error: ""
+  };
+
+  if (!enabled) {
+    const report = { ...baseReport, status: "disabled" };
+    writePerformanceSchemaReport(report);
+    console.log("[NOTION_PERFORMANCE_SCHEMA] skip disabled");
+    return schema;
+  }
+
+  if (!missingEntries.length) {
+    const report = { ...baseReport, status: mismatched.length ? "present_with_type_mismatch" : "already_present" };
+    writePerformanceSchemaReport(report);
+    console.log(
+      `[NOTION_PERFORMANCE_SCHEMA] ${report.status} openRepriceFields=${alreadyPresent.join("|") || "none"} mismatched=${mismatched.length}`
+    );
+    return schema;
+  }
+
+  const properties = Object.fromEntries(missingEntries);
+  try {
+    const updated = await notionRequest(notionToken, `/v1/databases/${databaseId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties })
+    });
+    const refreshedSchema = updated?.properties || schema;
+    const added = missingEntries.filter(([name]) => Boolean(refreshedSchema?.[name])).map(([name]) => name);
+    const stillMissing = missingEntries.filter(([name]) => !refreshedSchema?.[name]).map(([name]) => name);
+    const report = {
+      ...baseReport,
+      added,
+      status: stillMissing.length ? "partial" : "ensured",
+      stillMissing
+    };
+    writePerformanceSchemaReport(report);
+    console.log(
+      `[NOTION_PERFORMANCE_SCHEMA] ${report.status} added=${added.join("|") || "none"} stillMissing=${stillMissing.join("|") || "none"} mismatched=${mismatched.length}`
+    );
+    return refreshedSchema;
+  } catch (error) {
+    const report = {
+      ...baseReport,
+      status: "error",
+      error: error?.message || String(error)
+    };
+    writePerformanceSchemaReport(report);
+    console.log(`[NOTION_PERFORMANCE_SCHEMA] error missing=${baseReport.missingBefore.join("|")} error=${report.error}`);
+    if (required) throw error;
+    return schema;
+  }
+};
+
 const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }) => {
   const enabled = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED", true);
   const required = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED", false);
@@ -1327,7 +1466,8 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   }
 
   const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
-  const schema = db?.properties || {};
+  let schema = db?.properties || {};
+  schema = await ensurePerformanceOpenRepriceSchema({ notionToken, databaseId, schema });
   const titlePropertyName = findTitlePropertyName(schema) || "Run Key";
 
   const properties = {

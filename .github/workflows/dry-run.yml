@@ -1859,6 +1859,8 @@ jobs:
             state/order-state-consistency-report.md
             state/open-order-reprice-proposal.json
             state/open-order-reprice-proposal.md
+            state/notion-performance-dashboard-schema-report.json
+            state/notion-performance-dashboard-schema-report.md
             state/ops-health-report.json
             state/ops-health-report.md
             state/validation-pack-auto-trigger.json

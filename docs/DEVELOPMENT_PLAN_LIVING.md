@@ -676,3 +676,22 @@ Priority: P2 until M1/M2 stabilize; then P1
   - existing limit stayed at `$245.12`.
   - current/suggested near-market reprice exceeded the `$25` max-risk cap.
   - risk-capped limit was approximately `$247.44`, so the correct behavior is no automatic replace and continued report-only monitoring unless a separate guarded replace approval is later requested.
+
+## 2026-05-21 - Notion Performance Dashboard Open-Reprice Columns
+
+- Added idempotent Notion Performance Dashboard schema ensure for open-order reprice telemetry.
+- `scripts/sync-notion-summary.mjs` now creates these columns when missing before writing the Performance Dashboard row:
+  - `Open Reprice Proposal Overall` (`select`)
+  - `Open Reprice Ready` (`number`)
+  - `Open Reprice Risk Breaches` (`number`)
+  - `Open Reprice Attempted` (`checkbox`)
+  - `Open Reprice Submitted` (`checkbox`)
+  - `Open Reprice Summary` (`rich_text`)
+- Safety/ops behavior:
+  - schema ensure is controlled by `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_ENABLED` (default `true`).
+  - schema ensure is non-blocking by default unless `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_REQUIRED=true`.
+  - no broker or order mutation is involved.
+- Evidence:
+  - writes `state/notion-performance-dashboard-schema-report.json` / `.md`.
+  - `.github/workflows/dry-run.yml` uploads those reports with the sidecar state artifact.
+  - Notion sync logs now include `openReprice`, `openRepriceReady`, `openRepriceAttempted`, `openRepriceSubmitted`, and the concrete `openRepriceFields` written.
