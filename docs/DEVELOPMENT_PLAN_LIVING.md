@@ -649,5 +649,6 @@ Priority: P2 until M1/M2 stabilize; then P1
   - report-only fields include requested notional, one-share notional, one-share risk dollars, configured one-share caps, and whether `ENTRY_HIGH_PRICE_POLICY=min_one_share` would fit those caps.
   - changing `ENTRY_HIGH_PRICE_POLICY` remains an execution-policy decision; diagnostics do not alter order creation defaults.
 - Manual canary workflow support:
-  - `.github/workflows/dry-run.yml` now supports `run_portfolio_min_fillability_score` for `workflow_dispatch` only.
-  - This keeps repository defaults unchanged while allowing a safe read-only canary to determine whether `portfolio_fillability_below_floor` is the final blocker after one-share sizing and max-total-notional caps are satisfied.
+  - `.github/workflows/dry-run.yml` now supports `run_verify_mode=safe_min_one_share_admission_probe` for `workflow_dispatch` only.
+  - The preset keeps `READ_ONLY=true`, `EXEC_ENABLED=false`, and `LIVE_ORDER_SUBMIT_ENABLED=false` while applying `ENTRY_HIGH_PRICE_POLICY=min_one_share`, `DRY_MAX_TOTAL_NOTIONAL=300`, and `PORTFOLIO_MIN_FILLABILITY_SCORE=50` for that one run.
+  - This avoids GitHub's 25-input `workflow_dispatch` limit and keeps repository defaults unchanged while allowing a safe read-only canary to determine whether `portfolio_fillability_below_floor` is the final blocker after one-share sizing and max-total-notional caps are satisfied.
