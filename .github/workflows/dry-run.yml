@@ -1857,6 +1857,8 @@ jobs:
             state/fillability-report.md
             state/order-state-consistency-report.json
             state/order-state-consistency-report.md
+            state/open-order-reprice-proposal.json
+            state/open-order-reprice-proposal.md
             state/ops-health-report.json
             state/ops-health-report.md
             state/validation-pack-auto-trigger.json
