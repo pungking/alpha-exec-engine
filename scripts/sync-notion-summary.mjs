@@ -1664,10 +1664,39 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     rich_text: () => textProp(row.summary)
   });
 
-  const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
-  console.log(
-    `[NOTION_PERFORMANCE_DASHBOARD] ${upsertStatus} key=${runKey} simRows=${row.simulation.totalRows ?? "N/A"} snapshotTrades=${row.simulation.latestSnapshotTradeCount ?? "N/A"} gap=${row.simulation.rowSnapshotGap ?? "N/A"} live=${row.live.available}`
+  const openRepricePropertyNames = [
+    "Open Reprice Proposal Overall",
+    "Open Order Reprice Overall",
+    "Open Reprice Ready",
+    "Open Order Reprice Ready",
+    "Open Reprice Risk Breaches",
+    "Open Order Reprice Risk Breaches",
+    "Open Reprice Attempted",
+    "Open Order Reprice Attempted",
+    "Open Reprice Submitted",
+    "Open Order Reprice Submitted",
+    "Open Reprice Summary",
+    "Open Order Reprice Summary"
+  ];
+  const openRepriceAppliedFields = openRepricePropertyNames.filter((name) =>
+    Object.prototype.hasOwnProperty.call(properties, name)
   );
+
+  const upsertStatus = await upsertPage(notionToken, databaseId, titlePropertyName, row.title, properties);
+  const logParts = [
+    `[NOTION_PERFORMANCE_DASHBOARD] ${upsertStatus}`,
+    `key=${runKey}`,
+    `simRows=${row.simulation.totalRows ?? "N/A"}`,
+    `snapshotTrades=${row.simulation.latestSnapshotTradeCount ?? "N/A"}`,
+    `gap=${row.simulation.rowSnapshotGap ?? "N/A"}`,
+    `live=${row.live.available}`,
+    `openReprice=${row.live.openOrderRepriceProposalOverall || "N/A"}`,
+    `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,
+    `openRepriceAttempted=${row.live.openOrderRepriceAttempted}`,
+    `openRepriceSubmitted=${row.live.openOrderRepriceSubmitted}`,
+    `openRepriceFields=${openRepriceAppliedFields.length ? openRepriceAppliedFields.join("|") : "none"}`
+  ];
+  console.log(logParts.join(" "));
   return upsertStatus;
 };
 
