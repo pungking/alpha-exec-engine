@@ -810,3 +810,20 @@ Priority: P2 until M1/M2 stabilize; then P1
   - dispatch dry-run with `run_verify_mode=safe_min_one_share_admission_probe`, `run_entry_high_price_policy=min_one_share`, `run_dry_max_orders_override=1`, `run_dry_max_total_notional_override=600`, `run_entry_min_one_share_max_notional=300`, and `run_entry_max_risk_dollars_per_trade=25`.
   - done when payload generation is observed with `brokerMutationAttempted=false` and `brokerMutationSubmitted=false`.
   - if payload remains zero, inspect `orderReadiness`, `topSkip`, `portfolioAdmission`, and `fillability-report` before changing Stage6 or entry logic.
+
+## 2026-05-22 - Sidecar RTH Audit Stabilization
+
+- Latest RTH sidecar failures were caused by `npm run ops:order-state` exiting non-zero on a state-consistency audit failure (`ATAT` mixed fill state), not by a broker submit exception.
+- Updated order-state consistency behavior:
+  - security/account redaction failures still hard-exit.
+  - state consistency failures remain `overall=FAIL` in `state/order-state-consistency-report.json` / `.md` and ops health, but do not fail the whole sidecar workflow unless `ORDER_STATE_CONSISTENCY_EXIT_ON_FAIL=true`.
+  - no broker mutation is introduced; this remains report-only.
+- Ops health now consumes order-state consistency as a first-class signal (`orderState`, failures/warnings, redaction status) so the workflow can keep producing artifacts while preserving critical visibility.
+- GitHub Step Summary cleanup:
+  - `Sidecar Dry-Run Summary` now starts with a compact table for Stage6, payload, safety, and preflight.
+  - verbose key/value diagnostics are collapsed under `Verbose diagnostics` to reduce broken-looking markdown/noisy tables.
+- Next observation criteria:
+  - fresh RTH safe run succeeds at workflow level.
+  - payload remains visible when safe min-one-share probe is enabled.
+  - `attempted=0` and `submitted=0` remain true in safe mode.
+  - order-state `FAIL` is routed to ops health/Notion, not treated as a sidecar infrastructure crash.

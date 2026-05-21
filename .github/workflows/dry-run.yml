@@ -988,9 +988,41 @@ jobs:
             if (entries.length === 0) return "none";
             return entries.map(([k, v]) => `${k}:${v}`).join(", ");
           };
+          const readJsonSafe = (path) => {
+            if (!fs.existsSync(path)) return {};
+            try {
+              return JSON.parse(fs.readFileSync(path, "utf8"));
+            } catch {
+              return {};
+            }
+          };
 
           const lines = [];
           lines.push("## Sidecar Dry-Run Summary");
+          const compactState = readJsonSafe(statePath);
+          const compactPreview = readJsonSafe(previewPath);
+          const compactMode = compactPreview?.mode || {};
+          const compactBroker = compactPreview?.brokerSubmission || {};
+          const compactPreflight = compactPreview?.preflight || {};
+          const compactReadiness = String(compactPreview?.orderReadiness || "N/A").replace(/\|/g, "/");
+          lines.push("| Area | Status | Evidence |");
+          lines.push("| --- | --- | --- |");
+          lines.push(
+            `| Stage6 | ${(compactPreview.stage6Hash || compactState.lastStage6Sha256 || "").slice(0, 12) || "N/A"} | ${compactPreview.stage6File || compactState.lastStage6FileName || "N/A"} |`
+          );
+          lines.push(
+            `| Payload | ${compactPreview.payloadCount ?? "N/A"}/${compactPreview.skippedCount ?? "N/A"} | readiness=${compactReadiness.slice(0, 220)} |`
+          );
+          lines.push(
+            `| Safety | attempted=${compactBroker.attempted ?? "N/A"} submitted=${compactBroker.submitted ?? "N/A"} | readOnly=${compactMode.readOnly ?? "N/A"} exec=${compactMode.execEnabled ?? "N/A"} liveSubmit=${compactBroker.enabled ?? "N/A"} reason=${compactBroker.reason ?? "N/A"} |`
+          );
+          lines.push(
+            `| Preflight | ${compactPreflight.status ?? "N/A"}:${compactPreflight.code ?? "N/A"} | marketOpen=${compactPreflight.marketOpen ?? "N/A"} wouldBlockLive=${compactPreflight.wouldBlockLive ?? "N/A"} required=${compactPreflight.requiredNotional ?? "N/A"} |`
+          );
+          lines.push("");
+          lines.push("<details>");
+          lines.push("<summary>Verbose diagnostics</summary>");
+          lines.push("");
           const triggerEvent =
             process.env.WORKFLOW_EVENT_NAME || process.env.GITHUB_EVENT_NAME || "N/A";
           const triggerAction =
@@ -1501,6 +1533,8 @@ jobs:
             `- hf_tuning_comment: \`status=${tuningCommentStatus} action=${tuningCommentAction} reason=${tuningCommentReason} phase=${tuningSignals.phase} advice=${tuningSignals.adviceStatus} freeze=${tuningSignals.freezeStatus} livePromotion=${tuningSignals.livePromotionStatus} gate=${tuningSignals.perfGateStatus} progress=${tuningSignals.perfGateProgress} payloadProbe=${tuningSignals.payloadProbeStatus} markerAuditOk=${tuningSignals.markerAuditKnown ? tuningSignals.markerAuditOk : "N/A"}\``
           );
 
+          lines.push("");
+          lines.push("</details>");
           lines.push("");
 
           if (includeValidationPack && fs.existsSync("state/validation-pack")) {

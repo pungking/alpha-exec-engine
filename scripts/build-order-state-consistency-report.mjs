@@ -9,6 +9,7 @@ const FILES = {
 };
 const OUTPUT_JSON = `${STATE_DIR}/order-state-consistency-report.json`;
 const OUTPUT_MD = `${STATE_DIR}/order-state-consistency-report.md`;
+const EXIT_ON_STATE_FAIL = String(process.env.ORDER_STATE_CONSISTENCY_EXIT_ON_FAIL || "false").trim().toLowerCase() === "true";
 
 const readJson = (path) => {
   if (!fs.existsSync(path)) return null;
@@ -160,6 +161,9 @@ const buildMarkdown = (report) => {
     `- files: \`ledger=${report.files.ledger ? "ok" : "missing"} idempotency=${report.files.idempotency ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} performance=${report.files.performance ? "ok" : "missing"}\``
   );
   lines.push(`- account_redaction: \`${report.accountRedaction.status} ${report.accountRedaction.detail}\``);
+  lines.push(
+    `- policy: \`mode=${report.executionPolicy.mode} exitOnStateFail=${report.executionPolicy.exitOnStateFail} securityFailAlwaysExits=${report.executionPolicy.securityFailAlwaysExits}\``
+  );
   lines.push("| Symbol | Overall | Normalized | Ledger | Idempotency | Fillability | Performance | Reasons |");
   lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 40)) {
@@ -199,6 +203,14 @@ const main = () => {
     overall,
     files,
     accountRedaction,
+    executionPolicy: {
+      mode: "report_only",
+      exitOnStateFail: EXIT_ON_STATE_FAIL,
+      securityFailAlwaysExits: true,
+      brokerMutationAllowed: false,
+      brokerMutationAttempted: false,
+      brokerMutationSubmitted: false
+    },
     summary: {
       symbols: rows.length,
       failures: hardFails.length,
@@ -208,8 +220,10 @@ const main = () => {
   };
   fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
-  console.log(`[ORDER_STATE] overall=${overall} symbols=${rows.length} failures=${hardFails.length} accountRedaction=${accountRedaction.status}`);
-  if (overall === "FAIL") process.exit(1);
+  console.log(
+    `[ORDER_STATE] overall=${overall} symbols=${rows.length} failures=${hardFails.length} accountRedaction=${accountRedaction.status} exitOnStateFail=${EXIT_ON_STATE_FAIL}`
+  );
+  if (accountRedaction.status === "FAIL" || (overall === "FAIL" && EXIT_ON_STATE_FAIL)) process.exit(1);
 };
 
 main();

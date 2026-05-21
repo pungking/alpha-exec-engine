@@ -146,7 +146,7 @@ HF verification shortcuts:
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
 - `npm run ops:high-price:min-one-share-canary`: build report-only high-price min-one-share safe payload probe plan (`state/high-price-min-one-share-canary-plan.json`, `.md`).
 - `npm run ops:guard-metadata:lineage`: build report-only stop/target lineage proof for missing/stale guard metadata (`state/guard-metadata-lineage-audit.json`, `.md`).
-- `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
+- `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`). State consistency failures are report-only by default; set `ORDER_STATE_CONSISTENCY_EXIT_ON_FAIL=true` to make them fail the workflow. Account-redaction failures always fail.
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
 - `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
 - `OPS_HEALTH_STATE_DIR=/path/to/artifact npm run ops:health`: rebuild ops health from a downloaded sidecar artifact without mutating local `state/`.
