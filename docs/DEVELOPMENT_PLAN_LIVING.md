@@ -677,16 +677,48 @@ Priority: P2 until M1/M2 stabilize; then P1
   - current/suggested near-market reprice exceeded the `$25` max-risk cap.
   - risk-capped limit was approximately `$247.44`, so the correct behavior is no automatic replace and continued report-only monitoring unless a separate guarded replace approval is later requested.
 
+## 2026-05-21 - Guard Metadata Refresh Plan Wiring
+
+- Completion check found the prior guard-metadata commit only added the planner script; it was not yet wired into package scripts, CI artifact upload, ops health, or Notion telemetry.
+- Added the report-only refresh lane wiring:
+  - `npm run ops:guard-metadata-refresh`
+  - output: `state/guard-metadata-refresh-plan.json` / `.md`
+  - `.github/workflows/dry-run.yml` builds/publishes the plan after position-protection root-cause audit.
+  - sidecar state artifacts now include both guard metadata refresh outputs.
+- Goal/Team mapping:
+  - Goal 1: current position stop/target metadata is re-sourced dynamically from broker children, recommendation ledger, Stage6 20-trade loop, then order ledger.
+  - Goal 2: missing guard metadata now surfaces as `BLOCKED_NO_REFRESH_SOURCE` instead of being misclassified as broker repair work.
+  - Goal 3: stale metadata surfaces as `BLOCKED_REFRESH_SOURCE_STALE`; repair can only be re-evaluated after a fresh, valid source exists.
+  - Goal 4: open-order reprice remains independent and report-only; Notion/ops now include open reprice row count plus attempted/submitted flags.
+- Safety invariant:
+  - guard refresh is report-only only; `brokerMutationAllowed=false`, `stateMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - no ledger write, broker submit, cancel, replace, or OCO repair occurs from this lane.
+  - any future metadata write or protective repair still requires a separate approval-gated task.
+- Next run observation criteria:
+  - artifact includes `guard-metadata-refresh-plan.json` / `.md`.
+  - ops health files line shows `guardRefresh=ok`.
+  - ops key metrics include `guardRefresh`, `guardRefreshReady`, `guardRefreshBlocked`, `guardRefreshRepairAfterRefresh`, `guardRefreshAttempted`, and `guardRefreshSubmitted`.
+  - Notion Performance Dashboard summary/log includes the same guard refresh fields.
+  - if refresh creates repair re-evaluation candidates, that is a manual-review signal only; broker/state mutation remains false.
+
 ## 2026-05-21 - Notion Performance Dashboard Open-Reprice Columns
 
 - Added idempotent Notion Performance Dashboard schema ensure for open-order reprice telemetry.
 - `scripts/sync-notion-summary.mjs` now creates these columns when missing before writing the Performance Dashboard row:
   - `Open Reprice Proposal Overall` (`select`)
   - `Open Reprice Ready` (`number`)
+  - `Open Reprice Rows` (`number`)
   - `Open Reprice Risk Breaches` (`number`)
   - `Open Reprice Attempted` (`checkbox`)
   - `Open Reprice Submitted` (`checkbox`)
   - `Open Reprice Summary` (`rich_text`)
+  - `Guard Metadata Refresh Overall` (`select`)
+  - `Guard Metadata Refresh Ready` (`number`)
+  - `Guard Metadata Refresh Blocked` (`number`)
+  - `Guard Metadata Refresh Repair After Refresh` (`number`)
+  - `Guard Metadata Refresh Attempted` (`checkbox`)
+  - `Guard Metadata Refresh Submitted` (`checkbox`)
+  - `Guard Metadata Refresh Summary` (`rich_text`)
 - Safety/ops behavior:
   - schema ensure is controlled by `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_ENABLED` (default `true`).
   - schema ensure is non-blocking by default unless `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_REQUIRED=true`.
@@ -694,7 +726,7 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Evidence:
   - writes `state/notion-performance-dashboard-schema-report.json` / `.md`.
   - `.github/workflows/dry-run.yml` uploads those reports with the sidecar state artifact.
-  - Notion sync logs now include `openReprice`, `openRepriceReady`, `openRepriceAttempted`, `openRepriceSubmitted`, and the concrete `openRepriceFields` written.
+  - Notion sync logs now include `openReprice`, `openRepriceRows`, `openRepriceReady`, `openRepriceAttempted`, `openRepriceSubmitted`, `guardRefresh`, `guardRefreshReady`, `guardRefreshRepairAfter`, and the concrete dashboard ops fields written.
 
 ## 2026-05-21 - Position Protection Root-Cause Audit
 

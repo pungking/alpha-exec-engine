@@ -1073,6 +1073,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const positionProtectionAudit = readJson("state/position-protection-root-cause-audit.json") || {};
+  const guardMetadataRefreshPlan = readJson("state/guard-metadata-refresh-plan.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const persistentOcoRepairPlan = readJson("state/persistent-oco-repair-plan.json") || {};
   const persistentOcoOpenVerifyMulti = readJson("state/persistent-oco-repair-open-verify-multi.json") || {};
@@ -1154,6 +1155,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `protectionStale=${positionProtectionAudit?.summary?.guardMetadataStale ?? "N/A"}`,
     `protectionInvalidGeometry=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"}`,
     `protectionBrokerChildMissing=${positionProtectionAudit?.summary?.brokerChildMissing ?? "N/A"}`,
+    `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"}`,
+    `guardRefreshReady=${guardMetadataRefreshPlan?.summary?.refreshReady ?? "N/A"}`,
+    `guardRefreshRepairAfter=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"}`,
     `guardedRepair=${guardedRepairPlan?.overall || "N/A"}`,
     `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
     `persistentOcoRepair=${persistentOcoRepairPlan?.overall || "N/A"}`,
@@ -1175,6 +1179,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `paperOcoSubmitDecision=${paperOcoSubmitGate?.decision?.status || "N/A"}`,
     `paperOcoSubmitSubmitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"}`,
     `openRepriceProposal=${openOrderRepriceProposal?.overall || "N/A"}`,
+    `openRepriceRows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"}`,
     `openRepriceReady=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"}`,
     `openRepriceRiskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"}`,
     `openRepriceSubmitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
@@ -1231,6 +1236,24 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       positionProtectionBrokerChildMissing: toNumber(positionProtectionAudit?.summary?.brokerChildMissing),
       positionProtectionSummary: shortText(
         `overall=${positionProtectionAudit?.overall || "N/A"} positions=${positionProtectionAudit?.summary?.positions ?? "N/A"} critical=${positionProtectionAudit?.summary?.critical ?? "N/A"} warnings=${positionProtectionAudit?.summary?.warnings ?? "N/A"} guardMissing=${positionProtectionAudit?.summary?.guardMetadataMissing ?? "N/A"} guardStale=${positionProtectionAudit?.summary?.guardMetadataStale ?? "N/A"} invalidGeometry=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"} stopDrift=${positionProtectionAudit?.summary?.stopCurrentDrift ?? "N/A"} brokerChildMissing=${positionProtectionAudit?.summary?.brokerChildMissing ?? "N/A"} mode=${positionProtectionAudit?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      guardMetadataRefreshOverall: shortText(guardMetadataRefreshPlan?.overall || "N/A", 80),
+      guardMetadataRefreshReady: toNumber(guardMetadataRefreshPlan?.summary?.refreshReady),
+      guardMetadataRefreshBlocked: toNumber(guardMetadataRefreshPlan?.summary?.blocked),
+      guardMetadataRefreshRepairAfterRefresh: toNumber(
+        guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates
+      ),
+      guardMetadataRefreshAttempted:
+        guardMetadataRefreshPlan?.summary?.brokerMutationAttempted === true ||
+        guardMetadataRefreshPlan?.summary?.stateMutationAttempted === true ||
+        guardMetadataRefreshPlan?.executionPolicy?.brokerMutationAttempted === true ||
+        guardMetadataRefreshPlan?.executionPolicy?.stateMutationAttempted === true,
+      guardMetadataRefreshSubmitted:
+        guardMetadataRefreshPlan?.summary?.brokerMutationSubmitted === true ||
+        guardMetadataRefreshPlan?.executionPolicy?.brokerMutationSubmitted === true,
+      guardMetadataRefreshSummary: shortText(
+        `overall=${guardMetadataRefreshPlan?.overall || "N/A"} positions=${guardMetadataRefreshPlan?.summary?.positions ?? "N/A"} ready=${guardMetadataRefreshPlan?.summary?.refreshReady ?? "N/A"} blocked=${guardMetadataRefreshPlan?.summary?.blocked ?? "N/A"} noSource=${guardMetadataRefreshPlan?.summary?.noRefreshSource ?? "N/A"} stale=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"} invalidGeometry=${guardMetadataRefreshPlan?.summary?.invalidRefreshGeometry ?? "N/A"} repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} attempted=${guardMetadataRefreshPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${guardMetadataRefreshPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${guardMetadataRefreshPlan?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardedRepairOverall: shortText(guardedRepairPlan?.overall || "N/A", 80),
@@ -1336,16 +1359,36 @@ const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
         { name: "no_open_orders", color: "gray" },
         { name: "report_only_no_ready_reprice", color: "yellow" },
         { name: "report_only_ready_for_manual_approval", color: "orange" },
+        { name: "manual_approval_required", color: "orange" },
         { name: "report_only_blocked", color: "red" },
         { name: "N/A", color: "gray" }
       ]
     }
   },
   "Open Reprice Ready": { number: { format: "number" } },
+  "Open Reprice Rows": { number: { format: "number" } },
   "Open Reprice Risk Breaches": { number: { format: "number" } },
   "Open Reprice Attempted": { checkbox: {} },
   "Open Reprice Submitted": { checkbox: {} },
-  "Open Reprice Summary": { rich_text: {} }
+  "Open Reprice Summary": { rich_text: {} },
+  "Guard Metadata Refresh Overall": {
+    select: {
+      options: [
+        { name: "ready", color: "green" },
+        { name: "partial", color: "yellow" },
+        { name: "manual_review_ready", color: "orange" },
+        { name: "blocked", color: "red" },
+        { name: "warn", color: "yellow" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Guard Metadata Refresh Ready": { number: { format: "number" } },
+  "Guard Metadata Refresh Blocked": { number: { format: "number" } },
+  "Guard Metadata Refresh Repair After Refresh": { number: { format: "number" } },
+  "Guard Metadata Refresh Attempted": { checkbox: {} },
+  "Guard Metadata Refresh Submitted": { checkbox: {} },
+  "Guard Metadata Refresh Summary": { rich_text: {} }
 };
 
 const notionSchemaPayloadType = (payload) => {
@@ -1379,7 +1422,7 @@ const writePerformanceSchemaReport = (report) => {
   writeText("state/notion-performance-dashboard-schema-report.md", `${lines.join("\n")}\n`);
 };
 
-const ensurePerformanceOpenRepriceSchema = async ({ notionToken, databaseId, schema }) => {
+const ensurePerformanceOpsSchema = async ({ notionToken, databaseId, schema }) => {
   const enabled = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_ENABLED", true);
   const required = boolFromEnv("NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_REQUIRED", false);
   const generatedAt = new Date().toISOString();
@@ -1420,7 +1463,7 @@ const ensurePerformanceOpenRepriceSchema = async ({ notionToken, databaseId, sch
     const report = { ...baseReport, status: mismatched.length ? "present_with_type_mismatch" : "already_present" };
     writePerformanceSchemaReport(report);
     console.log(
-      `[NOTION_PERFORMANCE_SCHEMA] ${report.status} openRepriceFields=${alreadyPresent.join("|") || "none"} mismatched=${mismatched.length}`
+      `[NOTION_PERFORMANCE_SCHEMA] ${report.status} dashboardOpsFields=${alreadyPresent.join("|") || "none"} mismatched=${mismatched.length}`
     );
     return schema;
   }
@@ -1483,7 +1526,7 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
 
   const db = await notionRequest(notionToken, `/v1/databases/${databaseId}`, { method: "GET" });
   let schema = db?.properties || {};
-  schema = await ensurePerformanceOpenRepriceSchema({ notionToken, databaseId, schema });
+  schema = await ensurePerformanceOpsSchema({ notionToken, databaseId, schema });
   const titlePropertyName = findTitlePropertyName(schema) || "Run Key";
 
   const properties = {
@@ -1813,6 +1856,10 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     number: () => numberProp(row.live.openOrderRepriceReady),
     rich_text: () => textProp(row.live.openOrderRepriceReady ?? "N/A")
   });
+  setPropertyAliases(properties, schema, ["Open Reprice Rows", "Open Order Reprice Rows"], {
+    number: () => numberProp(row.live.openOrderRepriceRows),
+    rich_text: () => textProp(row.live.openOrderRepriceRows ?? "N/A")
+  });
   setPropertyAliases(properties, schema, ["Open Reprice Risk Breaches", "Open Order Reprice Risk Breaches"], {
     number: () => numberProp(row.live.openOrderRepriceRiskBreaches),
     rich_text: () => textProp(row.live.openOrderRepriceRiskBreaches ?? "N/A")
@@ -1827,6 +1874,33 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Open Reprice Summary", "Open Order Reprice Summary"], {
     rich_text: () => textProp(row.live.openOrderRepriceSummary)
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Overall", "Guard Refresh Overall"], {
+    select: () => selectProp(row.live.guardMetadataRefreshOverall || "N/A"),
+    rich_text: () => textProp(row.live.guardMetadataRefreshOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Ready", "Guard Refresh Ready"], {
+    number: () => numberProp(row.live.guardMetadataRefreshReady),
+    rich_text: () => textProp(row.live.guardMetadataRefreshReady ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Blocked", "Guard Refresh Blocked"], {
+    number: () => numberProp(row.live.guardMetadataRefreshBlocked),
+    rich_text: () => textProp(row.live.guardMetadataRefreshBlocked ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Repair After Refresh", "Guard Refresh Repair After"], {
+    number: () => numberProp(row.live.guardMetadataRefreshRepairAfterRefresh),
+    rich_text: () => textProp(row.live.guardMetadataRefreshRepairAfterRefresh ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Attempted", "Guard Refresh Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.guardMetadataRefreshAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.guardMetadataRefreshAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Submitted", "Guard Refresh Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.guardMetadataRefreshSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.guardMetadataRefreshSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Summary", "Guard Refresh Summary"], {
+    rich_text: () => textProp(row.live.guardMetadataRefreshSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),
@@ -1848,6 +1922,8 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     "Open Order Reprice Overall",
     "Open Reprice Ready",
     "Open Order Reprice Ready",
+    "Open Reprice Rows",
+    "Open Order Reprice Rows",
     "Open Reprice Risk Breaches",
     "Open Order Reprice Risk Breaches",
     "Open Reprice Attempted",
@@ -1855,9 +1931,23 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     "Open Reprice Submitted",
     "Open Order Reprice Submitted",
     "Open Reprice Summary",
-    "Open Order Reprice Summary"
+    "Open Order Reprice Summary",
+    "Guard Metadata Refresh Overall",
+    "Guard Refresh Overall",
+    "Guard Metadata Refresh Ready",
+    "Guard Refresh Ready",
+    "Guard Metadata Refresh Blocked",
+    "Guard Refresh Blocked",
+    "Guard Metadata Refresh Repair After Refresh",
+    "Guard Refresh Repair After",
+    "Guard Metadata Refresh Attempted",
+    "Guard Refresh Attempted",
+    "Guard Metadata Refresh Submitted",
+    "Guard Refresh Submitted",
+    "Guard Metadata Refresh Summary",
+    "Guard Refresh Summary"
   ];
-  const openRepriceAppliedFields = openRepricePropertyNames.filter((name) =>
+  const opsDashboardAppliedFields = openRepricePropertyNames.filter((name) =>
     Object.prototype.hasOwnProperty.call(properties, name)
   );
 
@@ -1873,11 +1963,17 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `protectionStale=${row.live.positionProtectionGuardStale ?? "N/A"}`,
     `protectionInvalidGeometry=${row.live.positionProtectionInvalidGeometry ?? "N/A"}`,
     `protectionBrokerChildMissing=${row.live.positionProtectionBrokerChildMissing ?? "N/A"}`,
+    `guardRefresh=${row.live.guardMetadataRefreshOverall || "N/A"}`,
+    `guardRefreshReady=${row.live.guardMetadataRefreshReady ?? "N/A"}`,
+    `guardRefreshRepairAfter=${row.live.guardMetadataRefreshRepairAfterRefresh ?? "N/A"}`,
+    `guardRefreshAttempted=${row.live.guardMetadataRefreshAttempted}`,
+    `guardRefreshSubmitted=${row.live.guardMetadataRefreshSubmitted}`,
     `openReprice=${row.live.openOrderRepriceProposalOverall || "N/A"}`,
+    `openRepriceRows=${row.live.openOrderRepriceRows ?? "N/A"}`,
     `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,
     `openRepriceAttempted=${row.live.openOrderRepriceAttempted}`,
     `openRepriceSubmitted=${row.live.openOrderRepriceSubmitted}`,
-    `openRepriceFields=${openRepriceAppliedFields.length ? openRepriceAppliedFields.join("|") : "none"}`
+    `dashboardOpsFields=${opsDashboardAppliedFields.length ? opsDashboardAppliedFields.join("|") : "none"}`
   ];
   console.log(logParts.join(" "));
   return upsertStatus;

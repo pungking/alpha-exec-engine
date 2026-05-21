@@ -1650,6 +1650,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build guard metadata refresh plan
+        if: always()
+        run: npm run ops:guard-metadata-refresh
+
+      - name: Publish guard metadata refresh plan summary
+        if: always()
+        run: |
+          if [[ -f state/guard-metadata-refresh-plan.md ]]; then
+            cat state/guard-metadata-refresh-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Guard Metadata Refresh Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/guard-metadata-refresh-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build open-order risk-capped reprice proposal
         if: always()
         run: npm run ops:open-order-reprice-proposal
@@ -1855,6 +1870,8 @@ jobs:
             state/broker-child-order-reconciliation.md
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
+            state/guard-metadata-refresh-plan.json
+            state/guard-metadata-refresh-plan.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
             state/alpaca-order-payload-schema-report.json
