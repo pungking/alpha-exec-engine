@@ -827,3 +827,6 @@ Priority: P2 until M1/M2 stabilize; then P1
   - payload remains visible when safe min-one-share probe is enabled.
   - `attempted=0` and `submitted=0` remain true in safe mode.
   - order-state `FAIL` is routed to ops health/Notion, not treated as a sidecar infrastructure crash.
+- Follow-up fix:
+  - latest safe run showed `payloadCount=0` because a currently held symbol consumed the pre-admission `maxOrders=1` slot and was rejected only later by portfolio admission; the next valid candidate then hit `max_orders_reached`.
+  - added a report-safe pre-admission held-position gate so held `ENTRY_NEW` rows are skipped before capacity allocation. This keeps candidate selection symbol-agnostic and prevents one held symbol from starving the next valid payload candidate.

@@ -5412,6 +5412,7 @@ function buildDryExecPayloads(
     hfNegativeSizeReductionEnabled?: boolean;
     lifecycleHeldSymbols?: Set<string>;
     lifecycleHeldContext?: Map<string, HeldPositionSnapshot>;
+    portfolioHeldSymbols?: Set<string>;
   }
 ): DryExecBuildResult {
   const runtimeCfg = loadRuntimeConfig();
@@ -5568,8 +5569,10 @@ function buildDryExecPayloads(
   const entryPricePolicy = buildEntryPriceAdjustmentPolicy();
   const entrySizingPolicy = buildEntrySizingPolicy();
   const executionOverlayPolicy = buildExecutionOverlayPolicy();
+  const portfolioAdmissionPolicy = buildPortfolioAdmissionPolicy();
   const lifecycleHeldSymbols = overrides?.lifecycleHeldSymbols;
   const lifecycleHeldContext = overrides?.lifecycleHeldContext;
+  const portfolioHeldSymbols = overrides?.portfolioHeldSymbols;
   const lifecycleHeldThresholds = resolveLifecycleHeldConvictionThresholds(lifecycle);
   const payloads: DryExecOrderPayload[] = [];
   const skipped: DryExecSkipReason[] = [];
@@ -5774,6 +5777,24 @@ function buildDryExecPayloads(
         actionType = "ENTRY_NEW";
         actionReason = "stage6_executable_now";
       }
+    }
+
+    const portfolioHeldEntryBlocked =
+      portfolioAdmissionPolicy.enabled &&
+      portfolioAdmissionPolicy.enforce &&
+      !hasHeldPosition &&
+      portfolioHeldSymbols != null &&
+      portfolioHeldSymbols.has(row.symbol) &&
+      (!actionType || actionType === "ENTRY_NEW");
+    if (portfolioHeldEntryBlocked) {
+      pushSkip(
+        row.symbol,
+        "portfolio_held_symbol_entry_blocked",
+        "HOLD_WAIT",
+        "portfolio_pre_admission_blocked",
+        `symbol=${row.symbol}|held=true|action=${actionType ?? "ENTRY_NEW"}|preAdmission=true`
+      );
+      return;
     }
 
     const isExitAction = isLifecycleExitActionType(actionType);
@@ -12913,10 +12934,12 @@ async function main() {
   const actionable = hfPayloadProbeApplied.actionable;
   let lifecycleHeldSymbols: Set<string> | undefined;
   let lifecycleHeldContext: Map<string, HeldPositionSnapshot> | undefined;
+  let portfolioHeldSymbols: Set<string> | undefined;
   if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
     try {
       lifecycleHeldContext = await loadHeldPositionSnapshots();
       lifecycleHeldSymbols = new Set([...lifecycleHeldContext.keys()]);
+      portfolioHeldSymbols = lifecycleHeldSymbols;
       console.log(
         `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
         }`
@@ -12924,6 +12947,24 @@ async function main() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[LIFECYCLE_PLAN] held_position_fetch_failed=${message.slice(0, 180)}`);
+    }
+  }
+  const portfolioAdmissionPolicyForPreGate = buildPortfolioAdmissionPolicy();
+  if (
+    portfolioHeldSymbols == null &&
+    portfolioAdmissionPolicyForPreGate.enabled &&
+    portfolioAdmissionPolicyForPreGate.enforce
+  ) {
+    try {
+      const heldContext = await loadHeldPositionSnapshots();
+      portfolioHeldSymbols = new Set([...heldContext.keys()]);
+      console.log(
+        `[PORTFOLIO_PRE_ADMISSION] held_positions=${portfolioHeldSymbols.size} symbols=${portfolioHeldSymbols.size > 0 ? [...portfolioHeldSymbols].slice(0, 10).join("/") : "none"
+        }`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[PORTFOLIO_PRE_ADMISSION] held_position_fetch_failed=${message.slice(0, 180)}`);
     }
   }
   if (hfPayloadProbeApplied.summary.requestedMode !== "off") {
@@ -12939,7 +12980,8 @@ async function main() {
   }
   const dryExecBaseRaw = buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
     lifecycleHeldSymbols,
-    lifecycleHeldContext
+    lifecycleHeldContext,
+    portfolioHeldSymbols
   });
   const hfPayloadProbe = finalizeHfPayloadProbeSummary(hfPayloadProbeApplied.summary, dryExecBaseRaw);
   const dryExecBase = dryExecBaseRaw;
