@@ -1083,6 +1083,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const paperOcoApprovalGate = readJson("state/paper-oco-canary-approval-gate.json") || {};
   const paperOcoSubmitGate = readJson("state/paper-oco-canary-submit-gate.json") || {};
   const openOrderRepriceProposal = readJson("state/open-order-reprice-proposal.json") || {};
+  const opsLaneStatus = readJson("state/ops-lane-status-report.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1182,7 +1183,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `openRepriceRows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"}`,
     `openRepriceReady=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"}`,
     `openRepriceRiskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"}`,
+    `openRepriceAttempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"}`,
     `openRepriceSubmitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+    `laneStatus=${opsLaneStatus?.overall || "N/A"}`,
+    `laneBlocked=${opsLaneStatus?.summary?.blockedCount ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
     `fillStateMismatch=${liveTotals?.fillStateMismatchCount ?? "N/A"}`
   ].join(" ");
@@ -1241,6 +1245,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       guardMetadataRefreshOverall: shortText(guardMetadataRefreshPlan?.overall || "N/A", 80),
       guardMetadataRefreshReady: toNumber(guardMetadataRefreshPlan?.summary?.refreshReady),
       guardMetadataRefreshBlocked: toNumber(guardMetadataRefreshPlan?.summary?.blocked),
+      guardMetadataRefreshNoSource: toNumber(guardMetadataRefreshPlan?.summary?.noRefreshSource),
+      guardMetadataRefreshStaleSource: toNumber(guardMetadataRefreshPlan?.summary?.staleRefreshSource),
+      guardMetadataRefreshInvalidGeometry: toNumber(guardMetadataRefreshPlan?.summary?.invalidRefreshGeometry),
       guardMetadataRefreshRepairAfterRefresh: toNumber(
         guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates
       ),
@@ -1343,6 +1350,21 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
         `overall=${openOrderRepriceProposal?.overall || "N/A"} rows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"} ready=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"} waitPolicy=${openOrderRepriceProposal?.summary?.waitingPolicy ?? "N/A"} riskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"} attempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"} reportOnly=${openOrderRepriceProposal?.executionPolicy?.reportOnly ?? "N/A"}`,
         500
       ),
+      opsLaneStatusOverall: shortText(opsLaneStatus?.overall || "N/A", 80),
+      opsLaneStatusBlocked: toNumber(opsLaneStatus?.summary?.blockedCount),
+      opsLaneStatusManualApprovalCandidates: toNumber(opsLaneStatus?.summary?.manualApprovalCandidates),
+      opsLaneStatusAttempted:
+        opsLaneStatus?.summary?.brokerMutationAttempted === true ||
+        opsLaneStatus?.summary?.stateMutationAttempted === true ||
+        opsLaneStatus?.executionPolicy?.brokerMutationAttempted === true ||
+        opsLaneStatus?.executionPolicy?.stateMutationAttempted === true,
+      opsLaneStatusSubmitted:
+        opsLaneStatus?.summary?.brokerMutationSubmitted === true ||
+        opsLaneStatus?.executionPolicy?.brokerMutationSubmitted === true,
+      opsLaneStatusSummary: shortText(
+        `overall=${opsLaneStatus?.overall || "N/A"} lanes=${opsLaneStatus?.summary?.lanes ?? "N/A"} blocked=${opsLaneStatus?.summary?.blockedCount ?? "N/A"} manualApproval=${opsLaneStatus?.summary?.manualApprovalCandidates ?? "N/A"} attempted=${opsLaneStatus?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${opsLaneStatus?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${opsLaneStatus?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
       guardMissingCount: toNumber(liveTotals?.guardMissingCount),
       fillStateMismatchCount: toNumber(liveTotals?.fillStateMismatchCount),
       positionDetails: shortText(livePositionDetails || "N/A", 1800)
@@ -1371,6 +1393,7 @@ const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
   "Open Reprice Attempted": { checkbox: {} },
   "Open Reprice Submitted": { checkbox: {} },
   "Open Reprice Summary": { rich_text: {} },
+  "Position Protection Guard Missing": { number: { format: "number" } },
   "Guard Metadata Refresh Overall": {
     select: {
       options: [
@@ -1385,10 +1408,28 @@ const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
   },
   "Guard Metadata Refresh Ready": { number: { format: "number" } },
   "Guard Metadata Refresh Blocked": { number: { format: "number" } },
+  "Guard Metadata Refresh No Source": { number: { format: "number" } },
+  "Guard Metadata Refresh Stale Source": { number: { format: "number" } },
+  "Guard Metadata Refresh Invalid Geometry": { number: { format: "number" } },
   "Guard Metadata Refresh Repair After Refresh": { number: { format: "number" } },
   "Guard Metadata Refresh Attempted": { checkbox: {} },
   "Guard Metadata Refresh Submitted": { checkbox: {} },
-  "Guard Metadata Refresh Summary": { rich_text: {} }
+  "Guard Metadata Refresh Summary": { rich_text: {} },
+  "Ops Lane Status Overall": {
+    select: {
+      options: [
+        { name: "monitoring", color: "green" },
+        { name: "blocked_lanes_present", color: "yellow" },
+        { name: "review_broker_activity", color: "red" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Ops Lane Status Blocked": { number: { format: "number" } },
+  "Ops Lane Manual Approval Candidates": { number: { format: "number" } },
+  "Ops Lane Attempted": { checkbox: {} },
+  "Ops Lane Submitted": { checkbox: {} },
+  "Ops Lane Status Summary": { rich_text: {} }
 };
 
 const notionSchemaPayloadType = (payload) => {
@@ -1672,6 +1713,10 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     number: () => numberProp(row.live.positionProtectionCritical),
     rich_text: () => textProp(row.live.positionProtectionCritical ?? "N/A")
   });
+  setPropertyAliases(properties, schema, ["Position Protection Guard Missing", "Protection Guard Metadata Missing"], {
+    number: () => numberProp(row.live.positionProtectionGuardMissing),
+    rich_text: () => textProp(row.live.positionProtectionGuardMissing ?? "N/A")
+  });
   setPropertyAliases(properties, schema, ["Position Protection Guard Stale", "Protection Guard Metadata Stale"], {
     number: () => numberProp(row.live.positionProtectionGuardStale),
     rich_text: () => textProp(row.live.positionProtectionGuardStale ?? "N/A")
@@ -1887,6 +1932,18 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     number: () => numberProp(row.live.guardMetadataRefreshBlocked),
     rich_text: () => textProp(row.live.guardMetadataRefreshBlocked ?? "N/A")
   });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh No Source", "Guard Refresh No Source"], {
+    number: () => numberProp(row.live.guardMetadataRefreshNoSource),
+    rich_text: () => textProp(row.live.guardMetadataRefreshNoSource ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Stale Source", "Guard Refresh Stale Source"], {
+    number: () => numberProp(row.live.guardMetadataRefreshStaleSource),
+    rich_text: () => textProp(row.live.guardMetadataRefreshStaleSource ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Refresh Invalid Geometry", "Guard Refresh Invalid Geometry"], {
+    number: () => numberProp(row.live.guardMetadataRefreshInvalidGeometry),
+    rich_text: () => textProp(row.live.guardMetadataRefreshInvalidGeometry ?? "N/A")
+  });
   setPropertyAliases(properties, schema, ["Guard Metadata Refresh Repair After Refresh", "Guard Refresh Repair After"], {
     number: () => numberProp(row.live.guardMetadataRefreshRepairAfterRefresh),
     rich_text: () => textProp(row.live.guardMetadataRefreshRepairAfterRefresh ?? "N/A")
@@ -1901,6 +1958,29 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   });
   setPropertyAliases(properties, schema, ["Guard Metadata Refresh Summary", "Guard Refresh Summary"], {
     rich_text: () => textProp(row.live.guardMetadataRefreshSummary)
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Status Overall", "Lane Status Overall"], {
+    select: () => selectProp(row.live.opsLaneStatusOverall || "N/A"),
+    rich_text: () => textProp(row.live.opsLaneStatusOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Status Blocked", "Lane Status Blocked"], {
+    number: () => numberProp(row.live.opsLaneStatusBlocked),
+    rich_text: () => textProp(row.live.opsLaneStatusBlocked ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Manual Approval Candidates", "Lane Manual Approval Candidates"], {
+    number: () => numberProp(row.live.opsLaneStatusManualApprovalCandidates),
+    rich_text: () => textProp(row.live.opsLaneStatusManualApprovalCandidates ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Attempted", "Lane Status Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.opsLaneStatusAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.opsLaneStatusAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Submitted", "Lane Status Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.opsLaneStatusSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.opsLaneStatusSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Ops Lane Status Summary", "Lane Status Summary"], {
+    rich_text: () => textProp(row.live.opsLaneStatusSummary)
   });
   setPropertyAliases(properties, schema, ["Live Guard Missing", "Guard Missing Count"], {
     number: () => numberProp(row.live.guardMissingCount),
@@ -1938,6 +2018,12 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     "Guard Refresh Ready",
     "Guard Metadata Refresh Blocked",
     "Guard Refresh Blocked",
+    "Guard Metadata Refresh No Source",
+    "Guard Refresh No Source",
+    "Guard Metadata Refresh Stale Source",
+    "Guard Refresh Stale Source",
+    "Guard Metadata Refresh Invalid Geometry",
+    "Guard Refresh Invalid Geometry",
     "Guard Metadata Refresh Repair After Refresh",
     "Guard Refresh Repair After",
     "Guard Metadata Refresh Attempted",
@@ -1945,7 +2031,19 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     "Guard Metadata Refresh Submitted",
     "Guard Refresh Submitted",
     "Guard Metadata Refresh Summary",
-    "Guard Refresh Summary"
+    "Guard Refresh Summary",
+    "Ops Lane Status Overall",
+    "Lane Status Overall",
+    "Ops Lane Status Blocked",
+    "Lane Status Blocked",
+    "Ops Lane Manual Approval Candidates",
+    "Lane Manual Approval Candidates",
+    "Ops Lane Attempted",
+    "Lane Status Attempted",
+    "Ops Lane Submitted",
+    "Lane Status Submitted",
+    "Ops Lane Status Summary",
+    "Lane Status Summary"
   ];
   const opsDashboardAppliedFields = openRepricePropertyNames.filter((name) =>
     Object.prototype.hasOwnProperty.call(properties, name)
@@ -1965,6 +2063,9 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `protectionBrokerChildMissing=${row.live.positionProtectionBrokerChildMissing ?? "N/A"}`,
     `guardRefresh=${row.live.guardMetadataRefreshOverall || "N/A"}`,
     `guardRefreshReady=${row.live.guardMetadataRefreshReady ?? "N/A"}`,
+    `guardRefreshNoSource=${row.live.guardMetadataRefreshNoSource ?? "N/A"}`,
+    `guardRefreshStaleSource=${row.live.guardMetadataRefreshStaleSource ?? "N/A"}`,
+    `guardRefreshInvalidGeometry=${row.live.guardMetadataRefreshInvalidGeometry ?? "N/A"}`,
     `guardRefreshRepairAfter=${row.live.guardMetadataRefreshRepairAfterRefresh ?? "N/A"}`,
     `guardRefreshAttempted=${row.live.guardMetadataRefreshAttempted}`,
     `guardRefreshSubmitted=${row.live.guardMetadataRefreshSubmitted}`,
@@ -1973,6 +2074,10 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,
     `openRepriceAttempted=${row.live.openOrderRepriceAttempted}`,
     `openRepriceSubmitted=${row.live.openOrderRepriceSubmitted}`,
+    `laneStatus=${row.live.opsLaneStatusOverall || "N/A"}`,
+    `laneBlocked=${row.live.opsLaneStatusBlocked ?? "N/A"}`,
+    `laneAttempted=${row.live.opsLaneStatusAttempted}`,
+    `laneSubmitted=${row.live.opsLaneStatusSubmitted}`,
     `dashboardOpsFields=${opsDashboardAppliedFields.length ? opsDashboardAppliedFields.join("|") : "none"}`
   ];
   console.log(logParts.join(" "));

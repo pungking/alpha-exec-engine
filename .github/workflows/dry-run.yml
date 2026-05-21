@@ -1785,6 +1785,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build ops lane status report
+        if: always()
+        run: npm run ops:lane-status
+
+      - name: Publish ops lane status summary
+        if: always()
+        run: |
+          if [[ -f state/ops-lane-status-report.md ]]; then
+            cat state/ops-lane-status-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Ops Lane Status Report" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ops-lane-status-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops health snapshot
         if: always()
         run: npm run ops:health:dry-run
@@ -1893,6 +1908,8 @@ jobs:
             state/order-state-consistency-report.md
             state/open-order-reprice-proposal.json
             state/open-order-reprice-proposal.md
+            state/ops-lane-status-report.json
+            state/ops-lane-status-report.md
             state/notion-performance-dashboard-schema-report.json
             state/notion-performance-dashboard-schema-report.md
             state/ops-health-report.json

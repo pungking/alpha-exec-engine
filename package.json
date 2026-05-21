@@ -17,6 +17,7 @@
     "ops:position-protection:audit": "node scripts/build-position-protection-root-cause-audit.mjs",
     "ops:guard-metadata-refresh": "node scripts/build-guard-metadata-refresh-plan.mjs",
     "ops:guarded-repair-plan": "node scripts/build-guarded-child-order-repair-plan.mjs",
+    "ops:lane-status": "node scripts/build-ops-lane-status-report.mjs",
     "ops:health": "node scripts/build-ops-health-report.mjs",
     "ops:health:dry-run": "OPS_HEALTH_KIND=dry_run node scripts/build-ops-health-report.mjs",
     "ops:health:market-guard": "OPS_HEALTH_KIND=market_guard node scripts/build-ops-health-report.mjs",

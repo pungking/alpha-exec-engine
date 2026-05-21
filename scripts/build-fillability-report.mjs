@@ -248,6 +248,13 @@ const calcDistancePct = (current, limit) => {
   return ((currentNum - limitNum) / limitNum) * 100;
 };
 
+const validQuoteMid = (quote) => {
+  const bid = toNum(quote?.bid);
+  const ask = toNum(quote?.ask);
+  if (bid == null || ask == null || bid <= 0 || ask <= 0 || ask < bid) return null;
+  return Number(((bid + ask) / 2).toFixed(4));
+};
+
 const parseReasonNumber = (reason, key) => {
   const match = String(reason || "").match(new RegExp(`${key}=(-?\\d+(?:\\.\\d+)?)`));
   return match ? toNum(match[1]) : null;
@@ -304,8 +311,12 @@ const buildRows = (records, alpaca, preview = {}) => {
     const latestClosed = latestByTime(closedBySymbol.get(symbol) || []);
     const fills = fillsBySymbol.get(symbol) || [];
     const quote = alpaca.quoteBySymbol?.[symbol] || null;
-    const quoteMid =
-      quote && quote.bid != null && quote.ask != null ? Number(((quote.bid + quote.ask) / 2).toFixed(4)) : null;
+    const quoteMid = validQuoteMid(quote);
+    const quoteInvalid =
+      quote &&
+      quote.reason == null &&
+      quoteMid == null &&
+      (toNum(quote?.bid) != null || toNum(quote?.ask) != null);
     const currentPrice = firstNonEmpty(
       quoteMid,
       row?.executionOverlay?.currentPrice,
@@ -348,6 +359,9 @@ const buildRows = (records, alpaca, preview = {}) => {
       currentPrice: toNum(currentPrice),
       quoteBid: toNum(quote?.bid),
       quoteAsk: toNum(quote?.ask),
+      quoteMid,
+      quoteValid: quoteMid != null,
+      quoteInvalid: Boolean(quoteInvalid),
       activeLimit: toNum(activeLimit),
       currentVsLimitPct: calcDistancePct(currentPrice, activeLimit),
       rrAtCurrent: toNum(row?.executionOverlay?.rrAtCurrent ?? row?.openOrderMonitor?.rrAtCurrent),
@@ -399,6 +413,7 @@ const summarizeRows = (rows, preview, alpaca) => {
       ? distanceRows.reduce((acc, row) => acc + (row.currentVsLimitPct || 0), 0) / distanceRows.length
       : null;
   const fillRows = rows.filter((row) => row.fillQty > 0);
+  const invalidQuoteCount = rows.filter((row) => row.quoteInvalid).length;
   const entryTooFar = count("BLOCKED_ENTRY_DISTANCE");
   const highPriceSizeBlocked = count("BLOCKED_HIGH_PRICE_SIZE");
   const openReprice = count("OPEN_REPRICE_CANDIDATE");
@@ -447,6 +462,10 @@ const summarizeRows = (rows, preview, alpaca) => {
   if (terminalUnfilled > 0) {
     findings.push(`${terminalUnfilled} order(s) closed without fill`);
   }
+  if (invalidQuoteCount > 0) {
+    overall = "warn";
+    findings.push(`${invalidQuoteCount} latest quote(s) had invalid bid/ask and fell back to overlay/monitor price`);
+  }
 
   return {
     overall,
@@ -470,6 +489,7 @@ const summarizeRows = (rows, preview, alpaca) => {
     entryTooFar,
     highPriceSizeBlocked,
     highPricePolicyChangeWouldAllow: rows.filter((row) => row.highPricePolicyChangeWouldAllow).length,
+    invalidQuoteCount,
     avgOpenCurrentVsLimitPct
   };
 };

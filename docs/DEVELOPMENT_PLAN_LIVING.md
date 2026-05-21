@@ -701,6 +701,32 @@ Priority: P2 until M1/M2 stabilize; then P1
   - Notion Performance Dashboard summary/log includes the same guard refresh fields.
   - if refresh creates repair re-evaluation candidates, that is a manual-review signal only; broker/state mutation remains false.
 
+## 2026-05-21 - Goal/Team Status Lane Report
+
+- Added a symbol-agnostic lane status report to make the Goal/Team operating model explicit:
+  - `npm run ops:lane-status`
+  - output: `state/ops-lane-status-report.json` / `.md`
+  - `.github/workflows/dry-run.yml` builds/publishes the report after persistent OCO repair planning and before ops health.
+- Lanes are status buckets, not ticker-specific workflows:
+  - `Guard Metadata Missing Lane`
+  - `Guard Metadata Stale Lane`
+  - `Broker Children Present Monitor Lane`
+  - `Valid Guard + Missing Child Repair Candidate Lane`
+  - `Invalid Geometry Root-Cause Lane`
+  - `Open Order Risk-Capped Reprice Lane`
+  - `New Order / Fillability / Submit Path Lane`
+- Safety invariant:
+  - lane status is report-only; no broker mutation, no state mutation, no submit/replace/cancel.
+  - actual paper/live broker mutation still requires a separate approval-gated task.
+- Fillability hardening:
+  - latest quote midpoint now rejects invalid bid/ask (`bid <= 0`, `ask <= 0`, or `ask < bid`) and falls back to execution overlay / monitor price.
+  - `fillability-report` and ops health now expose `invalidQuoteCount` / `invalidQuotes` so quote-quality distortion is visible.
+- Next run observation criteria:
+  - artifact includes `ops-lane-status-report.json` / `.md`.
+  - ops health files line shows `laneStatus=ok`.
+  - Notion Performance Dashboard logs include `laneStatus`, `laneBlocked`, `laneAttempted=false`, and `laneSubmitted=false`.
+  - high-price sizing blockers remain classified under the new-order/fillability lane, not submit-path failure.
+
 ## 2026-05-21 - Notion Performance Dashboard Open-Reprice Columns
 
 - Added idempotent Notion Performance Dashboard schema ensure for open-order reprice telemetry.
@@ -712,13 +738,23 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `Open Reprice Attempted` (`checkbox`)
   - `Open Reprice Submitted` (`checkbox`)
   - `Open Reprice Summary` (`rich_text`)
+  - `Position Protection Guard Missing` (`number`)
   - `Guard Metadata Refresh Overall` (`select`)
   - `Guard Metadata Refresh Ready` (`number`)
   - `Guard Metadata Refresh Blocked` (`number`)
+  - `Guard Metadata Refresh No Source` (`number`)
+  - `Guard Metadata Refresh Stale Source` (`number`)
+  - `Guard Metadata Refresh Invalid Geometry` (`number`)
   - `Guard Metadata Refresh Repair After Refresh` (`number`)
   - `Guard Metadata Refresh Attempted` (`checkbox`)
   - `Guard Metadata Refresh Submitted` (`checkbox`)
   - `Guard Metadata Refresh Summary` (`rich_text`)
+  - `Ops Lane Status Overall` (`select`)
+  - `Ops Lane Status Blocked` (`number`)
+  - `Ops Lane Manual Approval Candidates` (`number`)
+  - `Ops Lane Attempted` (`checkbox`)
+  - `Ops Lane Submitted` (`checkbox`)
+  - `Ops Lane Status Summary` (`rich_text`)
 - Safety/ops behavior:
   - schema ensure is controlled by `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_ENABLED` (default `true`).
   - schema ensure is non-blocking by default unless `NOTION_PERFORMANCE_DASHBOARD_SCHEMA_ENSURE_REQUIRED=true`.
