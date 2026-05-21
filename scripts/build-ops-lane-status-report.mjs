@@ -230,7 +230,7 @@ const buildReport = () => {
     })
   ];
 
-  const unsafe = lanes.some((row) => /submitted|attempted_not_submitted/.test(row.status));
+  const unsafe = lanes.some((row) => row.status === "submitted" || row.status === "attempted_not_submitted");
   const blockedCount = lanes.filter((row) => String(row.status).startsWith("blocked") || row.status.includes("required")).length;
   const manualApprovalCandidates = lanes.filter((row) => row.status.includes("approval_candidate")).length;
   const report = {
