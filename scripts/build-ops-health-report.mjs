@@ -10,6 +10,7 @@ const FILES = {
   guardControl: `${STATE_DIR}/guard-control.json`,
   perf: `${STATE_DIR}/performance-dashboard.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
+  positionProtectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
   guardedRepairPlan: `${STATE_DIR}/guarded-child-order-repair-plan.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   persistentOcoOpenVerifyMulti: `${STATE_DIR}/persistent-oco-repair-open-verify-multi.json`,
@@ -104,10 +105,10 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
-    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} persistentOcoRepair=${report.metrics.persistentOcoRepairPlanOverall ?? "N/A"} persistentEligible=${report.metrics.persistentOcoRepairEligible ?? "N/A"} persistentSelected=${report.metrics.persistentOcoRepairSelectedSymbol ?? "N/A"} persistentAttempted=${report.metrics.persistentOcoRepairAttempted ?? "N/A"} persistentSubmitted=${report.metrics.persistentOcoRepairSubmitted ?? "N/A"} persistentMultiVerify=${report.metrics.persistentOcoOpenVerifyMultiOverall ?? "N/A"} persistentMultiSymbols=${report.metrics.persistentOcoOpenVerifyMultiSymbols ?? "N/A"} persistentMultiPassFail=${report.metrics.persistentOcoOpenVerifyMultiPassCount ?? "N/A"}/${report.metrics.persistentOcoOpenVerifyMultiFailCount ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} paperOcoGate=${report.metrics.paperOcoApprovalGateOverall ?? "N/A"} paperOcoDecision=${report.metrics.paperOcoApprovalGateDecision ?? "N/A"} paperOcoSubmit=${report.metrics.paperOcoSubmitGateOverall ?? "N/A"} paperOcoSubmitDecision=${report.metrics.paperOcoSubmitGateDecision ?? "N/A"} paperOcoSubmitAttempted=${report.metrics.paperOcoSubmitGateAttempted ?? "N/A"} paperOcoSubmitSubmitted=${report.metrics.paperOcoSubmitGateSubmitted ?? "N/A"} openRepriceProposal=${report.metrics.openOrderRepriceProposalOverall ?? "N/A"} openRepriceReady=${report.metrics.openOrderRepriceReady ?? "N/A"} openRepriceRiskBreaches=${report.metrics.openOrderRepriceSuggestedRiskBreaches ?? "N/A"} openRepriceAttempted=${report.metrics.openOrderRepriceAttempted ?? "N/A"} openRepriceSubmitted=${report.metrics.openOrderRepriceSubmitted ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
+    `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} protectionAudit=${report.metrics.positionProtectionAuditOverall ?? "N/A"} protectionStale=${report.metrics.positionProtectionGuardMetadataStale ?? "N/A"} protectionInvalidGeometry=${report.metrics.positionProtectionInvalidGeometry ?? "N/A"} protectionBrokerChildMissing=${report.metrics.positionProtectionBrokerChildMissing ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} persistentOcoRepair=${report.metrics.persistentOcoRepairPlanOverall ?? "N/A"} persistentEligible=${report.metrics.persistentOcoRepairEligible ?? "N/A"} persistentSelected=${report.metrics.persistentOcoRepairSelectedSymbol ?? "N/A"} persistentAttempted=${report.metrics.persistentOcoRepairAttempted ?? "N/A"} persistentSubmitted=${report.metrics.persistentOcoRepairSubmitted ?? "N/A"} persistentMultiVerify=${report.metrics.persistentOcoOpenVerifyMultiOverall ?? "N/A"} persistentMultiSymbols=${report.metrics.persistentOcoOpenVerifyMultiSymbols ?? "N/A"} persistentMultiPassFail=${report.metrics.persistentOcoOpenVerifyMultiPassCount ?? "N/A"}/${report.metrics.persistentOcoOpenVerifyMultiFailCount ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} paperOcoGate=${report.metrics.paperOcoApprovalGateOverall ?? "N/A"} paperOcoDecision=${report.metrics.paperOcoApprovalGateDecision ?? "N/A"} paperOcoSubmit=${report.metrics.paperOcoSubmitGateOverall ?? "N/A"} paperOcoSubmitDecision=${report.metrics.paperOcoSubmitGateDecision ?? "N/A"} paperOcoSubmitAttempted=${report.metrics.paperOcoSubmitGateAttempted ?? "N/A"} paperOcoSubmitSubmitted=${report.metrics.paperOcoSubmitGateSubmitted ?? "N/A"} openRepriceProposal=${report.metrics.openOrderRepriceProposalOverall ?? "N/A"} openRepriceReady=${report.metrics.openOrderRepriceReady ?? "N/A"} openRepriceRiskBreaches=${report.metrics.openOrderRepriceSuggestedRiskBreaches ?? "N/A"} openRepriceAttempted=${report.metrics.openOrderRepriceAttempted ?? "N/A"} openRepriceSubmitted=${report.metrics.openOrderRepriceSubmitted ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
   );
   if (report.metrics.livePositionDetails) {
     lines.push(`- live_position_monitor: \`${report.metrics.livePositionDetails}\``);
@@ -131,6 +132,7 @@ const main = () => {
   const guardControl = readJson(FILES.guardControl);
   const perf = readJson(FILES.perf);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
+  const positionProtectionAudit = readJson(FILES.positionProtectionAudit);
   const guardedRepairPlan = readJson(FILES.guardedRepairPlan);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const persistentOcoOpenVerifyMulti = readJson(FILES.persistentOcoOpenVerifyMulti);
@@ -164,6 +166,14 @@ const main = () => {
       "warn",
       "broker_child_reconciliation_missing",
       "state/broker-child-order-reconciliation.json not found; broker child stop/target planner did not run"
+    );
+  }
+  if (brokerChildReconciliation && !positionProtectionAudit) {
+    addCheck(
+      checks,
+      "warn",
+      "position_protection_audit_missing",
+      "state/position-protection-root-cause-audit.json not found; stop/current/target drift and child-missing root causes are not separated"
     );
   }
   if (brokerChildReconciliation && !guardedRepairPlan) {
@@ -265,6 +275,17 @@ const main = () => {
     toNum(brokerChildReconciliation?.summary?.missingStopChildren);
   const brokerChildReconciliationMissingTargets =
     toNum(brokerChildReconciliation?.summary?.missingTargetChildren);
+  const positionProtectionAuditOverall = short(positionProtectionAudit?.overall || "", 48) || null;
+  const positionProtectionPositions = toNum(positionProtectionAudit?.summary?.positions);
+  const positionProtectionCritical = toNum(positionProtectionAudit?.summary?.critical);
+  const positionProtectionWarnings = toNum(positionProtectionAudit?.summary?.warnings);
+  const positionProtectionGuardMetadataMissing = toNum(positionProtectionAudit?.summary?.guardMetadataMissing);
+  const positionProtectionGuardMetadataStale = toNum(positionProtectionAudit?.summary?.guardMetadataStale);
+  const positionProtectionInvalidGeometry = toNum(positionProtectionAudit?.summary?.invalidGeometry);
+  const positionProtectionStopCurrentDrift = toNum(positionProtectionAudit?.summary?.stopCurrentDrift);
+  const positionProtectionBrokerChildMissing = toNum(positionProtectionAudit?.summary?.brokerChildMissing);
+  const positionProtectionBrokerStopMissing = toNum(positionProtectionAudit?.summary?.brokerStopMissing);
+  const positionProtectionBrokerTargetMissing = toNum(positionProtectionAudit?.summary?.brokerTargetMissing);
   const guardedRepairPlanOverall = short(guardedRepairPlan?.overall || "", 48) || null;
   const guardedRepairCandidates = toNum(guardedRepairPlan?.summary?.candidates);
   const guardedRepairBlockedByReportOnly = toNum(guardedRepairPlan?.summary?.blockedByReportOnly);
@@ -386,6 +407,40 @@ const main = () => {
       "warn",
       "broker_child_reconciliation_warn",
       `broker child-order reconciliation found ${brokerChildReconciliationWarningCount} warning row(s), targetMissing=${brokerChildReconciliationMissingTargets ?? "N/A"}`
+    );
+  }
+
+  if (positionProtectionAuditOverall === "fail" || (positionProtectionCritical ?? 0) > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "position_protection_root_cause_fail",
+      `position protection audit found critical=${positionProtectionCritical ?? "N/A"}, stale=${positionProtectionGuardMetadataStale ?? "N/A"}, invalidGeometry=${positionProtectionInvalidGeometry ?? "N/A"}, brokerChildMissing=${positionProtectionBrokerChildMissing ?? "N/A"}`
+    );
+  } else if (positionProtectionAuditOverall === "warn" || (positionProtectionWarnings ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "position_protection_root_cause_warn",
+      `position protection audit found warnings=${positionProtectionWarnings ?? "N/A"}, guardMissing=${positionProtectionGuardMetadataMissing ?? "N/A"}, stale=${positionProtectionGuardMetadataStale ?? "N/A"}, brokerChildMissing=${positionProtectionBrokerChildMissing ?? "N/A"}`
+    );
+  }
+
+  if (positionProtectionInvalidGeometry != null && positionProtectionInvalidGeometry > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "position_protection_invalid_geometry",
+      `${positionProtectionInvalidGeometry} held position(s) have invalid stop/current/target geometry; block repair and route to Stage6/guard metadata drift review`
+    );
+  }
+
+  if (positionProtectionGuardMetadataStale != null && positionProtectionGuardMetadataStale > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "position_protection_guard_metadata_stale",
+      `${positionProtectionGuardMetadataStale} held position(s) use stale planned stop/target metadata; refresh guard metadata before any protective repair submit`
     );
   }
 
@@ -815,6 +870,7 @@ const main = () => {
       guardControl: Boolean(guardControl),
       perf: Boolean(perf),
       brokerChildReconciliation: Boolean(brokerChildReconciliation),
+      positionProtectionAudit: Boolean(positionProtectionAudit),
       guardedRepairPlan: Boolean(guardedRepairPlan),
       persistentOcoRepairPlan: Boolean(persistentOcoRepairPlan),
       persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
@@ -855,6 +911,17 @@ const main = () => {
       brokerChildReconciliationProposedRows,
       brokerChildReconciliationMissingStops,
       brokerChildReconciliationMissingTargets,
+      positionProtectionAuditOverall,
+      positionProtectionPositions,
+      positionProtectionCritical,
+      positionProtectionWarnings,
+      positionProtectionGuardMetadataMissing,
+      positionProtectionGuardMetadataStale,
+      positionProtectionInvalidGeometry,
+      positionProtectionStopCurrentDrift,
+      positionProtectionBrokerChildMissing,
+      positionProtectionBrokerStopMissing,
+      positionProtectionBrokerTargetMissing,
       guardedRepairPlanOverall,
       guardedRepairCandidates,
       guardedRepairBlockedByReportOnly,

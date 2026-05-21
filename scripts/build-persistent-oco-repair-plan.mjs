@@ -19,6 +19,8 @@ const writeJson = (path, value) => {
   fs.renameSync(tmp, path);
 };
 const toNum = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && !value.trim()) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 };
@@ -64,8 +66,9 @@ const candidates = rows
     const stopBelowCurrent = plannedStop != null && current != null && plannedStop < current;
     const targetAboveCurrent = plannedTarget != null && current != null && current < plannedTarget;
     const geometryOk = stopBelowCurrent && targetAboveCurrent;
+    const guardMetadataGeneratedAt = row?.plannedLedgerUpdatedAt || recon?.generatedAt || null;
     const guardMetadataRisk = evaluateGuardMetadataRisk({
-      generatedAt: recon?.generatedAt,
+      generatedAt: guardMetadataGeneratedAt,
       currentPrice: current,
       plannedStopPrice: plannedStop,
       plannedTargetPrice: plannedTarget
@@ -113,6 +116,7 @@ const candidates = rows
       plannedStage6File: row?.plannedStage6File || null,
       plannedLedgerKey: row?.plannedLedgerKey || null,
       plannedLedgerUpdatedAt: row?.plannedLedgerUpdatedAt || null,
+      guardMetadataGeneratedAt,
       currentPriceSource: "alpaca_position_current_price",
       guardMetadataRisk,
       geometry: {

@@ -152,8 +152,13 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
   if (orderStateRow?.status === "FAIL") blockers.push("order_state_symbol_failure");
   if (orderStateRow?.status === "WARN") warnings.push("order_state_symbol_warning");
   if (performanceRow?.positionStatus === "HOLD_MONITOR_GUARD_MISSING") blockers.push("missing_position_guard_metadata");
+  const guardMetadataGeneratedAt =
+    reconciliationRow?.plannedLedgerUpdatedAt ||
+    performanceRow?.plannedLedgerUpdatedAt ||
+    sourceGeneratedAt ||
+    null;
   const guardMetadataRisk = evaluateGuardMetadataRisk({
-    generatedAt: sourceGeneratedAt,
+    generatedAt: guardMetadataGeneratedAt,
     currentPrice,
     plannedStopPrice,
     plannedTargetPrice
@@ -188,6 +193,7 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
     targetMissing,
     brokerStopPresent,
     brokerTargetPresent,
+    guardMetadataGeneratedAt,
     guardMetadataRisk,
     canaryNotional: canaryQty > 0 && currentPrice != null ? canaryQty * currentPrice : null,
     orderStateStatus: orderStateRow?.status || null,

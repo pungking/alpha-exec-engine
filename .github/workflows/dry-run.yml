@@ -1635,6 +1635,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build position protection root-cause audit
+        if: always()
+        run: npm run ops:position-protection:audit
+
+      - name: Publish position protection root-cause audit summary
+        if: always()
+        run: |
+          if [[ -f state/position-protection-root-cause-audit.md ]]; then
+            cat state/position-protection-root-cause-audit.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Position Protection Root-Cause Audit" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/position-protection-root-cause-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build open-order risk-capped reprice proposal
         if: always()
         run: npm run ops:open-order-reprice-proposal
@@ -1838,6 +1853,8 @@ jobs:
             state/performance-dashboard.md
             state/broker-child-order-reconciliation.json
             state/broker-child-order-reconciliation.md
+            state/position-protection-root-cause-audit.json
+            state/position-protection-root-cause-audit.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
             state/alpaca-order-payload-schema-report.json

@@ -695,3 +695,27 @@ Priority: P2 until M1/M2 stabilize; then P1
   - writes `state/notion-performance-dashboard-schema-report.json` / `.md`.
   - `.github/workflows/dry-run.yml` uploads those reports with the sidecar state artifact.
   - Notion sync logs now include `openReprice`, `openRepriceReady`, `openRepriceAttempted`, `openRepriceSubmitted`, and the concrete `openRepriceFields` written.
+
+## 2026-05-21 - Position Protection Root-Cause Audit
+
+- Added a symbol-agnostic root-cause audit for held-position protection gaps:
+  - `npm run ops:position-protection:audit`
+  - output: `state/position-protection-root-cause-audit.json` / `.md`
+  - wired into `.github/workflows/dry-run.yml` after order-state consistency and before open-order reprice/repair planners.
+- Audit purpose:
+  - separate broker child-order gaps from guard metadata gaps.
+  - detect stale stop/target metadata before any protective OCO repair can be approved.
+  - detect invalid stop/current/target geometry, including stop/current drift where planned stop is at or above current price.
+  - keep all decisions portfolio-wide and dynamic; proof symbols are examples only, not runtime targets.
+- Safety invariant:
+  - report-only only; `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - stale guard metadata blocks repair lanes until refreshed from a current Stage6 or position-lifecycle source.
+  - invalid guard geometry blocks repair lanes and routes to Stage6/guard-metadata root-cause review instead of broker repair.
+- Repair planner hardening:
+  - persistent OCO and paper OCO canary selectors now evaluate guard metadata freshness from the planned guard source timestamp (`plannedLedgerUpdatedAt`) instead of the newly generated reconciliation report timestamp.
+  - `null` planned stop/target values are no longer coerced to zero in the persistent repair planner.
+- Next run observation criteria:
+  - artifact includes `position-protection-root-cause-audit.json` / `.md`.
+  - ops health key metrics include `protectionAudit`, `protectionStale`, `protectionInvalidGeometry`, and `protectionBrokerChildMissing`.
+  - Notion Performance Dashboard summary/log includes `protectionAudit`, `protectionStale`, `protectionInvalidGeometry`, and `protectionBrokerChildMissing`.
+  - if a held position has stale or invalid guard metadata, persistent repair selection must be blocked rather than promoted to approval.

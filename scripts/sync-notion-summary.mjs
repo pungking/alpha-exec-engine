@@ -1072,6 +1072,7 @@ const fmtFixed = (value, digits = 2) => {
 const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const dashboard = readJson("state/performance-dashboard.json") || {};
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
+  const positionProtectionAudit = readJson("state/position-protection-root-cause-audit.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const persistentOcoRepairPlan = readJson("state/persistent-oco-repair-plan.json") || {};
   const persistentOcoOpenVerifyMulti = readJson("state/persistent-oco-repair-open-verify-multi.json") || {};
@@ -1149,6 +1150,10 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `brokerTargetMissing=${liveTotals?.brokerTargetMissingCount ?? "N/A"}`,
     `brokerChildRec=${brokerChildReconciliation?.overall || "N/A"}`,
     `brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"}`,
+    `protectionAudit=${positionProtectionAudit?.overall || "N/A"}`,
+    `protectionStale=${positionProtectionAudit?.summary?.guardMetadataStale ?? "N/A"}`,
+    `protectionInvalidGeometry=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"}`,
+    `protectionBrokerChildMissing=${positionProtectionAudit?.summary?.brokerChildMissing ?? "N/A"}`,
     `guardedRepair=${guardedRepairPlan?.overall || "N/A"}`,
     `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
     `persistentOcoRepair=${persistentOcoRepairPlan?.overall || "N/A"}`,
@@ -1215,6 +1220,17 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
       brokerChildReconcileProposedRows: toNumber(brokerChildReconciliation?.summary?.proposedActionRows),
       brokerChildReconcileSummary: shortText(
         `overall=${brokerChildReconciliation?.overall || "N/A"} stopMissing=${brokerChildReconciliation?.summary?.missingStopChildren ?? "N/A"} targetMissing=${brokerChildReconciliation?.summary?.missingTargetChildren ?? "N/A"} guardMissing=${brokerChildReconciliation?.summary?.guardMetadataMissing ?? "N/A"} proposedRows=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} mode=${brokerChildReconciliation?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      positionProtectionAuditOverall: shortText(positionProtectionAudit?.overall || "N/A", 80),
+      positionProtectionCritical: toNumber(positionProtectionAudit?.summary?.critical),
+      positionProtectionWarnings: toNumber(positionProtectionAudit?.summary?.warnings),
+      positionProtectionGuardMissing: toNumber(positionProtectionAudit?.summary?.guardMetadataMissing),
+      positionProtectionGuardStale: toNumber(positionProtectionAudit?.summary?.guardMetadataStale),
+      positionProtectionInvalidGeometry: toNumber(positionProtectionAudit?.summary?.invalidGeometry),
+      positionProtectionBrokerChildMissing: toNumber(positionProtectionAudit?.summary?.brokerChildMissing),
+      positionProtectionSummary: shortText(
+        `overall=${positionProtectionAudit?.overall || "N/A"} positions=${positionProtectionAudit?.summary?.positions ?? "N/A"} critical=${positionProtectionAudit?.summary?.critical ?? "N/A"} warnings=${positionProtectionAudit?.summary?.warnings ?? "N/A"} guardMissing=${positionProtectionAudit?.summary?.guardMetadataMissing ?? "N/A"} guardStale=${positionProtectionAudit?.summary?.guardMetadataStale ?? "N/A"} invalidGeometry=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"} stopDrift=${positionProtectionAudit?.summary?.stopCurrentDrift ?? "N/A"} brokerChildMissing=${positionProtectionAudit?.summary?.brokerChildMissing ?? "N/A"} mode=${positionProtectionAudit?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardedRepairOverall: shortText(guardedRepairPlan?.overall || "N/A", 80),
@@ -1605,6 +1621,29 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Broker Child Reconcile Summary"], {
     rich_text: () => textProp(row.live.brokerChildReconcileSummary)
   });
+  setPropertyAliases(properties, schema, ["Position Protection Audit Overall", "Protection Root Cause Overall"], {
+    select: () => selectProp(row.live.positionProtectionAuditOverall || "N/A"),
+    rich_text: () => textProp(row.live.positionProtectionAuditOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Position Protection Critical", "Protection Root Cause Critical"], {
+    number: () => numberProp(row.live.positionProtectionCritical),
+    rich_text: () => textProp(row.live.positionProtectionCritical ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Position Protection Guard Stale", "Protection Guard Metadata Stale"], {
+    number: () => numberProp(row.live.positionProtectionGuardStale),
+    rich_text: () => textProp(row.live.positionProtectionGuardStale ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Position Protection Invalid Geometry", "Protection Invalid Geometry"], {
+    number: () => numberProp(row.live.positionProtectionInvalidGeometry),
+    rich_text: () => textProp(row.live.positionProtectionInvalidGeometry ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Position Protection Broker Child Missing", "Protection Broker Child Missing"], {
+    number: () => numberProp(row.live.positionProtectionBrokerChildMissing),
+    rich_text: () => textProp(row.live.positionProtectionBrokerChildMissing ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Position Protection Summary", "Protection Root Cause Summary"], {
+    rich_text: () => textProp(row.live.positionProtectionSummary)
+  });
   setPropertyAliases(properties, schema, ["Guarded Repair Overall", "Guarded Child Repair Overall"], {
     select: () => selectProp(row.live.guardedRepairOverall || "N/A"),
     rich_text: () => textProp(row.live.guardedRepairOverall || "N/A")
@@ -1830,6 +1869,10 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `snapshotTrades=${row.simulation.latestSnapshotTradeCount ?? "N/A"}`,
     `gap=${row.simulation.rowSnapshotGap ?? "N/A"}`,
     `live=${row.live.available}`,
+    `protectionAudit=${row.live.positionProtectionAuditOverall || "N/A"}`,
+    `protectionStale=${row.live.positionProtectionGuardStale ?? "N/A"}`,
+    `protectionInvalidGeometry=${row.live.positionProtectionInvalidGeometry ?? "N/A"}`,
+    `protectionBrokerChildMissing=${row.live.positionProtectionBrokerChildMissing ?? "N/A"}`,
     `openReprice=${row.live.openOrderRepriceProposalOverall || "N/A"}`,
     `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,
     `openRepriceAttempted=${row.live.openOrderRepriceAttempted}`,
