@@ -787,3 +787,26 @@ Priority: P2 until M1/M2 stabilize; then P1
   - ops health key metrics include `protectionAudit`, `protectionStale`, `protectionInvalidGeometry`, and `protectionBrokerChildMissing`.
   - Notion Performance Dashboard summary/log includes `protectionAudit`, `protectionStale`, `protectionInvalidGeometry`, and `protectionBrokerChildMissing`.
   - if a held position has stale or invalid guard metadata, persistent repair selection must be blocked rather than promoted to approval.
+
+## 2026-05-21 - Guard Lineage + Min-One-Share Canary Goal/Team
+
+- Completed the two-lane Goal/Team expansion as report-only infrastructure:
+  - Goal 1: `npm run ops:guard-metadata:lineage`
+    - output: `state/guard-metadata-lineage-audit.json` / `.md`
+    - proves where held-position stop/target lineage is connected or disconnected across performance dashboard, broker children, recommendation ledger, Stage6 loop, order ledger, idempotency, fillability, and current preview records.
+  - Goal 2: `npm run ops:high-price:min-one-share-canary`
+    - output: `state/high-price-min-one-share-canary-plan.json` / `.md`
+    - selects a dynamic high-price sizing candidate only when `ENTRY_HIGH_PRICE_POLICY=min_one_share` would fit one-share notional/risk caps and there is no active/terminal broker state.
+- Workflow/telemetry wiring:
+  - `.github/workflows/dry-run.yml` now builds and uploads both reports.
+  - ops health now exposes `guardLineage*` and `minOneShareCanary*` metrics and fails if either lane attempts/submits broker mutation.
+  - ops lane status now uses the lineage audit for missing/stale/invalid guard source routing and labels high-price min-one-share candidates as safe payload-probe candidates.
+  - Notion Performance Dashboard schema ensure/sync now includes guard lineage and min-one-share canary fields.
+- Safety invariant:
+  - both lanes are report-only; `brokerMutationAllowed=false`, `stateMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - the min-one-share lane is a safe dry-run payload-generation probe only, not a submit approval.
+  - any later broker visibility test still requires a separate approval-gated run and must prove preflight, idempotency, and Alpaca visibility.
+- Safe canary observation criteria:
+  - dispatch dry-run with `run_verify_mode=safe_min_one_share_admission_probe`, `run_entry_high_price_policy=min_one_share`, `run_dry_max_orders_override=1`, `run_dry_max_total_notional_override=600`, `run_entry_min_one_share_max_notional=300`, and `run_entry_max_risk_dollars_per_trade=25`.
+  - done when payload generation is observed with `brokerMutationAttempted=false` and `brokerMutationSubmitted=false`.
+  - if payload remains zero, inspect `orderReadiness`, `topSkip`, `portfolioAdmission`, and `fillability-report` before changing Stage6 or entry logic.

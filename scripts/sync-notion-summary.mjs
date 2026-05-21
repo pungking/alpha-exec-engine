@@ -1074,6 +1074,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const brokerChildReconciliation = readJson("state/broker-child-order-reconciliation.json") || {};
   const positionProtectionAudit = readJson("state/position-protection-root-cause-audit.json") || {};
   const guardMetadataRefreshPlan = readJson("state/guard-metadata-refresh-plan.json") || {};
+  const guardMetadataLineageAudit = readJson("state/guard-metadata-lineage-audit.json") || {};
   const guardedRepairPlan = readJson("state/guarded-child-order-repair-plan.json") || {};
   const persistentOcoRepairPlan = readJson("state/persistent-oco-repair-plan.json") || {};
   const persistentOcoOpenVerifyMulti = readJson("state/persistent-oco-repair-open-verify-multi.json") || {};
@@ -1084,6 +1085,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const paperOcoSubmitGate = readJson("state/paper-oco-canary-submit-gate.json") || {};
   const openOrderRepriceProposal = readJson("state/open-order-reprice-proposal.json") || {};
   const opsLaneStatus = readJson("state/ops-lane-status-report.json") || {};
+  const highPriceMinOneShareCanaryPlan = readJson("state/high-price-min-one-share-canary-plan.json") || {};
   const simulation = dashboard?.simulation || {};
   const live = dashboard?.live || {};
   const simRows = toNumber(simulation?.totalRows);
@@ -1159,6 +1161,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"}`,
     `guardRefreshReady=${guardMetadataRefreshPlan?.summary?.refreshReady ?? "N/A"}`,
     `guardRefreshRepairAfter=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"}`,
+    `guardLineage=${guardMetadataLineageAudit?.overall || "N/A"}`,
+    `guardLineageMissing=${guardMetadataLineageAudit?.summary?.missingNoSource ?? "N/A"}`,
+    `guardLineageStale=${guardMetadataLineageAudit?.summary?.staleSourceOnly ?? "N/A"}`,
     `guardedRepair=${guardedRepairPlan?.overall || "N/A"}`,
     `guardedCandidates=${guardedRepairPlan?.summary?.candidates ?? "N/A"}`,
     `persistentOcoRepair=${persistentOcoRepairPlan?.overall || "N/A"}`,
@@ -1185,6 +1190,9 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `openRepriceRiskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"}`,
     `openRepriceAttempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"}`,
     `openRepriceSubmitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+    `minOneShareCanary=${highPriceMinOneShareCanaryPlan?.overall || "N/A"}`,
+    `minOneShareEligible=${highPriceMinOneShareCanaryPlan?.summary?.eligible ?? "N/A"}`,
+    `minOneShareSelected=${highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol ?? "N/A"}`,
     `laneStatus=${opsLaneStatus?.overall || "N/A"}`,
     `laneBlocked=${opsLaneStatus?.summary?.blockedCount ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
@@ -1261,6 +1269,23 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
         guardMetadataRefreshPlan?.executionPolicy?.brokerMutationSubmitted === true,
       guardMetadataRefreshSummary: shortText(
         `overall=${guardMetadataRefreshPlan?.overall || "N/A"} positions=${guardMetadataRefreshPlan?.summary?.positions ?? "N/A"} ready=${guardMetadataRefreshPlan?.summary?.refreshReady ?? "N/A"} blocked=${guardMetadataRefreshPlan?.summary?.blocked ?? "N/A"} noSource=${guardMetadataRefreshPlan?.summary?.noRefreshSource ?? "N/A"} stale=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"} invalidGeometry=${guardMetadataRefreshPlan?.summary?.invalidRefreshGeometry ?? "N/A"} repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} attempted=${guardMetadataRefreshPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${guardMetadataRefreshPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${guardMetadataRefreshPlan?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
+      guardMetadataLineageOverall: shortText(guardMetadataLineageAudit?.overall || "N/A", 80),
+      guardMetadataLineageReady: toNumber(guardMetadataLineageAudit?.summary?.ready),
+      guardMetadataLineageMissing: toNumber(guardMetadataLineageAudit?.summary?.missingNoSource),
+      guardMetadataLineageStale: toNumber(guardMetadataLineageAudit?.summary?.staleSourceOnly),
+      guardMetadataLineageInvalid: toNumber(guardMetadataLineageAudit?.summary?.invalidGeometry),
+      guardMetadataLineageAttempted:
+        guardMetadataLineageAudit?.summary?.brokerMutationAttempted === true ||
+        guardMetadataLineageAudit?.summary?.stateMutationAttempted === true ||
+        guardMetadataLineageAudit?.executionPolicy?.brokerMutationAttempted === true ||
+        guardMetadataLineageAudit?.executionPolicy?.stateMutationAttempted === true,
+      guardMetadataLineageSubmitted:
+        guardMetadataLineageAudit?.summary?.brokerMutationSubmitted === true ||
+        guardMetadataLineageAudit?.executionPolicy?.brokerMutationSubmitted === true,
+      guardMetadataLineageSummary: shortText(
+        `overall=${guardMetadataLineageAudit?.overall || "N/A"} positions=${guardMetadataLineageAudit?.summary?.positions ?? "N/A"} ready=${guardMetadataLineageAudit?.summary?.ready ?? "N/A"} missing=${guardMetadataLineageAudit?.summary?.missingNoSource ?? "N/A"} stale=${guardMetadataLineageAudit?.summary?.staleSourceOnly ?? "N/A"} invalidGeometry=${guardMetadataLineageAudit?.summary?.invalidGeometry ?? "N/A"} attempted=${guardMetadataLineageAudit?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${guardMetadataLineageAudit?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${guardMetadataLineageAudit?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       guardedRepairOverall: shortText(guardedRepairPlan?.overall || "N/A", 80),
@@ -1350,6 +1375,22 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
         `overall=${openOrderRepriceProposal?.overall || "N/A"} rows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"} ready=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"} waitPolicy=${openOrderRepriceProposal?.summary?.waitingPolicy ?? "N/A"} riskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"} attempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"} reportOnly=${openOrderRepriceProposal?.executionPolicy?.reportOnly ?? "N/A"}`,
         500
       ),
+      highPriceMinOneShareOverall: shortText(highPriceMinOneShareCanaryPlan?.overall || "N/A", 80),
+      highPriceMinOneShareEligible: toNumber(highPriceMinOneShareCanaryPlan?.summary?.eligible),
+      highPriceMinOneShareSelected: shortText(highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol || "N/A", 32),
+      highPriceMinOneShareWouldProbe: highPriceMinOneShareCanaryPlan?.summary?.wouldGeneratePayloadProbe === true,
+      highPriceMinOneShareAttempted:
+        highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted === true ||
+        highPriceMinOneShareCanaryPlan?.summary?.stateMutationAttempted === true ||
+        highPriceMinOneShareCanaryPlan?.executionPolicy?.brokerMutationAttempted === true ||
+        highPriceMinOneShareCanaryPlan?.executionPolicy?.stateMutationAttempted === true,
+      highPriceMinOneShareSubmitted:
+        highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted === true ||
+        highPriceMinOneShareCanaryPlan?.executionPolicy?.brokerMutationSubmitted === true,
+      highPriceMinOneShareSummary: shortText(
+        `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} candidates=${highPriceMinOneShareCanaryPlan?.summary?.candidates ?? "N/A"} eligible=${highPriceMinOneShareCanaryPlan?.summary?.eligible ?? "N/A"} selected=${highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol ?? "N/A"} wouldProbe=${highPriceMinOneShareCanaryPlan?.summary?.wouldGeneratePayloadProbe ?? "N/A"} attempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${highPriceMinOneShareCanaryPlan?.executionPolicy?.mode || "N/A"}`,
+        500
+      ),
       opsLaneStatusOverall: shortText(opsLaneStatus?.overall || "N/A", 80),
       opsLaneStatusBlocked: toNumber(opsLaneStatus?.summary?.blockedCount),
       opsLaneStatusManualApprovalCandidates: toNumber(opsLaneStatus?.summary?.manualApprovalCandidates),
@@ -1415,6 +1456,38 @@ const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
   "Guard Metadata Refresh Attempted": { checkbox: {} },
   "Guard Metadata Refresh Submitted": { checkbox: {} },
   "Guard Metadata Refresh Summary": { rich_text: {} },
+  "Guard Metadata Lineage Overall": {
+    select: {
+      options: [
+        { name: "ready", color: "green" },
+        { name: "lineage_gaps_found", color: "yellow" },
+        { name: "invalid_geometry", color: "red" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Guard Metadata Lineage Missing": { number: { format: "number" } },
+  "Guard Metadata Lineage Stale": { number: { format: "number" } },
+  "Guard Metadata Lineage Invalid": { number: { format: "number" } },
+  "Guard Metadata Lineage Attempted": { checkbox: {} },
+  "Guard Metadata Lineage Submitted": { checkbox: {} },
+  "Guard Metadata Lineage Summary": { rich_text: {} },
+  "Min One Share Canary Overall": {
+    select: {
+      options: [
+        { name: "ready_for_safe_payload_probe", color: "orange" },
+        { name: "blocked_no_eligible_candidate", color: "gray" },
+        { name: "no_fillability_rows", color: "gray" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Min One Share Canary Eligible": { number: { format: "number" } },
+  "Min One Share Canary Selected": { rich_text: {} },
+  "Min One Share Canary Would Probe": { checkbox: {} },
+  "Min One Share Canary Attempted": { checkbox: {} },
+  "Min One Share Canary Submitted": { checkbox: {} },
+  "Min One Share Canary Summary": { rich_text: {} },
   "Ops Lane Status Overall": {
     select: {
       options: [
@@ -1959,6 +2032,59 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Guard Metadata Refresh Summary", "Guard Refresh Summary"], {
     rich_text: () => textProp(row.live.guardMetadataRefreshSummary)
   });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Overall", "Guard Lineage Overall"], {
+    select: () => selectProp(row.live.guardMetadataLineageOverall || "N/A"),
+    rich_text: () => textProp(row.live.guardMetadataLineageOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Missing", "Guard Lineage Missing"], {
+    number: () => numberProp(row.live.guardMetadataLineageMissing),
+    rich_text: () => textProp(row.live.guardMetadataLineageMissing ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Stale", "Guard Lineage Stale"], {
+    number: () => numberProp(row.live.guardMetadataLineageStale),
+    rich_text: () => textProp(row.live.guardMetadataLineageStale ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Invalid", "Guard Lineage Invalid"], {
+    number: () => numberProp(row.live.guardMetadataLineageInvalid),
+    rich_text: () => textProp(row.live.guardMetadataLineageInvalid ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Attempted", "Guard Lineage Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.guardMetadataLineageAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.guardMetadataLineageAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Submitted", "Guard Lineage Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.guardMetadataLineageSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.guardMetadataLineageSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Guard Metadata Lineage Summary", "Guard Lineage Summary"], {
+    rich_text: () => textProp(row.live.guardMetadataLineageSummary)
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Overall", "High Price Min One Share Overall"], {
+    select: () => selectProp(row.live.highPriceMinOneShareOverall || "N/A"),
+    rich_text: () => textProp(row.live.highPriceMinOneShareOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Eligible", "High Price Min One Share Eligible"], {
+    number: () => numberProp(row.live.highPriceMinOneShareEligible),
+    rich_text: () => textProp(row.live.highPriceMinOneShareEligible ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Selected", "High Price Min One Share Selected"], {
+    rich_text: () => textProp(row.live.highPriceMinOneShareSelected || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Would Probe", "High Price Min One Share Would Probe"], {
+    checkbox: () => checkboxProp(Boolean(row.live.highPriceMinOneShareWouldProbe)),
+    rich_text: () => textProp(String(Boolean(row.live.highPriceMinOneShareWouldProbe)))
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Attempted", "High Price Min One Share Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.highPriceMinOneShareAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.highPriceMinOneShareAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Submitted", "High Price Min One Share Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.highPriceMinOneShareSubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.highPriceMinOneShareSubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Min One Share Canary Summary", "High Price Min One Share Summary"], {
+    rich_text: () => textProp(row.live.highPriceMinOneShareSummary)
+  });
   setPropertyAliases(properties, schema, ["Ops Lane Status Overall", "Lane Status Overall"], {
     select: () => selectProp(row.live.opsLaneStatusOverall || "N/A"),
     rich_text: () => textProp(row.live.opsLaneStatusOverall || "N/A")
@@ -2032,6 +2158,34 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     "Guard Refresh Submitted",
     "Guard Metadata Refresh Summary",
     "Guard Refresh Summary",
+    "Guard Metadata Lineage Overall",
+    "Guard Lineage Overall",
+    "Guard Metadata Lineage Missing",
+    "Guard Lineage Missing",
+    "Guard Metadata Lineage Stale",
+    "Guard Lineage Stale",
+    "Guard Metadata Lineage Invalid",
+    "Guard Lineage Invalid",
+    "Guard Metadata Lineage Attempted",
+    "Guard Lineage Attempted",
+    "Guard Metadata Lineage Submitted",
+    "Guard Lineage Submitted",
+    "Guard Metadata Lineage Summary",
+    "Guard Lineage Summary",
+    "Min One Share Canary Overall",
+    "High Price Min One Share Overall",
+    "Min One Share Canary Eligible",
+    "High Price Min One Share Eligible",
+    "Min One Share Canary Selected",
+    "High Price Min One Share Selected",
+    "Min One Share Canary Would Probe",
+    "High Price Min One Share Would Probe",
+    "Min One Share Canary Attempted",
+    "High Price Min One Share Attempted",
+    "Min One Share Canary Submitted",
+    "High Price Min One Share Submitted",
+    "Min One Share Canary Summary",
+    "High Price Min One Share Summary",
     "Ops Lane Status Overall",
     "Lane Status Overall",
     "Ops Lane Status Blocked",
@@ -2069,11 +2223,21 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `guardRefreshRepairAfter=${row.live.guardMetadataRefreshRepairAfterRefresh ?? "N/A"}`,
     `guardRefreshAttempted=${row.live.guardMetadataRefreshAttempted}`,
     `guardRefreshSubmitted=${row.live.guardMetadataRefreshSubmitted}`,
+    `guardLineage=${row.live.guardMetadataLineageOverall || "N/A"}`,
+    `guardLineageMissing=${row.live.guardMetadataLineageMissing ?? "N/A"}`,
+    `guardLineageStale=${row.live.guardMetadataLineageStale ?? "N/A"}`,
+    `guardLineageAttempted=${row.live.guardMetadataLineageAttempted}`,
+    `guardLineageSubmitted=${row.live.guardMetadataLineageSubmitted}`,
     `openReprice=${row.live.openOrderRepriceProposalOverall || "N/A"}`,
     `openRepriceRows=${row.live.openOrderRepriceRows ?? "N/A"}`,
     `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,
     `openRepriceAttempted=${row.live.openOrderRepriceAttempted}`,
     `openRepriceSubmitted=${row.live.openOrderRepriceSubmitted}`,
+    `minOneShareCanary=${row.live.highPriceMinOneShareOverall || "N/A"}`,
+    `minOneShareEligible=${row.live.highPriceMinOneShareEligible ?? "N/A"}`,
+    `minOneShareSelected=${row.live.highPriceMinOneShareSelected || "N/A"}`,
+    `minOneShareAttempted=${row.live.highPriceMinOneShareAttempted}`,
+    `minOneShareSubmitted=${row.live.highPriceMinOneShareSubmitted}`,
     `laneStatus=${row.live.opsLaneStatusOverall || "N/A"}`,
     `laneBlocked=${row.live.opsLaneStatusBlocked ?? "N/A"}`,
     `laneAttempted=${row.live.opsLaneStatusAttempted}`,

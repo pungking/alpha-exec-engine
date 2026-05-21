@@ -144,6 +144,8 @@ HF verification shortcuts:
 - `npm run ops:persistent-oco-open-verify:multi`: verify multiple previously approved persistent OCO submit artifacts with Alpaca paper `GET` calls only (`state/persistent-oco-repair-open-verify-multi.json`, `.md`); no POST/DELETE and no auto-cancel.
 - `npm run ops:safety:symbol-agnostic`: fail if runtime scripts/workflows hard-code current proof symbols such as QFIN/BZ/ACAD/TSLA/JHG/INVA; docs and test fixtures may still contain examples.
 - `npm run ops:fillability`: build candidate-wide order fillability evidence (`state/fillability-report.json`, `.md`).
+- `npm run ops:high-price:min-one-share-canary`: build report-only high-price min-one-share safe payload probe plan (`state/high-price-min-one-share-canary-plan.json`, `.md`).
+- `npm run ops:guard-metadata:lineage`: build report-only stop/target lineage proof for missing/stale guard metadata (`state/guard-metadata-lineage-audit.json`, `.md`).
 - `npm run ops:order-state`: verify order-ledger/idempotency/fillability/performance fill-state consistency and account-number redaction (`state/order-state-consistency-report.json`, `.md`).
 - `npm run ops:exec:blockers`: build multi-run execution blocker audit (`state/execution-blocker-audit.json`, `.md`). Use `EXEC_BLOCKER_AUDIT_ROOT=/path/to/downloaded-runs` for GitHub artifact folders.
 - `npm run ops:health`: build ops health snapshot (`state/ops-health-report.json`, `.md`) with perf-gate vs dashboard consistency checks.
@@ -651,11 +653,12 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - Market-closed/entry-blocking cases are still controlled by preflight gate (`PREFLIGHT_*`).
     - Recommended lifecycle vars (simulation mode): `POSITION_LIFECYCLE_ENABLED=true`, `POSITION_LIFECYCLE_PREVIEW_ONLY=true`, `POSITION_LIFECYCLE_ACTION_TYPES=ENTRY_NEW,HOLD_WAIT,SCALE_UP,SCALE_DOWN,EXIT_PARTIAL,EXIT_FULL`.
   - Manual dispatch inputs:
-    - `run_verify_mode=safe_default|submit_pass|guard_skip_pass|auto`:
+    - `run_verify_mode=safe_default|submit_pass|guard_skip_pass|safe_min_one_share_admission_probe|auto`:
       - `auto` (default): keeps repository variable defaults without verify-mode overrides.
       - `safe_default`: forces safe lane (`READ_ONLY=true`, `EXEC_ENABLED=false`, `SIMULATION_LIVE_PARITY=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`).
       - `submit_pass`: forces submit-verification lane (`READ_ONLY=false`, `EXEC_ENABLED=true`, `SIMULATION_LIVE_PARITY=true`, `LIVE_ORDER_SUBMIT_ENABLED=true`, `ENTRY_OPEN_ORDER_GUARD_ENABLED=false`).
       - `guard_skip_pass`: same as submit lane + open-entry guard strictness (`ENTRY_OPEN_ORDER_GUARD_ENABLED=true`, `ENTRY_OPEN_ORDER_STALE_CANCEL_ENABLED=false`).
+      - `safe_min_one_share_admission_probe`: safe dry-run only (`READ_ONLY=true`, `EXEC_ENABLED=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`) with `ENTRY_HIGH_PRICE_POLICY=min_one_share`, `DRY_MAX_ORDERS=1`, `DRY_MAX_TOTAL_NOTIONAL=600`, `ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=300`, and `ENTRY_MAX_RISK_DOLLARS_PER_TRADE=25`.
     - `validation_pack=true`: OFF/ON/STRICT entry feasibility validation in one run.
       - Before pack execution, workflow runs `npm run verify:hf` (build-once unit+fixture regression gate).
     - `payload_probe=true`: one-shot payload path probe with temporary `DRY_RISK_OFF_MIN_CONVICTION` override (`payload_probe_min_conviction`).
@@ -707,7 +710,7 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
     - `shadow_data_bus` (`enabled/mode/sources/keyReadiness`)
     - `shadow_parse` (`total/av/sec coverage + symbol samples`)
     - `hf_marker_audit` (`soft/drift/runSummary/shadow/runSummaryShadow/runSummaryShadowTrend/tuningPhase/runSummaryTuningPhase/tuningAdvice/runSummaryTuningAdvice/freeze/runSummaryFreeze/payloadProbe/runSummaryPayloadProbe/alert/runSummaryAlert/livePromotion/runSummaryLivePromotion/nextAction/runSummaryNextAction/dailyVerdict/runSummaryDailyVerdict/payloadPathSticky/runSummaryPayloadPathSticky/evidence/runSummaryEvidence` as `ok|missing`)
-  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/guarded-child-order-repair-plan.json`, `state/guarded-child-order-repair-plan.md`, `state/alpaca-order-payload-schema-report.json`, `state/alpaca-order-payload-schema-report.md`, `state/alpaca-oco-response-fixture-report.json`, `state/alpaca-oco-response-fixture-report.md`, `state/paper-oco-canary-candidate.json`, `state/paper-oco-canary-candidate.md`, `state/paper-oco-canary-approval-gate.json`, `state/paper-oco-canary-approval-gate.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
+  - Uploads `state/last-run.json`, `state/last-dry-exec-preview.json`, `state/last-order-decision-audit.json`, `state/order-decision-audit.jsonl`, `state/hf-marker-audit.json`, `state/hf-shadow-last.json`, `state/hf-shadow-history.jsonl`, `state/hf-evidence-history.jsonl`, `state/hf-tuning-freeze.json`, `state/hf-live-promotion-state.json`, `state/last-run-output.log`, `state/order-idempotency.json`, `state/order-ledger.json`, `state/portfolio-admission-audit.json`, `state/recommendation-ledger.json`, `state/open-entry-replace-guard.json`, `state/regime-guard-state.json`, `state/broker-child-order-reconciliation.json`, `state/broker-child-order-reconciliation.md`, `state/guarded-child-order-repair-plan.json`, `state/guarded-child-order-repair-plan.md`, `state/alpaca-order-payload-schema-report.json`, `state/alpaca-order-payload-schema-report.md`, `state/alpaca-oco-response-fixture-report.json`, `state/alpaca-oco-response-fixture-report.md`, `state/paper-oco-canary-candidate.json`, `state/paper-oco-canary-candidate.md`, `state/paper-oco-canary-approval-gate.json`, `state/paper-oco-canary-approval-gate.md`, `state/guard-metadata-lineage-audit.json`, `state/guard-metadata-lineage-audit.md`, `state/fillability-report.json`, `state/fillability-report.md`, `state/high-price-min-one-share-canary-plan.json`, `state/high-price-min-one-share-canary-plan.md`, `state/order-state-consistency-report.json`, `state/order-state-consistency-report.md`, `state/validation-pack-auto-trigger.json` as run artifacts.
 - `sidecar-payload-probe-isolated`: manual probe-only safe lane for payload path verification.
   - Forces dry preview mode (`READ_ONLY=true`, `EXEC_ENABLED=false`) with `HF_PAYLOAD_PROBE_MODE=tighten|relief`.
   - Disables Telegram sends in-lane (`TELEGRAM_SEND_ENABLED=false`) to avoid notification noise.
@@ -731,6 +734,8 @@ If profile-specific vars are empty, runtime falls back to legacy `DRY_*` values.
   - `state/paper-oco-canary-submit-gate.json` / `.md` (blocked-by-default final paper OCO submit gate with rollback/idempotency/visibility plan)
   - `state/persistent-oco-repair-open-verify-multi.json` / `.md` (GET-only multi-submit persistent OCO visibility proof; no broker mutation)
   - `state/fillability-report.json` / `.md` (candidate-wide submit/fill/open/reprice evidence)
+  - `state/high-price-min-one-share-canary-plan.json` / `.md` (report-only high-price min-one-share safe payload probe planner)
+  - `state/guard-metadata-lineage-audit.json` / `.md` (report-only held-position stop/target source lineage proof)
 - Simulation source:
   - `state/stage6-20trade-loop.json` (`rows` + `snapshots`)
   - `Sim Rows` = cumulative loop rows (history total), `latest snapshot tradeCount` = latest KPI snapshot count.

@@ -501,9 +501,14 @@ jobs:
                   "ALLOW_ENTRY_OUTSIDE_RTH=false",
                   "FORCE_SEND_ONCE=false",
                   "ENTRY_HIGH_PRICE_POLICY=min_one_share",
-                  "DRY_MAX_TOTAL_NOTIONAL=300",
-                  "DRY_DEFAULT_MAX_TOTAL_NOTIONAL=300",
-                  "DRY_RISK_OFF_MAX_TOTAL_NOTIONAL=300",
+                  "DRY_MAX_ORDERS=1",
+                  "DRY_DEFAULT_MAX_ORDERS=1",
+                  "DRY_RISK_OFF_MAX_ORDERS=1",
+                  "DRY_MAX_TOTAL_NOTIONAL=600",
+                  "DRY_DEFAULT_MAX_TOTAL_NOTIONAL=600",
+                  "DRY_RISK_OFF_MAX_TOTAL_NOTIONAL=600",
+                  "ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL=300",
+                  "ENTRY_MAX_RISK_DOLLARS_PER_TRADE=25",
                   "PORTFOLIO_MIN_FILLABILITY_SCORE=50",
               ],
           }
@@ -1590,6 +1595,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build high-price min-one-share canary plan
+        if: always()
+        run: npm run ops:high-price:min-one-share-canary
+
+      - name: Publish high-price min-one-share canary summary
+        if: always()
+        run: |
+          if [[ -f state/high-price-min-one-share-canary-plan.md ]]; then
+            cat state/high-price-min-one-share-canary-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## High-Price Min-One-Share Canary Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/high-price-min-one-share-canary-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build performance dashboard snapshot
         if: always()
         run: npm run dashboard:perf
@@ -1662,6 +1682,21 @@ jobs:
           else
             echo "## Guard Metadata Refresh Plan" >> "${GITHUB_STEP_SUMMARY}"
             echo "- status: \`missing state/guard-metadata-refresh-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Build guard metadata lineage audit
+        if: always()
+        run: npm run ops:guard-metadata:lineage
+
+      - name: Publish guard metadata lineage audit summary
+        if: always()
+        run: |
+          if [[ -f state/guard-metadata-lineage-audit.md ]]; then
+            cat state/guard-metadata-lineage-audit.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Guard Metadata Lineage Audit" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/guard-metadata-lineage-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
@@ -1887,6 +1922,8 @@ jobs:
             state/position-protection-root-cause-audit.md
             state/guard-metadata-refresh-plan.json
             state/guard-metadata-refresh-plan.md
+            state/guard-metadata-lineage-audit.json
+            state/guard-metadata-lineage-audit.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
             state/alpaca-order-payload-schema-report.json
@@ -1904,6 +1941,8 @@ jobs:
             state/persistent-oco-repair-plan.md
             state/fillability-report.json
             state/fillability-report.md
+            state/high-price-min-one-share-canary-plan.json
+            state/high-price-min-one-share-canary-plan.md
             state/order-state-consistency-report.json
             state/order-state-consistency-report.md
             state/open-order-reprice-proposal.json

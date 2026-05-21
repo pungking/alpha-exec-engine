@@ -10,7 +10,9 @@ const FILES = {
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   positionProtectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
   guardMetadataRefreshPlan: `${STATE_DIR}/guard-metadata-refresh-plan.json`,
+  guardMetadataLineageAudit: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
+  highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
   openOrderRepriceProposal: `${STATE_DIR}/open-order-reprice-proposal.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
@@ -63,10 +65,13 @@ const buildReport = () => {
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const positionProtectionAudit = readJson(FILES.positionProtectionAudit);
   const guardMetadataRefreshPlan = readJson(FILES.guardMetadataRefreshPlan);
+  const guardMetadataLineageAudit = readJson(FILES.guardMetadataLineageAudit);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
+  const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
   const openOrderRepriceProposal = readJson(FILES.openOrderRepriceProposal);
   const opsHealth = readJson(FILES.opsHealth);
 
+  const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
   const guardRows = Array.isArray(guardMetadataRefreshPlan?.rows) ? guardMetadataRefreshPlan.rows : [];
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
@@ -79,8 +84,17 @@ const buildReport = () => {
   const missingGuardRows = guardRows.filter((row) => row.refreshDecision === "BLOCKED_NO_REFRESH_SOURCE");
   const staleGuardRows = guardRows.filter((row) => row.refreshDecision === "BLOCKED_REFRESH_SOURCE_STALE");
   const invalidGuardRows = guardRows.filter((row) => row.refreshDecision === "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY");
+  const missingLineageRows = lineageRows.filter((row) => row.lineageStatus === "LINEAGE_MISSING_NO_SOURCE");
+  const staleLineageRows = lineageRows.filter((row) => row.lineageStatus === "LINEAGE_STALE_SOURCE_ONLY");
+  const invalidLineageRows = lineageRows.filter((row) => row.lineageStatus === "LINEAGE_INVALID_GEOMETRY");
   const invalidProtectionRows = protectionRows.filter(
-    (row) => row.invalidGeometry === true || row.stopCurrentDrift === true
+    (row) =>
+      row.invalidGeometry === true ||
+      row.stopCurrentDrift === true ||
+      row.geometry?.valid === false ||
+      row.geometry?.stopAboveOrAtCurrent === true ||
+      row.geometry?.targetBelowOrAtCurrent === true ||
+      row.geometry?.targetBelowOrAtStop === true
   );
   const brokerChildrenPresentRows = guardRows.filter(
     (row) => row.broker?.stopPresent === true && row.broker?.targetPresent === true
@@ -100,6 +114,8 @@ const buildReport = () => {
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
   );
+  const minOneShareSelectedSymbol = asSymbol(highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol);
+  const minOneShareEligible = toNum(highPriceMinOneShareCanaryPlan?.summary?.eligible) ?? 0;
   const payloadCount = toNum(preview?.payloadCount) ?? 0;
   const brokerAttempted = toNum(preview?.brokerSubmission?.attempted) ?? 0;
   const brokerSubmitted = toNum(preview?.brokerSubmission?.submitted) ?? 0;
@@ -108,10 +124,10 @@ const buildReport = () => {
     lane({
       id: "track_1_guard_metadata_missing",
       name: "Guard Metadata Missing Lane",
-      status: missingGuardRows.length ? "blocked_root_cause_required" : "clear",
-      symbols: uniqueSymbols(missingGuardRows),
-      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} noSource=${guardMetadataRefreshPlan?.summary?.noRefreshSource ?? "N/A"}`,
-      nextAction: missingGuardRows.length
+      status: missingGuardRows.length || missingLineageRows.length ? "blocked_root_cause_required" : "clear",
+      symbols: uniqueSymbols([...missingGuardRows, ...missingLineageRows]),
+      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} noSource=${guardMetadataRefreshPlan?.summary?.noRefreshSource ?? "N/A"} lineage=${guardMetadataLineageAudit?.overall || "N/A"} lineageMissing=${guardMetadataLineageAudit?.summary?.missingNoSource ?? "N/A"}`,
+      nextAction: missingGuardRows.length || missingLineageRows.length
         ? "Trace missing stop/target lineage through recommendation ledger, Stage6 loop, order ledger, and fillability state."
         : "No missing guard metadata lane action required.",
       safety: "report_only_no_broker_or_state_mutation"
@@ -119,10 +135,10 @@ const buildReport = () => {
     lane({
       id: "track_2_guard_metadata_stale",
       name: "Guard Metadata Stale Lane",
-      status: staleGuardRows.length ? "waiting_fresh_guard_source" : "clear",
-      symbols: uniqueSymbols(staleGuardRows),
-      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} staleSource=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"}`,
-      nextAction: staleGuardRows.length
+      status: staleGuardRows.length || staleLineageRows.length ? "waiting_fresh_guard_source" : "clear",
+      symbols: uniqueSymbols([...staleGuardRows, ...staleLineageRows]),
+      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} staleSource=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"} lineage=${guardMetadataLineageAudit?.overall || "N/A"} lineageStale=${guardMetadataLineageAudit?.summary?.staleSourceOnly ?? "N/A"}`,
+      nextAction: staleGuardRows.length || staleLineageRows.length
         ? "Wait for fresh Stage6/position-lifecycle/order-ledger source before repair re-evaluation."
         : "No stale guard metadata lane action required.",
       safety: "report_only_no_broker_or_state_mutation"
@@ -157,12 +173,12 @@ const buildReport = () => {
     lane({
       id: "track_5_invalid_geometry_root_cause",
       name: "Invalid Geometry Root-Cause Lane",
-      status: invalidGuardRows.length || invalidProtectionRows.length ? "root_cause_required" : "clear",
-      count: invalidGuardRows.length + invalidProtectionRows.length,
-      symbols: uniqueSymbols([...invalidGuardRows, ...invalidProtectionRows]),
-      evidence: `guardInvalid=${guardMetadataRefreshPlan?.summary?.invalidRefreshGeometry ?? "N/A"} protectionInvalid=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"} stopDrift=${positionProtectionAudit?.summary?.stopCurrentDrift ?? "N/A"}`,
+      status: invalidGuardRows.length || invalidProtectionRows.length || invalidLineageRows.length ? "root_cause_required" : "clear",
+      count: invalidGuardRows.length + invalidProtectionRows.length + invalidLineageRows.length,
+      symbols: uniqueSymbols([...invalidGuardRows, ...invalidProtectionRows, ...invalidLineageRows]),
+      evidence: `guardInvalid=${guardMetadataRefreshPlan?.summary?.invalidRefreshGeometry ?? "N/A"} protectionInvalid=${positionProtectionAudit?.summary?.invalidGeometry ?? "N/A"} lineageInvalid=${guardMetadataLineageAudit?.summary?.invalidGeometry ?? "N/A"} stopDrift=${positionProtectionAudit?.summary?.stopCurrentDrift ?? "N/A"}`,
       nextAction:
-        invalidGuardRows.length || invalidProtectionRows.length
+        invalidGuardRows.length || invalidProtectionRows.length || invalidLineageRows.length
           ? "Route to Stage6/guard metadata drift analysis; broker repair is blocked."
           : "No invalid geometry lane action required.",
       safety: "repair_blocked_when_geometry_invalid"
@@ -194,17 +210,21 @@ const buildReport = () => {
             : brokerAttempted > 0
               ? "attempted_not_submitted"
               : "payload_ready_not_submitted"
-          : highPriceSkippedRows.length
-            ? "blocked_high_price_sizing"
+          : minOneShareSelectedSymbol
+            ? "safe_min_one_share_payload_probe_candidate"
+            : highPriceSkippedRows.length
+              ? "blocked_high_price_sizing"
             : "blocked_before_payload",
       count: orderDecisionRecords.length,
       symbols: uniqueSymbols(orderDecisionRecords),
-      evidence: `payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} fillability=${fillability?.summary?.overall || "N/A"}`,
+      evidence: `payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} minOneShareEligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} fillability=${fillability?.summary?.overall || "N/A"}`,
       nextAction:
         payloadCount > 0
           ? "Verify preflight/idempotency/broker visibility according to approval scope."
-          : highPriceSkippedRows.length
-            ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
+          : minOneShareSelectedSymbol
+            ? "Run safe dry-run min_one_share admission probe only; keep broker mutation disabled and verify payload generation."
+            : highPriceSkippedRows.length
+              ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
             : "Route to orderReadiness/topSkip/fillability blocker classification.",
       safety: "safe_default_keeps_broker_submission_disabled_unless_approved"
     })
