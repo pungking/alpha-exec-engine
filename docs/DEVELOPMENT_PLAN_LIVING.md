@@ -865,3 +865,22 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Safety invariant:
   - this is report-only observability; it does not mutate broker state, idempotency state, or order ledgers.
   - safe runs must still show `attempted=0` and `submitted=0` until a separate approval-gated submit test is explicitly confirmed.
+
+## 2026-05-25 - Pre-RTH Readiness Lane Hardening
+
+- Calendar note:
+  - 2026-05-25 is a US market holiday, so RTH validation is deferred to the next normal session.
+- Ops lane status now refuses to treat stale local preview artifacts as current payload readiness:
+  - `track_7_new_order_fillability_submit_path` reports `stale_preview_wait_fresh_rth` when `last-dry-exec-preview.json` exceeds `OPS_LANE_STATUS_MAX_PREVIEW_AGE_MIN` (default `1440`).
+  - it reports `missing_decision_audit_wait_fresh_rth` when no `last-order-decision-audit.json` / embedded order-decision records are available.
+  - stale/missing states count as blocked lanes in `ops-lane-status-report.json/md`.
+- Purpose:
+  - prevent an old preview with `payloadCount>0` from being mistaken for the next RTH proof.
+  - force the next RTH judgment to use fresh `payloadExpectation`, `topSkipReasonCategories`, and decision-audit rows.
+- Safety invariant:
+  - report-only only; `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+- Next RTH done-when:
+  - fresh sidecar run updates `previewGeneratedAt` within the configured age window.
+  - `decisionAuditRows > 0`.
+  - if an unheld executable candidate exists, `payloadExpectation.status=pass_payload_ready` and `unheldExecutablePayloadReady>=1`.
+  - safe mode still shows `attempted=0` and `submitted=0`.

@@ -3,9 +3,11 @@ import fs from "node:fs";
 const STATE_DIR = String(process.env.OPS_LANE_STATUS_STATE_DIR || "state").trim() || "state";
 const OUTPUT_JSON = `${STATE_DIR}/ops-lane-status-report.json`;
 const OUTPUT_MD = `${STATE_DIR}/ops-lane-status-report.md`;
+const MAX_PREVIEW_AGE_MIN = Number(process.env.OPS_LANE_STATUS_MAX_PREVIEW_AGE_MIN || 1440);
 
 const FILES = {
   preview: `${STATE_DIR}/last-dry-exec-preview.json`,
+  decisionAudit: `${STATE_DIR}/last-order-decision-audit.json`,
   fillability: `${STATE_DIR}/fillability-report.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   positionProtectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
@@ -42,6 +44,11 @@ const toNum = (value) => {
 
 const asSymbol = (value) => String(value || "").trim().toUpperCase();
 const short = (value, max = 240) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+const ageMinutes = (value) => {
+  const ts = Date.parse(String(value || ""));
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, (Date.now() - ts) / 60000);
+};
 
 const uniqueSymbols = (rows) =>
   Array.from(new Set((Array.isArray(rows) ? rows : []).map((row) => asSymbol(row?.symbol)).filter(Boolean))).sort();
@@ -61,6 +68,7 @@ const lane = ({ id, name, status, count, symbols, evidence, nextAction, safety }
 
 const buildReport = () => {
   const preview = readJson(FILES.preview);
+  const decisionAudit = readJson(FILES.decisionAudit);
   const fillability = readJson(FILES.fillability);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const positionProtectionAudit = readJson(FILES.positionProtectionAudit);
@@ -77,9 +85,14 @@ const buildReport = () => {
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
   const repriceRows = Array.isArray(openOrderRepriceProposal?.rows) ? openOrderRepriceProposal.rows : [];
-  const orderDecisionRecords = Array.isArray(preview?.orderDecisionAudit?.records)
-    ? preview.orderDecisionAudit.records
-    : [];
+  const orderDecisionRecords = Array.isArray(decisionAudit?.records)
+    ? decisionAudit.records
+    : Array.isArray(preview?.orderDecisionAudit?.records)
+      ? preview.orderDecisionAudit.records
+      : [];
+  const previewAgeMin = ageMinutes(preview?.generatedAt);
+  const previewStale = previewAgeMin != null && Number.isFinite(MAX_PREVIEW_AGE_MIN) && previewAgeMin > MAX_PREVIEW_AGE_MIN;
+  const decisionAuditMissing = orderDecisionRecords.length === 0;
 
   const missingGuardRows = guardRows.filter((row) => row.refreshDecision === "BLOCKED_NO_REFRESH_SOURCE");
   const staleGuardRows = guardRows.filter((row) => row.refreshDecision === "BLOCKED_REFRESH_SOURCE_STALE");
@@ -204,34 +217,50 @@ const buildReport = () => {
       id: "track_7_new_order_fillability_submit_path",
       name: "New Order / Fillability / Submit Path Lane",
       status:
-        payloadCount > 0
-          ? brokerSubmitted > 0
-            ? "submitted"
-            : brokerAttempted > 0
-              ? "attempted_not_submitted"
-              : "payload_ready_not_submitted"
-          : minOneShareSelectedSymbol
-            ? "safe_min_one_share_payload_probe_candidate"
-            : highPriceSkippedRows.length
-              ? "blocked_high_price_sizing"
-            : "blocked_before_payload",
+        previewStale
+          ? "stale_preview_wait_fresh_rth"
+          : decisionAuditMissing
+            ? "missing_decision_audit_wait_fresh_rth"
+            : payloadCount > 0
+              ? brokerSubmitted > 0
+                ? "submitted"
+                : brokerAttempted > 0
+                  ? "attempted_not_submitted"
+                  : "payload_ready_not_submitted"
+              : minOneShareSelectedSymbol
+                ? "safe_min_one_share_payload_probe_candidate"
+                : highPriceSkippedRows.length
+                  ? "blocked_high_price_sizing"
+                  : "blocked_before_payload",
       count: orderDecisionRecords.length,
       symbols: uniqueSymbols(orderDecisionRecords),
-      evidence: `payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} minOneShareEligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} fillability=${fillability?.summary?.overall || "N/A"}`,
+      evidence: `previewAgeMin=${previewAgeMin == null ? "N/A" : previewAgeMin.toFixed(1)} maxPreviewAgeMin=${MAX_PREVIEW_AGE_MIN} decisionAuditRows=${orderDecisionRecords.length} payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} minOneShareEligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} fillability=${fillability?.summary?.overall || "N/A"}`,
       nextAction:
-        payloadCount > 0
-          ? "Verify preflight/idempotency/broker visibility according to approval scope."
-          : minOneShareSelectedSymbol
-            ? "Run safe dry-run min_one_share admission probe only; keep broker mutation disabled and verify payload generation."
-            : highPriceSkippedRows.length
-              ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
-            : "Route to orderReadiness/topSkip/fillability blocker classification.",
+        previewStale
+          ? "Wait for the next fresh RTH sidecar run before interpreting payload readiness or broker-submit route state."
+          : decisionAuditMissing
+            ? "Require last-order-decision-audit.json from the next sidecar run before classifying payload/topSkip routes."
+            : payloadCount > 0
+              ? "Verify preflight/idempotency/broker visibility according to approval scope."
+              : minOneShareSelectedSymbol
+                ? "Run safe dry-run min_one_share admission probe only; keep broker mutation disabled and verify payload generation."
+                : highPriceSkippedRows.length
+                  ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
+                  : "Route to orderReadiness/topSkip/fillability blocker classification.",
       safety: "safe_default_keeps_broker_submission_disabled_unless_approved"
     })
   ];
 
   const unsafe = lanes.some((row) => row.status === "submitted" || row.status === "attempted_not_submitted");
-  const blockedCount = lanes.filter((row) => String(row.status).startsWith("blocked") || row.status.includes("required")).length;
+  const blockedCount = lanes.filter((row) => {
+    const status = String(row.status);
+    return (
+      status.startsWith("blocked") ||
+      status.startsWith("stale") ||
+      status.startsWith("missing") ||
+      status.includes("required")
+    );
+  }).length;
   const manualApprovalCandidates = lanes.filter((row) => row.status.includes("approval_candidate")).length;
   const report = {
     generatedAt: new Date().toISOString(),
@@ -241,6 +270,11 @@ const buildReport = () => {
     source: {
       stage6Hash: preview?.stage6Hash || null,
       stage6File: preview?.stage6File || null,
+      previewGeneratedAt: preview?.generatedAt || null,
+      previewAgeMin,
+      previewStale,
+      maxPreviewAgeMin: MAX_PREVIEW_AGE_MIN,
+      decisionAuditRows: orderDecisionRecords.length,
       opsHealthOverall: opsHealth?.overall || null
     },
     executionPolicy: {
