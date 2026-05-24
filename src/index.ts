@@ -3115,6 +3115,54 @@ function reconcileDecisionAuditWithDryExec(
   });
 }
 
+function isExecutableDecisionAuditRow(row: OrderDecisionAuditRecord): boolean {
+  return row.finalDecision === "EXECUTABLE_NOW" || row.executionBucket === "EXECUTABLE";
+}
+
+function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Record<string, unknown> {
+  const executableRows = records.filter(isExecutableDecisionAuditRow);
+  const unheldExecutableRows = executableRows.filter(
+    (row) => !String(row.reason || "").includes("portfolio_held_symbol_entry_blocked")
+  );
+  const unheldPayloadReady = unheldExecutableRows.filter((row) => row.status === "payload").length;
+  const categoryCounts = buildSkipReasonCategoryCounts(
+    unheldExecutableRows
+      .filter((row) => row.status === "skipped")
+      .reduce<Record<string, number>>((acc, row) => {
+        const rawReason = String(row.reason || "unknown");
+        const key = rawReason.split("[")[0] || rawReason;
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})
+  );
+  const unheldSkipped = Math.max(0, unheldExecutableRows.length - unheldPayloadReady);
+  const expectedBlockers = (categoryCounts.dedupe || 0) + (categoryCounts.stale_source || 0);
+  const status =
+    unheldExecutableRows.length === 0
+      ? "no_unheld_executable"
+      : unheldPayloadReady > 0
+        ? "pass_payload_ready"
+        : expectedBlockers >= unheldSkipped && unheldSkipped > 0
+          ? "blocked_by_expected_non_new_order_gate"
+          : "fail_no_payload_for_unheld_executable";
+
+  return {
+    invariant: "payloadCount>=1 is expected only when at least one unheld executable candidate survives dedupe/stale gates",
+    status,
+    executableCandidates: executableRows.length,
+    unheldExecutableCandidates: unheldExecutableRows.length,
+    unheldExecutablePayloadReady: unheldPayloadReady,
+    unheldExecutableSkipped: unheldSkipped,
+    unheldExecutableSkipCategories: categoryCounts,
+    sampleSymbols: unheldExecutableRows.slice(0, 6).map((row) => ({
+      symbol: row.symbol,
+      status: row.status,
+      category: row.status === "payload" ? "payload_ready" : classifySkipReason(String(row.reason || "")),
+      reason: row.reason
+    }))
+  };
+}
+
 function computeAgeMinutes(isoTs: string | null | undefined): number | null {
   if (!isoTs) return null;
   const ts = Date.parse(isoTs);
@@ -3194,6 +3242,35 @@ function buildSkipReasonCounts(skipped: DryExecSkipReason[]): Record<string, num
   return skipped.reduce<Record<string, number>>((acc, row) => {
     const key = String(row?.reason || "unknown");
     acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function classifySkipReason(reason: string): string {
+  const key = String(reason || "").toLowerCase();
+  if (!key || key === "unknown") return "unknown";
+  if (key.includes("portfolio_held_symbol_entry_blocked")) return "portfolio_held";
+  if (key.includes("idempotency") || key.includes("dedupe") || key.includes("duplicate")) return "dedupe";
+  if (key.includes("stale")) return "stale_source";
+  if (key.includes("entry_too_far") || key.includes("pullback") || key.includes("feasibility")) {
+    return "entry_distance";
+  }
+  if (key.includes("geometry") || key.includes("price") || key.includes("stop") || key.includes("target")) {
+    return "price_geometry";
+  }
+  if (key.includes("sizing") || key.includes("notional") || key.includes("min_one_share")) return "sizing";
+  if (key.includes("max_orders") || key.includes("max_total")) return "capacity";
+  if (key.includes("conviction") || key.includes("hf_") || key.includes("earnings")) return "quality_gate";
+  if (key.includes("instrument") || key.includes("symbol_state")) return "contract_gate";
+  return "other";
+}
+
+function buildSkipReasonCategoryCounts(counts: Record<string, number>): Record<string, number> {
+  return Object.entries(counts).reduce<Record<string, number>>((acc, [reason, rawCount]) => {
+    const count = Number(rawCount);
+    if (!Number.isFinite(count) || count <= 0) return acc;
+    const category = classifySkipReason(reason);
+    acc[category] = (acc[category] || 0) + count;
     return acc;
   }, {});
 }
@@ -3382,7 +3459,9 @@ function buildOrderReadinessSummary(
     const overlay = dryExec.executionOverlay;
     const monitor = dryExec.openOrderMonitor;
     const admission = dryExec.portfolioAdmission;
-    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)} portfolio=checked:${admission.checked}|admitted:${admission.admitted}|rejected:${admission.rejected}|reasons:${formatSkipReasonCounts(admission.reasonCounts)}`;
+    const skipCategories = buildSkipReasonCategoryCounts(dryExec.skipReasonCounts);
+    const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
+    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} topSkipCategory=${formatSkipReasonCounts(skipCategories)} payloadExpectation=${String(payloadExpectation.status || "N/A")} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)} portfolio=checked:${admission.checked}|admitted:${admission.admitted}|rejected:${admission.rejected}|reasons:${formatSkipReasonCounts(admission.reasonCounts)}`;
   }
   if (brokerSubmit.attempted === 0) {
     return `NOT_SUBMITTED payloads=${dryExec.payloads.length} reason=${brokerSubmit.reason} skipped=${brokerSubmit.skipped}`;
@@ -10790,6 +10869,8 @@ async function saveOrderDecisionAudit(
   const generatedAt = new Date().toISOString();
   const payloadReady = dryExec.decisionAudit.filter((row) => row.status === "payload").length;
   const skipped = dryExec.decisionAudit.filter((row) => row.status === "skipped").length;
+  const topSkipReasonCategories = buildSkipReasonCategoryCounts(dryExec.skipReasonCounts);
+  const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
   const audit = {
     stage6File: result.fileName,
     stage6FileId: result.fileId,
@@ -10809,7 +10890,9 @@ async function saveOrderDecisionAudit(
       brokerAttempted: brokerSubmit.attempted,
       brokerSubmitted: brokerSubmit.submitted,
       brokerFailed: brokerSubmit.failed,
-      topSkipReasons: dryExec.skipReasonCounts
+      topSkipReasons: dryExec.skipReasonCounts,
+      topSkipReasonCategories,
+      payloadExpectation
     },
     records: dryExec.decisionAudit
   };
@@ -10831,7 +10914,7 @@ async function saveOrderDecisionAudit(
     await appendFile(ORDER_DECISION_AUDIT_HISTORY_PATH, `${historyRows.join("\n")}\n`, "utf8");
   }
   console.log(
-    `[ORDER_DECISION_AUDIT] saved=${ORDER_DECISION_AUDIT_PATH} history=${ORDER_DECISION_AUDIT_HISTORY_PATH} candidates=${dryExec.decisionAudit.length} payloadReady=${payloadReady} skipped=${skipped} broker=${brokerSubmit.reason} submitted=${brokerSubmit.submitted}`
+    `[ORDER_DECISION_AUDIT] saved=${ORDER_DECISION_AUDIT_PATH} history=${ORDER_DECISION_AUDIT_HISTORY_PATH} candidates=${dryExec.decisionAudit.length} payloadReady=${payloadReady} skipped=${skipped} broker=${brokerSubmit.reason} submitted=${brokerSubmit.submitted} topSkipCategories=${formatSkipReasonCounts(topSkipReasonCategories)} payloadExpectation=${String(payloadExpectation.status || "N/A")}`
   );
 }
 
@@ -10954,7 +11037,10 @@ async function saveDryExecPreview(
         skipped: dryExec.decisionAudit.filter((row) => row.status === "skipped").length,
         brokerReason: brokerSubmit.reason,
         brokerAttempted: brokerSubmit.attempted,
-        brokerSubmitted: brokerSubmit.submitted
+        brokerSubmitted: brokerSubmit.submitted,
+        topSkipReasons: dryExec.skipReasonCounts,
+        topSkipReasonCategories: buildSkipReasonCategoryCounts(dryExec.skipReasonCounts),
+        payloadExpectation: buildPayloadExpectationSummary(dryExec.decisionAudit)
       },
       records: dryExec.decisionAudit
     },

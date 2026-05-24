@@ -1076,11 +1076,17 @@ jobs:
               lines.push(
                 `- order_decision_audit: \`candidates=${orderDecisionAudit.candidates ?? "N/A"} payloadReady=${orderDecisionAudit.payloadReady ?? "N/A"} skipped=${orderDecisionAudit.skipped ?? "N/A"} broker=${orderDecisionAudit.brokerReason ?? "N/A"} attempted=${orderDecisionAudit.brokerAttempted ?? "N/A"} submitted=${orderDecisionAudit.brokerSubmitted ?? "N/A"}\``
               );
+              lines.push(
+                `- order_decision_routes: \`topSkipCategory=${JSON.stringify(orderDecisionAudit.topSkipReasonCategories || {})} payloadExpectation=${orderDecisionAudit.payloadExpectation?.status || "N/A"} unheldExecutable=${orderDecisionAudit.payloadExpectation?.unheldExecutableCandidates ?? "N/A"} ready=${orderDecisionAudit.payloadExpectation?.unheldExecutablePayloadReady ?? "N/A"}\``
+              );
             } else if (fs.existsSync(orderDecisionAuditPath)) {
               const audit = JSON.parse(fs.readFileSync(orderDecisionAuditPath, "utf8"));
               const s = audit?.summary || {};
               lines.push(
                 `- order_decision_audit: \`candidates=${s.candidates ?? "N/A"} payloadReady=${s.payloadReady ?? "N/A"} skipped=${s.skipped ?? "N/A"} broker=${s.brokerReason ?? "N/A"} attempted=${s.brokerAttempted ?? "N/A"} submitted=${s.brokerSubmitted ?? "N/A"}\``
+              );
+              lines.push(
+                `- order_decision_routes: \`topSkipCategory=${JSON.stringify(s.topSkipReasonCategories || {})} payloadExpectation=${s.payloadExpectation?.status || "N/A"} unheldExecutable=${s.payloadExpectation?.unheldExecutableCandidates ?? "N/A"} ready=${s.payloadExpectation?.unheldExecutablePayloadReady ?? "N/A"}\``
               );
             }
             const entryFeasibility = preview?.entryFeasibility || {};

@@ -847,3 +847,21 @@ Priority: P2 until M1/M2 stabilize; then P1
   - safe runs keep `attempted=0` and `submitted=0`.
   - order-state terminal reconciliation rows are visible but do not crash the sidecar workflow.
   - guard lineage root causes are visible in `guard-metadata-lineage-audit.json/md` and `ops-health-report.json/md`.
+
+## 2026-05-24 - Payload Expectation and TopSkip Route Split
+
+- Added order-decision route classification so `topSkip` is no longer a flat reason blob:
+  - `portfolio_held`: already-held symbol blocked before creating a new entry payload.
+  - `dedupe`: idempotency/deduplication gates that intentionally suppress repeated orders.
+  - `stale_source`: stale symbol/source metadata that must be fixed upstream before submit-path testing.
+  - other route buckets include entry distance, price geometry, sizing, capacity, quality gate, and contract gate.
+- `last-order-decision-audit.json` and `last-dry-exec-preview.json` now include:
+  - `summary.topSkipReasonCategories`
+  - `summary.payloadExpectation`
+- Payload expectation invariant:
+  - `payloadCount>=1` is required only when at least one unheld executable candidate survives portfolio-held, dedupe, and stale-source gates.
+  - a held executable candidate with `portfolio_held_symbol_entry_blocked` is a valid no-new-order route, not evidence that payload generation is broken.
+- GitHub `Sidecar Dry-Run Summary` now prints `order_decision_routes` with top-skip categories and the unheld-executable payload expectation status.
+- Safety invariant:
+  - this is report-only observability; it does not mutate broker state, idempotency state, or order ledgers.
+  - safe runs must still show `attempted=0` and `submitted=0` until a separate approval-gated submit test is explicitly confirmed.
