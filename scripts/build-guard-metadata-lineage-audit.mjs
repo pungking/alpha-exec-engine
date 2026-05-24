@@ -91,6 +91,20 @@ const sourceProbe = ({ source, stop, target, generatedAt, stage6Hash, stage6File
   const fresh = ageMin != null && Number.isFinite(MAX_SOURCE_AGE_MIN) && ageMin <= MAX_SOURCE_AGE_MIN;
   const geometryValid =
     hasStopTarget && current != null && stopPrice < current && current < targetPrice && targetPrice > stopPrice;
+  const freshnessStatus = !hasStopTarget
+    ? "no_stop_target"
+    : ageMin == null
+      ? "missing_generated_at"
+      : fresh
+        ? "fresh"
+        : "stale_age_exceeded";
+  const geometryStatus = !hasStopTarget
+    ? "not_evaluated"
+    : current == null
+      ? "missing_current_price"
+      : geometryValid
+        ? "valid"
+        : "invalid_stop_current_target";
   return {
     source,
     present: Boolean(detail || stopPrice != null || targetPrice != null || generatedAt || stage6Hash || stage6File),
@@ -101,7 +115,9 @@ const sourceProbe = ({ source, stop, target, generatedAt, stage6Hash, stage6File
     generatedAt: generatedAt || null,
     ageMin: round(ageMin),
     fresh,
+    freshnessStatus,
     geometryValid,
+    geometryStatus,
     stage6Hash: stage6Hash || null,
     stage6File: stage6File || null,
     detail: short(detail, 320)
@@ -214,6 +230,19 @@ const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, lo
       : invalid.length
         ? "LINEAGE_INVALID_GEOMETRY"
         : "LINEAGE_STALE_SOURCE_ONLY";
+  const rootCause = freshValid.length
+    ? "FRESH_VALID_SOURCE_AVAILABLE"
+    : !withStopTarget.length
+      ? "NO_SOURCE_WITH_STOP_TARGET"
+      : invalid.length
+        ? "FRESH_SOURCE_INVALID_GEOMETRY"
+        : stale.some((row) => row.freshnessStatus === "missing_generated_at")
+          ? "SOURCE_TIMESTAMP_MISSING"
+          : "SOURCE_AGE_EXCEEDED";
+  const freshnessDetails = withStopTarget.map((row) => {
+    const age = row.ageMin == null ? "age=N/A" : `age=${row.ageMin}m`;
+    return `${row.source}:${row.freshnessStatus}:${row.geometryStatus}:${age}`;
+  });
 
   return {
     symbol,
@@ -226,9 +255,11 @@ const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, lo
     guardRefreshAfterDecision: guardRefreshRow?.afterRefreshRepairDecision || null,
     lineageStatus,
     disconnectPoint,
+    rootCause,
     freshValidSources: freshValid.map((row) => row.source),
     staleSources: stale.map((row) => row.source),
     invalidSources: invalid.map((row) => row.source),
+    freshnessDetails,
     sourceSummary: {
       presentSources: sources.filter((row) => row.present).map((row) => row.source),
       sourcesWithStopTarget: withStopTarget.map((row) => row.source),
@@ -254,12 +285,13 @@ const buildMarkdown = (report) => {
   lines.push(
     `- summary: \`positions=${report.summary.positions} ready=${report.summary.ready} missing=${report.summary.missingNoSource} stale=${report.summary.staleSourceOnly} invalid=${report.summary.invalidGeometry} attempted=${report.summary.brokerMutationAttempted} submitted=${report.summary.brokerMutationSubmitted}\``
   );
+  lines.push(`- root_causes: \`${JSON.stringify(report.summary.rootCauseCounts)}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lineage Status | Disconnect Point | Fresh Valid Sources | Stale Sources | Invalid Sources | Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lineage Status | Root Cause | Disconnect Point | Fresh Valid Sources | Stale Sources | Invalid Sources | Freshness Details | Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 60)) {
     lines.push(
-      `| ${row.symbol} | ${row.lineageStatus} | ${row.disconnectPoint} | ${row.freshValidSources.join(",") || "none"} | ${row.staleSources.join(",") || "none"} | ${row.invalidSources.join(",") || "none"} | ${row.action} |`
+      `| ${row.symbol} | ${row.lineageStatus} | ${row.rootCause} | ${row.disconnectPoint} | ${row.freshValidSources.join(",") || "none"} | ${row.staleSources.join(",") || "none"} | ${row.invalidSources.join(",") || "none"} | ${short(row.freshnessDetails.join("; "), 260) || "none"} | ${row.action} |`
     );
   }
   lines.push("");
@@ -308,6 +340,17 @@ const main = () => {
     missingNoSource: count("LINEAGE_MISSING_NO_SOURCE"),
     staleSourceOnly: count("LINEAGE_STALE_SOURCE_ONLY"),
     invalidGeometry: count("LINEAGE_INVALID_GEOMETRY"),
+    rootCauseCounts: rows.reduce((acc, row) => {
+      acc[row.rootCause] = (acc[row.rootCause] || 0) + 1;
+      return acc;
+    }, {}),
+    freshnessStatusCounts: rows.reduce((acc, row) => {
+      for (const probe of row.sourceProbes || []) {
+        if (!probe.hasStopTarget) continue;
+        acc[probe.freshnessStatus] = (acc[probe.freshnessStatus] || 0) + 1;
+      }
+      return acc;
+    }, {}),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
     stateMutationAttempted: false

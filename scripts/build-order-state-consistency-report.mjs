@@ -52,6 +52,9 @@ const normalizeFillabilityState = (value) => {
   return normalizeFillState(text);
 };
 
+const TERMINAL_STATES = new Set(["filled", "canceled", "expired", "rejected", "unfilled_terminal"]);
+const isTerminalState = (value) => TERMINAL_STATES.has(String(value || ""));
+
 const latestBySymbol = (rows, mapper) => {
   const out = new Map();
   for (const raw of rows) {
@@ -109,29 +112,47 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
     };
     const observed = Object.values(states).map((row) => row?.normalized).filter(Boolean);
     const unique = [...new Set(observed)];
-    const hasFilledEvidence = observed.includes("filled");
-    const contradictoryFilledSources = hasFilledEvidence
+    const terminalObserved = unique.filter(isTerminalState);
+    const hasTerminalEvidence = terminalObserved.length > 0;
+    const terminalState = terminalObserved.length === 1 ? terminalObserved[0] : null;
+    const terminalConflicts = terminalObserved.length > 1;
+    const nonTerminalSourcesAgainstTerminal = hasTerminalEvidence
       ? Object.entries(states)
-        .filter(([, row]) => row?.normalized && row.normalized !== "filled")
+        .filter(([, row]) => row?.normalized && !isTerminalState(row.normalized))
         .map(([source]) => source)
       : [];
-    const missingStatusSources = hasFilledEvidence
+    const missingStatusSources = hasTerminalEvidence
       ? Object.entries(states)
         .filter(([, row]) => row && !row.normalized)
         .map(([source]) => source)
       : [];
-    const status =
-      hasFilledEvidence && contradictoryFilledSources.length > 0
-        ? "FAIL"
-        : unique.length > 1 || missingStatusSources.length > 0
-          ? "WARN"
-          : unique.length === 1
-            ? "PASS"
-            : "WARN";
+    let status = "WARN";
+    let category = "NO_STATE_EVIDENCE";
+    if (terminalConflicts) {
+      status = "FAIL";
+      category = "TERMINAL_CONFLICT";
+    } else if (hasTerminalEvidence && nonTerminalSourcesAgainstTerminal.length > 0) {
+      status = "WARN";
+      category = "TERMINAL_RECONCILIATION_REQUIRED";
+    } else if (hasTerminalEvidence && missingStatusSources.length > 0) {
+      status = "WARN";
+      category = "TERMINAL_SOURCE_MISSING";
+    } else if (unique.length > 1) {
+      status = "WARN";
+      category = "STATE_DIVERGENCE";
+    } else if (unique.length === 1) {
+      status = "PASS";
+      category = isTerminalState(unique[0]) ? "TERMINAL_CONSISTENT" : "ACTIVE_CONSISTENT";
+    }
     return {
       symbol,
       status,
+      category,
       normalized: unique.length === 1 ? unique[0] : unique.length > 1 ? "mixed" : null,
+      terminalState,
+      terminalReconciliationRequired: category === "TERMINAL_RECONCILIATION_REQUIRED",
+      terminalConflicts,
+      nonTerminalSourcesAgainstTerminal,
       ledger: states.ledger?.status || null,
       idempotency: states.idempotency?.status || null,
       fillability: states.fillability?.status || null,
@@ -164,11 +185,14 @@ const buildMarkdown = (report) => {
   lines.push(
     `- policy: \`mode=${report.executionPolicy.mode} exitOnStateFail=${report.executionPolicy.exitOnStateFail} securityFailAlwaysExits=${report.executionPolicy.securityFailAlwaysExits}\``
   );
-  lines.push("| Symbol | Overall | Normalized | Ledger | Idempotency | Fillability | Performance | Reasons |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push(
+    `- terminal_reconciliation: \`required=${report.summary.terminalReconciliationRequired} conflicts=${report.summary.terminalConflicts}\``
+  );
+  lines.push("| Symbol | Overall | Category | Normalized | Terminal | Ledger | Idempotency | Fillability | Performance | Reasons |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 40)) {
     lines.push(
-      `| ${row.symbol} | ${row.status} | ${row.normalized || "N/A"} | ${row.ledger || "N/A"} | ${row.idempotency || "N/A"} | ${row.fillability || "N/A"} | ${row.performance || "N/A"} | ${short(row.reasons.join("; "), 220) || "N/A"} |`
+      `| ${row.symbol} | ${row.status} | ${row.category} | ${row.normalized || "N/A"} | ${row.terminalState || "N/A"} | ${row.ledger || "N/A"} | ${row.idempotency || "N/A"} | ${row.fillability || "N/A"} | ${row.performance || "N/A"} | ${short(row.reasons.join("; "), 220) || "N/A"} |`
     );
   }
   lines.push("");
@@ -191,6 +215,8 @@ const main = () => {
   };
   const hardFails = rows.filter((row) => row.status === "FAIL");
   const warnRows = rows.filter((row) => row.status === "WARN");
+  const terminalReconciliationRows = rows.filter((row) => row.terminalReconciliationRequired);
+  const terminalConflictRows = rows.filter((row) => row.terminalConflicts);
   const missingCore = !files.ledger || !files.idempotency || !files.fillability || !files.performance;
   const overall =
     accountRedaction.status === "FAIL" || hardFails.length > 0
@@ -214,7 +240,9 @@ const main = () => {
     summary: {
       symbols: rows.length,
       failures: hardFails.length,
-      warnings: warnRows.length + (missingCore ? 1 : 0)
+      warnings: warnRows.length + (missingCore ? 1 : 0),
+      terminalReconciliationRequired: terminalReconciliationRows.length,
+      terminalConflicts: terminalConflictRows.length
     },
     rows
   };

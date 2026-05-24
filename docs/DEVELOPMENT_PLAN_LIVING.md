@@ -830,3 +830,20 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Follow-up fix:
   - latest safe run showed `payloadCount=0` because a currently held symbol consumed the pre-admission `maxOrders=1` slot and was rejected only later by portfolio admission; the next valid candidate then hit `max_orders_reached`.
   - added a report-safe pre-admission held-position gate so held `ENTRY_NEW` rows are skipped before capacity allocation. This keeps candidate selection symbol-agnostic and prevents one held symbol from starving the next valid payload candidate.
+
+## 2026-05-24 - Terminal State and Guard Freshness Split
+
+- Current calendar note: this review ran outside US RTH, so fresh RTH submit-path validation is deferred until the next market session.
+- Order-state mixed handling:
+  - terminal broker/fill evidence that conflicts with stale ledger/idempotency `submitted/open` evidence is now classified as `TERMINAL_RECONCILIATION_REQUIRED` instead of a generic hard state failure.
+  - true terminal-vs-terminal conflicts remain `FAIL`.
+  - the audit remains report-only and non-mutating; it does not repair ledgers automatically.
+- Guard metadata lineage:
+  - added per-source `freshnessStatus`, `geometryStatus`, row-level `rootCause`, and aggregate root-cause/freshness counts.
+  - expected root-cause classes: `NO_SOURCE_WITH_STOP_TARGET`, `SOURCE_AGE_EXCEEDED`, `SOURCE_TIMESTAMP_MISSING`, `FRESH_SOURCE_INVALID_GEOMETRY`, `FRESH_VALID_SOURCE_AVAILABLE`.
+  - source freshness gaps are explicitly separated from broker child-order repair; repair remains blocked until fresh valid stop/current/target metadata exists.
+- Next RTH done-when:
+  - latest fresh Stage6 safe run produces `payloadCount>=1` if an unheld executable candidate exists.
+  - safe runs keep `attempted=0` and `submitted=0`.
+  - order-state terminal reconciliation rows are visible but do not crash the sidecar workflow.
+  - guard lineage root causes are visible in `guard-metadata-lineage-audit.json/md` and `ops-health-report.json/md`.
