@@ -3250,6 +3250,9 @@ function classifySkipReason(reason: string): string {
   const key = String(reason || "").toLowerCase();
   if (!key || key === "unknown") return "unknown";
   if (key.includes("portfolio_held_symbol_entry_blocked")) return "portfolio_held";
+  if (key.includes("portfolio_fillability") || key.includes("fillability_below_floor")) {
+    return "quality_gate";
+  }
   if (key.includes("idempotency") || key.includes("dedupe") || key.includes("duplicate")) return "dedupe";
   if (key.includes("stale")) return "stale_source";
   if (key.includes("entry_too_far") || key.includes("pullback") || key.includes("feasibility")) {
