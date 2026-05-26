@@ -1083,6 +1083,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
   const paperOcoCanaryCandidate = readJson("state/paper-oco-canary-candidate.json") || {};
   const paperOcoApprovalGate = readJson("state/paper-oco-canary-approval-gate.json") || {};
   const paperOcoSubmitGate = readJson("state/paper-oco-canary-submit-gate.json") || {};
+  const entryRepricePolicyDecision = readJson("state/entry-reprice-policy-decision.json") || {};
   const openOrderRepriceProposal = readJson("state/open-order-reprice-proposal.json") || {};
   const opsLaneStatus = readJson("state/ops-lane-status-report.json") || {};
   const highPriceMinOneShareCanaryPlan = readJson("state/high-price-min-one-share-canary-plan.json") || {};
@@ -1184,6 +1185,12 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `paperOcoSubmit=${paperOcoSubmitGate?.overall || "N/A"}`,
     `paperOcoSubmitDecision=${paperOcoSubmitGate?.decision?.status || "N/A"}`,
     `paperOcoSubmitSubmitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+    `entryRepricePolicy=${entryRepricePolicyDecision?.overall || "N/A"}`,
+    `entryRepriceReady=${entryRepricePolicyDecision?.summary?.entryRepriceReviewReady ?? "N/A"}`,
+    `entryRepriceWait=${entryRepricePolicyDecision?.summary?.waitPullbackRows ?? "N/A"}`,
+    `entryRepriceRrBelow=${entryRepricePolicyDecision?.summary?.waitPullbackRrBelowMin ?? "N/A"}`,
+    `entryRepriceAttempted=${entryRepricePolicyDecision?.summary?.brokerMutationAttempted ?? "N/A"}`,
+    `entryRepriceSubmitted=${entryRepricePolicyDecision?.summary?.brokerMutationSubmitted ?? "N/A"}`,
     `openRepriceProposal=${openOrderRepriceProposal?.overall || "N/A"}`,
     `openRepriceRows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"}`,
     `openRepriceReady=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"}`,
@@ -1364,6 +1371,21 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
         `overall=${paperOcoSubmitGate?.overall || "N/A"} decision=${paperOcoSubmitGate?.decision?.status || "N/A"} action=${paperOcoSubmitGate?.decision?.recommendedAction || "N/A"} selected=${paperOcoSubmitGate?.summary?.selectedSymbol ?? "N/A"} attempted=${paperOcoSubmitGate?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${paperOcoSubmitGate?.summary?.brokerMutationSubmitted ?? "N/A"} blockingGates=${paperOcoSubmitGate?.summary?.blockingGates ?? "N/A"} mode=${paperOcoSubmitGate?.executionPolicy?.mode || "N/A"}`,
         500
       ),
+      entryRepricePolicyOverall: shortText(entryRepricePolicyDecision?.overall || "N/A", 80),
+      entryRepricePolicyRows: toNumber(entryRepricePolicyDecision?.summary?.rows),
+      entryRepricePolicyReady: toNumber(entryRepricePolicyDecision?.summary?.entryRepriceReviewReady),
+      entryRepricePolicyWaitPullback: toNumber(entryRepricePolicyDecision?.summary?.waitPullbackRows),
+      entryRepricePolicyRrBelowMin: toNumber(entryRepricePolicyDecision?.summary?.waitPullbackRrBelowMin),
+      entryRepricePolicyAttempted:
+        entryRepricePolicyDecision?.summary?.brokerMutationAttempted === true ||
+        entryRepricePolicyDecision?.executionPolicy?.brokerMutationAttempted === true,
+      entryRepricePolicySubmitted:
+        entryRepricePolicyDecision?.summary?.brokerMutationSubmitted === true ||
+        entryRepricePolicyDecision?.executionPolicy?.brokerMutationSubmitted === true,
+      entryRepricePolicySummary: shortText(
+        `overall=${entryRepricePolicyDecision?.overall || "N/A"} rows=${entryRepricePolicyDecision?.summary?.rows ?? "N/A"} priceRr=${entryRepricePolicyDecision?.summary?.priceRrCaseRows ?? "N/A"} ready=${entryRepricePolicyDecision?.summary?.entryRepriceReviewReady ?? "N/A"} wait=${entryRepricePolicyDecision?.summary?.waitPullbackRows ?? "N/A"} rrBelow=${entryRepricePolicyDecision?.summary?.waitPullbackRrBelowMin ?? "N/A"} floorChange=${entryRepricePolicyDecision?.summary?.fillabilityFloorChangeRecommended ?? "N/A"} attempted=${entryRepricePolicyDecision?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${entryRepricePolicyDecision?.summary?.brokerMutationSubmitted ?? "N/A"} reportOnly=${entryRepricePolicyDecision?.executionPolicy?.reportOnly ?? "N/A"}`,
+        500
+      ),
       openOrderRepriceProposalOverall: shortText(openOrderRepriceProposal?.overall || "N/A", 80),
       openOrderRepriceRows: toNumber(openOrderRepriceProposal?.summary?.rows),
       openOrderRepriceReady: toNumber(openOrderRepriceProposal?.summary?.readyForApproval),
@@ -1416,6 +1438,24 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
 };
 
 const PERFORMANCE_OPEN_REPRICE_PROPERTIES = {
+  "Entry/Reprice Policy Overall": {
+    select: {
+      options: [
+        { name: "report_only_wait_pullback", color: "yellow" },
+        { name: "report_only_manual_review_available", color: "orange" },
+        { name: "report_only_blocked_geometry", color: "red" },
+        { name: "report_only_no_price_rr_rows", color: "gray" },
+        { name: "no_decision_rows", color: "gray" },
+        { name: "N/A", color: "gray" }
+      ]
+    }
+  },
+  "Entry/Reprice Ready": { number: { format: "number" } },
+  "Entry/Reprice Wait Pullback": { number: { format: "number" } },
+  "Entry/Reprice RR Below Min": { number: { format: "number" } },
+  "Entry/Reprice Attempted": { checkbox: {} },
+  "Entry/Reprice Submitted": { checkbox: {} },
+  "Entry/Reprice Summary": { rich_text: {} },
   "Open Reprice Proposal Overall": {
     select: {
       options: [
@@ -1966,6 +2006,33 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
   setPropertyAliases(properties, schema, ["Paper OCO Submit Summary", "Paper OCO Submit Gate Summary"], {
     rich_text: () => textProp(row.live.paperOcoSubmitGateSummary)
   });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Policy Overall", "Entry Reprice Policy Overall"], {
+    select: () => selectProp(row.live.entryRepricePolicyOverall || "N/A"),
+    rich_text: () => textProp(row.live.entryRepricePolicyOverall || "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Ready", "Entry Reprice Ready"], {
+    number: () => numberProp(row.live.entryRepricePolicyReady),
+    rich_text: () => textProp(row.live.entryRepricePolicyReady ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Wait Pullback", "Entry Reprice Wait Pullback"], {
+    number: () => numberProp(row.live.entryRepricePolicyWaitPullback),
+    rich_text: () => textProp(row.live.entryRepricePolicyWaitPullback ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice RR Below Min", "Entry Reprice RR Below Min"], {
+    number: () => numberProp(row.live.entryRepricePolicyRrBelowMin),
+    rich_text: () => textProp(row.live.entryRepricePolicyRrBelowMin ?? "N/A")
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Attempted", "Entry Reprice Attempted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.entryRepricePolicyAttempted)),
+    rich_text: () => textProp(String(Boolean(row.live.entryRepricePolicyAttempted)))
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Submitted", "Entry Reprice Submitted"], {
+    checkbox: () => checkboxProp(Boolean(row.live.entryRepricePolicySubmitted)),
+    rich_text: () => textProp(String(Boolean(row.live.entryRepricePolicySubmitted)))
+  });
+  setPropertyAliases(properties, schema, ["Entry/Reprice Summary", "Entry Reprice Summary"], {
+    rich_text: () => textProp(row.live.entryRepricePolicySummary)
+  });
   setPropertyAliases(properties, schema, ["Open Reprice Proposal Overall", "Open Order Reprice Overall"], {
     select: () => selectProp(row.live.openOrderRepriceProposalOverall || "N/A"),
     rich_text: () => textProp(row.live.openOrderRepriceProposalOverall || "N/A")
@@ -2228,6 +2295,11 @@ const syncPerformanceDashboard = async ({ notionToken, kind, runKey, statusRaw }
     `guardLineageStale=${row.live.guardMetadataLineageStale ?? "N/A"}`,
     `guardLineageAttempted=${row.live.guardMetadataLineageAttempted}`,
     `guardLineageSubmitted=${row.live.guardMetadataLineageSubmitted}`,
+    `entryRepricePolicy=${row.live.entryRepricePolicyOverall || "N/A"}`,
+    `entryRepriceReady=${row.live.entryRepricePolicyReady ?? "N/A"}`,
+    `entryRepriceWait=${row.live.entryRepricePolicyWaitPullback ?? "N/A"}`,
+    `entryRepriceAttempted=${row.live.entryRepricePolicyAttempted}`,
+    `entryRepriceSubmitted=${row.live.entryRepricePolicySubmitted}`,
     `openReprice=${row.live.openOrderRepriceProposalOverall || "N/A"}`,
     `openRepriceRows=${row.live.openOrderRepriceRows ?? "N/A"}`,
     `openRepriceReady=${row.live.openOrderRepriceReady ?? "N/A"}`,

@@ -1635,6 +1635,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build entry/reprice policy decision
+        if: always()
+        run: npm run ops:entry-reprice-policy
+
+      - name: Publish entry/reprice policy decision summary
+        if: always()
+        run: |
+          if [[ -f state/entry-reprice-policy-decision.md ]]; then
+            cat state/entry-reprice-policy-decision.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Entry/Reprice Policy Decision" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/entry-reprice-policy-decision.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build high-price min-one-share canary plan
         if: always()
         run: npm run ops:high-price:min-one-share-canary
@@ -1981,6 +1996,8 @@ jobs:
             state/persistent-oco-repair-plan.md
             state/fillability-report.json
             state/fillability-report.md
+            state/entry-reprice-policy-decision.json
+            state/entry-reprice-policy-decision.md
             state/high-price-min-one-share-canary-plan.json
             state/high-price-min-one-share-canary-plan.md
             state/order-state-consistency-report.json

@@ -884,3 +884,25 @@ Priority: P2 until M1/M2 stabilize; then P1
   - `decisionAuditRows > 0`.
   - if an unheld executable candidate exists, `payloadExpectation.status=pass_payload_ready` and `unheldExecutablePayloadReady>=1`.
   - safe mode still shows `attempted=0` and `submitted=0`.
+
+## 2026-05-27 - Entry/Reprice Policy Split for Fillability Blocks
+
+- Current blocker class:
+  - do not lower `PORTFOLIO_MIN_FILLABILITY_SCORE` just because a candidate is rejected by `portfolio_fillability_below_floor`.
+  - first separate whether the rejection is caused by current price moving too far above Stage6 entry, RR falling below the minimum at current price, invalid stop/current/target geometry, or a genuinely reviewable adaptive-entry/reprice case.
+- Added report-only lane:
+  - `state/entry-reprice-policy-decision.json`
+  - `state/entry-reprice-policy-decision.md`
+  - npm script: `npm run ops:entry-reprice-policy`
+- Decision policy:
+  - `WAIT_PULLBACK_RR_BELOW_MIN`: current-price RR is below `ENTRY_PRICE_MIN_RR`; keep the Stage6 pullback limit and do not lower fillability floor.
+  - `WAIT_PULLBACK_DISTANCE_TOO_FAR` / `WAIT_PULLBACK_ABOVE_ADAPTIVE_BAND`: current price is outside the adaptive/reprice band; keep wait-pullback route.
+  - `ENTRY_REPRICE_REVIEW_READY`: current price remains inside the adaptive band and RR is preserved; this is manual-review only, not an automatic replace/submit.
+  - `BLOCK_PRICE_GEOMETRY`: stop/current/target geometry is invalid; route to Stage6/guard metadata root-cause, not broker repair.
+- Safety invariant:
+  - report-only only; `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - any future replace/submit verification still requires a separate approval-gated `CONFIRM LIVE EXECUTION` scope.
+- Next RTH done-when:
+  - artifact upload includes `entry-reprice-policy-decision.json/md`.
+  - RYAAY-like cases show `report_only_wait_pullback` with `WAIT_PULLBACK_RR_BELOW_MIN` when current-price RR is below policy floor.
+  - ops health and Notion Performance Dashboard reflect entry/reprice policy status without mutating broker/order state.

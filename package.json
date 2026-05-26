@@ -23,6 +23,7 @@
     "ops:health:dry-run": "OPS_HEALTH_KIND=dry_run node scripts/build-ops-health-report.mjs",
     "ops:health:market-guard": "OPS_HEALTH_KIND=market_guard node scripts/build-ops-health-report.mjs",
     "ops:fillability": "node scripts/build-fillability-report.mjs",
+    "ops:entry-reprice-policy": "node scripts/build-entry-reprice-policy-decision.mjs",
     "ops:high-price:min-one-share-canary": "node scripts/build-high-price-min-one-share-canary-plan.mjs",
     "ops:exec:blockers": "node scripts/build-execution-blocker-audit.mjs",
     "ops:notion:audit": "node scripts/build-notion-ops-audit.mjs",
