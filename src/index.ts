@@ -445,6 +445,19 @@ type OpenOrderMonitorRepricePatch = {
 
 type PortfolioAdmissionDecisionStatus = "ADMITTED" | "REJECTED" | "BYPASSED";
 
+type PortfolioFillabilityScoreBreakdown = {
+  base: number;
+  effectiveDistancePct: number | null;
+  distanceComponent: number;
+  rr: number | null;
+  rrComponent: number;
+  style: string | null;
+  styleComponent: number;
+  monitorStatus: string | null;
+  monitorComponent: number;
+  score: number;
+};
+
 type PortfolioAdmissionRecord = {
   symbol: string;
   status: PortfolioAdmissionDecisionStatus;
@@ -454,6 +467,7 @@ type PortfolioAdmissionRecord = {
   sector: string | null;
   actionType: LifecycleActionType | null;
   fillabilityScore: number | null;
+  fillabilityBreakdown: PortfolioFillabilityScoreBreakdown | null;
   rrAtCurrent: number | null;
   admissionRr: number | null;
   effectiveEntryDistancePct: number | null;
@@ -7036,32 +7050,71 @@ function applyOpenOrderMonitorRepriceToDryExec(dryExec: DryExecBuildResult): Dry
   };
 }
 
-function computePortfolioFillabilityScore(row: OrderDecisionAuditRecord): number | null {
+function computePortfolioFillabilityBreakdown(row: OrderDecisionAuditRecord): PortfolioFillabilityScoreBreakdown | null {
   const overlay = row.executionOverlay;
   const monitor = row.openOrderMonitor;
   if (!overlay && !monitor) return null;
-  let score = 50;
+  const base = 50;
+  let score = base;
   const effectiveDistance =
     overlay?.currentDistancePct != null
       ? Math.max(0, overlay.currentDistancePct)
       : row.effectiveEntryDistancePct != null
         ? Math.max(0, row.effectiveEntryDistancePct)
         : null;
+  let distanceComponent = 0;
   if (effectiveDistance != null) {
-    score += Math.max(-35, 20 - effectiveDistance * 5);
+    distanceComponent = Math.max(-35, 20 - effectiveDistance * 5);
+    score += distanceComponent;
   }
   const rr = overlay?.rrAtCurrent ?? row.riskRewardAfter ?? row.riskRewardBefore;
+  let rrComponent = 0;
   if (rr != null) {
-    score += Math.max(-25, Math.min(25, (rr - 1.8) * 8));
+    rrComponent = Math.max(-25, Math.min(25, (rr - 1.8) * 8));
+    score += rrComponent;
   }
-  if (overlay?.style === "CONFIRMED_ADAPTIVE_ENTRY") score += 15;
-  if (overlay?.style === "PULLBACK_LIMIT") score += 5;
-  if (overlay?.style === "WAIT_PULLBACK") score -= 20;
-  if (overlay?.style === "NO_TRADE") score -= 35;
-  if (monitor?.status === "KEEP") score += 8;
-  if (monitor?.status === "REPRICE_CANDIDATE") score += 10;
-  if (monitor?.status === "CANCEL_CANDIDATE") score -= 30;
-  return Number(clamp(score, 0, 100).toFixed(1));
+  let styleComponent = 0;
+  if (overlay?.style === "CONFIRMED_ADAPTIVE_ENTRY") styleComponent += 15;
+  if (overlay?.style === "PULLBACK_LIMIT") styleComponent += 5;
+  if (overlay?.style === "WAIT_PULLBACK") styleComponent -= 20;
+  if (overlay?.style === "NO_TRADE") styleComponent -= 35;
+  score += styleComponent;
+  let monitorComponent = 0;
+  if (monitor?.status === "KEEP") monitorComponent += 8;
+  if (monitor?.status === "REPRICE_CANDIDATE") monitorComponent += 10;
+  if (monitor?.status === "CANCEL_CANDIDATE") monitorComponent -= 30;
+  score += monitorComponent;
+  return {
+    base,
+    effectiveDistancePct: effectiveDistance == null ? null : Number(effectiveDistance.toFixed(4)),
+    distanceComponent: Number(distanceComponent.toFixed(4)),
+    rr: rr == null ? null : Number(rr.toFixed(4)),
+    rrComponent: Number(rrComponent.toFixed(4)),
+    style: overlay?.style ?? null,
+    styleComponent,
+    monitorStatus: monitor?.status ?? null,
+    monitorComponent,
+    score: Number(clamp(score, 0, 100).toFixed(1))
+  };
+}
+
+function computePortfolioFillabilityScore(row: OrderDecisionAuditRecord): number | null {
+  return computePortfolioFillabilityBreakdown(row)?.score ?? null;
+}
+
+function formatPortfolioFillabilityDetail(
+  breakdown: PortfolioFillabilityScoreBreakdown | null,
+  minFillabilityScore: number
+): string {
+  if (!breakdown) return `score=N/A|min=${minFillabilityScore.toFixed(1)}`;
+  return [
+    `score=${breakdown.score.toFixed(1)}`,
+    `min=${minFillabilityScore.toFixed(1)}`,
+    `dist=${formatNullablePct(breakdown.effectiveDistancePct)}`,
+    `rr=${formatNullableNumber(breakdown.rr, 4)}`,
+    `style=${breakdown.style ?? "N/A"}`,
+    `components=base:${breakdown.base.toFixed(1)},distance:${breakdown.distanceComponent.toFixed(1)},rr:${breakdown.rrComponent.toFixed(1)},style:${breakdown.styleComponent.toFixed(1)},monitor:${breakdown.monitorComponent.toFixed(1)}`
+  ].join("|");
 }
 
 function computePortfolioAdmissionRr(row: OrderDecisionAuditRecord | null): number | null {
@@ -7228,6 +7281,7 @@ async function applyPortfolioAdmissionToDryExec(
     const replacesExistingOpenEntry =
       hasExistingOpenEntry && payload.entrySizing?.reason?.startsWith("open_order_monitor_reprice:") === true;
     const addsOpenEntryOrder = !isExit && !hasExistingOpenEntry;
+    const fillabilityBreakdown = audit ? computePortfolioFillabilityBreakdown(audit) : null;
 
     const reject = (reason: string, detail: string) => {
       summary.rejected += 1;
@@ -7248,6 +7302,7 @@ async function applyPortfolioAdmissionToDryExec(
         sector,
         actionType: payload.actionType ?? null,
         fillabilityScore,
+        fillabilityBreakdown,
         rrAtCurrent,
         admissionRr,
         effectiveEntryDistancePct: effectiveDistance,
@@ -7305,7 +7360,7 @@ async function applyPortfolioAdmissionToDryExec(
     if (!isExit && fillabilityScore != null && fillabilityScore < policy.minFillabilityScore) {
       reject(
         "fillability_below_floor",
-        `score=${fillabilityScore.toFixed(1)}|min=${policy.minFillabilityScore.toFixed(1)}`
+        formatPortfolioFillabilityDetail(fillabilityBreakdown, policy.minFillabilityScore)
       );
       return;
     }
@@ -7334,6 +7389,7 @@ async function applyPortfolioAdmissionToDryExec(
       sector,
       actionType: payload.actionType ?? null,
       fillabilityScore,
+      fillabilityBreakdown,
       rrAtCurrent,
       admissionRr,
       effectiveEntryDistancePct: effectiveDistance,
