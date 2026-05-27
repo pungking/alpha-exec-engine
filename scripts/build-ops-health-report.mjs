@@ -495,6 +495,12 @@ const main = () => {
   const openOrderRepriceSubmitted =
     openOrderRepriceProposal?.executionPolicy?.brokerMutationSubmitted === true ||
     openOrderRepriceProposal?.summary?.brokerMutationSubmitted === true;
+  const entryOpenRepriceCombinedReady =
+    (entryRepricePolicyReady ?? 0) > 0 && (openOrderRepriceReady ?? 0) > 0;
+  const entryOpenRepriceBlockedByEntryPolicy =
+    (openOrderRepriceReady ?? 0) > 0 && (entryRepricePolicyReady ?? 0) <= 0;
+  const entryOpenRepriceBlockedByOpenOrder =
+    (entryRepricePolicyReady ?? 0) > 0 && (openOrderRepriceReady ?? 0) <= 0;
   const opsLaneStatusOverall = short(opsLaneStatus?.overall || "", 48) || null;
   const opsLaneBlockedCount = toNum(opsLaneStatus?.summary?.blockedCount);
   const opsLaneManualApprovalCandidates = toNum(opsLaneStatus?.summary?.manualApprovalCandidates);
@@ -992,12 +998,26 @@ const main = () => {
     );
   }
 
-  if (entryRepricePolicyReady != null && entryRepricePolicyReady > 0) {
+  if (entryOpenRepriceCombinedReady) {
     addCheck(
       checks,
       "warn",
-      "entry_reprice_policy_manual_review_ready",
-      `${entryRepricePolicyReady} candidate(s) preserve current-price RR inside adaptive band; route to manual entry/reprice review only`
+      "entry_open_order_reprice_manual_approval_required",
+      `entry/reprice policy and risk-capped open-order proposal are both ready; entryReady=${entryRepricePolicyReady} openRepriceReady=${openOrderRepriceReady}; no broker mutation is allowed without separate approval`
+    );
+  } else if (entryOpenRepriceBlockedByEntryPolicy) {
+    addCheck(
+      checks,
+      "warn",
+      "open_order_reprice_wait_entry_policy_alignment",
+      `risk-capped open-order reprice proposal has ${openOrderRepriceReady} ready row(s), but entry/reprice policy ready=0; keep report-only wait-pullback route`
+    );
+  } else if (entryOpenRepriceBlockedByOpenOrder) {
+    addCheck(
+      checks,
+      "warn",
+      "entry_reprice_wait_open_order_reprice_ready",
+      `entry/reprice policy has ${entryRepricePolicyReady} ready row(s), but open-order proposal ready=0; do not request replace approval yet`
     );
   }
 
@@ -1025,15 +1045,6 @@ const main = () => {
       "fail",
       "open_order_reprice_proposal_unsafe",
       `open-order reprice proposal must remain report-only; brokerMutationAllowed=${openOrderRepriceBrokerMutationAllowed} attempted=${openOrderRepriceAttempted} submitted=${openOrderRepriceSubmitted}`
-    );
-  }
-
-  if (openOrderRepriceReady != null && openOrderRepriceReady > 0) {
-    addCheck(
-      checks,
-      "warn",
-      "open_order_reprice_manual_approval_required",
-      `risk-capped open-order reprice proposal has ${openOrderRepriceReady} row(s) ready for manual replace approval; no broker mutation is allowed without separate approval`
     );
   }
 
@@ -1403,6 +1414,9 @@ const main = () => {
       openOrderRepriceNoRiskRoom,
       openOrderRepriceAttempted,
       openOrderRepriceSubmitted,
+      entryOpenRepriceCombinedReady,
+      entryOpenRepriceBlockedByEntryPolicy,
+      entryOpenRepriceBlockedByOpenOrder,
       opsLaneStatusOverall,
       opsLaneBlockedCount,
       opsLaneManualApprovalCandidates,

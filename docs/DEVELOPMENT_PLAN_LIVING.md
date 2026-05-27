@@ -906,3 +906,17 @@ Priority: P2 until M1/M2 stabilize; then P1
   - artifact upload includes `entry-reprice-policy-decision.json/md`.
   - RYAAY-like cases show `report_only_wait_pullback` with `WAIT_PULLBACK_RR_BELOW_MIN` when current-price RR is below policy floor.
   - ops health and Notion Performance Dashboard reflect entry/reprice policy status without mutating broker/order state.
+
+## 2026-05-27 - Combined Entry/Open-Order Reprice Approval Gate
+
+- RTH observation showed the two reprice signals can diverge intraday:
+  - `entry-reprice-policy-decision` may be ready while `open-order-reprice-proposal` is blocked by unsafe/non-report-only mode.
+  - a safe read-only run may show `open-order-reprice-proposal.readyForApproval>0` while `entry-reprice-policy-decision` has moved back to wait-pullback because current price exceeded the adaptive band.
+- Ops lane status now treats guarded replace approval as ready only when both gates align:
+  - `entryRepricePolicyReady > 0`
+  - `openOrderRepriceReady > 0`
+- If open-order reprice is ready but entry policy is not, lane 6 reports `wait_entry_policy_alignment` and no replace approval is requested.
+- If entry policy is ready but open-order reprice is not, lane 6 reports `wait_open_order_reprice_ready`.
+- Safety invariant:
+  - combined gate is report-only and symbol-agnostic.
+  - no replace/cancel/submit happens without a separate scoped `CONFIRM LIVE EXECUTION` approval.

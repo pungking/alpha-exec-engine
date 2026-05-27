@@ -15,6 +15,7 @@ const FILES = {
   guardMetadataLineageAudit: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
+  entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
   openOrderRepriceProposal: `${STATE_DIR}/open-order-reprice-proposal.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
@@ -76,6 +77,7 @@ const buildReport = () => {
   const guardMetadataLineageAudit = readJson(FILES.guardMetadataLineageAudit);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
+  const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
   const openOrderRepriceProposal = readJson(FILES.openOrderRepriceProposal);
   const opsHealth = readJson(FILES.opsHealth);
 
@@ -84,6 +86,7 @@ const buildReport = () => {
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
+  const entryRepriceRows = Array.isArray(entryRepricePolicyDecision?.rows) ? entryRepricePolicyDecision.rows : [];
   const repriceRows = Array.isArray(openOrderRepriceProposal?.rows) ? openOrderRepriceProposal.rows : [];
   const orderDecisionRecords = Array.isArray(decisionAudit?.records)
     ? decisionAudit.records
@@ -124,6 +127,15 @@ const buildReport = () => {
       row.missingTargetChild === true
   );
   const openRepriceReadyRows = repriceRows.filter((row) => row.readyForApproval === true);
+  const entryRepriceReadyRows = entryRepriceRows.filter((row) => row.policyDecision === "ENTRY_REPRICE_REVIEW_READY");
+  const entryRepriceWaitRows = entryRepriceRows.filter((row) => String(row.policyDecision || "").startsWith("WAIT_PULLBACK"));
+  const openRepriceReadyCount =
+    toNum(openOrderRepriceProposal?.summary?.readyForApproval) ?? openRepriceReadyRows.length;
+  const entryRepriceReadyCount =
+    toNum(entryRepricePolicyDecision?.summary?.entryRepriceReviewReady) ?? entryRepriceReadyRows.length;
+  const entryRepriceWaitCount =
+    toNum(entryRepricePolicyDecision?.summary?.waitPullbackRows) ?? entryRepriceWaitRows.length;
+  const combinedRepriceApprovalReady = openRepriceReadyCount > 0 && entryRepriceReadyCount > 0;
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
   );
@@ -132,6 +144,23 @@ const buildReport = () => {
   const payloadCount = toNum(preview?.payloadCount) ?? 0;
   const brokerAttempted = toNum(preview?.brokerSubmission?.attempted) ?? 0;
   const brokerSubmitted = toNum(preview?.brokerSubmission?.submitted) ?? 0;
+  let openOrderRepriceLaneStatus = openOrderRepriceProposal?.overall || "unknown";
+  let openOrderRepriceNextAction =
+    "Keep report-only monitoring until an open order exists and passes risk-capped policy.";
+  if (openOrderRepriceProposal?.overall === "no_open_orders") {
+    openOrderRepriceLaneStatus = "no_open_orders";
+  } else if (combinedRepriceApprovalReady) {
+    openOrderRepriceLaneStatus = "manual_replace_approval_candidate";
+    openOrderRepriceNextAction = "Require separate approval before any guarded replace.";
+  } else if (openRepriceReadyCount > 0 && entryRepriceReadyCount <= 0) {
+    openOrderRepriceLaneStatus = "wait_entry_policy_alignment";
+    openOrderRepriceNextAction =
+      "Do not request replace approval yet; wait until entry/reprice policy also reports ENTRY_REPRICE_REVIEW_READY.";
+  } else if (entryRepriceReadyCount > 0 && openRepriceReadyCount <= 0) {
+    openOrderRepriceLaneStatus = "wait_open_order_reprice_ready";
+    openOrderRepriceNextAction =
+      "Do not request replace approval yet; wait until open-order risk-capped proposal is ready.";
+  }
 
   const lanes = [
     lane({
@@ -199,18 +228,11 @@ const buildReport = () => {
     lane({
       id: "track_6_open_order_risk_capped_reprice",
       name: "Open Order Risk-Capped Reprice Lane",
-      status:
-        openOrderRepriceProposal?.overall === "no_open_orders"
-          ? "no_open_orders"
-          : openRepriceReadyRows.length
-            ? "manual_replace_approval_candidate"
-            : openOrderRepriceProposal?.overall || "unknown",
+      status: openOrderRepriceLaneStatus,
       count: repriceRows.length,
-      symbols: uniqueSymbols(repriceRows),
-      evidence: `overall=${openOrderRepriceProposal?.overall || "N/A"} rows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"} ready=${openOrderRepriceProposal?.summary?.readyForApproval ?? "N/A"} riskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"} attempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
-      nextAction: openRepriceReadyRows.length
-        ? "Require separate approval before any guarded replace."
-        : "Keep report-only monitoring until an open order exists and passes risk-capped policy.",
+      symbols: uniqueSymbols([...repriceRows, ...entryRepriceRows]),
+      evidence: `entryOverall=${entryRepricePolicyDecision?.overall || "N/A"} entryReady=${entryRepriceReadyCount} entryWait=${entryRepriceWaitCount} openOverall=${openOrderRepriceProposal?.overall || "N/A"} openRows=${openOrderRepriceProposal?.summary?.rows ?? "N/A"} openReady=${openRepriceReadyCount} riskBreaches=${openOrderRepriceProposal?.summary?.suggestedRiskCapBreaches ?? "N/A"} attempted=${openOrderRepriceProposal?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${openOrderRepriceProposal?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+      nextAction: openOrderRepriceNextAction,
       safety: "report_only_no_replace_or_cancel"
     }),
     lane({
