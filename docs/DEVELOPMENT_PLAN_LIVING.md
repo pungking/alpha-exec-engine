@@ -928,6 +928,7 @@ Priority: P2 until M1/M2 stabilize; then P1
   - an expired order is not automatically a bad alpha pick; it may be a good candidate whose pullback limit was not reached.
 - Added/updated report-only behavior:
   - order ledger reconciliation now uses released idempotency evidence as well as active idempotency rows.
+  - same Stage6/hash terminal re-entry is blocked by default after broker terminal release evidence.
   - fillability rows for terminal unfilled orders now classify root causes such as `limit_not_reached`, `quote_invalid`, and `pullback_not_filled`.
   - order-state consistency maps `TERMINAL_UNFILLED` with `reason=expired/canceled/rejected` to the matching terminal state instead of a generic mixed terminal bucket.
   - ops health surfaces expired taxonomy and re-entry review requirements.
@@ -941,3 +942,4 @@ Priority: P2 until M1/M2 stabilize; then P1
   - terminal broker releases transition ledger rows from `submitted` to the matching terminal state.
   - order-state consistency no longer shows terminal reconciliation required for rows whose broker terminal status is known.
   - fillability/ops reports show terminal taxonomy and `reentryReviewRequired` for expired unfilled orders.
+  - same Stage6/hash after `expired/canceled/rejected` produces `idempotency_terminal_reentry_requires_fresh_stage6_or_approval`, not a new payload.

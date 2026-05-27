@@ -1404,6 +1404,8 @@ type OrderIdempotencyBrokerReconcilePolicy = {
   releaseOnMissingBrokerOrder: boolean;
   maxChecks: number;
   reissueCooldownMinutes: number;
+  blockTerminalReentrySameHash: boolean;
+  allowTerminalReentrySameHash: boolean;
 };
 
 type BrokerOrderLookup = {
@@ -11907,7 +11909,9 @@ function buildOrderIdempotencyBrokerReconcilePolicy(): OrderIdempotencyBrokerRec
     reissueCooldownMinutes: Math.max(
       0,
       readNumberEnv("ORDER_IDEMPOTENCY_REISSUE_COOLDOWN_MINUTES", 15)
-    )
+    ),
+    blockTerminalReentrySameHash: readBoolEnv("ORDER_IDEMPOTENCY_BLOCK_TERMINAL_REENTRY_SAME_HASH", true),
+    allowTerminalReentrySameHash: readBoolEnv("ORDER_IDEMPOTENCY_ALLOW_TERMINAL_REENTRY_SAME_HASH", false)
   };
 }
 
@@ -11946,6 +11950,28 @@ function shouldHoldForReissueCooldown(
   const terminalMs = Date.parse(terminalAt);
   if (!Number.isFinite(terminalMs) || terminalMs <= 0) return false;
   return Date.now() - terminalMs < policy.reissueCooldownMinutes * 60 * 1000;
+}
+
+function findLatestOrderIdempotencyReleaseForKey(
+  state: OrderIdempotencyState,
+  key: string
+): OrderIdempotencyReleaseRecord | null {
+  for (let i = state.releases.length - 1; i >= 0; i -= 1) {
+    const release = state.releases[i];
+    if (release?.key === key) return release;
+  }
+  return null;
+}
+
+function shouldBlockTerminalReentrySameHash(
+  release: OrderIdempotencyReleaseRecord | null,
+  stage6: Stage6LoadResult,
+  policy: OrderIdempotencyBrokerReconcilePolicy
+): boolean {
+  if (!policy.blockTerminalReentrySameHash || policy.allowTerminalReentrySameHash) return false;
+  if (!release) return false;
+  if (release.stage6Hash !== stage6.sha256) return false;
+  return isTerminalOrderStatus(release.brokerStatus);
 }
 
 async function resolveOrderIdempotencyBrokerResolution(
@@ -12166,6 +12192,27 @@ async function applyOrderIdempotency(
         continue;
       }
       payloads.push(payload);
+      continue;
+    }
+
+    const latestRelease = findLatestOrderIdempotencyReleaseForKey(state, key);
+    if (shouldBlockTerminalReentrySameHash(latestRelease, stage6, brokerReconcilePolicy)) {
+      duplicateCount += 1;
+      const detail = [
+        `key=${key.slice(0, 18)}...`,
+        `brokerStatus=${latestRelease?.brokerStatus ?? "N/A"}`,
+        `releasedAt=${latestRelease?.releasedAt ?? "N/A"}`,
+        `releaseReason=${latestRelease?.reason ?? "N/A"}`,
+        "policy=fresh_stage6_or_explicit_retry_approval_required"
+      ].join("|");
+      skipped.push({
+        symbol: payload.symbol,
+        reason: "idempotency_terminal_reentry_requires_fresh_stage6_or_approval",
+        detail
+      });
+      console.log(
+        `[ORDER_IDEMP] terminal_reentry_block symbol=${payload.symbol} key=${key.slice(0, 18)} brokerStatus=${latestRelease?.brokerStatus ?? "N/A"} releasedAt=${latestRelease?.releasedAt ?? "N/A"}`
+      );
       continue;
     }
 
