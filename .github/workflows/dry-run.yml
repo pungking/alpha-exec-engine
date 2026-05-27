@@ -475,7 +475,6 @@ jobs:
                   "SIMULATION_LIVE_PARITY=false",
                   "LIVE_ORDER_SUBMIT_ENABLED=false",
                   "ALLOW_ENTRY_OUTSIDE_RTH=false",
-                  "FORCE_SEND_ONCE=false",
               ],
               "submit_pass": [
                   "READ_ONLY=false",
@@ -499,7 +498,6 @@ jobs:
                   "SIMULATION_LIVE_PARITY=false",
                   "LIVE_ORDER_SUBMIT_ENABLED=false",
                   "ALLOW_ENTRY_OUTSIDE_RTH=false",
-                  "FORCE_SEND_ONCE=false",
                   "ENTRY_HIGH_PRICE_POLICY=min_one_share",
                   "DRY_MAX_ORDERS=1",
                   "DRY_DEFAULT_MAX_ORDERS=1",
