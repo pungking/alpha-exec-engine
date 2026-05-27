@@ -12306,6 +12306,29 @@ function findOrderIdempotencyEntryForLedgerRecord(
   return null;
 }
 
+function findOrderIdempotencyReleaseForLedgerRecord(
+  order: OrderLedgerRecord,
+  idempotencyState: OrderIdempotencyState
+): OrderIdempotencyReleaseRecord | null {
+  const releases = [...idempotencyState.releases].reverse();
+  const direct = releases.find((entry) => entry.key === order.idempotencyKey);
+  if (direct) return direct;
+
+  const clientOrderId = order.clientOrderId.trim();
+  if (clientOrderId) {
+    const byClientOrderId = releases.find((entry) => entry.clientOrderId === clientOrderId);
+    if (byClientOrderId) return byClientOrderId;
+  }
+
+  const brokerOrderId = order.brokerOrderId?.trim();
+  if (brokerOrderId) {
+    const byBrokerOrderId = releases.find((entry) => entry.brokerOrderId === brokerOrderId);
+    if (byBrokerOrderId) return byBrokerOrderId;
+  }
+
+  return null;
+}
+
 function canReconcileOrderLedgerStatus(
   from: OrderLifecycleStatus,
   to: OrderLifecycleStatus
@@ -12324,25 +12347,30 @@ function reconcileOrderLedgerWithIdempotency(
   let reconciled = 0;
   for (const order of Object.values(state.orders)) {
     const entry = findOrderIdempotencyEntryForLedgerRecord(order, idempotencyState);
-    const brokerStatus = entry?.brokerStatus ?? null;
-    if (!entry || !brokerStatus) continue;
+    const release = entry ? null : findOrderIdempotencyReleaseForLedgerRecord(order, idempotencyState);
+    const brokerStatus = entry?.brokerStatus ?? release?.brokerStatus ?? null;
+    if (!brokerStatus) continue;
 
-    const brokerOrderId = entry.brokerOrderId ?? order.brokerOrderId ?? null;
-    const clientOrderId = entry.clientOrderId ?? order.clientOrderId;
+    const brokerOrderId = entry?.brokerOrderId ?? release?.brokerOrderId ?? order.brokerOrderId ?? null;
+    const clientOrderId = entry?.clientOrderId ?? release?.clientOrderId ?? order.clientOrderId;
     const metadataChanged =
       (brokerOrderId ?? null) !== (order.brokerOrderId ?? null) ||
       clientOrderId !== order.clientOrderId;
+    const historySource = entry ? "order_idempotency_broker_reconcile" : "order_idempotency_release_reconcile";
+    const historyReason = entry
+      ? `broker_idempotency_reconcile:${brokerStatus}`
+      : `broker_idempotency_release:${release?.reason || brokerStatus}`;
 
     if (order.status !== brokerStatus && canReconcileOrderLedgerStatus(order.status, brokerStatus)) {
       order.history.push({
         at: now,
         from: order.status,
         to: brokerStatus,
-        reason: `broker_idempotency_reconcile:${brokerStatus}`,
-        source: "order_idempotency_broker_reconcile"
+        reason: historyReason,
+        source: historySource
       });
       order.status = brokerStatus;
-      order.statusReason = `broker_idempotency_reconcile:${brokerStatus}`;
+      order.statusReason = historyReason;
       order.updatedAt = now;
       order.brokerOrderId = brokerOrderId;
       order.clientOrderId = clientOrderId;

@@ -920,3 +920,24 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Safety invariant:
   - combined gate is report-only and symbol-agnostic.
   - no replace/cancel/submit happens without a separate scoped `CONFIRM LIVE EXECUTION` approval.
+
+## 2026-05-28 - Terminal Reconciliation and Expired Fillability Taxonomy
+
+- Current blocker class:
+  - broker terminal states (`expired`, `canceled`, `rejected`) must not leave `order-ledger.json` stuck at `submitted`.
+  - an expired order is not automatically a bad alpha pick; it may be a good candidate whose pullback limit was not reached.
+- Added/updated report-only behavior:
+  - order ledger reconciliation now uses released idempotency evidence as well as active idempotency rows.
+  - fillability rows for terminal unfilled orders now classify root causes such as `limit_not_reached`, `quote_invalid`, and `pullback_not_filled`.
+  - order-state consistency maps `TERMINAL_UNFILLED` with `reason=expired/canceled/rejected` to the matching terminal state instead of a generic mixed terminal bucket.
+  - ops health surfaces expired taxonomy and re-entry review requirements.
+- Re-entry policy:
+  - same Stage6/hash re-entry is not allowed automatically after a terminal unfilled close.
+  - re-entry requires either a fresh Stage6 signal or an explicit manual retry/approval lane.
+- Safety invariant:
+  - report-only only; no broker submit/replace/cancel is performed by this lane.
+  - expired taxonomy is symbol-agnostic and must apply to any future submitted symbol, not just the observed sample.
+- Next RTH done-when:
+  - terminal broker releases transition ledger rows from `submitted` to the matching terminal state.
+  - order-state consistency no longer shows terminal reconciliation required for rows whose broker terminal status is known.
+  - fillability/ops reports show terminal taxonomy and `reentryReviewRequired` for expired unfilled orders.

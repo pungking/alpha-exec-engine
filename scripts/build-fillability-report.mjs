@@ -260,6 +260,26 @@ const parseReasonNumber = (reason, key) => {
   return match ? toNum(match[1]) : null;
 };
 
+const countLabels = (rows, key) => {
+  const out = {};
+  for (const row of rows) {
+    const values = Array.isArray(row?.[key]) ? row[key] : [];
+    for (const value of values) {
+      const label = String(value || "").trim();
+      if (!label) continue;
+      out[label] = (out[label] || 0) + 1;
+    }
+  }
+  return out;
+};
+
+const compactCountMap = (map) =>
+  Object.entries(map || {})
+    .filter(([, value]) => Number(value) > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, value]) => `${key}:${value}`)
+    .join(",");
+
 const classifyRow = (row, broker) => {
   const fillQty = broker.fills.reduce((acc, fill) => acc + (fill.qty || 0), 0);
   if (fillQty > 0 || (broker.openOrder?.filledQty || 0) > 0 || broker.latestClosed?.status === "filled") {
@@ -298,6 +318,66 @@ const classifyRow = (row, broker) => {
     return { status: "PAYLOAD_READY_NO_BROKER_MATCH", reason: "payload_ready_without_matching_broker_order" };
   }
   return { status: "NO_ACTIVE_ORDER", reason: row.reason || "no_payload_or_broker_match" };
+};
+
+const classifyTerminalUnfilledTaxonomy = (row) => {
+  if (row.status !== "TERMINAL_UNFILLED") return [];
+  const labels = [];
+  const add = (label) => {
+    if (!labels.includes(label)) labels.push(label);
+  };
+  const closedFilledQty = toNum(row.brokerClosedFilledQty) ?? 0;
+  const currentVsLimitPct = toNum(row.currentVsLimitPct);
+  if (closedFilledQty <= 0 && currentVsLimitPct != null && currentVsLimitPct > 0) {
+    add("limit_not_reached");
+  }
+  if (row.quoteInvalid) add("quote_invalid");
+
+  const context = [
+    row.overlayStyle,
+    row.overlayReason,
+    row.monitorStatus,
+    row.monitorReason,
+    row.executionReason,
+    row.reason
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  if (
+    context.includes("pullback") ||
+    context.includes("trend_unconfirmed") ||
+    context.includes("near_entry") ||
+    context.includes("entry_wait")
+  ) {
+    add("pullback_not_filled");
+  }
+  if (closedFilledQty <= 0 && labels.length === 0) add("broker_terminal_unfilled");
+  return labels;
+};
+
+const buildReentryPolicy = (row, taxonomy) => {
+  if (row.status !== "TERMINAL_UNFILLED") {
+    return {
+      sameStage6ReentryAllowed: null,
+      reentryApprovalRequired: false,
+      reentryPolicyDecision: "not_applicable",
+      reentryPolicyReason: "row_not_terminal_unfilled"
+    };
+  }
+  const needsFreshSignal =
+    taxonomy.includes("limit_not_reached") ||
+    taxonomy.includes("pullback_not_filled") ||
+    taxonomy.includes("quote_invalid");
+  return {
+    sameStage6ReentryAllowed: false,
+    reentryApprovalRequired: true,
+    reentryPolicyDecision: needsFreshSignal
+      ? "WAIT_FRESH_STAGE6_OR_MANUAL_RETRY_APPROVAL"
+      : "MANUAL_TERMINAL_REENTRY_REVIEW",
+    reentryPolicyReason: needsFreshSignal
+      ? "terminal_unfilled_requires_fresh_stage6_or_explicit_retry_approval"
+      : "terminal_unfilled_requires_manual_review"
+  };
 };
 
 const buildRows = (records, alpaca, preview = {}) => {
@@ -341,7 +421,7 @@ const buildRows = (records, alpaca, preview = {}) => {
         maxRiskDollarsPerTrade <= 0 ||
         (oneShareRiskDollars != null && oneShareRiskDollars <= maxRiskDollarsPerTrade));
 
-    return {
+    const baseRow = {
       symbol,
       status: classification.status,
       reason: short(classification.reason, 260),
@@ -401,6 +481,14 @@ const buildRows = (records, alpaca, preview = {}) => {
             Math.max(fills.reduce((acc, fill) => acc + (fill.qty || 0), 0), 1e-9)
           : null
     };
+    const terminalUnfilledTaxonomy = classifyTerminalUnfilledTaxonomy(baseRow);
+    const reentryPolicy = buildReentryPolicy(baseRow, terminalUnfilledTaxonomy);
+    return {
+      ...baseRow,
+      terminalUnfilledTaxonomy,
+      terminalUnfilledPrimaryCause: terminalUnfilledTaxonomy[0] || null,
+      ...reentryPolicy
+    };
   });
 };
 
@@ -421,6 +509,18 @@ const summarizeRows = (rows, preview, alpaca) => {
   const openCancel = count("OPEN_CANCEL_CANDIDATE");
   const terminalUnfilled = count("TERMINAL_UNFILLED");
   const openWaiting = count("OPEN_WAITING");
+  const terminalUnfilledRows = rows.filter((row) => row.status === "TERMINAL_UNFILLED");
+  const terminalUnfilledTaxonomyCounts = countLabels(terminalUnfilledRows, "terminalUnfilledTaxonomy");
+  const expiredLimitNotReached = terminalUnfilledRows.filter((row) =>
+    row.terminalUnfilledTaxonomy.includes("limit_not_reached")
+  ).length;
+  const expiredQuoteInvalid = terminalUnfilledRows.filter((row) =>
+    row.terminalUnfilledTaxonomy.includes("quote_invalid")
+  ).length;
+  const expiredPullbackNotFilled = terminalUnfilledRows.filter((row) =>
+    row.terminalUnfilledTaxonomy.includes("pullback_not_filled")
+  ).length;
+  const reentryReviewRequired = rows.filter((row) => row.reentryApprovalRequired === true).length;
 
   let overall = "pass";
   const findings = [];
@@ -462,6 +562,20 @@ const summarizeRows = (rows, preview, alpaca) => {
   if (terminalUnfilled > 0) {
     findings.push(`${terminalUnfilled} order(s) closed without fill`);
   }
+  if (expiredLimitNotReached > 0) {
+    findings.push(`${expiredLimitNotReached} expired/unfilled order(s) classified as limit_not_reached`);
+  }
+  if (expiredQuoteInvalid > 0) {
+    findings.push(`${expiredQuoteInvalid} expired/unfilled order(s) had invalid latest bid/ask`);
+  }
+  if (expiredPullbackNotFilled > 0) {
+    findings.push(`${expiredPullbackNotFilled} expired/unfilled order(s) remained pullback_not_filled`);
+  }
+  if (reentryReviewRequired > 0) {
+    findings.push(
+      `${reentryReviewRequired} terminal unfilled order(s) require fresh Stage6 or explicit retry approval before re-entry`
+    );
+  }
   if (invalidQuoteCount > 0) {
     overall = "warn";
     findings.push(`${invalidQuoteCount} latest quote(s) had invalid bid/ask and fell back to overlay/monitor price`);
@@ -486,6 +600,12 @@ const summarizeRows = (rows, preview, alpaca) => {
     openReprice,
     openCancel,
     terminalUnfilled,
+    terminalUnfilledTaxonomyCounts,
+    terminalUnfilledTaxonomySummary: compactCountMap(terminalUnfilledTaxonomyCounts) || null,
+    expiredLimitNotReached,
+    expiredQuoteInvalid,
+    expiredPullbackNotFilled,
+    reentryReviewRequired,
     entryTooFar,
     highPriceSizeBlocked,
     highPricePolicyChangeWouldAllow: rows.filter((row) => row.highPricePolicyChangeWouldAllow).length,
@@ -506,18 +626,18 @@ const buildMarkdown = (report) => {
     `- broker: \`available=${report.broker.available} reason=${report.broker.reason} open=${report.summary.openOrderCount} fills=${report.summary.fillActivityCount} attempted/submitted=${report.summary.brokerAttempted}/${report.summary.brokerSubmitted}\``
   );
   lines.push(
-    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${report.summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
+    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} expiredTaxonomy=${report.summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${report.summary.reentryReviewRequired} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${report.summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
   );
   if (report.summary.findings.length > 0) {
     lines.push("- findings:");
     for (const finding of report.summary.findings) lines.push(`  - ${finding}`);
   }
   lines.push("");
-  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | OneShareRisk | OneShareCaps | Monitor | Reason |");
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |");
+  lines.push("| Symbol | Status | Current | Limit | Distance | RR@Limit | RR@Current | Taxonomy | Reentry | Monitor | Reason |");
+  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 20)) {
     lines.push(
-      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${fmt(row.oneShareRiskDollars)} | ${row.highPricePolicyChangeWouldAllow ? "would_allow_min_one_share" : "N/A"} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
+      `| ${row.symbol} | ${row.status} | ${fmt(row.currentPrice)} | ${fmt(row.activeLimit)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.monitorRrAtLimit ?? row.rrAtAdjustedEntry)} | ${fmt(row.monitorRrAtCurrent ?? row.rrAtCurrent)} | ${row.terminalUnfilledTaxonomy.join(",") || "N/A"} | ${row.reentryPolicyDecision || "N/A"} | ${row.monitorStatus || "N/A"} | ${short(row.reason, 90)} |`
     );
   }
   lines.push("");
@@ -552,7 +672,7 @@ const main = async () => {
   fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
   console.log(
-    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
+    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} terminalUnfilled=${summary.terminalUnfilled} expiredTaxonomy=${summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${summary.reentryReviewRequired} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
   );
 };
 

@@ -40,12 +40,18 @@ const normalizeFillState = (value) => {
   return text;
 };
 
-const normalizeFillabilityState = (value) => {
+const normalizeFillabilityState = (value, reason) => {
   const text = String(value ?? "").trim().toLowerCase();
+  const reasonText = String(reason ?? "").trim().toLowerCase();
   if (!text) return null;
   if (text === "filled") return "filled";
   if (text.startsWith("open_")) return "open";
-  if (text === "terminal_unfilled") return "unfilled_terminal";
+  if (text === "terminal_unfilled") {
+    if (["canceled", "cancelled", "expired", "rejected"].includes(reasonText)) {
+      return normalizeFillState(reasonText);
+    }
+    return "unfilled_terminal";
+  }
   if (text === "idempotency_held") return "open";
   if (text === "payload_ready_no_broker_match") return "planned";
   if (text === "no_active_order" || text.startsWith("blocked_")) return null;
@@ -84,7 +90,7 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
   const fillabilityBySymbol = latestBySymbol(Array.isArray(fillability?.rows) ? fillability.rows : [], (row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
     status: row?.status || null,
-    normalized: normalizeFillabilityState(row?.status),
+    normalized: normalizeFillabilityState(row?.status, row?.reason || row?.brokerClosedStatus),
     at: fillability?.generatedAt || null,
     reason: row?.reason || null
   }));
