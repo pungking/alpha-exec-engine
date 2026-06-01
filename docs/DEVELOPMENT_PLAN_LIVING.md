@@ -1002,3 +1002,23 @@ Priority: P2 until M1/M2 stabilize; then P1
   - sidecar-managed submitted/open positions with broker position evidence classify as fill-state reconciliation required, not repair-ready.
   - external/manual positions classify as ownership review required before any guard metadata backfill or repair lane.
   - latest safe artifact still shows broker mutation attempted/submitted as false.
+
+## 2026-06-02 - Guard Source Recovery and Fill-State Reconciliation Split
+
+- Current blocker class:
+  - stale guard sources and fill-state inconsistencies are separate failure modes and must not be merged into one repair diagnosis.
+  - a sidecar-managed filled position with stale order-ledger stop/target needs a fresh guard source before repair reevaluation.
+  - a position-present row whose ledger/idempotency still says submitted/open needs fill-state reconciliation before any guard source recovery or child-order repair.
+- Added/updated report-only behavior:
+  - `guard-source-recovery-plan` classifies each held position into fresh-source-required, fill-state-first, ownership-review, invalid-geometry, broker-children-no-action, or repair-reevaluation-ready.
+  - `fill-state-reconciliation-audit` classifies position/ledger/idempotency/fillability consistency into confirmed-filled, position-present-open-ledger, terminal-not-filled-position, divergence, unknown, or external ownership review.
+  - ops health now surfaces both reports separately so stale source work cannot accidentally mask fill-state reconciliation work.
+- Safety invariant:
+  - both reports are portfolio-wide and symbol-agnostic.
+  - both reports are report-only: `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`, and `stateMutationAttempted=false`.
+  - ledger terminalization or guard metadata writes still require a separate scoped approval path.
+- Next safe-run done-when:
+  - stale-source rows show `FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE`, not repair-ready.
+  - submitted/open-position rows show `POSITION_PRESENT_WITH_OPEN_LEDGER_STATE` in fill-state reconciliation.
+  - broker-child-present rows remain `NO_ACTION_BROKER_CHILDREN_PRESENT`.
+  - ops health includes `guard_source_recovery` and `fill_state_reconciliation` summary lines.

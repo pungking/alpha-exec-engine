@@ -1708,6 +1708,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build fill-state reconciliation audit
+        if: always()
+        run: npm run ops:fill-state-reconcile
+
+      - name: Publish fill-state reconciliation audit summary
+        if: always()
+        run: |
+          if [[ -f state/fill-state-reconciliation-audit.md ]]; then
+            cat state/fill-state-reconciliation-audit.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Fill-State Reconciliation Audit" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/fill-state-reconciliation-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build position protection root-cause audit
         if: always()
         run: npm run ops:position-protection:audit
@@ -1750,6 +1765,21 @@ jobs:
           else
             echo "## Guard Metadata Lineage Audit" >> "${GITHUB_STEP_SUMMARY}"
             echo "- status: \`missing state/guard-metadata-lineage-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Build guard source recovery plan
+        if: always()
+        run: npm run ops:guard-source-recovery
+
+      - name: Publish guard source recovery plan summary
+        if: always()
+        run: |
+          if [[ -f state/guard-source-recovery-plan.md ]]; then
+            cat state/guard-source-recovery-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Guard Source Recovery Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/guard-source-recovery-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
@@ -1971,12 +2001,16 @@ jobs:
             state/performance-dashboard.md
             state/broker-child-order-reconciliation.json
             state/broker-child-order-reconciliation.md
+            state/fill-state-reconciliation-audit.json
+            state/fill-state-reconciliation-audit.md
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
             state/guard-metadata-refresh-plan.json
             state/guard-metadata-refresh-plan.md
             state/guard-metadata-lineage-audit.json
             state/guard-metadata-lineage-audit.md
+            state/guard-source-recovery-plan.json
+            state/guard-source-recovery-plan.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
             state/alpaca-order-payload-schema-report.json
