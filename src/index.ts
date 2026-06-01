@@ -184,6 +184,8 @@ type Stage6CandidateSummary = {
   hfSentimentArticleCount: number | null;
   hfSentimentNewestAgeHours: number | null;
   earningsDaysToEvent: number | null;
+  breakoutRetestProofVerdict: string | null;
+  breakoutRetestProofReviewReady: boolean | null;
   shadowIntel: Stage6ShadowIntelSummary | null;
 };
 
@@ -200,6 +202,8 @@ type Stage6BlockerSample = {
   qualityScore: number | null;
   expectedReturnPct: number | null;
   earningsDaysToEvent: number | null;
+  breakoutRetestProofVerdict: string | null;
+  breakoutRetestProofReviewReady: boolean | null;
   entry: string;
   target: string;
   stop: string;
@@ -3075,6 +3079,187 @@ function buildOrderDecisionAudit(
   });
 }
 
+function stripSkipReasonDetail(reason: string): string {
+  const rawReason = String(reason || "unknown");
+  return rawReason.split("[")[0] || rawReason;
+}
+
+function buildDecisionAuditSkipReasonCounts(records: OrderDecisionAuditRecord[]): Record<string, number> {
+  return records
+    .filter((row) => row.status === "skipped")
+    .reduce<Record<string, number>>((acc, row) => {
+      const key = stripSkipReasonDetail(row.reason);
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+}
+
+function mergeReasonCounts(...counts: Array<Record<string, number>>): Record<string, number> {
+  return counts.reduce<Record<string, number>>((acc, rows) => {
+    for (const [reason, rawCount] of Object.entries(rows)) {
+      const count = Number(rawCount);
+      if (!Number.isFinite(count) || count <= 0) continue;
+      acc[reason] = (acc[reason] || 0) + count;
+    }
+    return acc;
+  }, {});
+}
+
+function isBreakoutRetestProofConfirmed(verdict: string | null | undefined): boolean {
+  const key = String(verdict || "").trim().toUpperCase();
+  return key === "BREAKOUT_RETEST_PROOF_CONFIRMED" || key === "PROOF_CONFIRMED" || key === "CONFIRMED";
+}
+
+function isBreakoutRetestProofReviewReady(row: Stage6CandidateSummary): boolean {
+  return (
+    row.breakoutRetestProofReviewReady === true ||
+    String(row.breakoutRetestProofVerdict || "").trim().toUpperCase() === "BREAKOUT_RETEST_PROOF_REVIEW_READY"
+  );
+}
+
+function buildStage6BlockerDecisionAudit(
+  stage6: Stage6LoadResult,
+  existingAudit: OrderDecisionAuditRecord[],
+  maxStopDistancePct: number,
+  entryPricePolicy: EntryPriceAdjustmentPolicy,
+  maxItems = 12
+): OrderDecisionAuditRecord[] {
+  if (existingAudit.length > 0) return existingAudit;
+  const existingSymbols = new Set(existingAudit.map((row) => row.symbol));
+  const rows = selectStage6DiagnosticCandidates(stage6)
+    .filter((row) => !isStage6ExecutableCandidate(row))
+    .filter((row) => !existingSymbols.has(row.symbol))
+    .sort((a, b) => {
+      const rankA = a.modelRank ?? Number.POSITIVE_INFINITY;
+      const rankB = b.modelRank ?? Number.POSITIVE_INFINITY;
+      if (rankA !== rankB) return rankA - rankB;
+      const scoreA = a.executionScore ?? Number.NEGATIVE_INFINITY;
+      const scoreB = b.executionScore ?? Number.NEGATIVE_INFINITY;
+      return scoreB - scoreA;
+    })
+    .slice(0, Math.max(0, maxItems));
+
+  return rows.map((row) => {
+    const entryOriginal = row.entryValue ?? parseNumericPrice(row.entry);
+    const target = row.targetValue ?? parseNumericPrice(row.target);
+    const stop = row.stopValue ?? parseNumericPrice(row.stop);
+    const stage6EntryDistancePct =
+      row.entryDistancePct != null && Number.isFinite(Number(row.entryDistancePct))
+        ? Math.max(0, Number(row.entryDistancePct))
+        : null;
+    const adjustment =
+      entryOriginal != null && target != null && stop != null && target > entryOriginal && stop < entryOriginal
+        ? evaluateAdaptiveEntryPrice(
+            entryOriginal,
+            target,
+            stop,
+            stage6EntryDistancePct,
+            maxStopDistancePct,
+            entryPricePolicy
+          )
+        : { entry: entryOriginal ?? NaN, adjusted: false, capped: false, chasePct: 0 };
+    const reason = mapStage6DecisionReasonToSkip(row.decisionReason);
+    const proofReady = isBreakoutRetestProofReviewReady(row);
+    const actionReason = proofReady
+      ? "stage6_breakout_retest_proof_review_ready_report_only"
+      : reason === "stage6_wait_breakout_retest_required"
+        ? "stage6_breakout_retest_proof_not_confirmed"
+        : "stage6_zero_executable_blocker_audit";
+    const entryAdjusted = adjustment.adjusted ? adjustment.entry : entryOriginal;
+
+    return {
+      symbol: row.symbol,
+      status: "skipped",
+      reason,
+      verdict: row.verdict,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      executionBucket: row.executionBucket,
+      executionReason: row.executionReason,
+      conviction: parseConviction(row.conviction),
+      entryOriginal: entryOriginal != null && Number.isFinite(entryOriginal) ? entryOriginal : null,
+      entryAdjusted: entryAdjusted != null && Number.isFinite(entryAdjusted) ? entryAdjusted : null,
+      target: target != null && Number.isFinite(target) ? target : null,
+      stop: stop != null && Number.isFinite(stop) ? stop : null,
+      stage6EntryDistancePct,
+      effectiveEntryDistancePct: computeEffectiveEntryDistancePct(stage6EntryDistancePct, adjustment),
+      riskRewardBefore: computeRiskReward(entryOriginal, target, stop),
+      riskRewardAfter: computeRiskReward(
+        entryAdjusted != null && Number.isFinite(entryAdjusted) ? entryAdjusted : null,
+        target,
+        stop
+      ),
+      entryPriceAdjusted: adjustment.adjusted,
+      entryPriceCapped: adjustment.capped,
+      entryPriceChasePct: Number(adjustment.chasePct.toFixed(4)),
+      actionType: "HOLD_WAIT",
+      actionReason,
+      notional: null,
+      requestedNotional: null,
+      brokerQty: null,
+      riskDollars: null,
+      highPriceAdjusted: false,
+      sizingReason: null,
+      executionOverlay: null,
+      openOrderMonitor: null
+    };
+  });
+}
+
+function buildStage6PolicyAuditSummary(stage6: Stage6LoadResult): Record<string, unknown> {
+  const diagnosticRows = selectStage6DiagnosticCandidates(stage6);
+  const executablePicks = stage6.contractContext?.executablePicks.length ?? stage6.candidates.length;
+  const modelTopRows = stage6.contractContext?.modelTop6 ?? stage6.modelTopCandidates;
+  const reviewReadyRows = diagnosticRows.filter(isBreakoutRetestProofReviewReady);
+  const proofConfirmedRows = diagnosticRows.filter((row) =>
+    isBreakoutRetestProofConfirmed(row.breakoutRetestProofVerdict)
+  );
+  const breakoutWaitRows = diagnosticRows.filter(
+    (row) => row.decisionReason === "wait_breakout_retest_required"
+  );
+  const structureWaitRows = diagnosticRows.filter(
+    (row) => row.decisionReason === "wait_structure_confirmation_required"
+  );
+  const qualityBlockedRows = diagnosticRows.filter((row) =>
+    classifySkipReason(mapStage6DecisionReasonToSkip(row.decisionReason)) === "quality_gate"
+  );
+  const riskGeometryRows = diagnosticRows.filter((row) =>
+    classifySkipReason(mapStage6DecisionReasonToSkip(row.decisionReason)) === "risk_geometry"
+  );
+  const zeroExecutable = executablePicks === 0;
+  const policyVerdict =
+    proofConfirmedRows.length > 0
+      ? "proof_confirmed_requires_stage6_policy_review"
+      : reviewReadyRows.length > 0
+        ? "proof_review_ready_not_promoted"
+        : zeroExecutable
+          ? "zero_executable_blockers_require_review"
+          : "no_stage6_policy_blocker";
+
+  return {
+    mode: "report_only",
+    zeroExecutable,
+    executablePicks,
+    modelTopRows: modelTopRows.length,
+    diagnosticRows: diagnosticRows.length,
+    breakoutRetestProofReviewReady: reviewReadyRows.length,
+    breakoutRetestProofConfirmed: proofConfirmedRows.length,
+    waitBreakoutRetestRequired: breakoutWaitRows.length,
+    waitStructureConfirmationRequired: structureWaitRows.length,
+    qualityGateBlocked: qualityBlockedRows.length,
+    riskGeometryBlocked: riskGeometryRows.length,
+    policyVerdict,
+    promotionGuard: "sidecar never promotes review-ready rows; Stage6 must emit proof-confirmed executable rows",
+    reviewSamples: reviewReadyRows.slice(0, 6).map((row) => ({
+      symbol: row.symbol,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      proofVerdict: row.breakoutRetestProofVerdict,
+      proofReviewReady: row.breakoutRetestProofReviewReady
+    }))
+  };
+}
+
 function reconcileDecisionAuditWithDryExec(
   decisionAudit: OrderDecisionAuditRecord[],
   payloads: DryExecOrderPayload[],
@@ -3145,8 +3330,7 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
     unheldExecutableRows
       .filter((row) => row.status === "skipped")
       .reduce<Record<string, number>>((acc, row) => {
-        const rawReason = String(row.reason || "unknown");
-        const key = rawReason.split("[")[0] || rawReason;
+        const key = stripSkipReasonDetail(row.reason);
         acc[key] = (acc[key] || 0) + 1;
         return acc;
       }, {})
@@ -3220,6 +3404,8 @@ function mapStage6DecisionReasonToSkip(
   const key = String(reason || "").trim().toLowerCase();
   if (!key || key === "n/a") return "stage6_watchlist";
   if (key === "wait_pullback_not_reached") return "stage6_wait_pullback_too_deep";
+  if (key === "wait_breakout_retest_required") return "stage6_wait_breakout_retest_required";
+  if (key === "wait_structure_confirmation_required") return "stage6_wait_structure_confirmation_required";
   if (key === "wait_earnings_data_missing") return "stage6_wait_earnings_data_missing";
   if (key === "wait_insufficient_history") return "stage6_wait_insufficient_history";
   if (key === "wait_state_verdict_conflict") return "stage6_wait_state_verdict_conflict";
@@ -3271,12 +3457,23 @@ function classifySkipReason(reason: string): string {
   }
   if (key.includes("idempotency") || key.includes("dedupe") || key.includes("duplicate")) return "dedupe";
   if (key.includes("stale")) return "stale_source";
+  if (key.includes("breakout")) return "breakout";
+  if (key.includes("structure")) return "structure";
   if (key.includes("entry_too_far") || key.includes("pullback") || key.includes("feasibility")) {
     return "entry_distance";
   }
-  if (key.includes("geometry") || key.includes("price") || key.includes("stop") || key.includes("target")) {
-    return "price_geometry";
+  if (
+    key.includes("geometry") ||
+    key.includes("stop") ||
+    key.includes("target") ||
+    key.includes("rr_") ||
+    key.includes("risk") ||
+    key.includes("anchor_exec_gap") ||
+    key.includes("ev_non_positive")
+  ) {
+    return "risk_geometry";
   }
+  if (key.includes("price")) return "entry_distance";
   if (key.includes("sizing") || key.includes("notional") || key.includes("min_one_share")) return "sizing";
   if (key.includes("max_orders") || key.includes("max_total")) return "capacity";
   if (key.includes("conviction") || key.includes("hf_") || key.includes("earnings")) return "quality_gate";
@@ -3370,6 +3567,8 @@ function buildStage6BlockerSamples(stage6: Stage6LoadResult, maxItems = 8): Stag
       qualityScore: row.qualityScore,
       expectedReturnPct: row.expectedReturnPct,
       earningsDaysToEvent: row.earningsDaysToEvent,
+      breakoutRetestProofVerdict: row.breakoutRetestProofVerdict,
+      breakoutRetestProofReviewReady: row.breakoutRetestProofReviewReady,
       entry: row.entry,
       target: row.target,
       stop: row.stop,
@@ -3906,6 +4105,11 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
       const hfSentimentArticleCountRaw = parseFiniteNumber(node.hfSentimentArticleCount);
       const hfSentimentNewestAgeHoursRaw = parseFiniteNumber(node.hfSentimentNewestAgeHours);
       const earningsDaysToEventRaw = parseFiniteNumber(node.earningsDaysToEvent);
+      const breakoutRetestProofVerdictRaw =
+        typeof node.breakoutRetestProofVerdict === "string" && node.breakoutRetestProofVerdict.trim()
+          ? node.breakoutRetestProofVerdict.trim().toUpperCase()
+          : null;
+      const breakoutRetestProofReviewReadyRaw = parseBooleanValue(node.breakoutRetestProofReviewReady);
       const shadowIntel = parseStage6ShadowIntel(node);
       const instrumentType = normalizeStage6InstrumentType(node.instrumentType);
       const historyTier = normalizeStage6HistoryTier(node.historyTier);
@@ -4045,6 +4249,8 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
           hfSentimentNewestAgeHoursRaw != null ? Number(Math.max(0, hfSentimentNewestAgeHoursRaw).toFixed(2)) : null,
         earningsDaysToEvent:
           earningsDaysToEventRaw != null ? Number(earningsDaysToEventRaw.toFixed(0)) : null,
+        breakoutRetestProofVerdict: breakoutRetestProofVerdictRaw,
+        breakoutRetestProofReviewReady: breakoutRetestProofReviewReadyRaw,
         shadowIntel
       };
     })
@@ -5511,6 +5717,7 @@ function buildDryExecPayloads(
     lifecycleHeldSymbols?: Set<string>;
     lifecycleHeldContext?: Map<string, HeldPositionSnapshot>;
     portfolioHeldSymbols?: Set<string>;
+    stage6?: Stage6LoadResult;
   }
 ): DryExecBuildResult {
   const runtimeCfg = loadRuntimeConfig();
@@ -6069,18 +6276,39 @@ function buildDryExecPayloads(
     }
   });
 
-  const decisionAudit = buildOrderDecisionAudit(
+  const baseDecisionAudit = buildOrderDecisionAudit(
     actionable,
     payloads,
     skipped,
     maxStopDistancePct,
     entryPricePolicy
   );
+  const decisionAudit = buildStage6BlockerDecisionAudit(
+    overrides?.stage6 ?? {
+      fileId: "",
+      fileName: "",
+      modifiedTime: "",
+      md5Checksum: "",
+      sha256: stage6Hash,
+      candidateSymbols: actionable.map((row) => row.symbol),
+      candidates: actionable,
+      allCandidates: actionable,
+      modelTopCandidates: actionable,
+      contractContext: null
+    },
+    baseDecisionAudit,
+    maxStopDistancePct,
+    entryPricePolicy
+  );
+  const skipReasonCounts = mergeReasonCounts(
+    buildSkipReasonCounts(skipped),
+    baseDecisionAudit.length === 0 ? buildDecisionAuditSkipReasonCounts(decisionAudit) : {}
+  );
 
   return {
     payloads,
     skipped,
-    skipReasonCounts: buildSkipReasonCounts(skipped),
+    skipReasonCounts,
     decisionAudit,
     actionIntent: {
       enabled: lifecycle.enabled,
@@ -8578,6 +8806,8 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     hfSentimentArticleCount: null,
     hfSentimentNewestAgeHours: null,
     earningsDaysToEvent: null,
+    breakoutRetestProofVerdict: null,
+    breakoutRetestProofReviewReady: null,
     shadowIntel: null
   };
   const regimeDefault: RegimeSelection = {
@@ -10932,6 +11162,7 @@ async function saveOrderDecisionAudit(
   const skipped = dryExec.decisionAudit.filter((row) => row.status === "skipped").length;
   const topSkipReasonCategories = buildSkipReasonCategoryCounts(dryExec.skipReasonCounts);
   const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
+  const stage6PolicyAudit = buildStage6PolicyAuditSummary(result);
   const audit = {
     stage6File: result.fileName,
     stage6FileId: result.fileId,
@@ -10953,7 +11184,8 @@ async function saveOrderDecisionAudit(
       brokerFailed: brokerSubmit.failed,
       topSkipReasons: dryExec.skipReasonCounts,
       topSkipReasonCategories,
-      payloadExpectation
+      payloadExpectation,
+      stage6PolicyAudit
     },
     records: dryExec.decisionAudit
   };
@@ -11040,6 +11272,7 @@ async function saveDryExecPreview(
     stage6ContractReasonCountsPrimary
   );
   const stage6BlockerSamples = buildStage6BlockerSamples(result, 12);
+  const stage6PolicyAudit = buildStage6PolicyAuditSummary(result);
   const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
   await mkdir("state", { recursive: true });
   const preview = {
@@ -11101,7 +11334,8 @@ async function saveDryExecPreview(
         brokerSubmitted: brokerSubmit.submitted,
         topSkipReasons: dryExec.skipReasonCounts,
         topSkipReasonCategories: buildSkipReasonCategoryCounts(dryExec.skipReasonCounts),
-        payloadExpectation: buildPayloadExpectationSummary(dryExec.decisionAudit)
+        payloadExpectation: buildPayloadExpectationSummary(dryExec.decisionAudit),
+        stage6PolicyAudit
       },
       records: dryExec.decisionAudit
     },
@@ -13201,7 +13435,8 @@ async function main() {
   const dryExecBaseRaw = buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
     lifecycleHeldSymbols,
     lifecycleHeldContext,
-    portfolioHeldSymbols
+    portfolioHeldSymbols,
+    stage6
   });
   const hfPayloadProbe = finalizeHfPayloadProbeSummary(hfPayloadProbeApplied.summary, dryExecBaseRaw);
   const dryExecBase = dryExecBaseRaw;

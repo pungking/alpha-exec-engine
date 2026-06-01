@@ -943,3 +943,38 @@ Priority: P2 until M1/M2 stabilize; then P1
   - order-state consistency no longer shows terminal reconciliation required for rows whose broker terminal status is known.
   - fillability/ops reports show terminal taxonomy and `reentryReviewRequired` for expired unfilled orders.
   - same Stage6/hash after `expired/canceled/rejected` produces `idempotency_terminal_reentry_requires_fresh_stage6_or_approval`, not a new payload.
+
+## 2026-06-02 - Zero-Executable Decision Audit and Stage6 Proof Guard
+
+- Current blocker class:
+  - a Stage6 file may legitimately have `executablePicks=0`, but sidecar observability must still explain why top model/watchlist names were not actionable.
+  - `BREAKOUT_RETEST_PROOF_REVIEW_READY` is a producer-side review marker, not proof that sidecar may promote or submit the row.
+- Added/updated report-only behavior:
+  - when actionable rows are empty, sidecar now emits decision-audit rows from Stage6 diagnostic candidates (`modelTop6`, `watchlistTop`, and all candidate context).
+  - top skip categories split Stage6 blockers into `quality_gate`, `risk_geometry`, `entry_distance`, `structure`, and `breakout` instead of collapsing everything into empty/no-payload.
+  - `orderDecisionAudit.summary.stage6PolicyAudit` records zero-executable status, breakout proof review-ready counts, proof-confirmed counts, structure waits, and breakout waits.
+- Policy:
+  - proof-review-ready rows remain `skipped` / `HOLD_WAIT` in sidecar.
+  - Stage6 producer must emit a separate proof-confirmed executable row before the normal payload path can consider promotion.
+  - overblocking judgment is made from diagnostic rows and categories first; do not lower risk/fillability gates just to force payloads.
+- Safety invariant:
+  - report-only only; no submit, replace, cancel, or broker mutation behavior changes.
+  - safe RTH runs must still preserve `attempted=0` and `submitted=0` unless a separate scoped `CONFIRM LIVE EXECUTION` approval is given.
+- Next RTH done-when:
+  - if fresh Stage6 still has zero executable picks, `last-order-decision-audit.json.summary.candidates > 0`.
+  - `topSkipReasonCategories` shows the dominant blocker class instead of `none`.
+  - `payloadExpectation.status=no_unheld_executable` remains acceptable when Stage6 has no unheld executable row.
+  - `stage6PolicyAudit.policyVerdict` clearly distinguishes `proof_review_ready_not_promoted` from `proof_confirmed_requires_stage6_policy_review`.
+
+## 2026-06-02 - Progress Scorecard Policy
+
+- Use progress scores as an operator dashboard, not as proof of live readiness.
+- Recommended score lanes:
+  - Data collection / Harvester readiness: universe freshness, delist/new-list handling, failed ticker taxonomy, OHLCV freshness.
+  - Stage0-6 analysis readiness: schema stability, data lineage, zero-executable audit, proof-confirmed entry policy, ranking/entry/stop/target quality.
+  - Sidecar simulation readiness: fresh Stage6 consumption, decision audit, idempotency, ledger reconciliation, fillability taxonomy, safe-mode invariants.
+  - Paper execution readiness: paper submit visibility, OCO/stop protection, terminal reconciliation, guarded replace/retry lanes.
+  - Live readiness: explicit safety checklist only; score must stay below production-ready until dry/paper state separation, approval gates, alerting, and risk caps are proven.
+- Interpretation:
+  - scores are meaningful only when tied to done-when evidence and recent artifacts.
+  - a high sub-score must not override execution safety defaults.
