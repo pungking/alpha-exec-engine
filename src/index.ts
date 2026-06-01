@@ -3488,7 +3488,7 @@ function classifySkipReason(reason: string): string {
   if (key.includes("price")) return "entry_distance";
   if (key.includes("sizing") || key.includes("notional") || key.includes("min_one_share")) return "sizing";
   if (key.includes("max_orders") || key.includes("max_total")) return "capacity";
-  if (key.includes("conviction") || key.includes("hf_") || key.includes("earnings")) return "quality_gate";
+  if (key.includes("quality") || key.includes("conviction") || key.includes("hf_") || key.includes("earnings")) return "quality_gate";
   if (key.includes("instrument") || key.includes("symbol_state")) return "contract_gate";
   return "other";
 }
