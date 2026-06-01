@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { classifyProtectionOwnership, resolveEffectiveGuardMetadata } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.BROKER_CHILD_RECONCILIATION_STATE_DIR || "state").trim() || "state";
 const PERFORMANCE_PATH = `${STATE_DIR}/performance-dashboard.json`;
@@ -29,7 +30,7 @@ const fmt = (value, digits = 2) => {
 
 const short = (value, max = 500) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 
-const classifyPosition = (position) => {
+const classifyPosition = ({ position, performanceGeneratedAt }) => {
   const symbol = String(position?.symbol || "").toUpperCase();
   const qty = toNum(position?.qty) ?? 0;
   const plannedStopPrice = toNum(position?.plannedStopPrice ?? position?.stopPrice);
@@ -37,20 +38,24 @@ const classifyPosition = (position) => {
   const currentPrice = toNum(position?.currentPrice);
   const brokerStopPresent = position?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true;
+  const ownership = classifyProtectionOwnership({ position });
+  const effectiveGuard = resolveEffectiveGuardMetadata({ position, performanceGeneratedAt });
   const hasOpenPosition = qty > 0;
-  const guardMetadataMissing = hasOpenPosition && plannedStopPrice == null && plannedTargetPrice == null;
-  const stopGeometryInvalid = hasOpenPosition && currentPrice != null && plannedStopPrice != null && plannedStopPrice >= currentPrice;
-  const targetGeometryInvalid = hasOpenPosition && currentPrice != null && plannedTargetPrice != null && plannedTargetPrice <= currentPrice;
-  const targetStopGeometryInvalid = hasOpenPosition && plannedStopPrice != null && plannedTargetPrice != null && plannedTargetPrice <= plannedStopPrice;
+  const guardMetadataMissing = hasOpenPosition && effectiveGuard.stopPrice == null && effectiveGuard.targetPrice == null;
+  const stopGeometryInvalid = hasOpenPosition && currentPrice != null && effectiveGuard.stopPrice != null && effectiveGuard.stopPrice >= currentPrice;
+  const targetGeometryInvalid = hasOpenPosition && currentPrice != null && effectiveGuard.targetPrice != null && effectiveGuard.targetPrice <= currentPrice;
+  const targetStopGeometryInvalid = hasOpenPosition && effectiveGuard.stopPrice != null && effectiveGuard.targetPrice != null && effectiveGuard.targetPrice <= effectiveGuard.stopPrice;
   const guardGeometryInvalid = stopGeometryInvalid || targetGeometryInvalid || targetStopGeometryInvalid;
-  const stopChildMissing = hasOpenPosition && plannedStopPrice != null && !brokerStopPresent;
-  const targetChildMissing = hasOpenPosition && plannedTargetPrice != null && !brokerTargetPresent;
+  const stopChildMissing = hasOpenPosition && effectiveGuard.stopPrice != null && !brokerStopPresent;
+  const targetChildMissing = hasOpenPosition && effectiveGuard.targetPrice != null && !brokerTargetPresent;
+  const fillStateRepairBlocked = ownership.fillStateReconciliation.repairBlocked;
 
   const proposedActions = [];
   if (guardMetadataMissing) proposedActions.push("REPORT_ONLY_REVIEW_GUARD_METADATA");
   if (guardGeometryInvalid) proposedActions.push("REPORT_ONLY_REVIEW_INVALID_GUARD_GEOMETRY");
-  if (!guardGeometryInvalid && stopChildMissing) proposedActions.push("REPORT_ONLY_CREATE_STOP_CHILD");
-  if (!guardGeometryInvalid && targetChildMissing) proposedActions.push("REPORT_ONLY_CREATE_TARGET_CHILD");
+  if (fillStateRepairBlocked && hasOpenPosition) proposedActions.push("REPORT_ONLY_RECONCILE_FILL_STATE");
+  if (!fillStateRepairBlocked && !guardGeometryInvalid && stopChildMissing) proposedActions.push("REPORT_ONLY_CREATE_STOP_CHILD");
+  if (!fillStateRepairBlocked && !guardGeometryInvalid && targetChildMissing) proposedActions.push("REPORT_ONLY_CREATE_TARGET_CHILD");
   if (proposedActions.length === 0) proposedActions.push("NO_ACTION");
 
   const severity = guardGeometryInvalid || stopChildMissing ? "critical" : targetChildMissing || guardMetadataMissing ? "warn" : "pass";
@@ -60,7 +65,9 @@ const classifyPosition = (position) => {
       ? "GUARD_METADATA_MISSING"
       : guardGeometryInvalid
         ? "INVALID_GUARD_GEOMETRY_REVIEW"
-        : stopChildMissing && targetChildMissing
+        : fillStateRepairBlocked && (stopChildMissing || targetChildMissing)
+          ? "FILL_STATE_RECONCILIATION_REQUIRED_BEFORE_REPAIR"
+          : stopChildMissing && targetChildMissing
           ? "STOP_AND_TARGET_CHILD_MISSING"
           : stopChildMissing
             ? "STOP_CHILD_MISSING"
@@ -70,6 +77,8 @@ const classifyPosition = (position) => {
 
   const reason = guardGeometryInvalid
     ? "planned stop/current/target geometry is invalid; block repair and route to root-cause review"
+    : fillStateRepairBlocked && (stopChildMissing || targetChildMissing)
+      ? "broker position exists but sidecar fill state is not confirmed filled; reconcile fill ownership before any child-order repair"
     : stopChildMissing
       ? "planned stop exists but no active Alpaca sell stop child was found in nested open orders"
       : targetChildMissing
@@ -84,6 +93,12 @@ const classifyPosition = (position) => {
     currentPrice,
     plannedStopPrice,
     plannedTargetPrice,
+    effectiveStopPrice: effectiveGuard.stopPrice,
+    effectiveTargetPrice: effectiveGuard.targetPrice,
+    effectiveGuardSource: effectiveGuard.source,
+    effectiveGuardGeneratedAt: effectiveGuard.generatedAt,
+    sourcePrecedence: effectiveGuard.sourcePrecedence,
+    staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
     brokerStopPresent,
     brokerTargetPresent,
     brokerStopPrice: toNum(position?.brokerStopPrice),
@@ -99,7 +114,13 @@ const classifyPosition = (position) => {
     stopPriceSource: position?.stopPriceSource || null,
     targetPriceSource: position?.targetPriceSource || null,
     normalizedFillState: position?.normalizedFillState || null,
+    ledgerStatus: position?.ledgerStatus || null,
+    idempotencyBrokerStatus: position?.idempotencyBrokerStatus || null,
     positionStatus: position?.positionStatus || null,
+    ownershipClassification: ownership.ownershipClass,
+    sidecarManaged: ownership.sidecarManaged,
+    repairAllowedByOwnership: ownership.repairAllowedByOwnership,
+    fillStateReconciliation: ownership.fillStateReconciliation,
     guardMetadataMissing,
     guardGeometryInvalid,
     stopGeometryInvalid,
@@ -129,7 +150,11 @@ const summarize = (rows) => {
     missingTargetChildren: rows.filter((row) => row.targetChildMissing).length,
     guardMetadataMissing: rows.filter((row) => row.guardMetadataMissing).length,
     guardGeometryInvalid: rows.filter((row) => row.guardGeometryInvalid).length,
-    noActionRows: rows.filter((row) => row.proposedActions.length === 1 && row.proposedActions[0] === "NO_ACTION").length
+    noActionRows: rows.filter((row) => row.proposedActions.length === 1 && row.proposedActions[0] === "NO_ACTION").length,
+    sidecarManagedFilled: rows.filter((row) => row.ownershipClassification === "SIDECAR_MANAGED_FILLED").length,
+    fillStateReconciliationRequired: rows.filter((row) => row.fillStateReconciliation?.status === "position_present_ledger_submitted").length,
+    externalOrManualPositions: rows.filter((row) => row.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION").length,
+    brokerChildrenSourceActive: rows.filter((row) => row.effectiveGuardSource === "broker_children").length
   };
 };
 
@@ -143,14 +168,14 @@ const buildMarkdown = (report) => {
     `- source: \`performanceDashboard=${report.files.performanceDashboard ? "ok" : "missing"} nested=${report.source.openOrderNested ?? "N/A"} rawOpen=${report.source.openOrderRawCount ?? "N/A"} flattenedOpen=${report.source.openOrderFlattenedCount ?? "N/A"}\``
   );
   lines.push(
-    `- summary: \`positions=${report.summary.positionsChecked} critical=${report.summary.criticalCount} warnings=${report.summary.warningCount} stopMissing=${report.summary.missingStopChildren} targetMissing=${report.summary.missingTargetChildren} guardMissing=${report.summary.guardMetadataMissing} invalidGeometry=${report.summary.guardGeometryInvalid} proposedRows=${report.summary.proposedActionRows}\``
+    `- summary: \`positions=${report.summary.positionsChecked} critical=${report.summary.criticalCount} warnings=${report.summary.warningCount} stopMissing=${report.summary.missingStopChildren} targetMissing=${report.summary.missingTargetChildren} guardMissing=${report.summary.guardMetadataMissing} invalidGeometry=${report.summary.guardGeometryInvalid} fillRecon=${report.summary.fillStateReconciliationRequired} external=${report.summary.externalOrManualPositions} brokerChildSource=${report.summary.brokerChildrenSourceActive} proposedRows=${report.summary.proposedActionRows}\``
   );
   lines.push("- safety: `report-only; no broker mutation; auto repair disabled` ");
-  lines.push("| Symbol | Severity | Protection | Qty | Current | Planned Stop | Planned Target | Broker Stop | Broker Target | Actions | Reason |");
-  lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |");
+  lines.push("| Symbol | Severity | Protection | Ownership | Fill State | Qty | Current | Effective Stop | Effective Target | Source | Broker Stop | Broker Target | Actions | Reason |");
+  lines.push("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.severity.toUpperCase()} | ${row.protectionStatus} | ${fmt(row.qty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${row.proposedActions.join(",")} | ${short(row.reason, 160)} |`
+      `| ${row.symbol || "N/A"} | ${row.severity.toUpperCase()} | ${row.protectionStatus} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${fmt(row.qty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.effectiveStopPrice)} | ${fmt(row.effectiveTargetPrice)} | ${row.effectiveGuardSource || "N/A"} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${row.proposedActions.join(",")} | ${short(row.reason, 160)} |`
     );
   }
   lines.push("");
@@ -162,7 +187,9 @@ const main = () => {
   const dashboard = readJson(PERFORMANCE_PATH);
   const live = dashboard?.live || {};
   const positions = Array.isArray(live?.positions) ? live.positions : [];
-  const rows = positions.filter((row) => (toNum(row?.qty) ?? 0) > 0).map(classifyPosition);
+  const rows = positions
+    .filter((row) => (toNum(row?.qty) ?? 0) > 0)
+    .map((position) => classifyPosition({ position, performanceGeneratedAt: dashboard?.generatedAt || null }));
   const summary = summarize(rows);
   const overall = !dashboard
     ? "warn"

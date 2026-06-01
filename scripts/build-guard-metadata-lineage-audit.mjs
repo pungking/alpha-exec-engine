@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { classifyProtectionOwnership } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.GUARD_METADATA_LINEAGE_STATE_DIR || "state").trim() || "state";
 const OUTPUT_JSON = `${STATE_DIR}/guard-metadata-lineage-audit.json`;
@@ -124,9 +125,16 @@ const sourceProbe = ({ source, stop, target, generatedAt, stage6Hash, stage6File
   };
 };
 
-const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, previewRecord }) => {
+const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, previewRecord, performanceGeneratedAt }) => {
   const symbol = asSymbol(position?.symbol);
   const currentPrice = toNum(position?.currentPrice);
+  const ownership = classifyProtectionOwnership({
+    position,
+    reconciliationRow: protectionRow,
+    ledgerRow,
+    idempotencyRow,
+    fillabilityRow
+  });
   const sources = [
     sourceProbe({
       source: "performance_dashboard_planned_guard",
@@ -142,7 +150,7 @@ const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, lo
       source: "broker_children",
       stop: position?.brokerStopPrice,
       target: position?.brokerTargetPrice,
-      generatedAt: position?.brokerStopPresent || position?.brokerTargetPresent ? position?.plannedLedgerUpdatedAt : null,
+      generatedAt: position?.brokerStopPresent || position?.brokerTargetPresent ? performanceGeneratedAt : null,
       stage6Hash: position?.plannedStage6Hash,
       stage6File: position?.plannedStage6File,
       detail: `stopPresent=${position?.brokerStopPresent === true} targetPresent=${position?.brokerTargetPresent === true} sellOrders=${position?.brokerSellOrderCount ?? "N/A"}`,
@@ -249,8 +257,10 @@ const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, lo
     qty: toNum(position?.qty),
     currentPrice,
     positionStatus: position?.positionStatus || null,
+    ownershipClassification: ownership.ownershipClass,
+    fillStateReconciliation: ownership.fillStateReconciliation,
     protectionRootCauses: protectionRow?.rootCauses || [],
-    protectionRepairDecision: protectionRow?.repairDecision || null,
+    protectionRepairDecision: protectionRow?.repairLaneDecision || protectionRow?.repairDecision || null,
     guardRefreshDecision: guardRefreshRow?.refreshDecision || null,
     guardRefreshAfterDecision: guardRefreshRow?.afterRefreshRepairDecision || null,
     lineageStatus,
@@ -287,11 +297,11 @@ const buildMarkdown = (report) => {
   );
   lines.push(`- root_causes: \`${JSON.stringify(report.summary.rootCauseCounts)}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lineage Status | Root Cause | Disconnect Point | Fresh Valid Sources | Stale Sources | Invalid Sources | Freshness Details | Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lineage Status | Ownership | Fill State | Root Cause | Disconnect Point | Fresh Valid Sources | Stale Sources | Invalid Sources | Freshness Details | Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 60)) {
     lines.push(
-      `| ${row.symbol} | ${row.lineageStatus} | ${row.rootCause} | ${row.disconnectPoint} | ${row.freshValidSources.join(",") || "none"} | ${row.staleSources.join(",") || "none"} | ${row.invalidSources.join(",") || "none"} | ${short(row.freshnessDetails.join("; "), 260) || "none"} | ${row.action} |`
+      `| ${row.symbol} | ${row.lineageStatus} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${row.rootCause} | ${row.disconnectPoint} | ${row.freshValidSources.join(",") || "none"} | ${row.staleSources.join(",") || "none"} | ${row.invalidSources.join(",") || "none"} | ${short(row.freshnessDetails.join("; "), 260) || "none"} | ${row.action} |`
     );
   }
   lines.push("");
@@ -329,7 +339,8 @@ const main = () => {
         ledgerRow: valuesBySymbol(orderLedger?.orders, symbol),
         idempotencyRow: valuesBySymbol(idempotency?.orders, symbol),
         fillabilityRow: fillabilityBySymbol.get(symbol) || null,
-        previewRecord: previewBySymbol.get(symbol) || null
+        previewRecord: previewBySymbol.get(symbol) || null,
+        performanceGeneratedAt: performance?.generatedAt || null
       });
     });
 

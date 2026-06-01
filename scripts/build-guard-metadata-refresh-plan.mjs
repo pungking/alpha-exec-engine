@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { classifyProtectionOwnership } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.GUARD_METADATA_REFRESH_STATE_DIR || "state").trim() || "state";
 const PERFORMANCE_PATH = `${STATE_DIR}/performance-dashboard.json`;
@@ -186,11 +187,23 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
     selected.targetPrice > selected.stopPrice;
   const brokerStopPresent = position?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true;
+  const brokerChildrenComplete = brokerStopPresent && brokerTargetPresent;
+  const ownership = classifyProtectionOwnership({
+    position,
+    reconciliationRow: protectionRow,
+    ledgerRow,
+    idempotencyRow,
+    fillabilityRow
+  });
   const brokerChildMissingAfterRefresh = selectedFresh && geometryValid && (!brokerStopPresent || !brokerTargetPresent);
   const blockers = [];
   const warnings = [];
 
   if (qty <= 0) blockers.push("no_open_position");
+  if (ownership.ownershipClass === "EXTERNAL_OR_MANUAL_POSITION") blockers.push("position_not_sidecar_managed");
+  if (ownership.fillStateReconciliation.repairBlocked && ownership.ownershipClass !== "EXTERNAL_OR_MANUAL_POSITION") {
+    blockers.push("fill_state_reconciliation_required");
+  }
   if (!sources.length) blockers.push("no_guard_refresh_source");
   if (!selected) blockers.push("no_source_with_stop_target");
   if (selected && !selected.hasBothPrices) blockers.push("selected_source_missing_stop_or_target");
@@ -202,22 +215,32 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
   if (brokerStopPresent && brokerTargetPresent) warnings.push("broker_children_already_present");
 
   const refreshReady = blockers.length === 0;
-  const refreshDecision = refreshReady
-    ? brokerChildMissingAfterRefresh
-      ? "REFRESH_READY_THEN_REEVALUATE_REPAIR"
-      : "REFRESH_READY_MONITOR_ONLY"
-    : blockers.includes("no_guard_refresh_source") || blockers.includes("no_source_with_stop_target")
-      ? "BLOCKED_NO_REFRESH_SOURCE"
-      : blockers.includes("selected_source_stale")
-        ? "BLOCKED_REFRESH_SOURCE_STALE"
-        : blockers.includes("selected_source_invalid_geometry")
-          ? "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY"
-          : "BLOCKED_REFRESH_INPUT";
-  const afterRefreshRepairDecision = !refreshReady
-    ? "NOT_EVALUATED_REFRESH_BLOCKED"
-    : brokerChildMissingAfterRefresh
-      ? "REPORT_ONLY_REPAIR_REEVALUATION_CANDIDATE"
-      : "NO_REPAIR_NEEDED_AFTER_REFRESH";
+  let refreshDecision = "BLOCKED_REFRESH_INPUT";
+  if (brokerChildrenComplete && selectedFresh && geometryValid) {
+    refreshDecision = "FRESH_BROKER_CHILDREN_PRESENT_MONITOR_ONLY";
+  } else if (blockers.includes("position_not_sidecar_managed")) {
+    refreshDecision = "BLOCKED_POSITION_OWNERSHIP_REVIEW";
+  } else if (blockers.includes("fill_state_reconciliation_required")) {
+    refreshDecision = "BLOCKED_FILL_STATE_RECONCILIATION";
+  } else if (refreshReady && brokerChildMissingAfterRefresh) {
+    refreshDecision = "REFRESH_READY_THEN_REEVALUATE_REPAIR";
+  } else if (refreshReady) {
+    refreshDecision = "REFRESH_READY_MONITOR_ONLY";
+  } else if (blockers.includes("no_guard_refresh_source") || blockers.includes("no_source_with_stop_target")) {
+    refreshDecision = "BLOCKED_NO_REFRESH_SOURCE";
+  } else if (blockers.includes("selected_source_stale")) {
+    refreshDecision = "BLOCKED_REFRESH_SOURCE_STALE";
+  } else if (blockers.includes("selected_source_invalid_geometry")) {
+    refreshDecision = "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY";
+  }
+
+  const afterRefreshRepairDecision = brokerChildrenComplete
+    ? "NO_REPAIR_NEEDED_BROKER_CHILDREN_PRESENT"
+    : !refreshReady
+      ? "NOT_EVALUATED_REFRESH_BLOCKED"
+      : brokerChildMissingAfterRefresh
+        ? "REPORT_ONLY_REPAIR_REEVALUATION_CANDIDATE"
+        : "NO_REPAIR_NEEDED_AFTER_REFRESH";
 
   return {
     symbol,
@@ -242,6 +265,10 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
     sourceCandidates: sources,
     selectedSourceFresh: selectedFresh,
     selectedSourceGeometryValid: geometryValid,
+    ownershipClassification: ownership.ownershipClass,
+    sidecarManaged: ownership.sidecarManaged,
+    repairAllowedByOwnership: ownership.repairAllowedByOwnership,
+    fillStateReconciliation: ownership.fillStateReconciliation,
     refreshReady,
     refreshDecision,
     afterRefreshRepairDecision,
@@ -281,14 +308,14 @@ const buildMarkdown = (report) => {
   lines.push(`- overall: \`${String(report.overall).toUpperCase()}\``);
   lines.push(`- scope: \`${report.scope}\``);
   lines.push(
-    `- summary: \`positions=${report.summary.positions} refreshReady=${report.summary.refreshReady} blocked=${report.summary.blocked} noSource=${report.summary.noRefreshSource} staleSource=${report.summary.staleRefreshSource} invalidGeometry=${report.summary.invalidRefreshGeometry} repairAfterRefresh=${report.summary.repairReevaluationCandidates}\``
+    `- summary: \`positions=${report.summary.positions} refreshReady=${report.summary.refreshReady} blocked=${report.summary.blocked} noSource=${report.summary.noRefreshSource} staleSource=${report.summary.staleRefreshSource} invalidGeometry=${report.summary.invalidRefreshGeometry} fillRecon=${report.summary.fillStateReconciliationRequired} ownershipReview=${report.summary.positionOwnershipReviewRequired} brokerChildrenMonitor=${report.summary.brokerChildrenMonitorOnly} repairAfterRefresh=${report.summary.repairReevaluationCandidates}\``
   );
   lines.push("- safety: `report-only; no broker mutation; no ledger mutation; future metadata write requires separate approval`");
-  lines.push("| Symbol | Decision | Source | Fresh | Current | Stop | Target | Current Guard Age | Broker Children | After Refresh | Blockers |");
-  lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |");
+  lines.push("| Symbol | Decision | Ownership | Fill State | Source | Fresh | Current | Stop | Target | Current Guard Age | Broker Children | After Refresh | Blockers |");
+  lines.push("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.refreshDecision} | ${row.selectedSource?.type || "N/A"} | ${row.selectedSourceFresh ? "yes" : "no"} | ${fmt(row.currentPrice)} | ${fmt(row.selectedSource?.stopPrice)} | ${fmt(row.selectedSource?.targetPrice)} | ${fmt(row.currentGuard.ageMin)} | stop=${row.broker.stopPresent ? "present" : "missing"},target=${row.broker.targetPresent ? "present" : "missing"} | ${row.afterRefreshRepairDecision} | ${short(row.blockers.join(","), 180) || "none"} |`
+      `| ${row.symbol || "N/A"} | ${row.refreshDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.selectedSourceFresh ? "yes" : "no"} | ${fmt(row.currentPrice)} | ${fmt(row.selectedSource?.stopPrice)} | ${fmt(row.selectedSource?.targetPrice)} | ${fmt(row.currentGuard.ageMin)} | stop=${row.broker.stopPresent ? "present" : "missing"},target=${row.broker.targetPresent ? "present" : "missing"} | ${row.afterRefreshRepairDecision} | ${short(row.blockers.join(","), 180) || "none"} |`
     );
   }
   lines.push("");
@@ -331,6 +358,9 @@ const main = () => {
     noRefreshSource: count(rows, (row) => row.refreshDecision === "BLOCKED_NO_REFRESH_SOURCE"),
     staleRefreshSource: count(rows, (row) => row.refreshDecision === "BLOCKED_REFRESH_SOURCE_STALE"),
     invalidRefreshGeometry: count(rows, (row) => row.refreshDecision === "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY"),
+    fillStateReconciliationRequired: count(rows, (row) => row.refreshDecision === "BLOCKED_FILL_STATE_RECONCILIATION"),
+    positionOwnershipReviewRequired: count(rows, (row) => row.refreshDecision === "BLOCKED_POSITION_OWNERSHIP_REVIEW"),
+    brokerChildrenMonitorOnly: count(rows, (row) => row.refreshDecision === "FRESH_BROKER_CHILDREN_PRESENT_MONITOR_ONLY"),
     brokerChildrenSourceReady: count(rows, (row) => row.refreshReady && row.selectedSource?.type === "broker_children"),
     repairReevaluationCandidates: count(rows, (row) => row.afterRefreshRepairDecision === "REPORT_ONLY_REPAIR_REEVALUATION_CANDIDATE"),
     brokerMutationAttempted: false,

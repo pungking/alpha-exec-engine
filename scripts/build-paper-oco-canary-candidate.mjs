@@ -115,10 +115,10 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
   const qty = toNum(repairRow?.qty ?? performanceRow?.qty) ?? 0;
   const currentPrice = toNum(repairRow?.currentPrice ?? reconciliationRow?.currentPrice ?? performanceRow?.currentPrice);
   const plannedStopPrice = toNum(
-    repairRow?.plannedStopPrice ?? reconciliationRow?.plannedStopPrice ?? performanceRow?.plannedStopPrice ?? performanceRow?.stopPrice
+    repairRow?.effectiveStopPrice ?? reconciliationRow?.effectiveStopPrice ?? repairRow?.plannedStopPrice ?? reconciliationRow?.plannedStopPrice ?? performanceRow?.plannedStopPrice ?? performanceRow?.stopPrice
   );
   const plannedTargetPrice = toNum(
-    repairRow?.plannedTargetPrice ?? reconciliationRow?.plannedTargetPrice ?? performanceRow?.plannedTargetPrice ?? performanceRow?.targetPrice
+    repairRow?.effectiveTargetPrice ?? reconciliationRow?.effectiveTargetPrice ?? repairRow?.plannedTargetPrice ?? reconciliationRow?.plannedTargetPrice ?? performanceRow?.plannedTargetPrice ?? performanceRow?.targetPrice
   );
   const stopMissing = repairRow?.stopMissing === true || reconciliationRow?.stopChildMissing === true;
   const targetMissing = repairRow?.targetMissing === true || reconciliationRow?.targetChildMissing === true;
@@ -129,6 +129,12 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
   const warnings = [];
 
   if (!symbol) blockers.push("missing_symbol");
+  if (repairRow?.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION" || reconciliationRow?.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION") {
+    blockers.push("position_not_sidecar_managed");
+  }
+  if (repairRow?.fillStateReconciliation?.repairBlocked === true || reconciliationRow?.fillStateReconciliation?.repairBlocked === true) {
+    blockers.push("fill_state_reconciliation_required");
+  }
   if (repairRow?.candidate !== true || repairRow?.readiness !== "CANDIDATE_BLOCKED_REPORT_ONLY") {
     blockers.push("not_guarded_report_only_candidate");
   }
@@ -153,6 +159,7 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
   if (orderStateRow?.status === "WARN") warnings.push("order_state_symbol_warning");
   if (performanceRow?.positionStatus === "HOLD_MONITOR_GUARD_MISSING") blockers.push("missing_position_guard_metadata");
   const guardMetadataGeneratedAt =
+    reconciliationRow?.effectiveGuardGeneratedAt ||
     reconciliationRow?.plannedLedgerUpdatedAt ||
     performanceRow?.plannedLedgerUpdatedAt ||
     sourceGeneratedAt ||
@@ -199,6 +206,8 @@ const buildCandidateRow = ({ repairRow, reconciliationRow, performanceRow, order
     orderStateStatus: orderStateRow?.status || null,
     positionStatus: performanceRow?.positionStatus || null,
     normalizedFillState: performanceRow?.normalizedFillState || reconciliationRow?.normalizedFillState || null,
+    ownershipClassification: repairRow?.ownershipClassification || reconciliationRow?.ownershipClassification || null,
+    fillStateReconciliation: repairRow?.fillStateReconciliation || reconciliationRow?.fillStateReconciliation || null,
     blockers: [...new Set(blockers)],
     warnings: [...new Set(warnings)],
     idempotencyKeyPreview,

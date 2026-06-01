@@ -55,11 +55,17 @@ const buildRepairRow = ({ reconciliationRow, performanceRow }) => {
   const stopMissing = reconciliationRow?.stopChildMissing === true || hasAction(reconciliationRow, "REPORT_ONLY_CREATE_STOP_CHILD");
   const targetMissing = reconciliationRow?.targetChildMissing === true || hasAction(reconciliationRow, "REPORT_ONLY_CREATE_TARGET_CHILD");
   const guardMetadataMissing = reconciliationRow?.guardMetadataMissing === true || hasAction(reconciliationRow, "REPORT_ONLY_REVIEW_GUARD_METADATA");
+  const ownershipClassification = reconciliationRow?.ownershipClassification || null;
+  const fillStateReconciliation = reconciliationRow?.fillStateReconciliation || null;
   const futureIntent = [];
   const blockers = [];
   const warnings = [];
 
   if (guardMetadataMissing) blockers.push("missing_planned_guard_metadata");
+  if (ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION") blockers.push("position_not_sidecar_managed");
+  if (fillStateReconciliation?.repairBlocked === true && ownershipClassification !== "EXTERNAL_OR_MANUAL_POSITION") {
+    blockers.push("fill_state_reconciliation_required");
+  }
   if (qty <= 0) blockers.push("no_open_long_position_qty");
   if (stopMissing) {
     if (plannedStopPrice == null || plannedStopPrice <= 0) blockers.push("invalid_planned_stop_price");
@@ -92,6 +98,8 @@ const buildRepairRow = ({ reconciliationRow, performanceRow }) => {
     stopMissing,
     targetMissing,
     guardMetadataMissing,
+    ownershipClassification,
+    fillStateReconciliation,
     futureIntent,
     candidate,
     executionAllowed: false,

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { classifyProtectionOwnership, resolveEffectiveGuardMetadata } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.POSITION_PROTECTION_AUDIT_STATE_DIR || "state").trim() || "state";
 const PERFORMANCE_PATH = `${STATE_DIR}/performance-dashboard.json`;
@@ -112,22 +113,31 @@ const findIdempotencyRow = (idempotency, symbol) => {
 const findFillabilityRow = (fillability, symbol) =>
   (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === asSymbol(symbol)) || null;
 
-const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, idempotencyRow, fillabilityRow, config, nowMs }) => {
+const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, idempotencyRow, fillabilityRow, performanceGeneratedAt, config, nowMs }) => {
   const symbol = asSymbol(position?.symbol);
   const qty = toNum(position?.qty) ?? 0;
   const currentPrice = toNum(position?.currentPrice);
-  const plannedStopPrice = toNum(position?.plannedStopPrice ?? position?.stopPrice ?? ledgerRow?.stopLossPrice);
-  const plannedTargetPrice = toNum(position?.plannedTargetPrice ?? position?.targetPrice ?? ledgerRow?.takeProfitPrice);
   const brokerStopPresent = position?.brokerStopPresent === true || reconciliationRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || reconciliationRow?.brokerTargetPresent === true;
+  const effectiveGuard = resolveEffectiveGuardMetadata({ position, reconciliationRow, ledgerRow, performanceGeneratedAt });
+  const ownership = classifyProtectionOwnership({
+    position,
+    reconciliationRow,
+    ledgerRow,
+    idempotencyRow,
+    orderStateRow,
+    fillabilityRow
+  });
+  const plannedStopPrice = effectiveGuard.stopPrice;
+  const plannedTargetPrice = effectiveGuard.targetPrice;
   const normalizedFillState = position?.normalizedFillState || reconciliationRow?.normalizedFillState || null;
   const ledgerStatus = ledgerRow?.status || position?.ledgerStatus || null;
   const idempotencyBrokerStatus = idempotencyRow?.brokerStatus || position?.idempotencyBrokerStatus || null;
   const fillabilityStatus = fillabilityRow?.status || position?.fillabilityStatus || null;
-  const plannedStopSource = position?.plannedStopSource || reconciliationRow?.plannedStopSource || null;
-  const plannedTargetSource = position?.plannedTargetSource || reconciliationRow?.plannedTargetSource || null;
+  const plannedStopSource = effectiveGuard.source;
+  const plannedTargetSource = effectiveGuard.source;
   const plannedLedgerUpdatedAt =
-    position?.plannedLedgerUpdatedAt || reconciliationRow?.plannedLedgerUpdatedAt || ledgerRow?.updatedAt || null;
+    effectiveGuard.generatedAt || position?.plannedLedgerUpdatedAt || reconciliationRow?.plannedLedgerUpdatedAt || ledgerRow?.updatedAt || null;
   const metadataAgeMinRaw = ageMinutes(plannedLedgerUpdatedAt, nowMs);
   const metadataAgeMin = round(metadataAgeMinRaw, 2);
   const hasGuardMetadata = plannedStopPrice != null || plannedTargetPrice != null;
@@ -160,13 +170,23 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
   const brokerChildMissing = stopChildMissing || targetChildMissing;
   const rootCauses = [];
   const nextActions = [];
+  const fillStateRepairBlocked = ownership.fillStateReconciliation.repairBlocked;
+  const brokerChildrenComplete = brokerStopPresent && brokerTargetPresent;
 
   if (qty <= 0) rootCauses.push("no_open_position");
+  if (ownership.ownershipClass === "EXTERNAL_OR_MANUAL_POSITION") {
+    rootCauses.push("position_not_sidecar_managed");
+    nextActions.push("classify_position_ownership_before_repair");
+  }
+  if (fillStateRepairBlocked && ownership.ownershipClass !== "EXTERNAL_OR_MANUAL_POSITION") {
+    rootCauses.push("fill_state_reconciliation_required");
+    nextActions.push("reconcile_position_fill_state_before_child_repair");
+  }
   if (missingGuardMetadata) {
     rootCauses.push("guard_metadata_missing");
     nextActions.push("rebuild_or_backfill_position_guard_metadata_before_repair");
   }
-  if (guardMetadataStale) {
+  if (guardMetadataStale && !brokerChildrenComplete) {
     rootCauses.push("guard_metadata_stale");
     nextActions.push("refresh_guard_metadata_from_current_stage6_or_position_lifecycle_before_repair");
   }
@@ -198,29 +218,33 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     rootCauses.push("near_target_breach");
     nextActions.push("do_not_chase_repair_without_manual_risk_review");
   }
-  if (normalizedFillState && normalizedFillState !== "filled") {
-    rootCauses.push("fill_state_not_confirmed_filled");
-    nextActions.push("reconcile_fill_state_before_child_repair");
-  }
   if (!rootCauses.length) {
     rootCauses.push("protected_or_no_action");
     nextActions.push("monitor_only");
   }
 
+  const effectiveGuardMetadataStale = guardMetadataStale && !brokerChildrenComplete;
   const severity = invalidGeometry || stopChildMissing
     ? "critical"
-    : missingGuardMetadata || guardMetadataStale || targetChildMissing || nearStopBreach || nearTargetBreach
+    : missingGuardMetadata || effectiveGuardMetadataStale || targetChildMissing || nearStopBreach || nearTargetBreach || fillStateRepairBlocked
       ? "warn"
       : "pass";
-  const repairLaneDecision = invalidGeometry
-    ? "BLOCK_REPAIR_INVALID_GEOMETRY"
-    : missingGuardMetadata
-      ? "BLOCK_REPAIR_GUARD_METADATA_MISSING"
-      : guardMetadataStale
-        ? "BLOCK_REPAIR_GUARD_METADATA_STALE"
-        : brokerChildMissing
-          ? "REPORT_ONLY_REPAIR_CANDIDATE_REQUIRES_APPROVAL"
-          : "NO_ACTION";
+  let repairLaneDecision = "NO_ACTION";
+  if (invalidGeometry) {
+    repairLaneDecision = "BLOCK_REPAIR_INVALID_GEOMETRY";
+  } else if (brokerChildrenComplete) {
+    repairLaneDecision = "NO_ACTION_BROKER_CHILDREN_PRESENT";
+  } else if (ownership.ownershipClass === "EXTERNAL_OR_MANUAL_POSITION") {
+    repairLaneDecision = "BLOCK_REPAIR_POSITION_NOT_SIDECAR_MANAGED";
+  } else if (fillStateRepairBlocked) {
+    repairLaneDecision = "BLOCK_REPAIR_FILL_STATE_RECONCILIATION_REQUIRED";
+  } else if (missingGuardMetadata) {
+    repairLaneDecision = "BLOCK_REPAIR_GUARD_METADATA_MISSING";
+  } else if (effectiveGuardMetadataStale) {
+    repairLaneDecision = "BLOCK_REPAIR_GUARD_METADATA_STALE";
+  } else if (brokerChildMissing) {
+    repairLaneDecision = "REPORT_ONLY_REPAIR_CANDIDATE_REQUIRES_APPROVAL";
+  }
 
   return {
     symbol,
@@ -230,6 +254,10 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     plannedTargetPrice,
     plannedStopSource,
     plannedTargetSource,
+    effectiveGuardSource: effectiveGuard.source,
+    effectiveGuardGeneratedAt: effectiveGuard.generatedAt,
+    sourcePrecedence: effectiveGuard.sourcePrecedence,
+    staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
     plannedStage6Hash: position?.plannedStage6Hash || reconciliationRow?.plannedStage6Hash || ledgerRow?.stage6Hash || null,
     plannedStage6File: position?.plannedStage6File || reconciliationRow?.plannedStage6File || ledgerRow?.stage6File || null,
     plannedLedgerUpdatedAt,
@@ -243,7 +271,8 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     targetChildMissing,
     brokerChildMissing,
     missingGuardMetadata,
-    guardMetadataStale,
+    guardMetadataStale: effectiveGuardMetadataStale,
+    rawGuardMetadataStale: guardMetadataStale,
     geometry: {
       valid: !invalidGeometry,
       stopAboveOrAtCurrent,
@@ -260,6 +289,10 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     idempotencyBrokerStatus,
     fillabilityStatus,
     orderStateStatus: orderStateRow?.status || null,
+    ownershipClassification: ownership.ownershipClass,
+    sidecarManaged: ownership.sidecarManaged,
+    repairAllowedByOwnership: ownership.repairAllowedByOwnership,
+    fillStateReconciliation: ownership.fillStateReconciliation,
     severity,
     rootCauses: [...new Set(rootCauses)],
     repairLaneDecision,
@@ -289,15 +322,15 @@ const buildMarkdown = (report) => {
   lines.push(`- overall: \`${String(report.overall).toUpperCase()}\``);
   lines.push(`- scope: \`${report.scope}\``);
   lines.push(
-    `- summary: \`positions=${report.summary.positions} critical=${report.summary.critical} warnings=${report.summary.warnings} guardMissing=${report.summary.guardMetadataMissing} guardStale=${report.summary.guardMetadataStale} invalidGeometry=${report.summary.invalidGeometry} brokerChildMissing=${report.summary.brokerChildMissing} stopDrift=${report.summary.stopCurrentDrift}\``
+    `- summary: \`positions=${report.summary.positions} critical=${report.summary.critical} warnings=${report.summary.warnings} guardMissing=${report.summary.guardMetadataMissing} guardStale=${report.summary.guardMetadataStale} invalidGeometry=${report.summary.invalidGeometry} brokerChildMissing=${report.summary.brokerChildMissing} fillRecon=${report.summary.fillStateReconciliationRequired} ownershipReview=${report.summary.positionOwnershipReviewRequired} brokerChildrenNoAction=${report.summary.brokerChildrenPresentNoAction} stopDrift=${report.summary.stopCurrentDrift}\``
   );
   lines.push(`- root_causes: \`${Object.entries(report.rootCauseCounts).map(([key, value]) => `${key}:${value}`).join(", ") || "none"}\``);
   lines.push("- safety: `report-only; no broker mutation; invalid or stale guard metadata blocks repair lanes`");
-  lines.push("| Symbol | Severity | Repair Decision | Current | Stop | Target | Guard Age Min | Geometry | Broker Stop | Broker Target | Root Causes | Next Actions |");
-  lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Severity | Repair Decision | Ownership | Fill State | Source | Current | Stop | Target | Guard Age Min | Geometry | Broker Stop | Broker Target | Root Causes | Next Actions |");
+  lines.push("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.severity.toUpperCase()} | ${row.repairLaneDecision} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${fmt(row.metadataAgeMin)} | ${row.geometry.valid ? "valid" : "invalid"} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${short(row.rootCauses.join(","), 220)} | ${short(row.nextActions.join(","), 220)} |`
+      `| ${row.symbol || "N/A"} | ${row.severity.toUpperCase()} | ${row.repairLaneDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${row.effectiveGuardSource || "N/A"} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${fmt(row.metadataAgeMin)} | ${row.geometry.valid ? "valid" : "invalid"} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${short(row.rootCauses.join(","), 220)} | ${short(row.nextActions.join(","), 220)} |`
     );
   }
   lines.push("");
@@ -329,6 +362,7 @@ const main = () => {
         ledgerRow: findLedgerRow(ledger, symbol),
         idempotencyRow: findIdempotencyRow(idempotency, symbol),
         fillabilityRow: findFillabilityRow(fillability, symbol),
+        performanceGeneratedAt: performance?.generatedAt || null,
         config,
         nowMs
       });
@@ -350,6 +384,15 @@ const main = () => {
       rows,
       (row) => row.repairLaneDecision === "BLOCK_REPAIR_INVALID_GEOMETRY" || row.repairLaneDecision === "BLOCK_REPAIR_GUARD_METADATA_STALE"
     ),
+    fillStateReconciliationRequired: countBy(
+      rows,
+      (row) => row.repairLaneDecision === "BLOCK_REPAIR_FILL_STATE_RECONCILIATION_REQUIRED"
+    ),
+    positionOwnershipReviewRequired: countBy(
+      rows,
+      (row) => row.repairLaneDecision === "BLOCK_REPAIR_POSITION_NOT_SIDECAR_MANAGED"
+    ),
+    brokerChildrenPresentNoAction: countBy(rows, (row) => row.repairLaneDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT"),
     reportOnlyRepairCandidates: countBy(
       rows,
       (row) => row.repairLaneDecision === "REPORT_ONLY_REPAIR_CANDIDATE_REQUIRES_APPROVAL"

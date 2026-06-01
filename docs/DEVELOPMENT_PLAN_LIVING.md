@@ -978,3 +978,27 @@ Priority: P2 until M1/M2 stabilize; then P1
 - Interpretation:
   - scores are meaningful only when tied to done-when evidence and recent artifacts.
   - a high sub-score must not override execution safety defaults.
+
+## 2026-06-02 - Protection Metadata Source Precedence and Fill-State Split
+
+- Current blocker class:
+  - protection/guard metadata failures were mixed together: stale order-ledger metadata, existing broker child orders, unmanaged/manual positions, and unconfirmed fill state could all surface as a generic repair blocker.
+  - this made already-protected rows look stale and made submitted-but-position-present rows look like repair candidates.
+- Added/updated report-only behavior:
+  - broker child reconciliation now emits portfolio-wide `ownershipClassification`, `fillStateReconciliation`, and effective guard source fields.
+  - source precedence now prefers currently observed broker children over stale planned order-ledger guard metadata when both broker stop and target children are present.
+  - position protection root-cause audit distinguishes:
+    - `NO_ACTION_BROKER_CHILDREN_PRESENT`
+    - `BLOCK_REPAIR_POSITION_NOT_SIDECAR_MANAGED`
+    - `BLOCK_REPAIR_FILL_STATE_RECONCILIATION_REQUIRED`
+    - stale/missing guard metadata and broker-child-missing repair candidates.
+  - guard metadata refresh plan reports fresh broker-child monitor rows, fill-state reconciliation blockers, ownership review blockers, and repair reevaluation candidates separately.
+  - persistent/paper OCO planners remain report-only and block rows whose fill state is not confirmed filled.
+- Safety invariant:
+  - no broker/order/state mutation is introduced by this track.
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false` remain mandatory for all refresh/repair planner outputs.
+- Next safe-run done-when:
+  - rows with active broker stop+target children classify as monitor/no-action even if old ledger metadata exists.
+  - sidecar-managed submitted/open positions with broker position evidence classify as fill-state reconciliation required, not repair-ready.
+  - external/manual positions classify as ownership review required before any guard metadata backfill or repair lane.
+  - latest safe artifact still shows broker mutation attempted/submitted as false.
