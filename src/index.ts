@@ -3105,6 +3105,18 @@ function mergeReasonCounts(...counts: Array<Record<string, number>>): Record<str
   }, {});
 }
 
+function hasPositiveReasonCount(counts: Record<string, number>): boolean {
+  return Object.values(counts).some((rawCount) => {
+    const count = Number(rawCount);
+    return Number.isFinite(count) && count > 0;
+  });
+}
+
+function buildEffectiveSkipReasonCounts(dryExec: DryExecBuildResult): Record<string, number> {
+  if (hasPositiveReasonCount(dryExec.skipReasonCounts)) return dryExec.skipReasonCounts;
+  return buildDecisionAuditSkipReasonCounts(dryExec.decisionAudit);
+}
+
 function isBreakoutRetestProofConfirmed(verdict: string | null | undefined): boolean {
   const key = String(verdict || "").trim().toUpperCase();
   return key === "BREAKOUT_RETEST_PROOF_CONFIRMED" || key === "PROOF_CONFIRMED" || key === "CONFIRMED";
@@ -3677,9 +3689,10 @@ function buildOrderReadinessSummary(
     const overlay = dryExec.executionOverlay;
     const monitor = dryExec.openOrderMonitor;
     const admission = dryExec.portfolioAdmission;
-    const skipCategories = buildSkipReasonCategoryCounts(dryExec.skipReasonCounts);
+    const topSkipReasons = buildEffectiveSkipReasonCounts(dryExec);
+    const skipCategories = buildSkipReasonCategoryCounts(topSkipReasons);
     const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
-    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(dryExec.skipReasonCounts)} topSkipCategory=${formatSkipReasonCounts(skipCategories)} payloadExpectation=${String(payloadExpectation.status || "N/A")} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)} portfolio=checked:${admission.checked}|admitted:${admission.admitted}|rejected:${admission.rejected}|reasons:${formatSkipReasonCounts(admission.reasonCounts)}`;
+    return `NO_ORDER payloads=0 preflight=${preflight.code} broker=${brokerSubmit.reason} topSkip=${formatSkipReasonCounts(topSkipReasons)} topSkipCategory=${formatSkipReasonCounts(skipCategories)} payloadExpectation=${String(payloadExpectation.status || "N/A")} overlay=noTrade:${overlay.noTrade}|wait:${overlay.waitPullback}|confirmed:${overlay.confirmedAdaptiveEntry}|reasons:${formatSkipReasonCounts(overlay.reasonCounts)} openOrder=open:${monitor.openOrders}|matched:${monitor.matched}|reprice:${monitor.repriceCandidate}|cancel:${monitor.cancelCandidate}|reasons:${formatSkipReasonCounts(monitor.reasonCounts)} portfolio=checked:${admission.checked}|admitted:${admission.admitted}|rejected:${admission.rejected}|reasons:${formatSkipReasonCounts(admission.reasonCounts)}`;
   }
   if (brokerSubmit.attempted === 0) {
     return `NOT_SUBMITTED payloads=${dryExec.payloads.length} reason=${brokerSubmit.reason} skipped=${brokerSubmit.skipped}`;
@@ -11160,7 +11173,8 @@ async function saveOrderDecisionAudit(
   const generatedAt = new Date().toISOString();
   const payloadReady = dryExec.decisionAudit.filter((row) => row.status === "payload").length;
   const skipped = dryExec.decisionAudit.filter((row) => row.status === "skipped").length;
-  const topSkipReasonCategories = buildSkipReasonCategoryCounts(dryExec.skipReasonCounts);
+  const topSkipReasons = buildEffectiveSkipReasonCounts(dryExec);
+  const topSkipReasonCategories = buildSkipReasonCategoryCounts(topSkipReasons);
   const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
   const stage6PolicyAudit = buildStage6PolicyAuditSummary(result);
   const audit = {
@@ -11182,7 +11196,7 @@ async function saveOrderDecisionAudit(
       brokerAttempted: brokerSubmit.attempted,
       brokerSubmitted: brokerSubmit.submitted,
       brokerFailed: brokerSubmit.failed,
-      topSkipReasons: dryExec.skipReasonCounts,
+      topSkipReasons,
       topSkipReasonCategories,
       payloadExpectation,
       stage6PolicyAudit
@@ -11273,6 +11287,8 @@ async function saveDryExecPreview(
   );
   const stage6BlockerSamples = buildStage6BlockerSamples(result, 12);
   const stage6PolicyAudit = buildStage6PolicyAuditSummary(result);
+  const topSkipReasons = buildEffectiveSkipReasonCounts(dryExec);
+  const topSkipReasonCategories = buildSkipReasonCategoryCounts(topSkipReasons);
   const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
   await mkdir("state", { recursive: true });
   const preview = {
@@ -11332,8 +11348,8 @@ async function saveDryExecPreview(
         brokerReason: brokerSubmit.reason,
         brokerAttempted: brokerSubmit.attempted,
         brokerSubmitted: brokerSubmit.submitted,
-        topSkipReasons: dryExec.skipReasonCounts,
-        topSkipReasonCategories: buildSkipReasonCategoryCounts(dryExec.skipReasonCounts),
+        topSkipReasons,
+        topSkipReasonCategories,
         payloadExpectation: buildPayloadExpectationSummary(dryExec.decisionAudit),
         stage6PolicyAudit
       },
@@ -11352,7 +11368,7 @@ async function saveDryExecPreview(
     },
     payloadCount: dryExec.payloads.length,
     skippedCount: dryExec.skipped.length,
-    skipReasonCounts: dryExec.skipReasonCounts,
+    skipReasonCounts: topSkipReasons,
     payloads: dryExec.payloads,
     skipped: dryExec.skipped
   };
@@ -11362,7 +11378,7 @@ async function saveDryExecPreview(
   console.log(
     `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
   );
-  console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(dryExec.skipReasonCounts)}`);
+  console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(topSkipReasons)}`);
   console.log(
     `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
   );
