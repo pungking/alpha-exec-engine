@@ -1101,3 +1101,25 @@ Done-When:
 - `guard-metadata-refresh-plan.summary.staleRefreshSource=0` for lifecycle-revalidated rows and `repairReevaluationCandidates>0` when broker children are still missing.
 - `ops-lane-status-report` shows `track_4_valid_guard_missing_child_repair_candidate.status=manual_approval_candidate` with no broker mutation.
 - `persistent-oco-repair-plan` may select one dynamic row for manual approval, but remains report-only until separately approved.
+
+### 2026-06-03 - Limited Multi Persistent OCO Repair Planner
+
+- Scope: `alpha-exec-engine` / report-only limited multi planner layered above the one-row persistent OCO repair plan.
+- Added `limited-multi-oco-repair-plan` as a symbol-agnostic batch visibility lane:
+  - consumes `persistent-oco-repair-plan`, `broker-child-order-reconciliation`, and optional multi open verification evidence.
+  - classifies every row into already-protected, position ownership review, guard metadata missing, fill-state reconciliation, invalid geometry, or eligible manual approval.
+  - caps approval candidates by `LIMITED_MULTI_OCO_REPAIR_MAX_ROWS` and `LIMITED_MULTI_OCO_REPAIR_MAX_QTY_PER_ROW`.
+  - does not authorize or implement a multi-row submit lane.
+- Safety invariant:
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - protected rows with broker stop+target present remain monitor-only and must not generate duplicate OCO children.
+  - TSLA-style external/manual or guard-metadata-missing rows stay on root-cause lanes, not repair lanes.
+  - actual broker mutation still requires a separate scoped approval task with `CONFIRM LIVE EXECUTION`.
+
+Done-When:
+
+- Safe sidecar artifacts include `limited-multi-oco-repair-plan.json` / `.md`.
+- QFIN/BZ/ACAD/ATAT-style protected rows show `already_protected_no_action`.
+- TSLA-style rows show `position_ownership_review` or another concrete blocked group.
+- `ops-lane-status-report` includes `track_8_limited_multi_oco_repair_planner`.
+- `ops-health-report` includes limited multi OCO metrics and fails if the planner ever reports broker mutation.

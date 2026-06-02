@@ -24,6 +24,7 @@ const FILES = {
   highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
   entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
   openOrderRepriceProposal: `${STATE_DIR}/open-order-reprice-proposal.json`,
+  limitedMultiOcoRepairPlan: `${STATE_DIR}/limited-multi-oco-repair-plan.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
 
@@ -93,6 +94,7 @@ const buildReport = () => {
   const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
   const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
   const openOrderRepriceProposal = readJson(FILES.openOrderRepriceProposal);
+  const limitedMultiOcoRepairPlan = readJson(FILES.limitedMultiOcoRepairPlan);
   const opsHealth = readJson(FILES.opsHealth);
 
   const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
@@ -181,6 +183,15 @@ const buildReport = () => {
     toNum(entryRepricePolicyDecision?.summary?.entryRepriceReviewReady) ?? entryRepriceReadyRows.length;
   const entryRepriceWaitCount =
     toNum(entryRepricePolicyDecision?.summary?.waitPullbackRows) ?? entryRepriceWaitRows.length;
+  const limitedMultiSelectedCount = toNum(limitedMultiOcoRepairPlan?.summary?.selected) ?? 0;
+  const limitedMultiEligibleCount = toNum(limitedMultiOcoRepairPlan?.summary?.eligible) ?? 0;
+  const limitedMultiSelectedSymbols = Array.isArray(limitedMultiOcoRepairPlan?.summary?.selectedSymbols)
+    ? limitedMultiOcoRepairPlan.summary.selectedSymbols
+    : [];
+  const limitedMultiUnsafe =
+    limitedMultiOcoRepairPlan?.executionPolicy?.brokerMutationAllowed === true ||
+    limitedMultiOcoRepairPlan?.summary?.brokerMutationAttempted === true ||
+    limitedMultiOcoRepairPlan?.summary?.brokerMutationSubmitted === true;
   const combinedRepriceApprovalReady = openRepriceReadyCount > 0 && entryRepriceReadyCount > 0;
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
@@ -362,6 +373,26 @@ const buildReport = () => {
                   ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
                   : "Route to orderReadiness/topSkip/fillability blocker classification.",
       safety: "safe_default_keeps_broker_submission_disabled_unless_approved"
+    }),
+    lane({
+      id: "track_8_limited_multi_oco_repair_planner",
+      name: "Limited Multi Persistent OCO Repair Planner Lane",
+      status: limitedMultiUnsafe
+        ? "blocked_unsafe_mutation_signal"
+        : limitedMultiSelectedCount > 0
+          ? "manual_batch_approval_candidate"
+          : limitedMultiOcoRepairPlan?.overall === "blocked_no_eligible_row"
+            ? "no_eligible_row"
+            : limitedMultiOcoRepairPlan?.overall || "unknown",
+      count: toNum(limitedMultiOcoRepairPlan?.summary?.rows) ?? 0,
+      symbols: limitedMultiSelectedSymbols.length
+        ? limitedMultiSelectedSymbols
+        : uniqueSymbols(limitedMultiOcoRepairPlan?.rows || []),
+      evidence: `overall=${limitedMultiOcoRepairPlan?.overall || "N/A"} eligible=${limitedMultiEligibleCount} selected=${limitedMultiSelectedCount} alreadyProtected=${limitedMultiOcoRepairPlan?.summary?.alreadyProtectedNoAction ?? "N/A"} ownershipReview=${limitedMultiOcoRepairPlan?.summary?.positionOwnershipReviewRequired ?? "N/A"} guardMissing=${limitedMultiOcoRepairPlan?.summary?.guardMetadataMissing ?? "N/A"} attempted=${limitedMultiOcoRepairPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${limitedMultiOcoRepairPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+      nextAction: limitedMultiSelectedCount > 0
+        ? "Review selected batch candidates only; any broker mutation still requires a separate exact approval and submit lane."
+        : "No multi-repair submit action. Monitor protected rows and keep ownership/guard-missing rows on root-cause lanes.",
+      safety: "report_only_no_multi_submit_no_broker_mutation"
     })
   ];
 

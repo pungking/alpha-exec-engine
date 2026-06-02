@@ -1989,6 +1989,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build limited multi persistent OCO repair plan
+        if: always()
+        run: npm run ops:limited-multi-oco-plan
+
+      - name: Publish limited multi persistent OCO repair plan summary
+        if: always()
+        run: |
+          if [[ -f state/limited-multi-oco-repair-plan.md ]]; then
+            cat state/limited-multi-oco-repair-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Limited Multi Persistent OCO Repair Planner" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/limited-multi-oco-repair-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops lane status report
         if: always()
         run: npm run ops:lane-status
@@ -2123,6 +2138,8 @@ jobs:
             state/paper-oco-canary-submit-ledger.json
             state/persistent-oco-repair-plan.json
             state/persistent-oco-repair-plan.md
+            state/limited-multi-oco-repair-plan.json
+            state/limited-multi-oco-repair-plan.md
             state/fillability-report.json
             state/fillability-report.md
             state/entry-reprice-policy-decision.json
