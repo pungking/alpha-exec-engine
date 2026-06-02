@@ -1753,6 +1753,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build ledger filled migration plan
+        if: always()
+        run: npm run ops:ledger-filled-migration-plan
+
+      - name: Publish ledger filled migration plan summary
+        if: always()
+        run: |
+          if [[ -f state/ledger-filled-migration-plan.md ]]; then
+            cat state/ledger-filled-migration-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Ledger Filled Migration Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ledger-filled-migration-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build position protection root-cause audit
         if: always()
         run: npm run ops:position-protection:audit
@@ -2037,6 +2052,8 @@ jobs:
             state/broker-fill-state-evidence.md
             state/ledger-terminalization-proposal.json
             state/ledger-terminalization-proposal.md
+            state/ledger-filled-migration-plan.json
+            state/ledger-filled-migration-plan.md
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
             state/guard-metadata-refresh-plan.json

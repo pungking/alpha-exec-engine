@@ -1040,3 +1040,19 @@ Priority: P2 until M1/M2 stabilize; then P1
   - ATAT-style rows show broker evidence verdict and either a ready terminalization proposal or a concrete blocked reason.
   - QFIN/ACAD-style rows stay in fresh-source-required until a fresh Stage6 or position-lifecycle guard source exists.
   - protective repair planners do not re-enter while either fill-state reconciliation or guard-source freshness remains blocked.
+
+## 2026-06-02 - Ledger Filled Migration Report-First Lane
+
+- Current blocker class:
+  - broker evidence may prove a submitted/open ledger row is actually filled, but state ledgers must not be edited without an explicit report-first migration plan.
+- Added/updated report-only behavior:
+  - `ledger-filled-migration-plan` consumes `ledger-terminalization-proposal` and emits backup requirements, file hashes, order-ledger/idempotency diff previews, and audit record previews.
+  - migration rows are ready only when broker filled evidence, ledger key, idempotency key, current entries, patch preview, and repair-still-blocked gates all pass.
+  - ops lane status keeps protective repair blocked while filled migration rows are waiting for review/apply.
+- Safety invariant:
+  - this lane does not write `order-ledger.json` or `order-idempotency.json`.
+  - migration application requires a separate scoped state migration task with backup, diff, audit record, and restore plan.
+- Next done-when:
+  - ATAT-style filled rows show `manual_filled_migration_apply_review_ready` with backup/diff/audit previews.
+  - QFIN/ACAD-style stale guard rows remain fresh-source-required until a fresh Stage6 or position-lifecycle guard source exists.
+  - protective repair remains blocked until state migration is applied and guard source freshness is re-audited.

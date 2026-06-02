@@ -17,6 +17,7 @@ const FILES = {
   fillStateReconciliationAudit: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerFillStateEvidence: `${STATE_DIR}/broker-fill-state-evidence.json`,
   ledgerTerminalizationProposal: `${STATE_DIR}/ledger-terminalization-proposal.json`,
+  ledgerFilledMigrationPlan: `${STATE_DIR}/ledger-filled-migration-plan.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
   entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
@@ -83,6 +84,7 @@ const buildReport = () => {
   const fillStateReconciliationAudit = readJson(FILES.fillStateReconciliationAudit);
   const brokerFillStateEvidence = readJson(FILES.brokerFillStateEvidence);
   const ledgerTerminalizationProposal = readJson(FILES.ledgerTerminalizationProposal);
+  const ledgerFilledMigrationPlan = readJson(FILES.ledgerFilledMigrationPlan);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
   const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
@@ -95,6 +97,7 @@ const buildReport = () => {
   const fillStateRows = Array.isArray(fillStateReconciliationAudit?.rows) ? fillStateReconciliationAudit.rows : [];
   const brokerEvidenceRows = Array.isArray(brokerFillStateEvidence?.rows) ? brokerFillStateEvidence.rows : [];
   const terminalizationRows = Array.isArray(ledgerTerminalizationProposal?.rows) ? ledgerTerminalizationProposal.rows : [];
+  const filledMigrationRows = Array.isArray(ledgerFilledMigrationPlan?.rows) ? ledgerFilledMigrationPlan.rows : [];
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
@@ -136,7 +139,14 @@ const buildReport = () => {
   const fillStateReconciliationRows = fillStateRows.filter((row) => row.requiresLedgerTerminalizationReview === true);
   const terminalizationReadyRows = terminalizationRows.filter((row) => row.proposalReady === true);
   const terminalizationBlockedRows = terminalizationRows.filter((row) => row.proposalReady !== true);
-  const repairPrereqFillBlocked = fillStateReconciliationRows.length > 0 || terminalizationBlockedRows.length > 0;
+  const filledMigrationReadyRows = filledMigrationRows.filter((row) => row.readyForApplyReview === true);
+  const filledMigrationBlockedRows = filledMigrationRows.filter((row) => row.readyForApplyReview !== true);
+  const repairPrereqFillBlocked =
+    fillStateReconciliationRows.length > 0 ||
+    terminalizationBlockedRows.length > 0 ||
+    terminalizationReadyRows.length > 0 ||
+    filledMigrationReadyRows.length > 0 ||
+    filledMigrationBlockedRows.length > 0;
   const repairPrereqFreshBlocked = freshSourceRequiredRows.length > 0;
   const persistentEligibleRows = persistentRows.filter((row) => row.eligible === true);
   const brokerMissingRows = brokerRows.filter(
@@ -218,18 +228,22 @@ const buildReport = () => {
       id: "track_4_fill_state_terminalization",
       name: "Fill-State Terminalization Lane",
       status:
-        terminalizationReadyRows.length > 0
-          ? "manual_state_migration_review_ready"
+        filledMigrationReadyRows.length > 0
+          ? "manual_filled_migration_apply_review_ready"
+          : terminalizationReadyRows.length > 0
+            ? "manual_state_migration_review_ready"
           : fillStateReconciliationRows.length > 0
             ? brokerEvidenceRows.length > 0
               ? "blocked_no_terminalization_proposal"
               : "blocked_broker_evidence_required"
             : "clear",
-      count: fillStateReconciliationRows.length || terminalizationRows.length,
-      symbols: uniqueSymbols([...fillStateReconciliationRows, ...brokerEvidenceRows, ...terminalizationRows]),
-      evidence: `fillState=${fillStateReconciliationAudit?.overall || "N/A"} terminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} brokerEvidence=${brokerFillStateEvidence?.overall || "N/A"} readAttempted=${brokerFillStateEvidence?.summary?.brokerReadAttempted ?? "N/A"} terminalization=${ledgerTerminalizationProposal?.overall || "N/A"} ready=${ledgerTerminalizationProposal?.summary?.proposalReady ?? "N/A"} blocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"}`,
+      count: fillStateReconciliationRows.length || terminalizationRows.length || filledMigrationRows.length,
+      symbols: uniqueSymbols([...fillStateReconciliationRows, ...brokerEvidenceRows, ...terminalizationRows, ...filledMigrationRows]),
+      evidence: `fillState=${fillStateReconciliationAudit?.overall || "N/A"} terminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} brokerEvidence=${brokerFillStateEvidence?.overall || "N/A"} readAttempted=${brokerFillStateEvidence?.summary?.brokerReadAttempted ?? "N/A"} terminalization=${ledgerTerminalizationProposal?.overall || "N/A"} ready=${ledgerTerminalizationProposal?.summary?.proposalReady ?? "N/A"} blocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"} filledMigration=${ledgerFilledMigrationPlan?.overall || "N/A"} migrationReady=${ledgerFilledMigrationPlan?.summary?.readyForApplyReview ?? "N/A"} migrationBlocked=${ledgerFilledMigrationPlan?.summary?.blocked ?? "N/A"}`,
       nextAction:
-        terminalizationReadyRows.length > 0
+        filledMigrationReadyRows.length > 0
+          ? "Review backup/diff/audit previews. Applying the migration requires a separate scoped state migration task; keep repair blocked until applied and re-audited."
+          : terminalizationReadyRows.length > 0
           ? "Review report-only ledger/idempotency terminalization patch preview; applying it requires a separate scoped state migration task."
           : fillStateReconciliationRows.length > 0
             ? "Run/inspect broker GET-only fill-state evidence until filled/terminal status is proven; keep protective repair blocked."
