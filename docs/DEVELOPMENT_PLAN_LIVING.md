@@ -1145,3 +1145,24 @@ Done-When:
 - TSLA-style rows show `external_position_and_guard_metadata_missing` or another concrete root-cause class, not repair eligibility.
 - `ops-lane-status-report` includes `track_9_position_ownership_guard_gap`.
 - `ops-health-report` includes ownership guard gap metrics and fails if this audit ever reports broker mutation.
+
+### 2026-06-03 - Position Ownership Recovery Decision Lane
+
+- Scope: `alpha-exec-engine` / report-only decision layer for whether TSLA-style ownership proof should be recovered.
+- Added `position-ownership-recovery-decision` as a state-recovery decision lane, not a broker repair lane:
+  - consumes ownership gap audit, guard lineage, order ledger, order idempotency, recommendation ledger, persistent OCO plan, and limited multi plan.
+  - classifies external/manual rows with no sidecar filled proof and no fresh guard source as `DO_NOT_AUTO_RECOVER_EXTERNAL_NO_OWNERSHIP_NO_GUARD_SOURCE`.
+  - only allows `STATE_ONLY_RECOVERY_REVIEW_READY` when both sidecar ownership proof and fresh stop/target guard source exist.
+  - requires a separate state-only recovery task with `CONFIRM STATE OWNERSHIP RECOVERY` plus backup, diff, audit, and post-verify before any ledger/metadata mutation.
+- Safety invariant:
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - `stateMutationAllowed=false`, `stateMutationAttempted=false`, `stateMutationApplied=false`.
+  - limited multi planner remains report-only.
+  - no multi submit lane is authorized; actual broker mutation still requires a separate scoped `CONFIRM LIVE EXECUTION` task.
+
+Done-When:
+
+- Safe sidecar artifacts include `position-ownership-recovery-decision.json` / `.md`.
+- TSLA-style external/manual rows are not auto-adopted and show a concrete do-not-auto-recover decision until ownership proof and fresh guard source exist.
+- `ops-lane-status-report` includes `track_10_position_ownership_recovery_decision`.
+- `ops-health-report` includes ownership recovery decision metrics and fails if this lane reports broker or state mutation.

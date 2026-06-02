@@ -2019,6 +2019,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build position ownership recovery decision
+        if: always()
+        run: npm run ops:position-ownership-recovery-decision
+
+      - name: Publish position ownership recovery decision summary
+        if: always()
+        run: |
+          if [[ -f state/position-ownership-recovery-decision.md ]]; then
+            cat state/position-ownership-recovery-decision.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Position Ownership Recovery Decision" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/position-ownership-recovery-decision.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops lane status report
         if: always()
         run: npm run ops:lane-status
@@ -2157,6 +2172,8 @@ jobs:
             state/limited-multi-oco-repair-plan.md
             state/position-ownership-guard-gap-audit.json
             state/position-ownership-guard-gap-audit.md
+            state/position-ownership-recovery-decision.json
+            state/position-ownership-recovery-decision.md
             state/fillability-report.json
             state/fillability-report.md
             state/entry-reprice-policy-decision.json

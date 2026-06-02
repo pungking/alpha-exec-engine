@@ -26,6 +26,7 @@ const FILES = {
   openOrderRepriceProposal: `${STATE_DIR}/open-order-reprice-proposal.json`,
   limitedMultiOcoRepairPlan: `${STATE_DIR}/limited-multi-oco-repair-plan.json`,
   positionOwnershipGuardGapAudit: `${STATE_DIR}/position-ownership-guard-gap-audit.json`,
+  positionOwnershipRecoveryDecision: `${STATE_DIR}/position-ownership-recovery-decision.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
 
@@ -97,6 +98,7 @@ const buildReport = () => {
   const openOrderRepriceProposal = readJson(FILES.openOrderRepriceProposal);
   const limitedMultiOcoRepairPlan = readJson(FILES.limitedMultiOcoRepairPlan);
   const positionOwnershipGuardGapAudit = readJson(FILES.positionOwnershipGuardGapAudit);
+  const positionOwnershipRecoveryDecision = readJson(FILES.positionOwnershipRecoveryDecision);
   const opsHealth = readJson(FILES.opsHealth);
 
   const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
@@ -209,6 +211,28 @@ const buildReport = () => {
     ].includes(String(row?.classification || ""))
   );
   const ownershipGuardManualRows = ownershipGuardRows.filter((row) => row?.classification === "manual_approval_candidate");
+  const ownershipRecoveryRows = Array.isArray(positionOwnershipRecoveryDecision?.rows)
+    ? positionOwnershipRecoveryDecision.rows
+    : [];
+  const ownershipRecoveryUnsafe =
+    positionOwnershipRecoveryDecision?.executionPolicy?.brokerMutationAllowed === true ||
+    positionOwnershipRecoveryDecision?.executionPolicy?.brokerMutationAttempted === true ||
+    positionOwnershipRecoveryDecision?.executionPolicy?.brokerMutationSubmitted === true ||
+    positionOwnershipRecoveryDecision?.executionPolicy?.stateMutationAllowed === true ||
+    positionOwnershipRecoveryDecision?.executionPolicy?.stateMutationAttempted === true ||
+    positionOwnershipRecoveryDecision?.summary?.brokerMutationAttempted === true ||
+    positionOwnershipRecoveryDecision?.summary?.brokerMutationSubmitted === true ||
+    positionOwnershipRecoveryDecision?.summary?.stateMutationAttempted === true ||
+    positionOwnershipRecoveryDecision?.summary?.stateMutationApplied === true;
+  const ownershipRecoveryStateReadyRows = ownershipRecoveryRows.filter(
+    (row) => row?.stateRecoveryReviewReady === true
+  );
+  const ownershipRecoveryExternalAdoptionRows = ownershipRecoveryRows.filter(
+    (row) => row?.manualExternalAdoptionReview === true
+  );
+  const ownershipRecoveryDoNotAutoRows = ownershipRecoveryRows.filter((row) =>
+    String(row?.ownershipRecoveryDecision || "").startsWith("DO_NOT")
+  );
   const combinedRepriceApprovalReady = openRepriceReadyCount > 0 && entryRepriceReadyCount > 0;
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
@@ -428,6 +452,32 @@ const buildReport = () => {
         ? "Resolve position ownership evidence and fresh guard source gaps before any repair approval."
         : "No ownership/guard source gap action required; keep monitor-only rows separate from repair lanes.",
       safety: "report_only_no_broker_or_state_mutation"
+    }),
+    lane({
+      id: "track_10_position_ownership_recovery_decision",
+      name: "Position Ownership Recovery Decision Lane",
+      status: ownershipRecoveryUnsafe
+        ? "blocked_unsafe_mutation_signal"
+        : ownershipRecoveryStateReadyRows.length > 0
+          ? "state_recovery_review_ready"
+          : ownershipRecoveryExternalAdoptionRows.length > 0
+            ? "manual_external_adoption_review_required"
+            : positionOwnershipRecoveryDecision?.overall || "unknown",
+      count: ownershipRecoveryRows.length,
+      symbols: uniqueSymbols(
+        ownershipRecoveryStateReadyRows.length || ownershipRecoveryExternalAdoptionRows.length
+          ? [...ownershipRecoveryStateReadyRows, ...ownershipRecoveryExternalAdoptionRows]
+          : ownershipRecoveryRows
+      ),
+      evidence: `overall=${positionOwnershipRecoveryDecision?.overall || "N/A"} stateReady=${positionOwnershipRecoveryDecision?.summary?.stateRecoveryReviewReady ?? "N/A"} externalAdoption=${positionOwnershipRecoveryDecision?.summary?.manualExternalAdoptionReview ?? "N/A"} doNotAutoRecover=${positionOwnershipRecoveryDecision?.summary?.doNotAutoRecover ?? "N/A"} repairEligibleAfterRecovery=${positionOwnershipRecoveryDecision?.summary?.repairEligibleAfterRecovery ?? "N/A"} attempted=${positionOwnershipRecoveryDecision?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${positionOwnershipRecoveryDecision?.summary?.brokerMutationSubmitted ?? "N/A"} stateAttempted=${positionOwnershipRecoveryDecision?.summary?.stateMutationAttempted ?? "N/A"}`,
+      nextAction: ownershipRecoveryUnsafe
+        ? "Stop: ownership recovery decision lane emitted a mutation signal, which is forbidden in this report-only path."
+        : ownershipRecoveryStateReadyRows.length > 0
+          ? "Prepare a separate state-only recovery migration review with backup, diff, audit, and post-verify; do not mutate state from dry-run."
+          : ownershipRecoveryExternalAdoptionRows.length > 0 || ownershipRecoveryDoNotAutoRows.length > 0
+            ? "Do not auto-adopt external/manual positions. Require sidecar ownership proof and fresh guard source before any state-only recovery review."
+            : "Monitor only; keep broker repair and state recovery separated.",
+      safety: "report_only_no_broker_or_state_mutation_no_multi_submit"
     })
   ];
 
