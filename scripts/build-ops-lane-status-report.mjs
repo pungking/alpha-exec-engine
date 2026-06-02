@@ -161,10 +161,6 @@ const buildReport = () => {
   const persistentEligibleRows = persistentRows.filter(
     (row) => row.eligible === true || row.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL"
   );
-  const repairCandidateSymbols = uniqueSymbols([...repairAfterRefreshRows, ...persistentEligibleRows, ...lifecycleReadyRows]);
-  const repairLaneSymbols = repairCandidateSymbols.length
-    ? repairCandidateSymbols
-    : uniqueSymbols([...brokerMissingRows]);
   const brokerMissingRows = brokerRows.filter(
     (row) =>
       row.brokerStopPresent === false ||
@@ -172,6 +168,10 @@ const buildReport = () => {
       row.missingStopChild === true ||
       row.missingTargetChild === true
   );
+  const repairCandidateSymbols = uniqueSymbols([...repairAfterRefreshRows, ...persistentEligibleRows, ...lifecycleReadyRows]);
+  const repairLaneSymbols = repairCandidateSymbols.length
+    ? repairCandidateSymbols
+    : uniqueSymbols([...brokerMissingRows]);
   const openRepriceReadyRows = repriceRows.filter((row) => row.readyForApproval === true);
   const entryRepriceReadyRows = entryRepriceRows.filter((row) => row.policyDecision === "ENTRY_REPRICE_REVIEW_READY");
   const entryRepriceWaitRows = entryRepriceRows.filter((row) => String(row.policyDecision || "").startsWith("WAIT_PULLBACK"));
