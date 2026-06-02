@@ -62,7 +62,9 @@
     "ops:persistent-oco-open-verify:multi": "node scripts/verify-persistent-oco-repair-open-multi.mjs",
     "ops:safety:symbol-agnostic": "node scripts/check-symbol-agnostic-runtime.mjs",
     "ops:guard-source-recovery": "node scripts/build-guard-source-recovery-plan.mjs",
-    "ops:fill-state-reconcile": "node scripts/build-fill-state-reconciliation-audit.mjs"
+    "ops:fill-state-reconcile": "node scripts/build-fill-state-reconciliation-audit.mjs",
+    "ops:broker-fill-state-evidence": "node scripts/build-broker-fill-state-evidence.mjs",
+    "ops:ledger-terminalization-proposal": "node scripts/build-ledger-terminalization-proposal.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

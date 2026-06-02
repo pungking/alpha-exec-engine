@@ -16,6 +16,8 @@ const FILES = {
   guardMetadataLineageAudit: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
   guardSourceRecoveryPlan: `${STATE_DIR}/guard-source-recovery-plan.json`,
   fillStateReconciliationAudit: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
+  brokerFillStateEvidence: `${STATE_DIR}/broker-fill-state-evidence.json`,
+  ledgerTerminalizationProposal: `${STATE_DIR}/ledger-terminalization-proposal.json`,
   guardedRepairPlan: `${STATE_DIR}/guarded-child-order-repair-plan.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   persistentOcoOpenVerifyMulti: `${STATE_DIR}/persistent-oco-repair-open-verify-multi.json`,
@@ -123,7 +125,7 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} brokerFillEvidence=${report.files.brokerFillStateEvidence ? "ok" : "missing"} terminalizationProposal=${report.files.ledgerTerminalizationProposal ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
       `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} invalidQuotes=${report.metrics.fillabilityInvalidQuoteCount ?? "N/A"} expiredTaxonomy=${report.metrics.fillabilityTerminalUnfilledTaxonomy ?? "N/A"} reentryReview=${report.metrics.fillabilityReentryReviewRequired ?? "N/A"} orderState=${report.metrics.orderStateOverall ?? "N/A"} orderStateFailWarn=${report.metrics.orderStateFailures ?? "N/A"}/${report.metrics.orderStateWarnings ?? "N/A"} orderStateTerminalRecon=${report.metrics.orderStateTerminalReconciliationRequired ?? "N/A"} minOneShareCanary=${report.metrics.highPriceMinOneShareOverall ?? "N/A"} minOneShareEligible=${report.metrics.highPriceMinOneShareEligible ?? "N/A"} minOneShareSelected=${report.metrics.highPriceMinOneShareSelectedSymbol ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} protectionAudit=${report.metrics.positionProtectionAuditOverall ?? "N/A"} protectionMissing=${report.metrics.positionProtectionGuardMetadataMissing ?? "N/A"} protectionStale=${report.metrics.positionProtectionGuardMetadataStale ?? "N/A"} protectionInvalidGeometry=${report.metrics.positionProtectionInvalidGeometry ?? "N/A"} protectionBrokerChildMissing=${report.metrics.positionProtectionBrokerChildMissing ?? "N/A"} guardRefresh=${report.metrics.guardMetadataRefreshOverall ?? "N/A"} guardRefreshReady=${report.metrics.guardMetadataRefreshReady ?? "N/A"} guardRefreshBlocked=${report.metrics.guardMetadataRefreshBlocked ?? "N/A"} guardRefreshNoSource=${report.metrics.guardMetadataRefreshNoSource ?? "N/A"} guardRefreshStaleSource=${report.metrics.guardMetadataRefreshStaleSource ?? "N/A"} guardRefreshInvalidGeometry=${report.metrics.guardMetadataRefreshInvalidGeometry ?? "N/A"} guardRefreshRepairAfterRefresh=${report.metrics.guardMetadataRefreshRepairAfterRefresh ?? "N/A"} guardRefreshAttempted=${report.metrics.guardMetadataRefreshAttempted ?? "N/A"} guardRefreshSubmitted=${report.metrics.guardMetadataRefreshSubmitted ?? "N/A"} guardLineage=${report.metrics.guardMetadataLineageOverall ?? "N/A"} guardLineageMissing=${report.metrics.guardMetadataLineageMissing ?? "N/A"} guardLineageStale=${report.metrics.guardMetadataLineageStale ?? "N/A"} guardLineageInvalid=${report.metrics.guardMetadataLineageInvalid ?? "N/A"} guardLineageRoot=${report.metrics.guardMetadataLineageRootCauses ?? "N/A"} laneStatus=${report.metrics.opsLaneStatusOverall ?? "N/A"} laneBlocked=${report.metrics.opsLaneBlockedCount ?? "N/A"} laneManualApproval=${report.metrics.opsLaneManualApprovalCandidates ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} persistentOcoRepair=${report.metrics.persistentOcoRepairPlanOverall ?? "N/A"} persistentEligible=${report.metrics.persistentOcoRepairEligible ?? "N/A"} persistentSelected=${report.metrics.persistentOcoRepairSelectedSymbol ?? "N/A"} persistentAttempted=${report.metrics.persistentOcoRepairAttempted ?? "N/A"} persistentSubmitted=${report.metrics.persistentOcoRepairSubmitted ?? "N/A"} persistentMultiVerify=${report.metrics.persistentOcoOpenVerifyMultiOverall ?? "N/A"} persistentMultiSymbols=${report.metrics.persistentOcoOpenVerifyMultiSymbols ?? "N/A"} persistentMultiPassFail=${report.metrics.persistentOcoOpenVerifyMultiPassCount ?? "N/A"}/${report.metrics.persistentOcoOpenVerifyMultiFailCount ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} paperOcoGate=${report.metrics.paperOcoApprovalGateOverall ?? "N/A"} paperOcoDecision=${report.metrics.paperOcoApprovalGateDecision ?? "N/A"} paperOcoSubmit=${report.metrics.paperOcoSubmitGateOverall ?? "N/A"} paperOcoSubmitDecision=${report.metrics.paperOcoSubmitGateDecision ?? "N/A"} paperOcoSubmitAttempted=${report.metrics.paperOcoSubmitGateAttempted ?? "N/A"} paperOcoSubmitSubmitted=${report.metrics.paperOcoSubmitGateSubmitted ?? "N/A"} entryRepricePolicy=${report.metrics.entryRepricePolicyOverall ?? "N/A"} entryRepriceReady=${report.metrics.entryRepricePolicyReady ?? "N/A"} entryRepriceWait=${report.metrics.entryRepricePolicyWaitPullback ?? "N/A"} entryRepriceRrBelow=${report.metrics.entryRepricePolicyRrBelowMin ?? "N/A"} entryRepriceAttempted=${report.metrics.entryRepricePolicyAttempted ?? "N/A"} entryRepriceSubmitted=${report.metrics.entryRepricePolicySubmitted ?? "N/A"} openRepriceProposal=${report.metrics.openOrderRepriceProposalOverall ?? "N/A"} openRepriceRows=${report.metrics.openOrderRepriceRows ?? "N/A"} openRepriceReady=${report.metrics.openOrderRepriceReady ?? "N/A"} openRepriceRiskBreaches=${report.metrics.openOrderRepriceSuggestedRiskBreaches ?? "N/A"} openRepriceAttempted=${report.metrics.openOrderRepriceAttempted ?? "N/A"} openRepriceSubmitted=${report.metrics.openOrderRepriceSubmitted ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
@@ -136,6 +138,12 @@ const buildMarkdown = (report) => {
   );
   lines.push(
     `- fill_state_reconciliation: \`overall=${report.metrics.fillStateReconciliationOverall ?? "N/A"} openLedger=${report.metrics.fillStateReconciliationOpenLedger ?? "N/A"} terminalReview=${report.metrics.fillStateReconciliationTerminalReview ?? "N/A"} confirmedFilled=${report.metrics.fillStateReconciliationConfirmedFilled ?? "N/A"} external=${report.metrics.fillStateReconciliationExternal ?? "N/A"} attempted=${report.metrics.fillStateReconciliationAttempted ?? "N/A"} submitted=${report.metrics.fillStateReconciliationSubmitted ?? "N/A"}\``
+  );
+  lines.push(
+    `- broker_fill_state_evidence: \`overall=${report.metrics.brokerFillStateEvidenceOverall ?? "N/A"} candidates=${report.metrics.brokerFillStateEvidenceCandidates ?? "N/A"} readAttempted=${report.metrics.brokerFillStateEvidenceReadAttempted ?? "N/A"} filled=${report.metrics.brokerFillStateEvidenceFilled ?? "N/A"} terminal=${report.metrics.brokerFillStateEvidenceTerminal ?? "N/A"} working=${report.metrics.brokerFillStateEvidenceWorking ?? "N/A"} inconclusive=${report.metrics.brokerFillStateEvidenceInconclusive ?? "N/A"} attempted=${report.metrics.brokerFillStateEvidenceAttempted ?? "N/A"} submitted=${report.metrics.brokerFillStateEvidenceSubmitted ?? "N/A"}\``
+  );
+  lines.push(
+    `- ledger_terminalization: \`overall=${report.metrics.ledgerTerminalizationOverall ?? "N/A"} ready=${report.metrics.ledgerTerminalizationReady ?? "N/A"} filledReady=${report.metrics.ledgerTerminalizationFilledReady ?? "N/A"} terminalReady=${report.metrics.ledgerTerminalizationUnfilledReady ?? "N/A"} blocked=${report.metrics.ledgerTerminalizationBlocked ?? "N/A"} attempted=${report.metrics.ledgerTerminalizationAttempted ?? "N/A"} submitted=${report.metrics.ledgerTerminalizationSubmitted ?? "N/A"}\``
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
@@ -162,6 +170,8 @@ const main = () => {
   const guardMetadataLineageAudit = readJson(FILES.guardMetadataLineageAudit);
   const guardSourceRecoveryPlan = readJson(FILES.guardSourceRecoveryPlan);
   const fillStateReconciliationAudit = readJson(FILES.fillStateReconciliationAudit);
+  const brokerFillStateEvidence = readJson(FILES.brokerFillStateEvidence);
+  const ledgerTerminalizationProposal = readJson(FILES.ledgerTerminalizationProposal);
   const guardedRepairPlan = readJson(FILES.guardedRepairPlan);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const persistentOcoOpenVerifyMulti = readJson(FILES.persistentOcoOpenVerifyMulti);
@@ -460,6 +470,43 @@ const main = () => {
     fillStateReconciliationAudit?.executionPolicy?.brokerMutationAllowed === true;
   const fillStateReconciliationStateMutationAllowed =
     fillStateReconciliationAudit?.executionPolicy?.stateMutationAllowed === true;
+  const brokerFillStateEvidenceOverall = short(brokerFillStateEvidence?.overall || "", 48) || null;
+  const brokerFillStateEvidenceCandidates = toNum(brokerFillStateEvidence?.summary?.candidates);
+  const brokerFillStateEvidenceReadAttempted = brokerFillStateEvidence?.summary?.brokerReadAttempted === true;
+  const brokerFillStateEvidenceFilled = toNum(brokerFillStateEvidence?.summary?.brokerFilledConfirmed);
+  const brokerFillStateEvidenceTerminal = toNum(brokerFillStateEvidence?.summary?.brokerTerminalUnfilledConfirmed);
+  const brokerFillStateEvidenceWorking = toNum(brokerFillStateEvidence?.summary?.brokerStillWorking);
+  const brokerFillStateEvidenceInconclusive = toNum(brokerFillStateEvidence?.summary?.inconclusive);
+  const brokerFillStateEvidenceAttempted =
+    brokerFillStateEvidence?.executionPolicy?.brokerMutationAttempted === true ||
+    brokerFillStateEvidence?.summary?.brokerMutationAttempted === true ||
+    brokerFillStateEvidence?.executionPolicy?.stateMutationAttempted === true ||
+    brokerFillStateEvidence?.summary?.stateMutationAttempted === true;
+  const brokerFillStateEvidenceSubmitted =
+    brokerFillStateEvidence?.executionPolicy?.brokerMutationSubmitted === true ||
+    brokerFillStateEvidence?.summary?.brokerMutationSubmitted === true;
+  const brokerFillStateEvidenceBrokerMutationAllowed =
+    brokerFillStateEvidence?.executionPolicy?.brokerMutationAllowed === true;
+  const brokerFillStateEvidenceStateMutationAllowed =
+    brokerFillStateEvidence?.executionPolicy?.stateMutationAllowed === true;
+  const ledgerTerminalizationOverall = short(ledgerTerminalizationProposal?.overall || "", 48) || null;
+  const ledgerTerminalizationRows = toNum(ledgerTerminalizationProposal?.summary?.rows);
+  const ledgerTerminalizationReady = toNum(ledgerTerminalizationProposal?.summary?.proposalReady);
+  const ledgerTerminalizationFilledReady = toNum(ledgerTerminalizationProposal?.summary?.markFilledReady);
+  const ledgerTerminalizationUnfilledReady = toNum(ledgerTerminalizationProposal?.summary?.markTerminalUnfilledReady);
+  const ledgerTerminalizationBlocked = toNum(ledgerTerminalizationProposal?.summary?.blocked);
+  const ledgerTerminalizationAttempted =
+    ledgerTerminalizationProposal?.executionPolicy?.brokerMutationAttempted === true ||
+    ledgerTerminalizationProposal?.summary?.brokerMutationAttempted === true ||
+    ledgerTerminalizationProposal?.executionPolicy?.stateMutationAttempted === true ||
+    ledgerTerminalizationProposal?.summary?.stateMutationAttempted === true;
+  const ledgerTerminalizationSubmitted =
+    ledgerTerminalizationProposal?.executionPolicy?.brokerMutationSubmitted === true ||
+    ledgerTerminalizationProposal?.summary?.brokerMutationSubmitted === true;
+  const ledgerTerminalizationBrokerMutationAllowed =
+    ledgerTerminalizationProposal?.executionPolicy?.brokerMutationAllowed === true;
+  const ledgerTerminalizationStateMutationAllowed =
+    ledgerTerminalizationProposal?.executionPolicy?.stateMutationAllowed === true;
   const guardedRepairPlanOverall = short(guardedRepairPlan?.overall || "", 48) || null;
   const guardedRepairCandidates = toNum(guardedRepairPlan?.summary?.candidates);
   const guardedRepairBlockedByReportOnly = toNum(guardedRepairPlan?.summary?.blockedByReportOnly);
@@ -942,6 +989,93 @@ const main = () => {
       "warn",
       "fill_state_external_ownership_review",
       `${fillStateReconciliationExternal} held position(s) appear external/manual; do not attach sidecar protective repair without ownership proof`
+    );
+  }
+
+  if (
+    brokerFillStateEvidenceBrokerMutationAllowed ||
+    brokerFillStateEvidenceStateMutationAllowed ||
+    brokerFillStateEvidenceAttempted ||
+    brokerFillStateEvidenceSubmitted
+  ) {
+    addCheck(
+      checks,
+      "fail",
+      "broker_fill_state_evidence_unsafe",
+      `broker fill-state evidence must remain GET-only; brokerMutationAllowed=${brokerFillStateEvidenceBrokerMutationAllowed} stateMutationAllowed=${brokerFillStateEvidenceStateMutationAllowed} attempted=${brokerFillStateEvidenceAttempted} submitted=${brokerFillStateEvidenceSubmitted}`
+    );
+  }
+
+  if (brokerFillStateEvidenceOverall === "blocked_non_paper_base_url") {
+    addCheck(
+      checks,
+      "warn",
+      "broker_fill_state_evidence_non_paper_blocked",
+      "broker fill-state read evidence is blocked unless ALPACA_BASE_URL is the paper endpoint"
+    );
+  } else if (brokerFillStateEvidenceOverall === "broker_credentials_missing") {
+    addCheck(
+      checks,
+      "warn",
+      "broker_fill_state_evidence_credentials_missing",
+      "broker fill-state evidence could not query Alpaca because credentials are unavailable"
+    );
+  }
+
+  if ((brokerFillStateEvidenceInconclusive ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_fill_state_evidence_inconclusive",
+      `${brokerFillStateEvidenceInconclusive} held position(s) still lack filled/terminal broker evidence after GET-only read`
+    );
+  }
+
+  if ((brokerFillStateEvidenceWorking ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_fill_state_evidence_working_order",
+      `${brokerFillStateEvidenceWorking} held position(s) still show working broker order evidence; do not terminalize ledger yet`
+    );
+  }
+
+  if ((brokerFillStateEvidenceFilled ?? 0) > 0 || (brokerFillStateEvidenceTerminal ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "broker_fill_state_terminal_or_filled_evidence_ready",
+      `broker GET-only evidence found filled=${brokerFillStateEvidenceFilled ?? 0} terminalUnfilled=${brokerFillStateEvidenceTerminal ?? 0}; route to report-only terminalization proposal review`
+    );
+  }
+
+  if (
+    ledgerTerminalizationBrokerMutationAllowed ||
+    ledgerTerminalizationStateMutationAllowed ||
+    ledgerTerminalizationAttempted ||
+    ledgerTerminalizationSubmitted
+  ) {
+    addCheck(
+      checks,
+      "fail",
+      "ledger_terminalization_proposal_unsafe",
+      `ledger terminalization proposal must never write state in this lane; brokerMutationAllowed=${ledgerTerminalizationBrokerMutationAllowed} stateMutationAllowed=${ledgerTerminalizationStateMutationAllowed} attempted=${ledgerTerminalizationAttempted} submitted=${ledgerTerminalizationSubmitted}`
+    );
+  }
+
+  if ((ledgerTerminalizationReady ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "ledger_terminalization_manual_review_ready",
+      `${ledgerTerminalizationReady} row(s) have report-only ledger/idempotency terminalization patches ready; applying them requires a separate scoped state migration task`
+    );
+  } else if ((ledgerTerminalizationRows ?? 0) > 0 && (ledgerTerminalizationBlocked ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "ledger_terminalization_blocked",
+      `${ledgerTerminalizationBlocked} row(s) remain blocked from terminalization; keep protective repair blocked`
     );
   }
 
@@ -1444,6 +1578,8 @@ const main = () => {
       guardMetadataLineageAudit: Boolean(guardMetadataLineageAudit),
       guardSourceRecoveryPlan: Boolean(guardSourceRecoveryPlan),
       fillStateReconciliationAudit: Boolean(fillStateReconciliationAudit),
+      brokerFillStateEvidence: Boolean(brokerFillStateEvidence),
+      ledgerTerminalizationProposal: Boolean(ledgerTerminalizationProposal),
       guardedRepairPlan: Boolean(guardedRepairPlan),
       persistentOcoRepairPlan: Boolean(persistentOcoRepairPlan),
       persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
@@ -1546,6 +1682,23 @@ const main = () => {
       fillStateReconciliationTerminalReview,
       fillStateReconciliationAttempted,
       fillStateReconciliationSubmitted,
+      brokerFillStateEvidenceOverall,
+      brokerFillStateEvidenceCandidates,
+      brokerFillStateEvidenceReadAttempted,
+      brokerFillStateEvidenceFilled,
+      brokerFillStateEvidenceTerminal,
+      brokerFillStateEvidenceWorking,
+      brokerFillStateEvidenceInconclusive,
+      brokerFillStateEvidenceAttempted,
+      brokerFillStateEvidenceSubmitted,
+      ledgerTerminalizationOverall,
+      ledgerTerminalizationRows,
+      ledgerTerminalizationReady,
+      ledgerTerminalizationFilledReady,
+      ledgerTerminalizationUnfilledReady,
+      ledgerTerminalizationBlocked,
+      ledgerTerminalizationAttempted,
+      ledgerTerminalizationSubmitted,
       guardedRepairPlanOverall,
       guardedRepairCandidates,
       guardedRepairBlockedByReportOnly,

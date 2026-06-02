@@ -1022,3 +1022,21 @@ Priority: P2 until M1/M2 stabilize; then P1
   - submitted/open-position rows show `POSITION_PRESENT_WITH_OPEN_LEDGER_STATE` in fill-state reconciliation.
   - broker-child-present rows remain `NO_ACTION_BROKER_CHILDREN_PRESENT`.
   - ops health includes `guard_source_recovery` and `fill_state_reconciliation` summary lines.
+
+## 2026-06-02 - Broker Fill-State Evidence and Ledger Terminalization Proposal
+
+- Current blocker class:
+  - fill-state reconciliation rows must be proven by broker read-only evidence before any ledger/idempotency terminalization is even proposed.
+  - stale guard-source recovery remains blocked until fill-state rows are no longer open/submitted or inconclusive.
+- Added/updated report-only behavior:
+  - `broker-fill-state-evidence` performs Alpaca paper GET-only reads for reconciliation candidates and classifies filled, terminal-unfilled, still-working, or inconclusive evidence.
+  - `ledger-terminalization-proposal` converts only confirmed broker evidence into proposed ledger/idempotency patch previews; it never writes state.
+  - protective repair remains blocked while terminalization is blocked or evidence is inconclusive.
+- Safety invariant:
+  - broker evidence is GET-only and paper endpoint gated.
+  - ledger/idempotency terminalization is proposal-only; applying patches requires a separate scoped state migration task.
+  - no broker mutation, no ledger mutation, no idempotency mutation is introduced.
+- Next safe-run done-when:
+  - ATAT-style rows show broker evidence verdict and either a ready terminalization proposal or a concrete blocked reason.
+  - QFIN/ACAD-style rows stay in fresh-source-required until a fresh Stage6 or position-lifecycle guard source exists.
+  - protective repair planners do not re-enter while either fill-state reconciliation or guard-source freshness remains blocked.

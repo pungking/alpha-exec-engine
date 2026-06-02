@@ -13,6 +13,10 @@ const FILES = {
   positionProtectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
   guardMetadataRefreshPlan: `${STATE_DIR}/guard-metadata-refresh-plan.json`,
   guardMetadataLineageAudit: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
+  guardSourceRecoveryPlan: `${STATE_DIR}/guard-source-recovery-plan.json`,
+  fillStateReconciliationAudit: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
+  brokerFillStateEvidence: `${STATE_DIR}/broker-fill-state-evidence.json`,
+  ledgerTerminalizationProposal: `${STATE_DIR}/ledger-terminalization-proposal.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
   entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
@@ -75,6 +79,10 @@ const buildReport = () => {
   const positionProtectionAudit = readJson(FILES.positionProtectionAudit);
   const guardMetadataRefreshPlan = readJson(FILES.guardMetadataRefreshPlan);
   const guardMetadataLineageAudit = readJson(FILES.guardMetadataLineageAudit);
+  const guardSourceRecoveryPlan = readJson(FILES.guardSourceRecoveryPlan);
+  const fillStateReconciliationAudit = readJson(FILES.fillStateReconciliationAudit);
+  const brokerFillStateEvidence = readJson(FILES.brokerFillStateEvidence);
+  const ledgerTerminalizationProposal = readJson(FILES.ledgerTerminalizationProposal);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
   const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
@@ -83,6 +91,10 @@ const buildReport = () => {
 
   const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
   const guardRows = Array.isArray(guardMetadataRefreshPlan?.rows) ? guardMetadataRefreshPlan.rows : [];
+  const guardSourceRows = Array.isArray(guardSourceRecoveryPlan?.rows) ? guardSourceRecoveryPlan.rows : [];
+  const fillStateRows = Array.isArray(fillStateReconciliationAudit?.rows) ? fillStateReconciliationAudit.rows : [];
+  const brokerEvidenceRows = Array.isArray(brokerFillStateEvidence?.rows) ? brokerFillStateEvidence.rows : [];
+  const terminalizationRows = Array.isArray(ledgerTerminalizationProposal?.rows) ? ledgerTerminalizationProposal.rows : [];
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
@@ -118,6 +130,14 @@ const buildReport = () => {
   const repairAfterRefreshRows = guardRows.filter(
     (row) => row.afterRefreshRepairDecision === "REPORT_ONLY_REPAIR_REEVALUATION_CANDIDATE"
   );
+  const freshSourceRequiredRows = guardSourceRows.filter((row) =>
+    String(row.recoveryDecision || "").startsWith("FRESH_SOURCE_REQUIRED")
+  );
+  const fillStateReconciliationRows = fillStateRows.filter((row) => row.requiresLedgerTerminalizationReview === true);
+  const terminalizationReadyRows = terminalizationRows.filter((row) => row.proposalReady === true);
+  const terminalizationBlockedRows = terminalizationRows.filter((row) => row.proposalReady !== true);
+  const repairPrereqFillBlocked = fillStateReconciliationRows.length > 0 || terminalizationBlockedRows.length > 0;
+  const repairPrereqFreshBlocked = freshSourceRequiredRows.length > 0;
   const persistentEligibleRows = persistentRows.filter((row) => row.eligible === true);
   const brokerMissingRows = brokerRows.filter(
     (row) =>
@@ -195,19 +215,53 @@ const buildReport = () => {
       safety: "get_only_monitor_no_broker_mutation"
     }),
     lane({
+      id: "track_4_fill_state_terminalization",
+      name: "Fill-State Terminalization Lane",
+      status:
+        terminalizationReadyRows.length > 0
+          ? "manual_state_migration_review_ready"
+          : fillStateReconciliationRows.length > 0
+            ? brokerEvidenceRows.length > 0
+              ? "blocked_no_terminalization_proposal"
+              : "blocked_broker_evidence_required"
+            : "clear",
+      count: fillStateReconciliationRows.length || terminalizationRows.length,
+      symbols: uniqueSymbols([...fillStateReconciliationRows, ...brokerEvidenceRows, ...terminalizationRows]),
+      evidence: `fillState=${fillStateReconciliationAudit?.overall || "N/A"} terminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} brokerEvidence=${brokerFillStateEvidence?.overall || "N/A"} readAttempted=${brokerFillStateEvidence?.summary?.brokerReadAttempted ?? "N/A"} terminalization=${ledgerTerminalizationProposal?.overall || "N/A"} ready=${ledgerTerminalizationProposal?.summary?.proposalReady ?? "N/A"} blocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"}`,
+      nextAction:
+        terminalizationReadyRows.length > 0
+          ? "Review report-only ledger/idempotency terminalization patch preview; applying it requires a separate scoped state migration task."
+          : fillStateReconciliationRows.length > 0
+            ? "Run/inspect broker GET-only fill-state evidence until filled/terminal status is proven; keep protective repair blocked."
+            : "No fill-state terminalization lane action required.",
+      safety: "report_only_no_broker_or_ledger_mutation"
+    }),
+    lane({
       id: "track_4_valid_guard_missing_child_repair_candidate",
       name: "Valid Guard + Missing Child Repair Candidate Lane",
       status:
-        repairAfterRefreshRows.length || persistentEligibleRows.length
+        repairPrereqFillBlocked && repairPrereqFreshBlocked
+          ? "blocked_mixed_fill_state_and_fresh_source_prerequisites"
+          : repairPrereqFillBlocked
+            ? "blocked_fill_state_reconciliation_required"
+            : repairPrereqFreshBlocked
+            ? "blocked_waiting_fresh_guard_source"
+            : repairAfterRefreshRows.length || persistentEligibleRows.length
           ? "manual_approval_candidate"
           : brokerMissingRows.length
             ? "blocked_until_guard_refresh_valid"
             : "no_candidate",
       count: repairAfterRefreshRows.length || persistentEligibleRows.length || brokerMissingRows.length,
       symbols: uniqueSymbols([...repairAfterRefreshRows, ...persistentEligibleRows, ...brokerMissingRows]),
-      evidence: `repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} persistentEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"}`,
+      evidence: `repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} persistentEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} freshSourceRequired=${guardSourceRecoveryPlan?.summary?.freshSourceRequired ?? "N/A"} fillTerminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} terminalizationBlocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"}`,
       nextAction:
-        repairAfterRefreshRows.length || persistentEligibleRows.length
+        repairPrereqFillBlocked && repairPrereqFreshBlocked
+          ? "Do not re-enter protective repair. Split prerequisites: resolve fill-state terminalization rows and wait for fresh guard source rows separately."
+          : repairPrereqFillBlocked
+            ? "Do not re-enter protective repair; fill-state terminalization must be resolved first."
+            : repairPrereqFreshBlocked
+            ? "Do not re-enter protective repair; wait for fresh Stage6 or position-lifecycle guard source."
+            : repairAfterRefreshRows.length || persistentEligibleRows.length
           ? "Require separate approval before any paper repair submit."
           : "Do not submit repair until guard metadata is fresh and geometry-valid.",
       safety: "approval_required_for_any_broker_mutation"

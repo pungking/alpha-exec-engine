@@ -1723,6 +1723,36 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build broker fill-state evidence
+        if: always()
+        run: npm run ops:broker-fill-state-evidence
+
+      - name: Publish broker fill-state evidence summary
+        if: always()
+        run: |
+          if [[ -f state/broker-fill-state-evidence.md ]]; then
+            cat state/broker-fill-state-evidence.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Broker Fill-State Evidence" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/broker-fill-state-evidence.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Build ledger terminalization proposal
+        if: always()
+        run: npm run ops:ledger-terminalization-proposal
+
+      - name: Publish ledger terminalization proposal summary
+        if: always()
+        run: |
+          if [[ -f state/ledger-terminalization-proposal.md ]]; then
+            cat state/ledger-terminalization-proposal.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Ledger Terminalization Proposal" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ledger-terminalization-proposal.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build position protection root-cause audit
         if: always()
         run: npm run ops:position-protection:audit
@@ -2003,6 +2033,10 @@ jobs:
             state/broker-child-order-reconciliation.md
             state/fill-state-reconciliation-audit.json
             state/fill-state-reconciliation-audit.md
+            state/broker-fill-state-evidence.json
+            state/broker-fill-state-evidence.md
+            state/ledger-terminalization-proposal.json
+            state/ledger-terminalization-proposal.md
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
             state/guard-metadata-refresh-plan.json
