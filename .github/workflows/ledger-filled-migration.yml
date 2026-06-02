@@ -1,0 +1,165 @@
+name: sidecar-ledger-filled-migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval_phrase:
+        description: "Required exact phrase: CONFIRM STATE LEDGER MIGRATION"
+        required: true
+        type: string
+      symbol_scope:
+        description: "Comma-separated symbol scope; blank allows dynamic rows up to max_rows"
+        required: false
+        default: ""
+        type: string
+      max_rows:
+        description: "Maximum state migration rows allowed"
+        required: false
+        default: "1"
+        type: string
+
+concurrency:
+  group: sidecar-dry-run-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ledger-filled-migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      EXEC_ENABLED: "false"
+      READ_ONLY: "true"
+      LIVE_ORDER_SUBMIT_ENABLED: "false"
+      MARKET_GUARD_MODE: observe
+      GUARD_EXECUTE_TIGHTEN_STOPS: "false"
+      GUARD_EXECUTE_REDUCE_POSITIONS: "false"
+      GUARD_EXECUTE_FLATTEN: "false"
+      LEDGER_FILLED_MIGRATION_APPLY: "true"
+      LEDGER_FILLED_MIGRATION_APPROVAL: ${{ inputs.approval_phrase }}
+      LEDGER_FILLED_MIGRATION_SYMBOLS: ${{ inputs.symbol_scope }}
+      LEDGER_FILLED_MIGRATION_MAX_ROWS: ${{ inputs.max_rows }}
+      ALPHA_ENV: PAPER
+      ALPACA_BASE_URL: ${{ vars.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets' }}
+      ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Restore sidecar state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            sidecar-state-${{ github.ref_name }}-
+
+      - name: Install
+        run: npm ci
+
+      - name: Pre-apply fill-state and proposal refresh
+        run: |
+          npm run ops:fill-state-reconcile
+          npm run ops:broker-fill-state-evidence
+          npm run ops:ledger-terminalization-proposal
+          npm run ops:ledger-filled-migration-plan
+
+      - name: Apply state-only filled ledger migration
+        run: npm run ops:ledger-filled-migration-apply
+
+      - name: Post-apply audit chain
+        run: |
+          npm run dashboard:perf
+          npm run ops:broker-child-reconcile
+          npm run ops:order-state
+          npm run ops:fill-state-reconcile
+          npm run ops:ledger-terminalization-proposal
+          npm run ops:ledger-filled-migration-plan
+          npm run ops:position-protection:audit
+          npm run ops:guard-metadata-refresh
+          npm run ops:guard-metadata:lineage
+          npm run ops:guard-source-recovery
+          npm run ops:guarded-repair-plan
+          npm run ops:persistent-oco-plan
+          npm run ops:lane-status
+          npm run ops:health
+
+      - name: Verify migration done-when
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const apply = JSON.parse(fs.readFileSync('state/ledger-filled-migration-apply-report.json', 'utf8'));
+          const fill = JSON.parse(fs.readFileSync('state/fill-state-reconciliation-audit.json', 'utf8'));
+          const terminal = JSON.parse(fs.readFileSync('state/ledger-terminalization-proposal.json', 'utf8'));
+          const lanes = JSON.parse(fs.readFileSync('state/ops-lane-status-report.json', 'utf8'));
+          const applyOk = apply.overall === 'state_migration_applied_and_verified' && apply.summary?.postVerifiedRows > 0;
+          const fillOk = Number(fill.summary?.ledgerTerminalizationReviewRequired || 0) === 0;
+          const terminalOk = Number(terminal.summary?.proposalReady || 0) === 0;
+          const repairLane = (lanes.lanes || []).find((lane) => lane.id === 'track_4_valid_guard_missing_child_repair_candidate');
+          const repairBlocked = repairLane && String(repairLane.status || '').startsWith('blocked_');
+          if (!applyOk || !fillOk || !terminalOk || !repairBlocked) {
+            console.error(JSON.stringify({ applyOk, fillOk, terminalOk, repairBlocked, apply: apply.overall, fill: fill.summary, terminal: terminal.summary, repairLane }, null, 2));
+            process.exit(1);
+          }
+          console.log(JSON.stringify({ applyOk, fillOk, terminalOk, repairBlocked, repairStatus: repairLane.status }, null, 2));
+          NODE
+
+      - name: Publish migration summary
+        if: always()
+        run: |
+          {
+            echo "## Ledger Filled Migration"
+            echo "- state mutation scope: \`order-ledger + order-idempotency only\`"
+            echo "- broker mutation: \`false\`"
+            echo ""
+            cat state/ledger-filled-migration-apply-report.md || true
+            cat state/fill-state-reconciliation-audit.md || true
+            cat state/guard-source-recovery-plan.md || true
+            cat state/ops-lane-status-report.md || true
+            cat state/ops-health-report.md || true
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload migration artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sidecar-ledger-filled-migration-${{ github.run_id }}
+          path: |
+            state/order-ledger.json
+            state/order-idempotency.json
+            state/ledger-filled-migration-plan.json
+            state/ledger-filled-migration-plan.md
+            state/ledger-filled-migration-apply-report.json
+            state/ledger-filled-migration-apply-report.md
+            state/fill-state-reconciliation-audit.json
+            state/fill-state-reconciliation-audit.md
+            state/ledger-terminalization-proposal.json
+            state/ledger-terminalization-proposal.md
+            state/guard-source-recovery-plan.json
+            state/guard-source-recovery-plan.md
+            state/guarded-child-order-repair-plan.json
+            state/guarded-child-order-repair-plan.md
+            state/persistent-oco-repair-plan.json
+            state/persistent-oco-repair-plan.md
+            state/ops-lane-status-report.json
+            state/ops-lane-status-report.md
+            state/ops-health-report.json
+            state/ops-health-report.md
+            state/migration-backups/**
+          if-no-files-found: warn
+
+      - name: Save sidecar state
+        id: save_state
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: sidecar-state-${{ github.ref_name }}-${{ github.run_id }}
