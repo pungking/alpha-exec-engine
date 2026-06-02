@@ -186,29 +186,6 @@ on:
           - "30"
           - "40"
           - "50"
-      run_ledger_filled_migration_apply:
-        description: "Apply report-first filled ledger/idempotency migration (state-only; requires approval phrase)"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
-      run_ledger_filled_migration_symbols:
-        description: "Optional comma-separated symbol scope for filled ledger migration apply"
-        required: false
-        default: ""
-        type: string
-      run_ledger_filled_migration_max_rows:
-        description: "Max rows allowed for filled ledger migration apply"
-        required: false
-        default: "1"
-        type: string
-      run_ledger_filled_migration_approval:
-        description: "Required phrase for state-only migration apply: CONFIRM STATE LEDGER MIGRATION"
-        required: false
-        default: ""
-        type: string
   schedule:
     # RTH simulation cadence (UTC, weekdays): every 15m in broad US cash-session window.
     # - Covers DST (EDT) and non-DST (EST) without manual seasonal edits.
@@ -229,10 +206,10 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       RUN_VERIFY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_verify_mode || 'auto' }}
-      LEDGER_FILLED_MIGRATION_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_apply || 'false' }}
-      LEDGER_FILLED_MIGRATION_SYMBOLS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_symbols || '' }}
-      LEDGER_FILLED_MIGRATION_MAX_ROWS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_max_rows || '1' }}
-      LEDGER_FILLED_MIGRATION_APPROVAL: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_approval || '' }}
+      LEDGER_FILLED_MIGRATION_APPLY: "false"
+      LEDGER_FILLED_MIGRATION_SYMBOLS: ""
+      LEDGER_FILLED_MIGRATION_MAX_ROWS: "1"
+      LEDGER_FILLED_MIGRATION_APPROVAL: ""
       EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
       READ_ONLY: ${{ vars.READ_ONLY }}
       SIMULATION_LIVE_PARITY: ${{ vars.SIMULATION_LIVE_PARITY }}

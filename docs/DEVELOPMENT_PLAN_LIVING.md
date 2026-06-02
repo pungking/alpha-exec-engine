@@ -1079,3 +1079,5 @@ Done-When:
 - Safe/default run shows `ledger-filled-migration-apply-report.overall=apply_not_requested_ready_rows_present` or no-ready-row equivalent with `stateMutationApplied=false`.
 - Approved state-only run, if explicitly requested, shows `overall=state_migration_applied_and_verified`, backup files under `state/migration-backups/**`, and audit records in `ledger-filled-migration-audit.jsonl`.
 - Subsequent audit run clears the fill-state terminalization prerequisite before QFIN/ACAD-style fresh guard source recovery can be re-evaluated.
+
+Note: the regular `sidecar-dry-run` workflow intentionally hard-locks `LEDGER_FILLED_MIGRATION_APPLY=false` because GitHub workflow_dispatch input count is already at the platform limit and dry-run must not become a state-mutation entrypoint. Approved state migration must be run as a separate scoped migration task using `scripts/apply-ledger-filled-migration.mjs` against a reviewed state directory, then followed by the same safe dry-run audit chain.
