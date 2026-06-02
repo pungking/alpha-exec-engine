@@ -1056,3 +1056,26 @@ Priority: P2 until M1/M2 stabilize; then P1
   - ATAT-style filled rows show `manual_filled_migration_apply_review_ready` with backup/diff/audit previews.
   - QFIN/ACAD-style stale guard rows remain fresh-source-required until a fresh Stage6 or position-lifecycle guard source exists.
   - protective repair remains blocked until state migration is applied and guard source freshness is re-audited.
+
+### 2026-06-02 - Ledger Filled Migration Apply Gate
+
+- Scope: `alpha-exec-engine` / state-only `order-ledger` + `order-idempotency` filled terminalization lane.
+- The apply lane is symbol-agnostic and consumes the existing `ledger-filled-migration-plan`; ATAT is only the current evidence row, not a hard-coded operating target.
+- Default behavior remains report-only: `LEDGER_FILLED_MIGRATION_APPLY=false` writes `ledger-filled-migration-apply-report` and does not mutate state.
+- State apply is blocked unless all gates pass:
+  - explicit `LEDGER_FILLED_MIGRATION_APPLY=true`,
+  - approval phrase `CONFIRM STATE LEDGER MIGRATION`,
+  - ready filled-only rows,
+  - max-row/symbol scope guard,
+  - current `order-ledger` and `order-idempotency` hashes match the reviewed plan,
+  - pre-write backups are created,
+  - audit JSONL is written,
+  - post-write verification confirms filled ledger/idempotency terminal state.
+- Broker mutation remains impossible in this lane; it never places, cancels, or replaces orders.
+- Protective repair remains blocked after apply until fill-state reconciliation and guard-source recovery are rerun against the migrated state.
+
+Done-When:
+
+- Safe/default run shows `ledger-filled-migration-apply-report.overall=apply_not_requested_ready_rows_present` or no-ready-row equivalent with `stateMutationApplied=false`.
+- Approved state-only run, if explicitly requested, shows `overall=state_migration_applied_and_verified`, backup files under `state/migration-backups/**`, and audit records in `ledger-filled-migration-audit.jsonl`.
+- Subsequent audit run clears the fill-state terminalization prerequisite before QFIN/ACAD-style fresh guard source recovery can be re-evaluated.

@@ -19,6 +19,7 @@ const FILES = {
   brokerFillStateEvidence: `${STATE_DIR}/broker-fill-state-evidence.json`,
   ledgerTerminalizationProposal: `${STATE_DIR}/ledger-terminalization-proposal.json`,
   ledgerFilledMigrationPlan: `${STATE_DIR}/ledger-filled-migration-plan.json`,
+  ledgerFilledMigrationApply: `${STATE_DIR}/ledger-filled-migration-apply-report.json`,
   guardedRepairPlan: `${STATE_DIR}/guarded-child-order-repair-plan.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   persistentOcoOpenVerifyMulti: `${STATE_DIR}/persistent-oco-repair-open-verify-multi.json`,
@@ -126,7 +127,7 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} brokerFillEvidence=${report.files.brokerFillStateEvidence ? "ok" : "missing"} terminalizationProposal=${report.files.ledgerTerminalizationProposal ? "ok" : "missing"} filledMigration=${report.files.ledgerFilledMigrationPlan ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} brokerFillEvidence=${report.files.brokerFillStateEvidence ? "ok" : "missing"} terminalizationProposal=${report.files.ledgerTerminalizationProposal ? "ok" : "missing"} filledMigration=${report.files.ledgerFilledMigrationPlan ? "ok" : "missing"} filledMigrationApply=${report.files.ledgerFilledMigrationApply ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
       `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} invalidQuotes=${report.metrics.fillabilityInvalidQuoteCount ?? "N/A"} expiredTaxonomy=${report.metrics.fillabilityTerminalUnfilledTaxonomy ?? "N/A"} reentryReview=${report.metrics.fillabilityReentryReviewRequired ?? "N/A"} orderState=${report.metrics.orderStateOverall ?? "N/A"} orderStateFailWarn=${report.metrics.orderStateFailures ?? "N/A"}/${report.metrics.orderStateWarnings ?? "N/A"} orderStateTerminalRecon=${report.metrics.orderStateTerminalReconciliationRequired ?? "N/A"} minOneShareCanary=${report.metrics.highPriceMinOneShareOverall ?? "N/A"} minOneShareEligible=${report.metrics.highPriceMinOneShareEligible ?? "N/A"} minOneShareSelected=${report.metrics.highPriceMinOneShareSelectedSymbol ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} protectionAudit=${report.metrics.positionProtectionAuditOverall ?? "N/A"} protectionMissing=${report.metrics.positionProtectionGuardMetadataMissing ?? "N/A"} protectionStale=${report.metrics.positionProtectionGuardMetadataStale ?? "N/A"} protectionInvalidGeometry=${report.metrics.positionProtectionInvalidGeometry ?? "N/A"} protectionBrokerChildMissing=${report.metrics.positionProtectionBrokerChildMissing ?? "N/A"} guardRefresh=${report.metrics.guardMetadataRefreshOverall ?? "N/A"} guardRefreshReady=${report.metrics.guardMetadataRefreshReady ?? "N/A"} guardRefreshBlocked=${report.metrics.guardMetadataRefreshBlocked ?? "N/A"} guardRefreshNoSource=${report.metrics.guardMetadataRefreshNoSource ?? "N/A"} guardRefreshStaleSource=${report.metrics.guardMetadataRefreshStaleSource ?? "N/A"} guardRefreshInvalidGeometry=${report.metrics.guardMetadataRefreshInvalidGeometry ?? "N/A"} guardRefreshRepairAfterRefresh=${report.metrics.guardMetadataRefreshRepairAfterRefresh ?? "N/A"} guardRefreshAttempted=${report.metrics.guardMetadataRefreshAttempted ?? "N/A"} guardRefreshSubmitted=${report.metrics.guardMetadataRefreshSubmitted ?? "N/A"} guardLineage=${report.metrics.guardMetadataLineageOverall ?? "N/A"} guardLineageMissing=${report.metrics.guardMetadataLineageMissing ?? "N/A"} guardLineageStale=${report.metrics.guardMetadataLineageStale ?? "N/A"} guardLineageInvalid=${report.metrics.guardMetadataLineageInvalid ?? "N/A"} guardLineageRoot=${report.metrics.guardMetadataLineageRootCauses ?? "N/A"} laneStatus=${report.metrics.opsLaneStatusOverall ?? "N/A"} laneBlocked=${report.metrics.opsLaneBlockedCount ?? "N/A"} laneManualApproval=${report.metrics.opsLaneManualApprovalCandidates ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} persistentOcoRepair=${report.metrics.persistentOcoRepairPlanOverall ?? "N/A"} persistentEligible=${report.metrics.persistentOcoRepairEligible ?? "N/A"} persistentSelected=${report.metrics.persistentOcoRepairSelectedSymbol ?? "N/A"} persistentAttempted=${report.metrics.persistentOcoRepairAttempted ?? "N/A"} persistentSubmitted=${report.metrics.persistentOcoRepairSubmitted ?? "N/A"} persistentMultiVerify=${report.metrics.persistentOcoOpenVerifyMultiOverall ?? "N/A"} persistentMultiSymbols=${report.metrics.persistentOcoOpenVerifyMultiSymbols ?? "N/A"} persistentMultiPassFail=${report.metrics.persistentOcoOpenVerifyMultiPassCount ?? "N/A"}/${report.metrics.persistentOcoOpenVerifyMultiFailCount ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} paperOcoGate=${report.metrics.paperOcoApprovalGateOverall ?? "N/A"} paperOcoDecision=${report.metrics.paperOcoApprovalGateDecision ?? "N/A"} paperOcoSubmit=${report.metrics.paperOcoSubmitGateOverall ?? "N/A"} paperOcoSubmitDecision=${report.metrics.paperOcoSubmitGateDecision ?? "N/A"} paperOcoSubmitAttempted=${report.metrics.paperOcoSubmitGateAttempted ?? "N/A"} paperOcoSubmitSubmitted=${report.metrics.paperOcoSubmitGateSubmitted ?? "N/A"} entryRepricePolicy=${report.metrics.entryRepricePolicyOverall ?? "N/A"} entryRepriceReady=${report.metrics.entryRepricePolicyReady ?? "N/A"} entryRepriceWait=${report.metrics.entryRepricePolicyWaitPullback ?? "N/A"} entryRepriceRrBelow=${report.metrics.entryRepricePolicyRrBelowMin ?? "N/A"} entryRepriceAttempted=${report.metrics.entryRepricePolicyAttempted ?? "N/A"} entryRepriceSubmitted=${report.metrics.entryRepricePolicySubmitted ?? "N/A"} openRepriceProposal=${report.metrics.openOrderRepriceProposalOverall ?? "N/A"} openRepriceRows=${report.metrics.openOrderRepriceRows ?? "N/A"} openRepriceReady=${report.metrics.openOrderRepriceReady ?? "N/A"} openRepriceRiskBreaches=${report.metrics.openOrderRepriceSuggestedRiskBreaches ?? "N/A"} openRepriceAttempted=${report.metrics.openOrderRepriceAttempted ?? "N/A"} openRepriceSubmitted=${report.metrics.openOrderRepriceSubmitted ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
@@ -148,6 +149,9 @@ const buildMarkdown = (report) => {
   );
   lines.push(
     `- ledger_filled_migration: \`overall=${report.metrics.ledgerFilledMigrationOverall ?? "N/A"} rows=${report.metrics.ledgerFilledMigrationRows ?? "N/A"} ready=${report.metrics.ledgerFilledMigrationReady ?? "N/A"} blocked=${report.metrics.ledgerFilledMigrationBlocked ?? "N/A"} backupRequired=${report.metrics.ledgerFilledMigrationBackupRequired ?? "N/A"} diffRows=${report.metrics.ledgerFilledMigrationDiffRows ?? "N/A"} auditRows=${report.metrics.ledgerFilledMigrationAuditRows ?? "N/A"} stateApplied=${report.metrics.ledgerFilledMigrationStateApplied ?? "N/A"}\``
+  );
+  lines.push(
+    `- ledger_filled_migration_apply: \`overall=${report.metrics.ledgerFilledMigrationApplyOverall ?? "N/A"} selected=${report.metrics.ledgerFilledMigrationApplySelectedRows ?? "N/A"} postVerified=${report.metrics.ledgerFilledMigrationApplyPostVerifiedRows ?? "N/A"} backupCreated=${report.metrics.ledgerFilledMigrationApplyBackupCreated ?? "N/A"} attempted=${report.metrics.ledgerFilledMigrationApplyAttempted ?? "N/A"} stateApplied=${report.metrics.ledgerFilledMigrationApplyStateApplied ?? "N/A"}\``
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
@@ -177,6 +181,7 @@ const main = () => {
   const brokerFillStateEvidence = readJson(FILES.brokerFillStateEvidence);
   const ledgerTerminalizationProposal = readJson(FILES.ledgerTerminalizationProposal);
   const ledgerFilledMigrationPlan = readJson(FILES.ledgerFilledMigrationPlan);
+  const ledgerFilledMigrationApply = readJson(FILES.ledgerFilledMigrationApply);
   const guardedRepairPlan = readJson(FILES.guardedRepairPlan);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const persistentOcoOpenVerifyMulti = readJson(FILES.persistentOcoOpenVerifyMulti);
@@ -534,6 +539,24 @@ const main = () => {
     ledgerFilledMigrationPlan?.executionPolicy?.brokerMutationAllowed === true;
   const ledgerFilledMigrationStateMutationAllowed =
     ledgerFilledMigrationPlan?.executionPolicy?.stateMutationAllowed === true;
+  const ledgerFilledMigrationApplyOverall = short(ledgerFilledMigrationApply?.overall || "", 64) || null;
+  const ledgerFilledMigrationApplySelectedRows = toNum(ledgerFilledMigrationApply?.summary?.selectedRows);
+  const ledgerFilledMigrationApplyPostVerifiedRows = toNum(ledgerFilledMigrationApply?.summary?.postVerifiedRows);
+  const ledgerFilledMigrationApplyBackupCreated = ledgerFilledMigrationApply?.backup?.created === true;
+  const ledgerFilledMigrationApplyAttempted =
+    ledgerFilledMigrationApply?.executionPolicy?.brokerMutationAttempted === true ||
+    ledgerFilledMigrationApply?.executionPolicy?.brokerMutationSubmitted === true ||
+    ledgerFilledMigrationApply?.summary?.stateMutationAttempted === true ||
+    ledgerFilledMigrationApply?.executionPolicy?.stateMutationAttempted === true;
+  const ledgerFilledMigrationApplySubmitted =
+    ledgerFilledMigrationApply?.executionPolicy?.brokerMutationSubmitted === true;
+  const ledgerFilledMigrationApplyStateApplied =
+    ledgerFilledMigrationApply?.summary?.stateMutationApplied === true ||
+    ledgerFilledMigrationApply?.executionPolicy?.stateMutationApplied === true;
+  const ledgerFilledMigrationApplyBrokerMutationAllowed =
+    ledgerFilledMigrationApply?.executionPolicy?.brokerMutationAllowed === true;
+  const ledgerFilledMigrationApplyApprovalProvided =
+    ledgerFilledMigrationApply?.apply?.approvalProvided === true;
   const guardedRepairPlanOverall = short(guardedRepairPlan?.overall || "", 48) || null;
   const guardedRepairCandidates = toNum(guardedRepairPlan?.summary?.candidates);
   const guardedRepairBlockedByReportOnly = toNum(guardedRepairPlan?.summary?.blockedByReportOnly);
@@ -1137,6 +1160,50 @@ const main = () => {
     );
   }
 
+  if (ledgerFilledMigrationApplyBrokerMutationAllowed || ledgerFilledMigrationApplySubmitted) {
+    addCheck(
+      checks,
+      "fail",
+      "ledger_filled_migration_apply_broker_mutation_unsafe",
+      `filled migration apply lane is state-only; brokerMutationAllowed=${ledgerFilledMigrationApplyBrokerMutationAllowed} brokerSubmitted=${ledgerFilledMigrationApplySubmitted}`
+    );
+  }
+
+  if (
+    ledgerFilledMigrationApplyStateApplied &&
+    (!ledgerFilledMigrationApplyApprovalProvided ||
+      !ledgerFilledMigrationApplyBackupCreated ||
+      (ledgerFilledMigrationApplyPostVerifiedRows ?? 0) <= 0)
+  ) {
+    addCheck(
+      checks,
+      "fail",
+      "ledger_filled_migration_apply_missing_safety_evidence",
+      `stateApplied=true requires approval, backup, and post verification; approval=${ledgerFilledMigrationApplyApprovalProvided} backup=${ledgerFilledMigrationApplyBackupCreated} postVerified=${ledgerFilledMigrationApplyPostVerifiedRows ?? "N/A"}`
+    );
+  } else if (ledgerFilledMigrationApplyStateApplied) {
+    addCheck(
+      checks,
+      "warn",
+      "ledger_filled_migration_state_applied",
+      `${ledgerFilledMigrationApplyPostVerifiedRows ?? 0} filled migration row(s) were state-applied with backup/audit/post verification; rerun fill-state and guard source recovery before repair`
+    );
+  } else if (ledgerFilledMigrationApplyOverall === "apply_not_requested_ready_rows_present") {
+    addCheck(
+      checks,
+      "warn",
+      "ledger_filled_migration_apply_not_requested",
+      `${ledgerFilledMigrationApplySelectedRows ?? 0} filled migration row(s) are ready but apply was not requested`
+    );
+  } else if (ledgerFilledMigrationApplyOverall === "apply_blocked_by_safety_gates") {
+    addCheck(
+      checks,
+      "warn",
+      "ledger_filled_migration_apply_blocked",
+      "filled migration apply was requested but blocked by approval/hash/scope gates"
+    );
+  }
+
   if (guardedRepairExecutionReadyRows != null && guardedRepairExecutionReadyRows > 0) {
     addCheck(
       checks,
@@ -1639,6 +1706,7 @@ const main = () => {
       brokerFillStateEvidence: Boolean(brokerFillStateEvidence),
       ledgerTerminalizationProposal: Boolean(ledgerTerminalizationProposal),
       ledgerFilledMigrationPlan: Boolean(ledgerFilledMigrationPlan),
+      ledgerFilledMigrationApply: Boolean(ledgerFilledMigrationApply),
       guardedRepairPlan: Boolean(guardedRepairPlan),
       persistentOcoRepairPlan: Boolean(persistentOcoRepairPlan),
       persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
@@ -1768,6 +1836,13 @@ const main = () => {
       ledgerFilledMigrationAttempted,
       ledgerFilledMigrationSubmitted,
       ledgerFilledMigrationStateApplied,
+      ledgerFilledMigrationApplyOverall,
+      ledgerFilledMigrationApplySelectedRows,
+      ledgerFilledMigrationApplyPostVerifiedRows,
+      ledgerFilledMigrationApplyBackupCreated,
+      ledgerFilledMigrationApplyAttempted,
+      ledgerFilledMigrationApplySubmitted,
+      ledgerFilledMigrationApplyStateApplied,
       guardedRepairPlanOverall,
       guardedRepairCandidates,
       guardedRepairBlockedByReportOnly,

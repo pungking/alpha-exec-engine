@@ -18,6 +18,7 @@ const FILES = {
   brokerFillStateEvidence: `${STATE_DIR}/broker-fill-state-evidence.json`,
   ledgerTerminalizationProposal: `${STATE_DIR}/ledger-terminalization-proposal.json`,
   ledgerFilledMigrationPlan: `${STATE_DIR}/ledger-filled-migration-plan.json`,
+  ledgerFilledMigrationApply: `${STATE_DIR}/ledger-filled-migration-apply-report.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
   highPriceMinOneShareCanaryPlan: `${STATE_DIR}/high-price-min-one-share-canary-plan.json`,
   entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
@@ -85,6 +86,7 @@ const buildReport = () => {
   const brokerFillStateEvidence = readJson(FILES.brokerFillStateEvidence);
   const ledgerTerminalizationProposal = readJson(FILES.ledgerTerminalizationProposal);
   const ledgerFilledMigrationPlan = readJson(FILES.ledgerFilledMigrationPlan);
+  const ledgerFilledMigrationApply = readJson(FILES.ledgerFilledMigrationApply);
   const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
   const highPriceMinOneShareCanaryPlan = readJson(FILES.highPriceMinOneShareCanaryPlan);
   const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
@@ -98,6 +100,7 @@ const buildReport = () => {
   const brokerEvidenceRows = Array.isArray(brokerFillStateEvidence?.rows) ? brokerFillStateEvidence.rows : [];
   const terminalizationRows = Array.isArray(ledgerTerminalizationProposal?.rows) ? ledgerTerminalizationProposal.rows : [];
   const filledMigrationRows = Array.isArray(ledgerFilledMigrationPlan?.rows) ? ledgerFilledMigrationPlan.rows : [];
+  const filledMigrationApplyRows = Array.isArray(ledgerFilledMigrationApply?.rows) ? ledgerFilledMigrationApply.rows : [];
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
@@ -141,12 +144,15 @@ const buildReport = () => {
   const terminalizationBlockedRows = terminalizationRows.filter((row) => row.proposalReady !== true);
   const filledMigrationReadyRows = filledMigrationRows.filter((row) => row.readyForApplyReview === true);
   const filledMigrationBlockedRows = filledMigrationRows.filter((row) => row.readyForApplyReview !== true);
-  const repairPrereqFillBlocked =
+  const filledMigrationAppliedRows = filledMigrationApplyRows.filter((row) => row.stateMutationApplied === true);
+  const fillTerminalizationOpen =
     fillStateReconciliationRows.length > 0 ||
     terminalizationBlockedRows.length > 0 ||
     terminalizationReadyRows.length > 0 ||
     filledMigrationReadyRows.length > 0 ||
     filledMigrationBlockedRows.length > 0;
+  const filledMigrationAppliedNeedsReaudit = filledMigrationAppliedRows.length > 0 && fillTerminalizationOpen;
+  const repairPrereqFillBlocked = fillTerminalizationOpen || filledMigrationAppliedNeedsReaudit;
   const repairPrereqFreshBlocked = freshSourceRequiredRows.length > 0;
   const persistentEligibleRows = persistentRows.filter((row) => row.eligible === true);
   const brokerMissingRows = brokerRows.filter(
@@ -228,7 +234,11 @@ const buildReport = () => {
       id: "track_4_fill_state_terminalization",
       name: "Fill-State Terminalization Lane",
       status:
-        filledMigrationReadyRows.length > 0
+        filledMigrationAppliedRows.length > 0 && !fillTerminalizationOpen
+          ? "filled_migration_applied_reaudit_clear"
+          : filledMigrationAppliedRows.length > 0
+          ? "filled_migration_applied_pending_reaudit"
+          : filledMigrationReadyRows.length > 0
           ? "manual_filled_migration_apply_review_ready"
           : terminalizationReadyRows.length > 0
             ? "manual_state_migration_review_ready"
@@ -237,11 +247,15 @@ const buildReport = () => {
               ? "blocked_no_terminalization_proposal"
               : "blocked_broker_evidence_required"
             : "clear",
-      count: fillStateReconciliationRows.length || terminalizationRows.length || filledMigrationRows.length,
-      symbols: uniqueSymbols([...fillStateReconciliationRows, ...brokerEvidenceRows, ...terminalizationRows, ...filledMigrationRows]),
-      evidence: `fillState=${fillStateReconciliationAudit?.overall || "N/A"} terminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} brokerEvidence=${brokerFillStateEvidence?.overall || "N/A"} readAttempted=${brokerFillStateEvidence?.summary?.brokerReadAttempted ?? "N/A"} terminalization=${ledgerTerminalizationProposal?.overall || "N/A"} ready=${ledgerTerminalizationProposal?.summary?.proposalReady ?? "N/A"} blocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"} filledMigration=${ledgerFilledMigrationPlan?.overall || "N/A"} migrationReady=${ledgerFilledMigrationPlan?.summary?.readyForApplyReview ?? "N/A"} migrationBlocked=${ledgerFilledMigrationPlan?.summary?.blocked ?? "N/A"}`,
+      count: fillStateReconciliationRows.length || terminalizationRows.length || filledMigrationRows.length || filledMigrationApplyRows.length,
+      symbols: uniqueSymbols([...fillStateReconciliationRows, ...brokerEvidenceRows, ...terminalizationRows, ...filledMigrationRows, ...filledMigrationApplyRows]),
+      evidence: `fillState=${fillStateReconciliationAudit?.overall || "N/A"} terminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} brokerEvidence=${brokerFillStateEvidence?.overall || "N/A"} readAttempted=${brokerFillStateEvidence?.summary?.brokerReadAttempted ?? "N/A"} terminalization=${ledgerTerminalizationProposal?.overall || "N/A"} ready=${ledgerTerminalizationProposal?.summary?.proposalReady ?? "N/A"} blocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"} filledMigration=${ledgerFilledMigrationPlan?.overall || "N/A"} migrationReady=${ledgerFilledMigrationPlan?.summary?.readyForApplyReview ?? "N/A"} migrationBlocked=${ledgerFilledMigrationPlan?.summary?.blocked ?? "N/A"} apply=${ledgerFilledMigrationApply?.overall || "N/A"} applied=${ledgerFilledMigrationApply?.summary?.stateMutationApplied ?? "N/A"} postVerified=${ledgerFilledMigrationApply?.summary?.postVerifiedRows ?? "N/A"}`,
       nextAction:
-        filledMigrationReadyRows.length > 0
+        filledMigrationAppliedRows.length > 0 && !fillTerminalizationOpen
+          ? "Fill-state terminalization is clear after state migration; move to fresh guard source recovery and keep repair blocked while stale/missing guard source remains."
+          : filledMigrationAppliedRows.length > 0
+          ? "Rerun fill-state reconciliation, broker evidence, terminalization proposal, guard source recovery, and lane status before any repair re-entry."
+          : filledMigrationReadyRows.length > 0
           ? "Review backup/diff/audit previews. Applying the migration requires a separate scoped state migration task; keep repair blocked until applied and re-audited."
           : terminalizationReadyRows.length > 0
           ? "Review report-only ledger/idempotency terminalization patch preview; applying it requires a separate scoped state migration task."

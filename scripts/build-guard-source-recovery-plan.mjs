@@ -6,6 +6,7 @@ const FILES = {
   protectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
   guardRefresh: `${STATE_DIR}/guard-metadata-refresh-plan.json`,
   guardLineage: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
+  fillStateReconciliation: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
 };
@@ -59,17 +60,27 @@ const indexRows = (rows) => {
   return out;
 };
 
-const rowDecision = ({ refreshRow, protectionRow, lineageRow, reconciliationRow }) => {
+const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow }) => {
   const refreshDecision = String(refreshRow?.refreshDecision || "");
   const ownership = String(refreshRow?.ownershipClassification || protectionRow?.ownershipClassification || "");
   const fillState = String(refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || "");
   const brokerStopPresent = refreshRow?.broker?.stopPresent === true || reconciliationRow?.brokerStopPresent === true;
   const brokerTargetPresent = refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true;
   const brokerChildrenPresent = brokerStopPresent && brokerTargetPresent;
-  const staleSource = refreshDecision === "BLOCKED_REFRESH_SOURCE_STALE" || lineageRow?.freshnessStatus === "STALE_SOURCE_ONLY";
-  const missingSource = refreshDecision === "BLOCKED_NO_REFRESH_SOURCE" || lineageRow?.freshnessStatus === "MISSING_NO_SOURCE";
+  const lineageFreshness = String(lineageRow?.freshnessStatus || lineageRow?.lineageStatus || "");
+  const staleSource =
+    refreshDecision === "BLOCKED_REFRESH_SOURCE_STALE" ||
+    lineageFreshness === "STALE_SOURCE_ONLY" ||
+    lineageFreshness === "LINEAGE_STALE_SOURCE_ONLY";
+  const missingSource =
+    refreshDecision === "BLOCKED_NO_REFRESH_SOURCE" ||
+    lineageFreshness === "MISSING_NO_SOURCE" ||
+    lineageFreshness === "LINEAGE_MISSING_NO_SOURCE";
   const invalidGeometry = refreshDecision === "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY" || protectionRow?.invalidGeometry === true;
-  const fillStateBlocked = refreshDecision === "BLOCKED_FILL_STATE_RECONCILIATION" || ownership === "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED";
+  const fillStateConfirmed =
+    fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
+    fillStateRow?.requiresLedgerTerminalizationReview !== true;
+  const fillStateBlocked = !fillStateConfirmed && (refreshDecision === "BLOCKED_FILL_STATE_RECONCILIATION" || ownership === "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED");
   const ownershipBlocked = refreshDecision === "BLOCKED_POSITION_OWNERSHIP_REVIEW" || ownership === "EXTERNAL_OR_MANUAL_POSITION";
 
   if (brokerChildrenPresent) {
@@ -148,8 +159,8 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, reconciliationRow 
   };
 };
 
-const buildRow = ({ refreshRow, protectionRow, lineageRow, reconciliationRow }) => {
-  const decision = rowDecision({ refreshRow, protectionRow, lineageRow, reconciliationRow });
+const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow }) => {
+  const decision = rowDecision({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow });
   const selected = refreshRow?.selectedSource || null;
   const sourceAgeMin = selected?.ageMin ?? round(ageMinutes(selected?.generatedAt));
   const blockerSource =
@@ -159,14 +170,17 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, reconciliationRow }) 
     decision.recoveryDecision === "BLOCKED_UNCLASSIFIED_GUARD_SOURCE_GAP"
       ? [...(refreshRow?.blockers || []), ...decision.blockers]
       : decision.blockers;
+  const fillStateConfirmed =
+    fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
+    fillStateRow?.requiresLedgerTerminalizationReview !== true;
   return {
     symbol: asSymbol(refreshRow?.symbol || protectionRow?.symbol || lineageRow?.symbol || reconciliationRow?.symbol),
     currentPrice: toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice),
     qty: toNum(refreshRow?.qty ?? protectionRow?.qty ?? reconciliationRow?.qty),
     ownershipClassification: refreshRow?.ownershipClassification || protectionRow?.ownershipClassification || null,
-    fillStateStatus: refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || null,
+    fillStateStatus: fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || null,
     refreshDecision: refreshRow?.refreshDecision || null,
-    lineageFreshnessStatus: lineageRow?.freshnessStatus || null,
+    lineageFreshnessStatus: lineageRow?.freshnessStatus || lineageRow?.lineageStatus || null,
     lineageRootCause: lineageRow?.rootCause || null,
     selectedSource: selected
       ? {
@@ -189,7 +203,7 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, reconciliationRow }) 
     recoveryReady: decision.recoveryReady,
     repairEligibleNow: decision.repairEligibleNow,
     recommendedSourceRecoveryMethods: decision.methods,
-    blockers: [...new Set(blockerSource)],
+    blockers: [...new Set(blockerSource.filter((blocker) => !(fillStateConfirmed && blocker === "fill_state_reconciliation_required")))],
     brokerMutationAllowed: false,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
@@ -230,12 +244,14 @@ const main = () => {
   const protectionAudit = readJson(FILES.protectionAudit);
   const guardRefresh = readJson(FILES.guardRefresh);
   const guardLineage = readJson(FILES.guardLineage);
+  const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const preview = readJson(FILES.preview);
 
   const refreshRows = Array.isArray(guardRefresh?.rows) ? guardRefresh.rows : [];
   const protectionBySymbol = indexRows(protectionAudit?.rows);
   const lineageBySymbol = indexRows(guardLineage?.rows);
+  const fillStateBySymbol = indexRows(fillStateReconciliation?.rows);
   const reconciliationBySymbol = indexRows(brokerChildReconciliation?.rows);
   const rows = refreshRows.map((refreshRow) => {
     const symbol = asSymbol(refreshRow?.symbol);
@@ -243,6 +259,7 @@ const main = () => {
       refreshRow,
       protectionRow: protectionBySymbol.get(symbol) || null,
       lineageRow: lineageBySymbol.get(symbol) || null,
+      fillStateRow: fillStateBySymbol.get(symbol) || null,
       reconciliationRow: reconciliationBySymbol.get(symbol) || null
     });
   });

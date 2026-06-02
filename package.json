@@ -65,7 +65,8 @@
     "ops:fill-state-reconcile": "node scripts/build-fill-state-reconciliation-audit.mjs",
     "ops:broker-fill-state-evidence": "node scripts/build-broker-fill-state-evidence.mjs",
     "ops:ledger-terminalization-proposal": "node scripts/build-ledger-terminalization-proposal.mjs",
-    "ops:ledger-filled-migration-plan": "node scripts/build-ledger-filled-migration-plan.mjs"
+    "ops:ledger-filled-migration-plan": "node scripts/build-ledger-filled-migration-plan.mjs",
+    "ops:ledger-filled-migration-apply": "node scripts/apply-ledger-filled-migration.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

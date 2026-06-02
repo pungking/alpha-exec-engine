@@ -186,6 +186,29 @@ on:
           - "30"
           - "40"
           - "50"
+      run_ledger_filled_migration_apply:
+        description: "Apply report-first filled ledger/idempotency migration (state-only; requires approval phrase)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      run_ledger_filled_migration_symbols:
+        description: "Optional comma-separated symbol scope for filled ledger migration apply"
+        required: false
+        default: ""
+        type: string
+      run_ledger_filled_migration_max_rows:
+        description: "Max rows allowed for filled ledger migration apply"
+        required: false
+        default: "1"
+        type: string
+      run_ledger_filled_migration_approval:
+        description: "Required phrase for state-only migration apply: CONFIRM STATE LEDGER MIGRATION"
+        required: false
+        default: ""
+        type: string
   schedule:
     # RTH simulation cadence (UTC, weekdays): every 15m in broad US cash-session window.
     # - Covers DST (EDT) and non-DST (EST) without manual seasonal edits.
@@ -206,6 +229,10 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       RUN_VERIFY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_verify_mode || 'auto' }}
+      LEDGER_FILLED_MIGRATION_APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_apply || 'false' }}
+      LEDGER_FILLED_MIGRATION_SYMBOLS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_symbols || '' }}
+      LEDGER_FILLED_MIGRATION_MAX_ROWS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_max_rows || '1' }}
+      LEDGER_FILLED_MIGRATION_APPROVAL: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ledger_filled_migration_approval || '' }}
       EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
       READ_ONLY: ${{ vars.READ_ONLY }}
       SIMULATION_LIVE_PARITY: ${{ vars.SIMULATION_LIVE_PARITY }}
@@ -1768,6 +1795,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Apply ledger filled migration gate
+        if: always()
+        run: npm run ops:ledger-filled-migration-apply
+
+      - name: Publish ledger filled migration apply summary
+        if: always()
+        run: |
+          if [[ -f state/ledger-filled-migration-apply-report.md ]]; then
+            cat state/ledger-filled-migration-apply-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Ledger Filled Migration Apply Report" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ledger-filled-migration-apply-report.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build position protection root-cause audit
         if: always()
         run: npm run ops:position-protection:audit
@@ -2054,6 +2096,9 @@ jobs:
             state/ledger-terminalization-proposal.md
             state/ledger-filled-migration-plan.json
             state/ledger-filled-migration-plan.md
+            state/ledger-filled-migration-apply-report.json
+            state/ledger-filled-migration-apply-report.md
+            state/migration-backups/**
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
             state/guard-metadata-refresh-plan.json
