@@ -2004,6 +2004,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build position ownership guard metadata gap audit
+        if: always()
+        run: npm run ops:position-ownership-guard-gap
+
+      - name: Publish position ownership guard metadata gap audit summary
+        if: always()
+        run: |
+          if [[ -f state/position-ownership-guard-gap-audit.md ]]; then
+            cat state/position-ownership-guard-gap-audit.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Position Ownership + Guard Metadata Gap Audit" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/position-ownership-guard-gap-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops lane status report
         if: always()
         run: npm run ops:lane-status
@@ -2140,6 +2155,8 @@ jobs:
             state/persistent-oco-repair-plan.md
             state/limited-multi-oco-repair-plan.json
             state/limited-multi-oco-repair-plan.md
+            state/position-ownership-guard-gap-audit.json
+            state/position-ownership-guard-gap-audit.md
             state/fillability-report.json
             state/fillability-report.md
             state/entry-reprice-policy-decision.json

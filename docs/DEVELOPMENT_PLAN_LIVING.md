@@ -1123,3 +1123,25 @@ Done-When:
 - TSLA-style rows show `position_ownership_review` or another concrete blocked group.
 - `ops-lane-status-report` includes `track_8_limited_multi_oco_repair_planner`.
 - `ops-health-report` includes limited multi OCO metrics and fails if the planner ever reports broker mutation.
+
+### 2026-06-03 - Position Ownership + Guard Metadata Gap Audit
+
+- Scope: `alpha-exec-engine` / report-only root-cause separation for TSLA-style positions that are not sidecar-managed and have no fresh stop/target source.
+- Added `position-ownership-guard-gap-audit` as a symbol-agnostic separation lane:
+  - consumes performance dashboard positions, position protection root-cause audit, guard metadata lineage, guard source recovery, persistent OCO repair plan, and limited multi OCO repair plan.
+  - classifies protected rows as `already_protected_no_action` so duplicate OCO children are not generated.
+  - classifies TSLA-style rows as `external_position_and_guard_metadata_missing` when both sidecar ownership evidence and stop/target guard source are absent.
+  - emits required evidence before repair can be reconsidered: sidecar order/idempotency ownership proof plus fresh Stage6 or position lifecycle stop/target source.
+- Safety invariant:
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - `stateMutationAllowed=false`, `stateMutationAttempted=false`.
+  - multi submit remains unauthorized; limited multi planner remains report-only.
+  - broker mutation still requires a separate scoped `CONFIRM LIVE EXECUTION` task.
+
+Done-When:
+
+- Safe sidecar artifacts include `position-ownership-guard-gap-audit.json` / `.md`.
+- QFIN/BZ/ACAD/ATAT-style protected rows show `already_protected_no_action`.
+- TSLA-style rows show `external_position_and_guard_metadata_missing` or another concrete root-cause class, not repair eligibility.
+- `ops-lane-status-report` includes `track_9_position_ownership_guard_gap`.
+- `ops-health-report` includes ownership guard gap metrics and fails if this audit ever reports broker mutation.

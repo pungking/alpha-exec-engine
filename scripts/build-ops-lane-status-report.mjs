@@ -25,6 +25,7 @@ const FILES = {
   entryRepricePolicyDecision: `${STATE_DIR}/entry-reprice-policy-decision.json`,
   openOrderRepriceProposal: `${STATE_DIR}/open-order-reprice-proposal.json`,
   limitedMultiOcoRepairPlan: `${STATE_DIR}/limited-multi-oco-repair-plan.json`,
+  positionOwnershipGuardGapAudit: `${STATE_DIR}/position-ownership-guard-gap-audit.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
 
@@ -95,6 +96,7 @@ const buildReport = () => {
   const entryRepricePolicyDecision = readJson(FILES.entryRepricePolicyDecision);
   const openOrderRepriceProposal = readJson(FILES.openOrderRepriceProposal);
   const limitedMultiOcoRepairPlan = readJson(FILES.limitedMultiOcoRepairPlan);
+  const positionOwnershipGuardGapAudit = readJson(FILES.positionOwnershipGuardGapAudit);
   const opsHealth = readJson(FILES.opsHealth);
 
   const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
@@ -192,6 +194,21 @@ const buildReport = () => {
     limitedMultiOcoRepairPlan?.executionPolicy?.brokerMutationAllowed === true ||
     limitedMultiOcoRepairPlan?.summary?.brokerMutationAttempted === true ||
     limitedMultiOcoRepairPlan?.summary?.brokerMutationSubmitted === true;
+  const ownershipGuardRows = Array.isArray(positionOwnershipGuardGapAudit?.rows)
+    ? positionOwnershipGuardGapAudit.rows
+    : [];
+  const ownershipGuardUnsafe =
+    positionOwnershipGuardGapAudit?.executionPolicy?.brokerMutationAllowed === true ||
+    positionOwnershipGuardGapAudit?.summary?.brokerMutationAttempted === true ||
+    positionOwnershipGuardGapAudit?.summary?.brokerMutationSubmitted === true;
+  const ownershipGuardRootCauseRows = ownershipGuardRows.filter((row) =>
+    [
+      "external_position_and_guard_metadata_missing",
+      "external_position_ownership_review",
+      "guard_metadata_missing_source_gap"
+    ].includes(String(row?.classification || ""))
+  );
+  const ownershipGuardManualRows = ownershipGuardRows.filter((row) => row?.classification === "manual_approval_candidate");
   const combinedRepriceApprovalReady = openRepriceReadyCount > 0 && entryRepriceReadyCount > 0;
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
@@ -393,6 +410,24 @@ const buildReport = () => {
         ? "Review selected batch candidates only; any broker mutation still requires a separate exact approval and submit lane."
         : "No multi-repair submit action. Monitor protected rows and keep ownership/guard-missing rows on root-cause lanes.",
       safety: "report_only_no_multi_submit_no_broker_mutation"
+    }),
+    lane({
+      id: "track_9_position_ownership_guard_gap",
+      name: "Position Ownership + Guard Metadata Gap Lane",
+      status: ownershipGuardUnsafe
+        ? "blocked_unsafe_mutation_signal"
+        : ownershipGuardManualRows.length > 0
+          ? "manual_approval_candidate"
+          : ownershipGuardRootCauseRows.length > 0
+            ? "root_cause_review_required"
+            : positionOwnershipGuardGapAudit?.overall || "unknown",
+      count: ownershipGuardRows.length,
+      symbols: uniqueSymbols(ownershipGuardRootCauseRows.length ? ownershipGuardRootCauseRows : ownershipGuardRows),
+      evidence: `overall=${positionOwnershipGuardGapAudit?.overall || "N/A"} protected=${positionOwnershipGuardGapAudit?.summary?.alreadyProtectedNoAction ?? "N/A"} externalAndGuardMissing=${positionOwnershipGuardGapAudit?.summary?.externalPositionAndGuardMissing ?? "N/A"} ownershipReview=${positionOwnershipGuardGapAudit?.summary?.externalPositionOwnershipReview ?? "N/A"} guardMissing=${positionOwnershipGuardGapAudit?.summary?.guardMetadataMissingSourceGap ?? "N/A"} repairEligible=${positionOwnershipGuardGapAudit?.summary?.repairEligible ?? "N/A"} multiEligible=${positionOwnershipGuardGapAudit?.summary?.multiPlannerEligible ?? "N/A"} attempted=${positionOwnershipGuardGapAudit?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${positionOwnershipGuardGapAudit?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+      nextAction: ownershipGuardRootCauseRows.length > 0
+        ? "Resolve position ownership evidence and fresh guard source gaps before any repair approval."
+        : "No ownership/guard source gap action required; keep monitor-only rows separate from repair lanes.",
+      safety: "report_only_no_broker_or_state_mutation"
     })
   ];
 
