@@ -1817,6 +1817,28 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build position lifecycle guard source plan
+        if: always()
+        run: npm run ops:position-lifecycle-guard-source
+
+      - name: Publish position lifecycle guard source summary
+        if: always()
+        run: |
+          if [[ -f state/position-lifecycle-guard-source-plan.md ]]; then
+            cat state/position-lifecycle-guard-source-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Position Lifecycle Guard Source Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/position-lifecycle-guard-source-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Rebuild protection chain with lifecycle guard source
+        if: always()
+        run: |
+          npm run ops:broker-child-reconcile
+          npm run ops:position-protection:audit
+          npm run ops:guard-metadata-refresh
+
       - name: Build guard metadata lineage audit
         if: always()
         run: npm run ops:guard-metadata:lineage
@@ -2078,6 +2100,8 @@ jobs:
             state/migration-backups/**
             state/position-protection-root-cause-audit.json
             state/position-protection-root-cause-audit.md
+            state/position-lifecycle-guard-source-plan.json
+            state/position-lifecycle-guard-source-plan.md
             state/guard-metadata-refresh-plan.json
             state/guard-metadata-refresh-plan.md
             state/guard-metadata-lineage-audit.json

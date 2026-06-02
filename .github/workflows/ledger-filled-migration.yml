@@ -85,6 +85,10 @@ jobs:
           npm run ops:ledger-filled-migration-plan
           npm run ops:position-protection:audit
           npm run ops:guard-metadata-refresh
+          npm run ops:position-lifecycle-guard-source
+          npm run ops:broker-child-reconcile
+          npm run ops:position-protection:audit
+          npm run ops:guard-metadata-refresh
           npm run ops:guard-metadata:lineage
           npm run ops:guard-source-recovery
           npm run ops:guarded-repair-plan
@@ -122,6 +126,7 @@ jobs:
             echo ""
             cat state/ledger-filled-migration-apply-report.md || true
             cat state/fill-state-reconciliation-audit.md || true
+            cat state/position-lifecycle-guard-source-plan.md || true
             cat state/guard-source-recovery-plan.md || true
             cat state/ops-lane-status-report.md || true
             cat state/ops-health-report.md || true
@@ -145,6 +150,8 @@ jobs:
             state/ledger-terminalization-proposal.md
             state/guard-source-recovery-plan.json
             state/guard-source-recovery-plan.md
+            state/position-lifecycle-guard-source-plan.json
+            state/position-lifecycle-guard-source-plan.md
             state/guarded-child-order-repair-plan.json
             state/guarded-child-order-repair-plan.md
             state/persistent-oco-repair-plan.json

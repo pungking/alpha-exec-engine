@@ -1081,3 +1081,23 @@ Done-When:
 - Subsequent audit run clears the fill-state terminalization prerequisite before QFIN/ACAD-style fresh guard source recovery can be re-evaluated.
 
 Note: the regular `sidecar-dry-run` workflow intentionally hard-locks `LEDGER_FILLED_MIGRATION_APPLY=false` because GitHub workflow_dispatch input count is already at the platform limit and dry-run must not become a state-mutation entrypoint. Approved state migration must be run as a separate scoped migration task using `scripts/apply-ledger-filled-migration.mjs` against a reviewed state directory, then followed by the same safe dry-run audit chain.
+
+### 2026-06-02 - Position Lifecycle Guard Source Recovery Lane
+
+- Scope: `alpha-exec-engine` / report-only fresh guard source recovery for sidecar-managed filled positions with stale stop/target metadata.
+- Added `position-lifecycle-guard-source-plan` as a symbol-agnostic lifecycle revalidation lane:
+  - consumes current performance dashboard positions, broker child reconciliation, position protection audit, guard metadata refresh, and fill-state reconciliation.
+  - emits a fresh `position_lifecycle_revalidated_guard` source only when the position is confirmed sidecar-managed filled, current stop/current/target geometry is valid, performance data is fresh, and stop/target are not near-breached.
+  - does not write order ledgers, idempotency ledgers, broker orders, or position metadata.
+- The protection chain now reruns after lifecycle source planning so broker-child reconciliation, position-protection audit, guard metadata refresh, guard lineage, guard-source recovery, and persistent OCO planning all see the same fresh lifecycle source.
+- Safety invariant:
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - `stateMutationAllowed=false`, `stateMutationAttempted=false`.
+  - actual protective repair submit still requires a separate scoped approval task with `CONFIRM LIVE EXECUTION`.
+
+Done-When:
+
+- QFIN/ACAD-style stale source rows move from `FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE` to `FRESH_SOURCE_READY_REPAIR_REEVALUATION_REPORT_ONLY` only when lifecycle revalidation passes.
+- `guard-metadata-refresh-plan.summary.staleRefreshSource=0` for lifecycle-revalidated rows and `repairReevaluationCandidates>0` when broker children are still missing.
+- `ops-lane-status-report` shows `track_4_valid_guard_missing_child_repair_candidate.status=manual_approval_candidate` with no broker mutation.
+- `persistent-oco-repair-plan` may select one dynamic row for manual approval, but remains report-only until separately approved.

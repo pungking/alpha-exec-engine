@@ -3,6 +3,7 @@ import { classifyProtectionOwnership, resolveEffectiveGuardMetadata } from "./li
 
 const STATE_DIR = String(process.env.BROKER_CHILD_RECONCILIATION_STATE_DIR || "state").trim() || "state";
 const PERFORMANCE_PATH = `${STATE_DIR}/performance-dashboard.json`;
+const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
 const OUTPUT_JSON = `${STATE_DIR}/broker-child-order-reconciliation.json`;
 const OUTPUT_MD = `${STATE_DIR}/broker-child-order-reconciliation.md`;
 
@@ -29,8 +30,16 @@ const fmt = (value, digits = 2) => {
 };
 
 const short = (value, max = 500) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+const indexRows = (rows) => {
+  const out = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const symbol = String(row?.symbol || "").trim().toUpperCase();
+    if (symbol) out.set(symbol, row);
+  }
+  return out;
+};
 
-const classifyPosition = ({ position, performanceGeneratedAt }) => {
+const classifyPosition = ({ position, performanceGeneratedAt, lifecycleRow }) => {
   const symbol = String(position?.symbol || "").toUpperCase();
   const qty = toNum(position?.qty) ?? 0;
   const plannedStopPrice = toNum(position?.plannedStopPrice ?? position?.stopPrice);
@@ -39,7 +48,7 @@ const classifyPosition = ({ position, performanceGeneratedAt }) => {
   const brokerStopPresent = position?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true;
   const ownership = classifyProtectionOwnership({ position });
-  const effectiveGuard = resolveEffectiveGuardMetadata({ position, performanceGeneratedAt });
+  const effectiveGuard = resolveEffectiveGuardMetadata({ position, performanceGeneratedAt, lifecycleRow });
   const hasOpenPosition = qty > 0;
   const guardMetadataMissing = hasOpenPosition && effectiveGuard.stopPrice == null && effectiveGuard.targetPrice == null;
   const stopGeometryInvalid = hasOpenPosition && currentPrice != null && effectiveGuard.stopPrice != null && effectiveGuard.stopPrice >= currentPrice;
@@ -98,6 +107,9 @@ const classifyPosition = ({ position, performanceGeneratedAt }) => {
     effectiveGuardSource: effectiveGuard.source,
     effectiveGuardGeneratedAt: effectiveGuard.generatedAt,
     sourcePrecedence: effectiveGuard.sourcePrecedence,
+    lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
+    lifecycleOriginalGuardSource: effectiveGuard.originalSourceType || null,
+    lifecycleOriginalGeneratedAt: effectiveGuard.originalGeneratedAt || null,
     staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
     brokerStopPresent,
     brokerTargetPresent,
@@ -185,11 +197,19 @@ const buildMarkdown = (report) => {
 const main = () => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const dashboard = readJson(PERFORMANCE_PATH);
+  const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
   const live = dashboard?.live || {};
   const positions = Array.isArray(live?.positions) ? live.positions : [];
+  const lifecycleBySymbol = indexRows(lifecyclePlan?.rows);
   const rows = positions
     .filter((row) => (toNum(row?.qty) ?? 0) > 0)
-    .map((position) => classifyPosition({ position, performanceGeneratedAt: dashboard?.generatedAt || null }));
+    .map((position) =>
+      classifyPosition({
+        position,
+        performanceGeneratedAt: dashboard?.generatedAt || null,
+        lifecycleRow: lifecycleBySymbol.get(String(position?.symbol || "").toUpperCase()) || null
+      })
+    );
   const summary = summarize(rows);
   const overall = !dashboard
     ? "warn"
@@ -203,10 +223,12 @@ const main = () => {
     generatedAt: new Date().toISOString(),
     overall,
     files: {
-      performanceDashboard: Boolean(dashboard)
+      performanceDashboard: Boolean(dashboard),
+      positionLifecycleGuardSourcePlan: Boolean(lifecyclePlan)
     },
     source: {
       performanceDashboardGeneratedAt: dashboard?.generatedAt || null,
+      lifecycleGuardSourceOverall: lifecyclePlan?.overall || null,
       openOrderNested: live?.totals?.openOrderNested ?? null,
       openOrderRawCount: toNum(live?.totals?.openOrderRawCount),
       openOrderFlattenedCount: toNum(live?.totals?.openOrderFlattenedCount)

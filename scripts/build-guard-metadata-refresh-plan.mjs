@@ -10,6 +10,7 @@ const ORDER_LEDGER_PATH = `${STATE_DIR}/order-ledger.json`;
 const IDEMPOTENCY_PATH = `${STATE_DIR}/order-idempotency.json`;
 const FILLABILITY_PATH = `${STATE_DIR}/fillability-report.json`;
 const PREVIEW_PATH = `${STATE_DIR}/last-dry-exec-preview.json`;
+const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
 const OUTPUT_JSON = `${STATE_DIR}/guard-metadata-refresh-plan.json`;
 const OUTPUT_MD = `${STATE_DIR}/guard-metadata-refresh-plan.md`;
 
@@ -112,7 +113,7 @@ const sourceCandidate = ({ type, stop, target, generatedAt, stage6Hash, stage6Fi
   };
 };
 
-const buildSources = ({ position, recommendation, loopRow, ledgerRow, performanceGeneratedAt }) => {
+const buildSources = ({ position, recommendation, loopRow, ledgerRow, lifecycleRow, performanceGeneratedAt }) => {
   const sources = [];
   if (position?.brokerStopPresent === true || position?.brokerTargetPresent === true) {
     sources.push(sourceCandidate({
@@ -123,6 +124,17 @@ const buildSources = ({ position, recommendation, loopRow, ledgerRow, performanc
       stage6Hash: position?.plannedStage6Hash,
       stage6File: position?.plannedStage6File,
       detail: "active Alpaca nested sell children observed in current performance dashboard"
+    }));
+  }
+  if (lifecycleRow?.lifecycleReady === true && lifecycleRow?.lifecycleSource) {
+    sources.push(sourceCandidate({
+      type: lifecycleRow.lifecycleSource.type || "position_lifecycle_revalidated_guard",
+      stop: lifecycleRow.lifecycleSource.stopPrice,
+      target: lifecycleRow.lifecycleSource.targetPrice,
+      generatedAt: lifecycleRow.lifecycleSource.generatedAt,
+      stage6Hash: lifecycleRow.lifecycleSource.stage6Hash,
+      stage6File: lifecycleRow.lifecycleSource.stage6File,
+      detail: `original=${lifecycleRow.lifecycleSource.originalSourceType || "N/A"} originalAt=${lifecycleRow.lifecycleSource.originalGeneratedAt || "N/A"} decision=${lifecycleRow.lifecycleDecision || "N/A"}`
     }));
   }
   if (recommendation) {
@@ -162,7 +174,7 @@ const buildSources = ({ position, recommendation, loopRow, ledgerRow, performanc
 };
 
 const chooseSource = (sources) => {
-  const priority = ["broker_children", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"];
+  const priority = ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"];
   const ready = sources.filter((row) => row.hasBothPrices && row.fresh);
   ready.sort((a, b) => priority.indexOf(a.type) - priority.indexOf(b.type));
   if (ready.length) return ready[0];
@@ -171,11 +183,11 @@ const chooseSource = (sources) => {
   return withPrices[0] || null;
 };
 
-const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, performanceGeneratedAt }) => {
+const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, lifecycleRow, performanceGeneratedAt }) => {
   const symbol = asSymbol(position?.symbol);
   const qty = toNum(position?.qty) ?? 0;
   const currentPrice = toNum(position?.currentPrice);
-  const sources = buildSources({ position, recommendation, loopRow, ledgerRow, performanceGeneratedAt });
+  const sources = buildSources({ position, recommendation, loopRow, ledgerRow, lifecycleRow, performanceGeneratedAt });
   const selected = chooseSource(sources);
   const selectedFresh = selected?.hasBothPrices === true && selected?.fresh === true;
   const geometryValid =
@@ -334,8 +346,10 @@ const main = () => {
   const idempotency = readJson(IDEMPOTENCY_PATH);
   const fillability = readJson(FILLABILITY_PATH);
   const preview = readJson(PREVIEW_PATH);
+  const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
   const positions = Array.isArray(performance?.live?.positions) ? performance.live.positions : [];
   const protectionBySymbol = indexArrayBySymbol(protectionAudit?.rows);
+  const lifecycleBySymbol = indexArrayBySymbol(lifecyclePlan?.rows);
   const rows = positions
     .filter((position) => (toNum(position?.qty) ?? 0) > 0)
     .map((position) => {
@@ -348,6 +362,7 @@ const main = () => {
         ledgerRow: valuesBySymbol(orderLedger?.orders, symbol),
         idempotencyRow: valuesBySymbol(idempotency?.orders, symbol),
         fillabilityRow: (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === symbol) || null,
+        lifecycleRow: lifecycleBySymbol.get(symbol) || null,
         performanceGeneratedAt: performance?.generatedAt || null
       });
     });
@@ -388,17 +403,19 @@ const main = () => {
       orderLedger: Boolean(orderLedger),
       orderIdempotency: Boolean(idempotency),
       fillability: Boolean(fillability),
-      preview: Boolean(preview)
+      preview: Boolean(preview),
+      positionLifecycleGuardSourcePlan: Boolean(lifecyclePlan)
     },
     source: {
       performanceDashboardGeneratedAt: performance?.generatedAt || null,
       protectionAuditGeneratedAt: protectionAudit?.generatedAt || null,
+      lifecycleGuardSourceOverall: lifecyclePlan?.overall || null,
       latestStage6Hash: preview?.stage6Hash || null,
       latestStage6File: preview?.stage6File || null
     },
     config: {
       refreshSourceMaxAgeMin: freshnessMaxAgeMin,
-      sourcePriority: ["broker_children", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"]
+      sourcePriority: ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"]
     },
     executionPolicy: {
       mode: "report_only",

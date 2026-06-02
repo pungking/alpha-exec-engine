@@ -4,6 +4,7 @@ import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const RECON_PATH = `${STATE_DIR}/broker-child-order-reconciliation.json`;
+const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
 const OUTPUT_JSON = `${STATE_DIR}/persistent-oco-repair-plan.json`;
 const OUTPUT_MD = `${STATE_DIR}/persistent-oco-repair-plan.md`;
 const PERSISTENT_REPAIR_TIME_IN_FORCE = "gtc";
@@ -49,15 +50,19 @@ const clientOrderId = ({ symbol, repairQty, plannedStop, plannedTarget }) => {
 
 const maxQty = Math.max(1, Math.trunc(Number(process.env.PERSISTENT_OCO_REPAIR_MAX_QTY || "1") || 1));
 const recon = readJson(RECON_PATH);
+const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
 const rows = Array.isArray(recon?.rows) ? recon.rows : [];
+const lifecycleBySymbol = new Map((Array.isArray(lifecyclePlan?.rows) ? lifecyclePlan.rows : []).map((row) => [asSymbol(row?.symbol), row]));
 const candidates = rows
   .map((row) => {
     const symbol = asSymbol(row?.symbol);
+    const lifecycleRow = lifecycleBySymbol.get(symbol) || null;
+    const lifecycleSource = lifecycleRow?.lifecycleReady === true ? lifecycleRow.lifecycleSource : null;
     const qty = toNum(row?.qty);
-    const plannedStop = toNum(row?.plannedStopPrice);
-    const plannedTarget = toNum(row?.plannedTargetPrice);
-    const effectiveStop = toNum(row?.effectiveStopPrice ?? row?.plannedStopPrice);
-    const effectiveTarget = toNum(row?.effectiveTargetPrice ?? row?.plannedTargetPrice);
+    const plannedStop = toNum(lifecycleSource?.stopPrice ?? row?.plannedStopPrice);
+    const plannedTarget = toNum(lifecycleSource?.targetPrice ?? row?.plannedTargetPrice);
+    const effectiveStop = toNum(lifecycleSource?.stopPrice ?? row?.effectiveStopPrice ?? row?.plannedStopPrice);
+    const effectiveTarget = toNum(lifecycleSource?.targetPrice ?? row?.effectiveTargetPrice ?? row?.plannedTargetPrice);
     const current = toNum(row?.currentPrice);
     const bothMissing = row?.stopChildMissing === true && row?.targetChildMissing === true;
     const brokerSellOrderCount = toNum(row?.brokerSellOrderCount) ?? 0;
@@ -69,7 +74,7 @@ const candidates = rows
     const stopBelowCurrent = effectiveStop != null && current != null && effectiveStop < current;
     const targetAboveCurrent = effectiveTarget != null && current != null && current < effectiveTarget;
     const geometryOk = stopBelowCurrent && targetAboveCurrent;
-    const guardMetadataGeneratedAt = row?.effectiveGuardGeneratedAt || row?.plannedLedgerUpdatedAt || recon?.generatedAt || null;
+    const guardMetadataGeneratedAt = lifecycleSource?.generatedAt || row?.effectiveGuardGeneratedAt || row?.plannedLedgerUpdatedAt || recon?.generatedAt || null;
     const rawGuardMetadataRisk = evaluateGuardMetadataRisk({
       generatedAt: guardMetadataGeneratedAt,
       currentPrice: current,
@@ -126,8 +131,11 @@ const candidates = rows
       plannedTargetPrice: plannedTarget,
       effectiveStopPrice: effectiveStop,
       effectiveTargetPrice: effectiveTarget,
-      effectiveGuardSource: row?.effectiveGuardSource || row?.plannedStopSource || row?.plannedTargetSource || null,
+      effectiveGuardSource: lifecycleSource?.type || row?.effectiveGuardSource || row?.plannedStopSource || row?.plannedTargetSource || null,
       sourcePrecedence: row?.sourcePrecedence || null,
+      lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
+      lifecycleOriginalGuardSource: lifecycleSource?.originalSourceType || row?.lifecycleOriginalGuardSource || null,
+      lifecycleOriginalGeneratedAt: lifecycleSource?.originalGeneratedAt || row?.lifecycleOriginalGeneratedAt || null,
       stopChildMissing: row?.stopChildMissing === true,
       targetChildMissing: row?.targetChildMissing === true,
       brokerStopPresent,
@@ -207,6 +215,10 @@ const report = {
     guardMetadataNearBreached: candidates.filter((row) => row.guardMetadataRisk?.nearStopBreach || row.guardMetadataRisk?.nearTargetBreach).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false
+  },
+  source: {
+    brokerChildReconciliationOverall: recon?.overall || null,
+    positionLifecycleGuardSourceOverall: lifecyclePlan?.overall || null
   },
   nextAction: selected
     ? "request a separate approved paper-only persistent OCO repair submit for the selected row; no auto-cancel"

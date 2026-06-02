@@ -105,7 +105,8 @@ export const resolveEffectiveGuardMetadata = ({
   position = {},
   reconciliationRow = {},
   ledgerRow = null,
-  performanceGeneratedAt = null
+  performanceGeneratedAt = null,
+  lifecycleRow = null
 }) => {
   const brokerStopPresent = position?.brokerStopPresent === true || reconciliationRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || reconciliationRow?.brokerTargetPresent === true;
@@ -126,6 +127,23 @@ export const resolveEffectiveGuardMetadata = ({
       sourcePrecedence: "broker_children_over_state_guard_metadata",
       brokerChildrenComplete: true,
       staleStateMetadataIgnored: true
+    };
+  }
+
+  const lifecycleSource = lifecycleRow?.lifecycleReady === true ? lifecycleRow.lifecycleSource : null;
+  const lifecycleStopPrice = toNum(lifecycleSource?.stopPrice);
+  const lifecycleTargetPrice = toNum(lifecycleSource?.targetPrice);
+  if (lifecycleStopPrice != null && lifecycleTargetPrice != null) {
+    return {
+      stopPrice: lifecycleStopPrice,
+      targetPrice: lifecycleTargetPrice,
+      source: lifecycleSource?.type || "position_lifecycle_revalidated_guard",
+      generatedAt: lifecycleSource?.generatedAt || null,
+      sourcePrecedence: "position_lifecycle_revalidated_guard_over_stale_state_metadata",
+      brokerChildrenComplete: false,
+      staleStateMetadataIgnored: true,
+      originalSourceType: lifecycleSource?.originalSourceType || null,
+      originalGeneratedAt: lifecycleSource?.originalGeneratedAt || null
     };
   }
 

@@ -9,6 +9,7 @@ const ORDER_LEDGER_PATH = `${STATE_DIR}/order-ledger.json`;
 const IDEMPOTENCY_PATH = `${STATE_DIR}/order-idempotency.json`;
 const FILLABILITY_PATH = `${STATE_DIR}/fillability-report.json`;
 const PREVIEW_PATH = `${STATE_DIR}/last-dry-exec-preview.json`;
+const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
 const OUTPUT_JSON = `${STATE_DIR}/position-protection-root-cause-audit.json`;
 const OUTPUT_MD = `${STATE_DIR}/position-protection-root-cause-audit.md`;
 
@@ -113,13 +114,13 @@ const findIdempotencyRow = (idempotency, symbol) => {
 const findFillabilityRow = (fillability, symbol) =>
   (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === asSymbol(symbol)) || null;
 
-const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, idempotencyRow, fillabilityRow, performanceGeneratedAt, config, nowMs }) => {
+const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, idempotencyRow, fillabilityRow, lifecycleRow, performanceGeneratedAt, config, nowMs }) => {
   const symbol = asSymbol(position?.symbol);
   const qty = toNum(position?.qty) ?? 0;
   const currentPrice = toNum(position?.currentPrice);
   const brokerStopPresent = position?.brokerStopPresent === true || reconciliationRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || reconciliationRow?.brokerTargetPresent === true;
-  const effectiveGuard = resolveEffectiveGuardMetadata({ position, reconciliationRow, ledgerRow, performanceGeneratedAt });
+  const effectiveGuard = resolveEffectiveGuardMetadata({ position, reconciliationRow, ledgerRow, lifecycleRow, performanceGeneratedAt });
   const ownership = classifyProtectionOwnership({
     position,
     reconciliationRow,
@@ -257,6 +258,9 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     effectiveGuardSource: effectiveGuard.source,
     effectiveGuardGeneratedAt: effectiveGuard.generatedAt,
     sourcePrecedence: effectiveGuard.sourcePrecedence,
+    lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
+    lifecycleOriginalGuardSource: effectiveGuard.originalSourceType || null,
+    lifecycleOriginalGeneratedAt: effectiveGuard.originalGeneratedAt || null,
     staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
     plannedStage6Hash: position?.plannedStage6Hash || reconciliationRow?.plannedStage6Hash || ledgerRow?.stage6Hash || null,
     plannedStage6File: position?.plannedStage6File || reconciliationRow?.plannedStage6File || ledgerRow?.stage6File || null,
@@ -346,10 +350,12 @@ const main = () => {
   const idempotency = readJson(IDEMPOTENCY_PATH);
   const fillability = readJson(FILLABILITY_PATH);
   const preview = readJson(PREVIEW_PATH);
+  const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
   const config = protectionConfig();
   const nowMs = Date.now();
   const reconciliationBySymbol = indexBySymbol(reconciliation?.rows);
   const orderStateBySymbol = indexBySymbol(orderState?.rows);
+  const lifecycleBySymbol = indexBySymbol(lifecyclePlan?.rows);
   const positions = Array.isArray(performance?.live?.positions) ? performance.live.positions : [];
   const rows = positions
     .filter((row) => (toNum(row?.qty) ?? 0) > 0)
@@ -362,6 +368,7 @@ const main = () => {
         ledgerRow: findLedgerRow(ledger, symbol),
         idempotencyRow: findIdempotencyRow(idempotency, symbol),
         fillabilityRow: findFillabilityRow(fillability, symbol),
+        lifecycleRow: lifecycleBySymbol.get(symbol) || null,
         performanceGeneratedAt: performance?.generatedAt || null,
         config,
         nowMs
@@ -416,11 +423,13 @@ const main = () => {
       orderLedger: Boolean(ledger),
       orderIdempotency: Boolean(idempotency),
       fillability: Boolean(fillability),
-      preview: Boolean(preview)
+      preview: Boolean(preview),
+      positionLifecycleGuardSourcePlan: Boolean(lifecyclePlan)
     },
     source: {
       performanceDashboardGeneratedAt: performance?.generatedAt || null,
       reconciliationGeneratedAt: reconciliation?.generatedAt || null,
+      lifecycleGuardSourceOverall: lifecyclePlan?.overall || null,
       stage6Hash: preview?.stage6Hash || null,
       stage6File: preview?.stage6File || null
     },

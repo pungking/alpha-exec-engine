@@ -11,6 +11,7 @@ const FILES = {
   fillability: `${STATE_DIR}/fillability-report.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   positionProtectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
+  positionLifecycleGuardSourcePlan: `${STATE_DIR}/position-lifecycle-guard-source-plan.json`,
   guardMetadataRefreshPlan: `${STATE_DIR}/guard-metadata-refresh-plan.json`,
   guardMetadataLineageAudit: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
   guardSourceRecoveryPlan: `${STATE_DIR}/guard-source-recovery-plan.json`,
@@ -79,6 +80,7 @@ const buildReport = () => {
   const fillability = readJson(FILES.fillability);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const positionProtectionAudit = readJson(FILES.positionProtectionAudit);
+  const positionLifecycleGuardSourcePlan = readJson(FILES.positionLifecycleGuardSourcePlan);
   const guardMetadataRefreshPlan = readJson(FILES.guardMetadataRefreshPlan);
   const guardMetadataLineageAudit = readJson(FILES.guardMetadataLineageAudit);
   const guardSourceRecoveryPlan = readJson(FILES.guardSourceRecoveryPlan);
@@ -102,6 +104,7 @@ const buildReport = () => {
   const filledMigrationRows = Array.isArray(ledgerFilledMigrationPlan?.rows) ? ledgerFilledMigrationPlan.rows : [];
   const filledMigrationApplyRows = Array.isArray(ledgerFilledMigrationApply?.rows) ? ledgerFilledMigrationApply.rows : [];
   const protectionRows = Array.isArray(positionProtectionAudit?.rows) ? positionProtectionAudit.rows : [];
+  const lifecycleRows = Array.isArray(positionLifecycleGuardSourcePlan?.rows) ? positionLifecycleGuardSourcePlan.rows : [];
   const brokerRows = Array.isArray(brokerChildReconciliation?.rows) ? brokerChildReconciliation.rows : [];
   const persistentRows = Array.isArray(persistentOcoRepairPlan?.rows) ? persistentOcoRepairPlan.rows : [];
   const entryRepriceRows = Array.isArray(entryRepricePolicyDecision?.rows) ? entryRepricePolicyDecision.rows : [];
@@ -154,7 +157,14 @@ const buildReport = () => {
   const filledMigrationAppliedNeedsReaudit = filledMigrationAppliedRows.length > 0 && fillTerminalizationOpen;
   const repairPrereqFillBlocked = fillTerminalizationOpen || filledMigrationAppliedNeedsReaudit;
   const repairPrereqFreshBlocked = freshSourceRequiredRows.length > 0;
-  const persistentEligibleRows = persistentRows.filter((row) => row.eligible === true);
+  const lifecycleReadyRows = lifecycleRows.filter((row) => row.lifecycleReady === true);
+  const persistentEligibleRows = persistentRows.filter(
+    (row) => row.eligible === true || row.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL"
+  );
+  const repairCandidateSymbols = uniqueSymbols([...repairAfterRefreshRows, ...persistentEligibleRows, ...lifecycleReadyRows]);
+  const repairLaneSymbols = repairCandidateSymbols.length
+    ? repairCandidateSymbols
+    : uniqueSymbols([...brokerMissingRows]);
   const brokerMissingRows = brokerRows.filter(
     (row) =>
       row.brokerStopPresent === false ||
@@ -215,7 +225,7 @@ const buildReport = () => {
       name: "Guard Metadata Stale Lane",
       status: staleGuardRows.length || staleLineageRows.length ? "waiting_fresh_guard_source" : "clear",
       symbols: uniqueSymbols([...staleGuardRows, ...staleLineageRows]),
-      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} staleSource=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"} lineage=${guardMetadataLineageAudit?.overall || "N/A"} lineageStale=${guardMetadataLineageAudit?.summary?.staleSourceOnly ?? "N/A"}`,
+      evidence: `guardRefresh=${guardMetadataRefreshPlan?.overall || "N/A"} staleSource=${guardMetadataRefreshPlan?.summary?.staleRefreshSource ?? "N/A"} lifecycle=${positionLifecycleGuardSourcePlan?.overall || "N/A"} lifecycleReady=${positionLifecycleGuardSourcePlan?.summary?.lifecycleReady ?? "N/A"} lineage=${guardMetadataLineageAudit?.overall || "N/A"} lineageStale=${guardMetadataLineageAudit?.summary?.staleSourceOnly ?? "N/A"}`,
       nextAction: staleGuardRows.length || staleLineageRows.length
         ? "Wait for fresh Stage6/position-lifecycle/order-ledger source before repair re-evaluation."
         : "No stale guard metadata lane action required.",
@@ -280,8 +290,8 @@ const buildReport = () => {
             ? "blocked_until_guard_refresh_valid"
             : "no_candidate",
       count: repairAfterRefreshRows.length || persistentEligibleRows.length || brokerMissingRows.length,
-      symbols: uniqueSymbols([...repairAfterRefreshRows, ...persistentEligibleRows, ...brokerMissingRows]),
-      evidence: `repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} persistentEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} freshSourceRequired=${guardSourceRecoveryPlan?.summary?.freshSourceRequired ?? "N/A"} fillTerminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} terminalizationBlocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"}`,
+      symbols: repairLaneSymbols,
+      evidence: `repairAfterRefresh=${guardMetadataRefreshPlan?.summary?.repairReevaluationCandidates ?? "N/A"} lifecycleReady=${positionLifecycleGuardSourcePlan?.summary?.lifecycleReady ?? "N/A"} persistentEligible=${persistentOcoRepairPlan?.summary?.eligible ?? "N/A"} brokerChildActions=${brokerChildReconciliation?.summary?.proposedActionRows ?? "N/A"} freshSourceRequired=${guardSourceRecoveryPlan?.summary?.freshSourceRequired ?? "N/A"} fillTerminalReview=${fillStateReconciliationAudit?.summary?.ledgerTerminalizationReviewRequired ?? "N/A"} terminalizationBlocked=${ledgerTerminalizationProposal?.summary?.blocked ?? "N/A"}`,
       nextAction:
         repairPrereqFillBlocked && repairPrereqFreshBlocked
           ? "Do not re-enter protective repair. Split prerequisites: resolve fill-state terminalization rows and wait for fresh guard source rows separately."

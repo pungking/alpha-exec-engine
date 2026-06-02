@@ -14,6 +14,7 @@ const FILES = {
   orderLedger: `${STATE_DIR}/order-ledger.json`,
   orderIdempotency: `${STATE_DIR}/order-idempotency.json`,
   fillability: `${STATE_DIR}/fillability-report.json`,
+  lifecycleGuardSource: `${STATE_DIR}/position-lifecycle-guard-source-plan.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
 };
 
@@ -125,7 +126,7 @@ const sourceProbe = ({ source, stop, target, generatedAt, stage6Hash, stage6File
   };
 };
 
-const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, previewRecord, performanceGeneratedAt }) => {
+const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, lifecycleRow, previewRecord, performanceGeneratedAt }) => {
   const symbol = asSymbol(position?.symbol);
   const currentPrice = toNum(position?.currentPrice);
   const ownership = classifyProtectionOwnership({
@@ -154,6 +155,16 @@ const buildRow = ({ position, protectionRow, guardRefreshRow, recommendation, lo
       stage6Hash: position?.plannedStage6Hash,
       stage6File: position?.plannedStage6File,
       detail: `stopPresent=${position?.brokerStopPresent === true} targetPresent=${position?.brokerTargetPresent === true} sellOrders=${position?.brokerSellOrderCount ?? "N/A"}`,
+      currentPrice
+    }),
+    sourceProbe({
+      source: "position_lifecycle_revalidated_guard",
+      stop: lifecycleRow?.lifecycleSource?.stopPrice,
+      target: lifecycleRow?.lifecycleSource?.targetPrice,
+      generatedAt: lifecycleRow?.lifecycleSource?.generatedAt,
+      stage6Hash: lifecycleRow?.lifecycleSource?.stage6Hash,
+      stage6File: lifecycleRow?.lifecycleSource?.stage6File,
+      detail: `ready=${lifecycleRow?.lifecycleReady === true} original=${lifecycleRow?.lifecycleSource?.originalSourceType || "N/A"} decision=${lifecycleRow?.lifecycleDecision || "N/A"}`,
       currentPrice
     }),
     sourceProbe({
@@ -318,12 +329,14 @@ const main = () => {
   const orderLedger = readJson(FILES.orderLedger);
   const idempotency = readJson(FILES.orderIdempotency);
   const fillability = readJson(FILES.fillability);
+  const lifecyclePlan = readJson(FILES.lifecycleGuardSource);
   const preview = readJson(FILES.preview);
 
   const positions = Array.isArray(performance?.live?.positions) ? performance.live.positions : [];
   const protectionBySymbol = indexArrayBySymbol(protectionAudit?.rows);
   const guardRefreshBySymbol = indexArrayBySymbol(guardRefresh?.rows);
   const fillabilityBySymbol = indexArrayBySymbol(fillability?.rows);
+  const lifecycleBySymbol = indexArrayBySymbol(lifecyclePlan?.rows);
   const previewBySymbol = indexArrayBySymbol(preview?.orderDecisionAudit?.records);
 
   const rows = positions
@@ -339,6 +352,7 @@ const main = () => {
         ledgerRow: valuesBySymbol(orderLedger?.orders, symbol),
         idempotencyRow: valuesBySymbol(idempotency?.orders, symbol),
         fillabilityRow: fillabilityBySymbol.get(symbol) || null,
+        lifecycleRow: lifecycleBySymbol.get(symbol) || null,
         previewRecord: previewBySymbol.get(symbol) || null,
         performanceGeneratedAt: performance?.generatedAt || null
       });
