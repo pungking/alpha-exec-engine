@@ -511,7 +511,7 @@ const buildReport = () => {
       nextAction: ownershipRecoveryGateUnsafe
         ? "Stop: recovery approval gate emitted a mutation signal, which is forbidden in this report-only path."
         : positionOwnershipRecoveryApprovalGate?.overall === "blocked_external_adoption_evidence_required"
-          ? "Do not auto-recover TSLA-style rows. Wait for sidecar ownership proof and fresh guard source before any state approval review."
+          ? "Do not auto-recover external/manual rows. Wait for sidecar ownership proof and fresh guard source before any state approval review."
           : positionOwnershipRecoveryApprovalGate?.overall === "manual_state_approval_required"
             ? "A separate state-only migration review may be requested only with exact CONFIRM STATE OWNERSHIP RECOVERY and backup/diff/audit/post-verify scope."
             : "Monitor only; no broker repair and no state migration are authorized by this dry-run gate.",
