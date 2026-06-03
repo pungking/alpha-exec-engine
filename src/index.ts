@@ -3352,7 +3352,12 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
     (categoryCounts.dedupe || 0) +
     (categoryCounts.stale_source || 0) +
     (categoryCounts.portfolio_capacity || 0) +
-    (categoryCounts.capacity || 0);
+    (categoryCounts.capacity || 0) +
+    (categoryCounts.quality_gate || 0) +
+    (categoryCounts.risk_geometry || 0) +
+    (categoryCounts.entry_distance || 0) +
+    (categoryCounts.sizing || 0) +
+    (categoryCounts.price_geometry || 0);
   const status =
     unheldExecutableRows.length === 0
       ? "no_unheld_executable"
@@ -3363,7 +3368,7 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
           : "fail_no_payload_for_unheld_executable";
 
   return {
-    invariant: "payloadCount>=1 is expected only when at least one unheld executable candidate survives dedupe/stale/portfolio-capacity gates",
+    invariant: "payloadCount>=1 is expected only when at least one unheld executable candidate survives dedupe/stale/portfolio-capacity/quality/risk/entry/sizing gates",
     status,
     executableCandidates: executableRows.length,
     unheldExecutableCandidates: unheldExecutableRows.length,
