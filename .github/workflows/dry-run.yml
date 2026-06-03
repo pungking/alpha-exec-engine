@@ -438,6 +438,9 @@ jobs:
       - name: Symbol-agnostic runtime guard
         run: npm run ops:safety:symbol-agnostic
 
+      - name: Ownership recovery safety gates test
+        run: npm run ops:test:ownership-gates
+
       - name: HF Verify gate (validation pack)
         id: hf_verify_gate
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack == 'true' }}

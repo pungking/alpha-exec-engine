@@ -73,7 +73,8 @@
     "ops:position-ownership-recovery-decision": "node scripts/build-position-ownership-recovery-decision.mjs",
     "ops:position-ownership-recovery-gate": "node scripts/build-position-ownership-recovery-approval-gate.mjs",
     "ops:position-ownership-state-migration-review": "node scripts/build-position-ownership-state-migration-review-plan.mjs",
-    "ops:multi-oco-submit-gate": "node scripts/build-multi-oco-submit-safety-gate.mjs"
+    "ops:multi-oco-submit-gate": "node scripts/build-multi-oco-submit-safety-gate.mjs",
+    "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

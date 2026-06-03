@@ -1201,3 +1201,20 @@ Done-When:
 - Multi submit remains `multi_submit_design_forbidden` or blocked pending explicit design review; no submit implementation exists.
 - `ops-lane-status-report` includes `track_12_position_ownership_state_migration_review` and `track_13_multi_oco_submit_safety_gate`.
 - `ops-health-report` includes both gate metrics and fails if either gate emits broker, state, or multi-submit mutation signals.
+
+### 2026-06-03 - Ownership Recovery Safety Gate Regression Tests
+
+- Scope: `alpha-exec-engine` / CI regression coverage for ownership recovery and multi-submit safety gates.
+- Added `ops:test:ownership-gates`:
+  - proves external/manual rows remain blocked from automatic ownership recovery.
+  - proves state-ready rows without exact approval stay `blocked_state_approval_required`.
+  - proves exact `CONFIRM STATE OWNERSHIP RECOVERY` only allows report-only review readiness, not state application.
+  - proves the multi-submit design approval phrase still does not unlock broker mutation or dry-run batch submit.
+  - proves unsafe upstream mutation signals are blocked instead of propagated.
+- Added the regression test to `sidecar-dry-run` before the main dry-run body so scheduled and manual runs fail fast if these gates regress.
+
+Done-When:
+
+- `npm run ops:test:ownership-gates` passes locally and in GitHub Actions.
+- Test output shows `brokerMutation=false stateMutation=false multiSubmit=false`.
+- The symbol-agnostic runtime check remains green after adding the tests.
