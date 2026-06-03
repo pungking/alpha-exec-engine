@@ -1,6 +1,6 @@
 # Sidecar Development Plan (Living Document)
 
-Last updated: 2026-05-15 (KST, paper OCO submit gate)
+Last updated: 2026-06-03 (KST, ownership recovery gates)
 Owner: givet-bsm + Codex
 Scope: `alpha-exec-engine` execution/paper-trading operations
 
@@ -1173,3 +1173,31 @@ Done-When:
 - `ops-lane-status-report` includes `track_10_position_ownership_recovery_decision`.
 - `ops-lane-status-report` includes `track_11_position_ownership_recovery_approval_gate`.
 - `ops-health-report` includes ownership recovery decision/gate metrics and fails if either lane reports broker, state, or multi-submit mutation.
+
+### 2026-06-03 - Ownership State Migration Review + Multi Submit Safety Gates
+
+- Scope: `alpha-exec-engine` / report-only gates that prevent automatic ownership recovery and prohibit any multi-submit path.
+- Added `position-ownership-state-migration-review-plan` as the layer after ownership recovery approval:
+  - consumes `position-ownership-recovery-decision` and `position-ownership-recovery-approval-gate`.
+  - stays blocked for external/manual rows until both sidecar ownership proof and a fresh valid guard source exist.
+  - treats `CONFIRM STATE OWNERSHIP RECOVERY` as permission to prepare a review package only; it does not apply state changes.
+  - requires any future state mutation to be a separate state-only migration task with backup, machine-readable diff, audit record, and post-verify artifacts.
+- Added `multi-oco-submit-safety-gate` as a hard report-only gate above the limited multi planner:
+  - consumes `limited-multi-oco-repair-plan`.
+  - keeps the multi submit lane not implemented and unauthorized.
+  - a future design review would require `CONFIRM MULTI SUBMIT DESIGN REVIEW`, but that still would not authorize broker mutation.
+  - any future broker mutation would still require a separate exact `CONFIRM LIVE EXECUTION` scope.
+- Safety invariant:
+  - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
+  - `stateMutationAllowed=false`, `stateMutationAttempted=false`, `stateMutationApplied=false`.
+  - `multiSubmitLaneAllowed=false`, `dryRunMaySubmitMulti=false`.
+  - external/manual rows are never auto-adopted; protected rows remain monitor-only.
+
+Done-When:
+
+- Safe sidecar artifacts include `position-ownership-state-migration-review-plan.json` / `.md`.
+- Safe sidecar artifacts include `multi-oco-submit-safety-gate.json` / `.md`.
+- External/manual rows stay `blocked_external_adoption_evidence_required` until ownership proof and fresh guard source exist.
+- Multi submit remains `multi_submit_design_forbidden` or blocked pending explicit design review; no submit implementation exists.
+- `ops-lane-status-report` includes `track_12_position_ownership_state_migration_review` and `track_13_multi_oco_submit_safety_gate`.
+- `ops-health-report` includes both gate metrics and fails if either gate emits broker, state, or multi-submit mutation signals.

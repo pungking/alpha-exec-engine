@@ -28,6 +28,8 @@ const FILES = {
   positionOwnershipGuardGapAudit: `${STATE_DIR}/position-ownership-guard-gap-audit.json`,
   positionOwnershipRecoveryDecision: `${STATE_DIR}/position-ownership-recovery-decision.json`,
   positionOwnershipRecoveryApprovalGate: `${STATE_DIR}/position-ownership-recovery-approval-gate.json`,
+  positionOwnershipStateMigrationReviewPlan: `${STATE_DIR}/position-ownership-state-migration-review-plan.json`,
+  multiOcoSubmitSafetyGate: `${STATE_DIR}/multi-oco-submit-safety-gate.json`,
   opsHealth: `${STATE_DIR}/ops-health-report.json`
 };
 
@@ -101,6 +103,8 @@ const buildReport = () => {
   const positionOwnershipGuardGapAudit = readJson(FILES.positionOwnershipGuardGapAudit);
   const positionOwnershipRecoveryDecision = readJson(FILES.positionOwnershipRecoveryDecision);
   const positionOwnershipRecoveryApprovalGate = readJson(FILES.positionOwnershipRecoveryApprovalGate);
+  const positionOwnershipStateMigrationReviewPlan = readJson(FILES.positionOwnershipStateMigrationReviewPlan);
+  const multiOcoSubmitSafetyGate = readJson(FILES.multiOcoSubmitSafetyGate);
   const opsHealth = readJson(FILES.opsHealth);
 
   const lineageRows = Array.isArray(guardMetadataLineageAudit?.rows) ? guardMetadataLineageAudit.rows : [];
@@ -247,6 +251,32 @@ const buildReport = () => {
     positionOwnershipRecoveryApprovalGate?.summary?.brokerMutationSubmitted === true ||
     positionOwnershipRecoveryApprovalGate?.summary?.stateMutationAttempted === true ||
     positionOwnershipRecoveryApprovalGate?.summary?.stateMutationApplied === true;
+  const ownershipStateMigrationUnsafe =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationAllowed === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationSubmitted === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationAllowed === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationApplied === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.multiSubmitLaneAllowed === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationSubmitted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationApplied === true;
+  const multiOcoSubmitGateUnsafe =
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationAllowed === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationSubmitted === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationAllowed === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationApplied === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.multiSubmitLaneAllowed === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.dryRunMaySubmitMulti === true ||
+    multiOcoSubmitSafetyGate?.summary?.brokerMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.summary?.brokerMutationSubmitted === true ||
+    multiOcoSubmitSafetyGate?.summary?.stateMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.summary?.stateMutationApplied === true ||
+    multiOcoSubmitSafetyGate?.summary?.multiSubmitAuthorized === true;
   const combinedRepriceApprovalReady = openRepriceReadyCount > 0 && entryRepriceReadyCount > 0;
   const highPriceSkippedRows = orderDecisionRecords.filter((row) =>
     String(row?.reason || "").includes("entry_notional_below_limit_price")
@@ -516,6 +546,46 @@ const buildReport = () => {
             ? "A separate state-only migration review may be requested only with exact CONFIRM STATE OWNERSHIP RECOVERY and backup/diff/audit/post-verify scope."
             : "Monitor only; no broker repair and no state migration are authorized by this dry-run gate.",
       safety: "report_only_no_state_apply_no_broker_mutation_no_multi_submit"
+    }),
+    lane({
+      id: "track_12_position_ownership_state_migration_review",
+      name: "Position Ownership State Migration Review Plan Lane",
+      status: ownershipStateMigrationUnsafe
+        ? "blocked_unsafe_mutation_signal"
+        : positionOwnershipStateMigrationReviewPlan?.overall || "unknown",
+      count: positionOwnershipStateMigrationReviewPlan?.summary?.rows ?? 0,
+      symbols: [
+        ...new Set([
+          ...(positionOwnershipStateMigrationReviewPlan?.symbols?.reviewReady || []),
+          ...(positionOwnershipStateMigrationReviewPlan?.symbols?.externalAdoptionReview || []),
+          ...(positionOwnershipStateMigrationReviewPlan?.symbols?.doNotAutoRecover || [])
+        ])
+      ].sort(),
+      evidence: `overall=${positionOwnershipStateMigrationReviewPlan?.overall || "N/A"} stateReady=${positionOwnershipStateMigrationReviewPlan?.summary?.stateRecoveryReviewReady ?? "N/A"} reviewRows=${positionOwnershipStateMigrationReviewPlan?.summary?.migrationReviewRows ?? "N/A"} externalAdoption=${positionOwnershipStateMigrationReviewPlan?.summary?.externalAdoptionReview ?? "N/A"} doNotAutoRecover=${positionOwnershipStateMigrationReviewPlan?.summary?.doNotAutoRecover ?? "N/A"} reviewAuthorized=${positionOwnershipStateMigrationReviewPlan?.summary?.reviewAuthorized ?? "N/A"} attempted=${positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationSubmitted ?? "N/A"} stateAttempted=${positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationAttempted ?? "N/A"} stateApplied=${positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationApplied ?? "N/A"}`,
+      nextAction: ownershipStateMigrationUnsafe
+        ? "Stop: state migration review plan emitted a mutation signal, which is forbidden in this report-only path."
+        : positionOwnershipStateMigrationReviewPlan?.overall === "state_migration_review_ready_report_only"
+          ? "Prepare a separate migration package only; applying state still requires an explicit state migration task with backup/diff/audit/post-verify."
+          : "Keep monitor-only. State migration review remains blocked until ownership proof, fresh guard source, and exact state approval are all present.",
+      safety: "report_only_no_state_apply_no_broker_mutation_no_multi_submit"
+    }),
+    lane({
+      id: "track_13_multi_oco_submit_safety_gate",
+      name: "Multi OCO Submit Safety Gate Lane",
+      status: multiOcoSubmitGateUnsafe
+        ? "blocked_unsafe_mutation_signal"
+        : multiOcoSubmitSafetyGate?.overall || "unknown",
+      count: multiOcoSubmitSafetyGate?.summary?.rows ?? 0,
+      symbols: Array.isArray(multiOcoSubmitSafetyGate?.summary?.selectedSymbols)
+        ? multiOcoSubmitSafetyGate.summary.selectedSymbols
+        : [],
+      evidence: `overall=${multiOcoSubmitSafetyGate?.overall || "N/A"} eligible=${multiOcoSubmitSafetyGate?.summary?.eligible ?? "N/A"} selected=${multiOcoSubmitSafetyGate?.summary?.selected ?? "N/A"} designApproval=${multiOcoSubmitSafetyGate?.summary?.designApprovalProvided ?? "N/A"} attempted=${multiOcoSubmitSafetyGate?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${multiOcoSubmitSafetyGate?.summary?.brokerMutationSubmitted ?? "N/A"} multiAuthorized=${multiOcoSubmitSafetyGate?.summary?.multiSubmitAuthorized ?? "N/A"}`,
+      nextAction: multiOcoSubmitGateUnsafe
+        ? "Stop: multi submit gate emitted a mutation/authorization signal, which is forbidden."
+        : multiOcoSubmitSafetyGate?.overall === "multi_submit_design_review_authorized_report_only"
+          ? "Design review only; no broker mutation is authorized and a separate broker approval phrase is still required before any future submit."
+          : "Keep multi submit lane forbidden. Future design requires a separate safety gate and approval scope.",
+      safety: "report_only_multi_submit_forbidden_no_broker_mutation"
     })
   ];
 

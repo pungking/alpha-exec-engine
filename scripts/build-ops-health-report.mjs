@@ -26,6 +26,8 @@ const FILES = {
   positionOwnershipGuardGapAudit: `${STATE_DIR}/position-ownership-guard-gap-audit.json`,
   positionOwnershipRecoveryDecision: `${STATE_DIR}/position-ownership-recovery-decision.json`,
   positionOwnershipRecoveryApprovalGate: `${STATE_DIR}/position-ownership-recovery-approval-gate.json`,
+  positionOwnershipStateMigrationReviewPlan: `${STATE_DIR}/position-ownership-state-migration-review-plan.json`,
+  multiOcoSubmitSafetyGate: `${STATE_DIR}/multi-oco-submit-safety-gate.json`,
   persistentOcoOpenVerifyMulti: `${STATE_DIR}/persistent-oco-repair-open-verify-multi.json`,
   alpacaPayloadSchema: `${STATE_DIR}/alpaca-order-payload-schema-report.json`,
   alpacaOcoResponseFixture: `${STATE_DIR}/alpaca-oco-response-fixture-report.json`,
@@ -131,7 +133,7 @@ const buildMarkdown = (report) => {
   lines.push(`- kind: \`${report.kind}\``);
   lines.push(`- overall: \`${report.overall.toUpperCase()}\``);
   lines.push(
-    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} brokerFillEvidence=${report.files.brokerFillStateEvidence ? "ok" : "missing"} terminalizationProposal=${report.files.ledgerTerminalizationProposal ? "ok" : "missing"} filledMigration=${report.files.ledgerFilledMigrationPlan ? "ok" : "missing"} filledMigrationApply=${report.files.ledgerFilledMigrationApply ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} limitedMultiOco=${report.files.limitedMultiOcoRepairPlan ? "ok" : "missing"} ownershipGuardGap=${report.files.positionOwnershipGuardGapAudit ? "ok" : "missing"} ownershipRecovery=${report.files.positionOwnershipRecoveryDecision ? "ok" : "missing"} ownershipRecoveryGate=${report.files.positionOwnershipRecoveryApprovalGate ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
+    `- files: \`preview=${report.files.preview ? "ok" : "missing"} guard=${report.files.guard ? "ok" : "missing"} guardControl=${report.files.guardControl ? "ok" : "missing"} perf=${report.files.perf ? "ok" : "missing"} orderState=${report.files.orderStateConsistency ? "ok" : "missing"} brokerChildRec=${report.files.brokerChildReconciliation ? "ok" : "missing"} protectionAudit=${report.files.positionProtectionAudit ? "ok" : "missing"} guardRefresh=${report.files.guardMetadataRefreshPlan ? "ok" : "missing"} guardLineage=${report.files.guardMetadataLineageAudit ? "ok" : "missing"} guardSourceRecovery=${report.files.guardSourceRecoveryPlan ? "ok" : "missing"} fillStateRecon=${report.files.fillStateReconciliationAudit ? "ok" : "missing"} brokerFillEvidence=${report.files.brokerFillStateEvidence ? "ok" : "missing"} terminalizationProposal=${report.files.ledgerTerminalizationProposal ? "ok" : "missing"} filledMigration=${report.files.ledgerFilledMigrationPlan ? "ok" : "missing"} filledMigrationApply=${report.files.ledgerFilledMigrationApply ? "ok" : "missing"} guardedRepair=${report.files.guardedRepairPlan ? "ok" : "missing"} persistentOcoRepair=${report.files.persistentOcoRepairPlan ? "ok" : "missing"} limitedMultiOco=${report.files.limitedMultiOcoRepairPlan ? "ok" : "missing"} ownershipGuardGap=${report.files.positionOwnershipGuardGapAudit ? "ok" : "missing"} ownershipRecovery=${report.files.positionOwnershipRecoveryDecision ? "ok" : "missing"} ownershipRecoveryGate=${report.files.positionOwnershipRecoveryApprovalGate ? "ok" : "missing"} ownershipStateMigration=${report.files.positionOwnershipStateMigrationReviewPlan ? "ok" : "missing"} multiSubmitGate=${report.files.multiOcoSubmitSafetyGate ? "ok" : "missing"} persistentOcoMultiVerify=${report.files.persistentOcoOpenVerifyMulti ? "ok" : "missing"} alpacaPayloadSchema=${report.files.alpacaPayloadSchema ? "ok" : "missing"} alpacaOcoResponse=${report.files.alpacaOcoResponseFixture ? "ok" : "missing"} paperOcoCanary=${report.files.paperOcoCanaryCandidate ? "ok" : "missing"} paperOcoGate=${report.files.paperOcoApprovalGate ? "ok" : "missing"} paperOcoSubmitGate=${report.files.paperOcoSubmitGate ? "ok" : "missing"} entryRepricePolicy=${report.files.entryRepricePolicyDecision ? "ok" : "missing"} openRepriceProposal=${report.files.openOrderRepriceProposal ? "ok" : "missing"} laneStatus=${report.files.opsLaneStatus ? "ok" : "missing"} minOneShareCanary=${report.files.highPriceMinOneShareCanaryPlan ? "ok" : "missing"} fillability=${report.files.fillability ? "ok" : "missing"} markerAudit=${report.files.markerAudit ? "ok" : "missing"}\``
   );
   lines.push(
       `- key_metrics: \`stage6Hash=${report.metrics.stage6Hash || "N/A"} payloads/skipped=${report.metrics.payloadCount ?? "N/A"}/${report.metrics.skippedCount ?? "N/A"} perfGate=${report.metrics.perfGateProgress || "N/A"} simRows=${report.metrics.simulationRows ?? "N/A"} simSnapshot=${report.metrics.simulationSnapshotTrades ?? "N/A"} simGap=${report.metrics.simulationRowSnapshotGap ?? "N/A"} fillability=${report.metrics.fillabilityOverall ?? "N/A"} fills=${report.metrics.fillabilityFills ?? "N/A"} repricedWaiting=${report.metrics.fillabilityRepricedWaiting ?? "N/A"} openReprice=${report.metrics.fillabilityOpenReprice ?? "N/A"} openCancel=${report.metrics.fillabilityOpenCancel ?? "N/A"} entryTooFar=${report.metrics.fillabilityEntryTooFar ?? "N/A"} highPriceSize=${report.metrics.fillabilityHighPriceSize ?? "N/A"} invalidQuotes=${report.metrics.fillabilityInvalidQuoteCount ?? "N/A"} expiredTaxonomy=${report.metrics.fillabilityTerminalUnfilledTaxonomy ?? "N/A"} reentryReview=${report.metrics.fillabilityReentryReviewRequired ?? "N/A"} orderState=${report.metrics.orderStateOverall ?? "N/A"} orderStateFailWarn=${report.metrics.orderStateFailures ?? "N/A"}/${report.metrics.orderStateWarnings ?? "N/A"} orderStateTerminalRecon=${report.metrics.orderStateTerminalReconciliationRequired ?? "N/A"} minOneShareCanary=${report.metrics.highPriceMinOneShareOverall ?? "N/A"} minOneShareEligible=${report.metrics.highPriceMinOneShareEligible ?? "N/A"} minOneShareSelected=${report.metrics.highPriceMinOneShareSelectedSymbol ?? "N/A"} hfAlert=${report.metrics.hfAlertTriggered ?? "N/A"} guardLevel=${report.metrics.guardLevel ?? "N/A"} haltNewEntries=${report.metrics.haltNewEntries ?? "N/A"} liveAvailable=${report.metrics.liveAvailable ?? "N/A"} liveReturnPct=${fmt(report.metrics.liveReturnPct)} brokerChildRec=${report.metrics.brokerChildReconciliationOverall ?? "N/A"} brokerChildActions=${report.metrics.brokerChildReconciliationProposedRows ?? "N/A"} protectionAudit=${report.metrics.positionProtectionAuditOverall ?? "N/A"} protectionMissing=${report.metrics.positionProtectionGuardMetadataMissing ?? "N/A"} protectionStale=${report.metrics.positionProtectionGuardMetadataStale ?? "N/A"} protectionInvalidGeometry=${report.metrics.positionProtectionInvalidGeometry ?? "N/A"} protectionBrokerChildMissing=${report.metrics.positionProtectionBrokerChildMissing ?? "N/A"} guardRefresh=${report.metrics.guardMetadataRefreshOverall ?? "N/A"} guardRefreshReady=${report.metrics.guardMetadataRefreshReady ?? "N/A"} guardRefreshBlocked=${report.metrics.guardMetadataRefreshBlocked ?? "N/A"} guardRefreshNoSource=${report.metrics.guardMetadataRefreshNoSource ?? "N/A"} guardRefreshStaleSource=${report.metrics.guardMetadataRefreshStaleSource ?? "N/A"} guardRefreshInvalidGeometry=${report.metrics.guardMetadataRefreshInvalidGeometry ?? "N/A"} guardRefreshRepairAfterRefresh=${report.metrics.guardMetadataRefreshRepairAfterRefresh ?? "N/A"} guardRefreshAttempted=${report.metrics.guardMetadataRefreshAttempted ?? "N/A"} guardRefreshSubmitted=${report.metrics.guardMetadataRefreshSubmitted ?? "N/A"} guardLineage=${report.metrics.guardMetadataLineageOverall ?? "N/A"} guardLineageMissing=${report.metrics.guardMetadataLineageMissing ?? "N/A"} guardLineageStale=${report.metrics.guardMetadataLineageStale ?? "N/A"} guardLineageInvalid=${report.metrics.guardMetadataLineageInvalid ?? "N/A"} guardLineageRoot=${report.metrics.guardMetadataLineageRootCauses ?? "N/A"} laneStatus=${report.metrics.opsLaneStatusOverall ?? "N/A"} laneBlocked=${report.metrics.opsLaneBlockedCount ?? "N/A"} laneManualApproval=${report.metrics.opsLaneManualApprovalCandidates ?? "N/A"} guardedRepair=${report.metrics.guardedRepairPlanOverall ?? "N/A"} guardedCandidates=${report.metrics.guardedRepairCandidates ?? "N/A"} guardedExecReady=${report.metrics.guardedRepairExecutionReadyRows ?? "N/A"} persistentOcoRepair=${report.metrics.persistentOcoRepairPlanOverall ?? "N/A"} persistentEligible=${report.metrics.persistentOcoRepairEligible ?? "N/A"} persistentSelected=${report.metrics.persistentOcoRepairSelectedSymbol ?? "N/A"} persistentAttempted=${report.metrics.persistentOcoRepairAttempted ?? "N/A"} persistentSubmitted=${report.metrics.persistentOcoRepairSubmitted ?? "N/A"} persistentMultiVerify=${report.metrics.persistentOcoOpenVerifyMultiOverall ?? "N/A"} persistentMultiSymbols=${report.metrics.persistentOcoOpenVerifyMultiSymbols ?? "N/A"} persistentMultiPassFail=${report.metrics.persistentOcoOpenVerifyMultiPassCount ?? "N/A"}/${report.metrics.persistentOcoOpenVerifyMultiFailCount ?? "N/A"} alpacaPayloadSchema=${report.metrics.alpacaPayloadSchemaOverall ?? "N/A"} alpacaFixtureFail=${report.metrics.alpacaPayloadSchemaFailCount ?? "N/A"} alpacaOcoResponse=${report.metrics.alpacaOcoResponseOverall ?? "N/A"} alpacaOcoFail=${report.metrics.alpacaOcoResponseFailCount ?? "N/A"} paperOcoCanary=${report.metrics.paperOcoCanaryOverall ?? "N/A"} paperOcoEligible=${report.metrics.paperOcoCanaryEligible ?? "N/A"} paperOcoSelected=${report.metrics.paperOcoCanarySelectedSymbol ?? "N/A"} paperOcoGate=${report.metrics.paperOcoApprovalGateOverall ?? "N/A"} paperOcoDecision=${report.metrics.paperOcoApprovalGateDecision ?? "N/A"} paperOcoSubmit=${report.metrics.paperOcoSubmitGateOverall ?? "N/A"} paperOcoSubmitDecision=${report.metrics.paperOcoSubmitGateDecision ?? "N/A"} paperOcoSubmitAttempted=${report.metrics.paperOcoSubmitGateAttempted ?? "N/A"} paperOcoSubmitSubmitted=${report.metrics.paperOcoSubmitGateSubmitted ?? "N/A"} entryRepricePolicy=${report.metrics.entryRepricePolicyOverall ?? "N/A"} entryRepriceReady=${report.metrics.entryRepricePolicyReady ?? "N/A"} entryRepriceWait=${report.metrics.entryRepricePolicyWaitPullback ?? "N/A"} entryRepriceRrBelow=${report.metrics.entryRepricePolicyRrBelowMin ?? "N/A"} entryRepriceAttempted=${report.metrics.entryRepricePolicyAttempted ?? "N/A"} entryRepriceSubmitted=${report.metrics.entryRepricePolicySubmitted ?? "N/A"} openRepriceProposal=${report.metrics.openOrderRepriceProposalOverall ?? "N/A"} openRepriceRows=${report.metrics.openOrderRepriceRows ?? "N/A"} openRepriceReady=${report.metrics.openOrderRepriceReady ?? "N/A"} openRepriceRiskBreaches=${report.metrics.openOrderRepriceSuggestedRiskBreaches ?? "N/A"} openRepriceAttempted=${report.metrics.openOrderRepriceAttempted ?? "N/A"} openRepriceSubmitted=${report.metrics.openOrderRepriceSubmitted ?? "N/A"} brokerStopMissing=${report.metrics.liveBrokerStopMissingCount ?? "N/A"} brokerTargetMissing=${report.metrics.liveBrokerTargetMissingCount ?? "N/A"} liveGuardMissing=${report.metrics.liveGuardMissingCount ?? "N/A"} liveFillMismatch=${report.metrics.liveFillStateMismatchCount ?? "N/A"}\``
@@ -169,6 +171,12 @@ const buildMarkdown = (report) => {
   lines.push(
     `- ownership_recovery_gate: \`overall=${report.metrics.ownershipRecoveryGateOverall ?? "N/A"} rows=${report.metrics.ownershipRecoveryGateRows ?? "N/A"} stateReady=${report.metrics.ownershipRecoveryGateStateReady ?? "N/A"} externalAdoptionReview=${report.metrics.ownershipRecoveryGateExternalAdoptionReview ?? "N/A"} doNotAutoRecover=${report.metrics.ownershipRecoveryGateDoNotAutoRecover ?? "N/A"} approvalProvided=${report.metrics.ownershipRecoveryGateApprovalProvided ?? "N/A"} attempted=${report.metrics.ownershipRecoveryGateAttempted ?? "N/A"} submitted=${report.metrics.ownershipRecoveryGateSubmitted ?? "N/A"} stateAttempted=${report.metrics.ownershipRecoveryGateStateAttempted ?? "N/A"} stateApplied=${report.metrics.ownershipRecoveryGateStateApplied ?? "N/A"} multiSubmit=${report.metrics.ownershipRecoveryGateMultiSubmitAllowed ?? "N/A"}\``
   );
+  lines.push(
+    `- ownership_state_migration_review: \`overall=${report.metrics.ownershipStateMigrationOverall ?? "N/A"} rows=${report.metrics.ownershipStateMigrationRows ?? "N/A"} reviewRows=${report.metrics.ownershipStateMigrationReviewRows ?? "N/A"} reviewAuthorized=${report.metrics.ownershipStateMigrationReviewAuthorized ?? "N/A"} externalAdoptionReview=${report.metrics.ownershipStateMigrationExternalAdoptionReview ?? "N/A"} doNotAutoRecover=${report.metrics.ownershipStateMigrationDoNotAutoRecover ?? "N/A"} attempted=${report.metrics.ownershipStateMigrationAttempted ?? "N/A"} submitted=${report.metrics.ownershipStateMigrationSubmitted ?? "N/A"} stateAttempted=${report.metrics.ownershipStateMigrationStateAttempted ?? "N/A"} stateApplied=${report.metrics.ownershipStateMigrationStateApplied ?? "N/A"} multiSubmit=${report.metrics.ownershipStateMigrationMultiSubmitAllowed ?? "N/A"}\``
+  );
+  lines.push(
+    `- multi_oco_submit_gate: \`overall=${report.metrics.multiOcoSubmitGateOverall ?? "N/A"} rows=${report.metrics.multiOcoSubmitGateRows ?? "N/A"} eligible=${report.metrics.multiOcoSubmitGateEligible ?? "N/A"} selected=${report.metrics.multiOcoSubmitGateSelected ?? "N/A"} designApproval=${report.metrics.multiOcoSubmitGateDesignApprovalProvided ?? "N/A"} attempted=${report.metrics.multiOcoSubmitGateAttempted ?? "N/A"} submitted=${report.metrics.multiOcoSubmitGateSubmitted ?? "N/A"} stateAttempted=${report.metrics.multiOcoSubmitGateStateAttempted ?? "N/A"} stateApplied=${report.metrics.multiOcoSubmitGateStateApplied ?? "N/A"} multiAuthorized=${report.metrics.multiOcoSubmitGateMultiAuthorized ?? "N/A"}\``
+  );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
   }
@@ -204,6 +212,8 @@ const main = () => {
   const positionOwnershipGuardGapAudit = readJson(FILES.positionOwnershipGuardGapAudit);
   const positionOwnershipRecoveryDecision = readJson(FILES.positionOwnershipRecoveryDecision);
   const positionOwnershipRecoveryApprovalGate = readJson(FILES.positionOwnershipRecoveryApprovalGate);
+  const positionOwnershipStateMigrationReviewPlan = readJson(FILES.positionOwnershipStateMigrationReviewPlan);
+  const multiOcoSubmitSafetyGate = readJson(FILES.multiOcoSubmitSafetyGate);
   const persistentOcoOpenVerifyMulti = readJson(FILES.persistentOcoOpenVerifyMulti);
   const alpacaPayloadSchema = readJson(FILES.alpacaPayloadSchema);
   const alpacaOcoResponseFixture = readJson(FILES.alpacaOcoResponseFixture);
@@ -687,6 +697,63 @@ const main = () => {
     positionOwnershipRecoveryApprovalGate?.executionPolicy?.stateMutationAllowed === true;
   const ownershipRecoveryGateMultiSubmitAllowed =
     positionOwnershipRecoveryApprovalGate?.executionPolicy?.multiSubmitLaneAllowed === true;
+  const ownershipStateMigrationOverall = short(positionOwnershipStateMigrationReviewPlan?.overall || "", 64) || null;
+  const ownershipStateMigrationRows = toNum(positionOwnershipStateMigrationReviewPlan?.summary?.rows);
+  const ownershipStateMigrationReviewRows = toNum(positionOwnershipStateMigrationReviewPlan?.summary?.migrationReviewRows);
+  const ownershipStateMigrationReviewAuthorized =
+    positionOwnershipStateMigrationReviewPlan?.summary?.reviewAuthorized === true ||
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.reviewAuthorized === true;
+  const ownershipStateMigrationExternalAdoptionReview = toNum(
+    positionOwnershipStateMigrationReviewPlan?.summary?.externalAdoptionReview
+  );
+  const ownershipStateMigrationDoNotAutoRecover = toNum(
+    positionOwnershipStateMigrationReviewPlan?.summary?.doNotAutoRecover
+  );
+  const ownershipStateMigrationAttempted =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationAttempted === true;
+  const ownershipStateMigrationSubmitted =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationSubmitted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.brokerMutationSubmitted === true;
+  const ownershipStateMigrationStateAttempted =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationAttempted === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationAttempted === true;
+  const ownershipStateMigrationStateApplied =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationApplied === true ||
+    positionOwnershipStateMigrationReviewPlan?.summary?.stateMutationApplied === true;
+  const ownershipStateMigrationBrokerMutationAllowed =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.brokerMutationAllowed === true;
+  const ownershipStateMigrationStateMutationAllowed =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.stateMutationAllowed === true;
+  const ownershipStateMigrationMultiSubmitAllowed =
+    positionOwnershipStateMigrationReviewPlan?.executionPolicy?.multiSubmitLaneAllowed === true;
+  const multiOcoSubmitGateOverall = short(multiOcoSubmitSafetyGate?.overall || "", 64) || null;
+  const multiOcoSubmitGateRows = toNum(multiOcoSubmitSafetyGate?.summary?.rows);
+  const multiOcoSubmitGateEligible = toNum(multiOcoSubmitSafetyGate?.summary?.eligible);
+  const multiOcoSubmitGateSelected = toNum(multiOcoSubmitSafetyGate?.summary?.selected);
+  const multiOcoSubmitGateDesignApprovalProvided =
+    multiOcoSubmitSafetyGate?.summary?.designApprovalProvided === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.designApprovalProvided === true;
+  const multiOcoSubmitGateAttempted =
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.summary?.brokerMutationAttempted === true;
+  const multiOcoSubmitGateSubmitted =
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationSubmitted === true ||
+    multiOcoSubmitSafetyGate?.summary?.brokerMutationSubmitted === true;
+  const multiOcoSubmitGateStateAttempted =
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationAttempted === true ||
+    multiOcoSubmitSafetyGate?.summary?.stateMutationAttempted === true;
+  const multiOcoSubmitGateStateApplied =
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationApplied === true ||
+    multiOcoSubmitSafetyGate?.summary?.stateMutationApplied === true;
+  const multiOcoSubmitGateBrokerMutationAllowed =
+    multiOcoSubmitSafetyGate?.executionPolicy?.brokerMutationAllowed === true;
+  const multiOcoSubmitGateStateMutationAllowed =
+    multiOcoSubmitSafetyGate?.executionPolicy?.stateMutationAllowed === true;
+  const multiOcoSubmitGateMultiSubmitAllowed =
+    multiOcoSubmitSafetyGate?.executionPolicy?.multiSubmitLaneAllowed === true ||
+    multiOcoSubmitSafetyGate?.executionPolicy?.dryRunMaySubmitMulti === true ||
+    multiOcoSubmitSafetyGate?.summary?.multiSubmitAuthorized === true;
   const persistentOcoOpenVerifyMultiOverall =
     short(persistentOcoOpenVerifyMulti?.overall || "", 48) || null;
   const persistentOcoOpenVerifyMultiReports = toNum(persistentOcoOpenVerifyMulti?.summary?.reports);
@@ -1509,6 +1576,93 @@ const main = () => {
   }
 
   if (
+    ownershipStateMigrationBrokerMutationAllowed ||
+    ownershipStateMigrationStateMutationAllowed ||
+    ownershipStateMigrationMultiSubmitAllowed ||
+    ownershipStateMigrationAttempted ||
+    ownershipStateMigrationSubmitted ||
+    ownershipStateMigrationStateAttempted ||
+    ownershipStateMigrationStateApplied
+  ) {
+    addCheck(
+      checks,
+      "fail",
+      "position_ownership_state_migration_review_unsafe",
+      `state migration review plan must remain report-only; brokerAllowed=${ownershipStateMigrationBrokerMutationAllowed} stateAllowed=${ownershipStateMigrationStateMutationAllowed} multiSubmit=${ownershipStateMigrationMultiSubmitAllowed} attempted=${ownershipStateMigrationAttempted} submitted=${ownershipStateMigrationSubmitted} stateAttempted=${ownershipStateMigrationStateAttempted} stateApplied=${ownershipStateMigrationStateApplied}`
+    );
+  }
+
+  if (ownershipStateMigrationOverall === "blocked_external_adoption_evidence_required") {
+    addCheck(
+      checks,
+      "warn",
+      "position_ownership_state_migration_external_evidence_required",
+      `state migration review blocked external/manual adoption; externalAdoptionReview=${ownershipStateMigrationExternalAdoptionReview ?? "N/A"} doNotAutoRecover=${ownershipStateMigrationDoNotAutoRecover ?? "N/A"}`
+    );
+  } else if (ownershipStateMigrationOverall === "blocked_state_approval_required") {
+    addCheck(
+      checks,
+      "warn",
+      "position_ownership_state_migration_approval_required",
+      `state migration review has ${ownershipStateMigrationReviewRows ?? "N/A"} candidate row(s) but exact state approval is absent`
+    );
+  } else if (ownershipStateMigrationOverall === "state_migration_review_ready_report_only") {
+    addCheck(
+      checks,
+      "warn",
+      "position_ownership_state_migration_review_ready",
+      "state migration review package may be prepared, but applying state remains blocked until a separate migration task with backup/diff/audit/post-verify"
+    );
+  } else if (ownershipStateMigrationOverall) {
+    addCheck(
+      checks,
+      "pass",
+      "position_ownership_state_migration_monitoring",
+      `state migration review is monitor-only; reviewAuthorized=${ownershipStateMigrationReviewAuthorized}`
+    );
+  }
+
+  if (
+    multiOcoSubmitGateBrokerMutationAllowed ||
+    multiOcoSubmitGateStateMutationAllowed ||
+    multiOcoSubmitGateMultiSubmitAllowed ||
+    multiOcoSubmitGateAttempted ||
+    multiOcoSubmitGateSubmitted ||
+    multiOcoSubmitGateStateAttempted ||
+    multiOcoSubmitGateStateApplied
+  ) {
+    addCheck(
+      checks,
+      "fail",
+      "multi_oco_submit_gate_unsafe",
+      `multi OCO submit gate must remain non-mutating and unauthorized; brokerAllowed=${multiOcoSubmitGateBrokerMutationAllowed} stateAllowed=${multiOcoSubmitGateStateMutationAllowed} multiSubmit=${multiOcoSubmitGateMultiSubmitAllowed} attempted=${multiOcoSubmitGateAttempted} submitted=${multiOcoSubmitGateSubmitted} stateAttempted=${multiOcoSubmitGateStateAttempted} stateApplied=${multiOcoSubmitGateStateApplied}`
+    );
+  }
+
+  if (multiOcoSubmitGateOverall === "blocked_multi_submit_design_approval_required") {
+    addCheck(
+      checks,
+      "warn",
+      "multi_oco_submit_design_approval_required",
+      `multi submit design remains blocked; selected=${multiOcoSubmitGateSelected ?? "N/A"} eligible=${multiOcoSubmitGateEligible ?? "N/A"}`
+    );
+  } else if (multiOcoSubmitGateOverall === "multi_submit_design_review_authorized_report_only") {
+    addCheck(
+      checks,
+      "warn",
+      "multi_oco_submit_design_review_only",
+      "multi submit design review is report-only; no broker mutation or submit lane is authorized"
+    );
+  } else if (multiOcoSubmitGateOverall) {
+    addCheck(
+      checks,
+      "pass",
+      "multi_oco_submit_gate_forbidden",
+      `multi submit gate remains forbidden/report-only; designApproval=${multiOcoSubmitGateDesignApprovalProvided}`
+    );
+  }
+
+  if (
     persistentOcoOpenVerifyMultiBrokerMutationAllowed ||
     persistentOcoOpenVerifyMultiAttempted ||
     persistentOcoOpenVerifyMultiSubmitted
@@ -1974,6 +2128,8 @@ const main = () => {
       positionOwnershipGuardGapAudit: Boolean(positionOwnershipGuardGapAudit),
       positionOwnershipRecoveryDecision: Boolean(positionOwnershipRecoveryDecision),
       positionOwnershipRecoveryApprovalGate: Boolean(positionOwnershipRecoveryApprovalGate),
+      positionOwnershipStateMigrationReviewPlan: Boolean(positionOwnershipStateMigrationReviewPlan),
+      multiOcoSubmitSafetyGate: Boolean(multiOcoSubmitSafetyGate),
       persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
       alpacaPayloadSchema: Boolean(alpacaPayloadSchema),
       alpacaOcoResponseFixture: Boolean(alpacaOcoResponseFixture),
@@ -2163,6 +2319,27 @@ const main = () => {
       ownershipRecoveryGateStateAttempted,
       ownershipRecoveryGateStateApplied,
       ownershipRecoveryGateMultiSubmitAllowed,
+      ownershipStateMigrationOverall,
+      ownershipStateMigrationRows,
+      ownershipStateMigrationReviewRows,
+      ownershipStateMigrationReviewAuthorized,
+      ownershipStateMigrationExternalAdoptionReview,
+      ownershipStateMigrationDoNotAutoRecover,
+      ownershipStateMigrationAttempted,
+      ownershipStateMigrationSubmitted,
+      ownershipStateMigrationStateAttempted,
+      ownershipStateMigrationStateApplied,
+      ownershipStateMigrationMultiSubmitAllowed,
+      multiOcoSubmitGateOverall,
+      multiOcoSubmitGateRows,
+      multiOcoSubmitGateEligible,
+      multiOcoSubmitGateSelected,
+      multiOcoSubmitGateDesignApprovalProvided,
+      multiOcoSubmitGateAttempted,
+      multiOcoSubmitGateSubmitted,
+      multiOcoSubmitGateStateAttempted,
+      multiOcoSubmitGateStateApplied,
+      multiOcoSubmitGateMultiAuthorized: multiOcoSubmitGateMultiSubmitAllowed,
       persistentOcoOpenVerifyMultiOverall,
       persistentOcoOpenVerifyMultiReports,
       persistentOcoOpenVerifyMultiPassCount,

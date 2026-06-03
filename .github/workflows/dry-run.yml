@@ -2049,6 +2049,36 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build position ownership state migration review plan
+        if: always()
+        run: npm run ops:position-ownership-state-migration-review
+
+      - name: Publish position ownership state migration review summary
+        if: always()
+        run: |
+          if [[ -f state/position-ownership-state-migration-review-plan.md ]]; then
+            cat state/position-ownership-state-migration-review-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Position Ownership State Migration Review Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/position-ownership-state-migration-review-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Build multi OCO submit safety gate
+        if: always()
+        run: npm run ops:multi-oco-submit-gate
+
+      - name: Publish multi OCO submit safety gate summary
+        if: always()
+        run: |
+          if [[ -f state/multi-oco-submit-safety-gate.md ]]; then
+            cat state/multi-oco-submit-safety-gate.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Multi OCO Submit Safety Gate" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/multi-oco-submit-safety-gate.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops lane status report
         if: always()
         run: npm run ops:lane-status
@@ -2191,6 +2221,10 @@ jobs:
             state/position-ownership-recovery-decision.md
             state/position-ownership-recovery-approval-gate.json
             state/position-ownership-recovery-approval-gate.md
+            state/position-ownership-state-migration-review-plan.json
+            state/position-ownership-state-migration-review-plan.md
+            state/multi-oco-submit-safety-gate.json
+            state/multi-oco-submit-safety-gate.md
             state/fillability-report.json
             state/fillability-report.md
             state/entry-reprice-policy-decision.json
