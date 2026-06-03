@@ -70,7 +70,8 @@
     "ops:ledger-filled-migration-apply": "node scripts/apply-ledger-filled-migration.mjs",
     "ops:limited-multi-oco-plan": "node scripts/build-limited-multi-oco-repair-plan.mjs",
     "ops:position-ownership-guard-gap": "node scripts/build-position-ownership-guard-gap-audit.mjs",
-    "ops:position-ownership-recovery-decision": "node scripts/build-position-ownership-recovery-decision.mjs"
+    "ops:position-ownership-recovery-decision": "node scripts/build-position-ownership-recovery-decision.mjs",
+    "ops:position-ownership-recovery-gate": "node scripts/build-position-ownership-recovery-approval-gate.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

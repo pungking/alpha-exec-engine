@@ -1154,6 +1154,11 @@ Done-When:
   - classifies external/manual rows with no sidecar filled proof and no fresh guard source as `DO_NOT_AUTO_RECOVER_EXTERNAL_NO_OWNERSHIP_NO_GUARD_SOURCE`.
   - only allows `STATE_ONLY_RECOVERY_REVIEW_READY` when both sidecar ownership proof and fresh stop/target guard source exist.
   - requires a separate state-only recovery task with `CONFIRM STATE OWNERSHIP RECOVERY` plus backup, diff, audit, and post-verify before any ledger/metadata mutation.
+- Added `position-ownership-recovery-approval-gate` as a second report-only gate:
+  - blocks TSLA-style external/manual adoption until ownership proof and fresh guard source both exist.
+  - reports `manual_state_approval_required` only after state-ready evidence exists and the exact state approval phrase is absent.
+  - treats `CONFIRM STATE OWNERSHIP RECOVERY` as permission to prepare a separate migration review, not permission to mutate state inside dry-run.
+  - keeps multi-submit explicitly forbidden.
 - Safety invariant:
   - `brokerMutationAllowed=false`, `brokerMutationAttempted=false`, `brokerMutationSubmitted=false`.
   - `stateMutationAllowed=false`, `stateMutationAttempted=false`, `stateMutationApplied=false`.
@@ -1163,6 +1168,8 @@ Done-When:
 Done-When:
 
 - Safe sidecar artifacts include `position-ownership-recovery-decision.json` / `.md`.
+- Safe sidecar artifacts include `position-ownership-recovery-approval-gate.json` / `.md`.
 - TSLA-style external/manual rows are not auto-adopted and show a concrete do-not-auto-recover decision until ownership proof and fresh guard source exist.
 - `ops-lane-status-report` includes `track_10_position_ownership_recovery_decision`.
-- `ops-health-report` includes ownership recovery decision metrics and fails if this lane reports broker or state mutation.
+- `ops-lane-status-report` includes `track_11_position_ownership_recovery_approval_gate`.
+- `ops-health-report` includes ownership recovery decision/gate metrics and fails if either lane reports broker, state, or multi-submit mutation.
