@@ -3348,7 +3348,11 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
       }, {})
   );
   const unheldSkipped = Math.max(0, unheldExecutableRows.length - unheldPayloadReady);
-  const expectedBlockers = (categoryCounts.dedupe || 0) + (categoryCounts.stale_source || 0);
+  const expectedBlockers =
+    (categoryCounts.dedupe || 0) +
+    (categoryCounts.stale_source || 0) +
+    (categoryCounts.portfolio_capacity || 0) +
+    (categoryCounts.capacity || 0);
   const status =
     unheldExecutableRows.length === 0
       ? "no_unheld_executable"
@@ -3359,7 +3363,7 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
           : "fail_no_payload_for_unheld_executable";
 
   return {
-    invariant: "payloadCount>=1 is expected only when at least one unheld executable candidate survives dedupe/stale gates",
+    invariant: "payloadCount>=1 is expected only when at least one unheld executable candidate survives dedupe/stale/portfolio-capacity gates",
     status,
     executableCandidates: executableRows.length,
     unheldExecutableCandidates: unheldExecutableRows.length,
@@ -3464,6 +3468,10 @@ function classifySkipReason(reason: string): string {
   const key = String(reason || "").toLowerCase();
   if (!key || key === "unknown") return "unknown";
   if (key.includes("portfolio_held_symbol_entry_blocked")) return "portfolio_held";
+  if (key.includes("portfolio_active_symbol_capacity_full") || key.includes("active_symbol_capacity_full")) {
+    return "portfolio_capacity";
+  }
+  if (key.includes("portfolio_capacity")) return "portfolio_capacity";
   if (key.includes("portfolio_fillability") || key.includes("fillability_below_floor")) {
     return "quality_gate";
   }
