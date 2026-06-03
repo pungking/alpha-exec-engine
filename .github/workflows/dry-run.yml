@@ -2082,6 +2082,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build no-actionable-event escalation
+        if: always()
+        run: npm run ops:no-actionable-event
+
+      - name: Publish no-actionable-event escalation summary
+        if: always()
+        run: |
+          if [[ -f state/no-actionable-event-escalation.md ]]; then
+            cat state/no-actionable-event-escalation.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## No Actionable Event Escalation" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/no-actionable-event-escalation.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ops lane status report
         if: always()
         run: npm run ops:lane-status
@@ -2228,6 +2243,9 @@ jobs:
             state/position-ownership-state-migration-review-plan.md
             state/multi-oco-submit-safety-gate.json
             state/multi-oco-submit-safety-gate.md
+            state/no-actionable-event-ledger.json
+            state/no-actionable-event-escalation.json
+            state/no-actionable-event-escalation.md
             state/fillability-report.json
             state/fillability-report.md
             state/entry-reprice-policy-decision.json

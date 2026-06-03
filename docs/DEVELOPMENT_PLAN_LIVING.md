@@ -1218,3 +1218,29 @@ Done-When:
 - `npm run ops:test:ownership-gates` passes locally and in GitHub Actions.
 - Test output shows `brokerMutation=false stateMutation=false multiSubmit=false`.
 - The symbol-agnostic runtime check remains green after adding the tests.
+
+### 2026-06-03 - Bounded No-Actionable-Event Escalation
+
+- Scope: `alpha-exec-engine` / report-only observation boundary so the project does not become indefinite monitoring.
+- Added `no-actionable-event-escalation`:
+  - consumes the latest dry-run preview, order decision audit, entry/open reprice reports, persistent repair plan, ownership migration gate, and multi-submit gate.
+  - records each safe run in `state/no-actionable-event-ledger.json`.
+  - emits `state/no-actionable-event-escalation.json` / `.md`.
+  - classifies each run as `actionable_event_present`, `no_actionable_event`, or `unsafe_mutation_signal`.
+  - escalates repeated no-actionable runs to `stage0_6_quality_audit_required` instead of recommending continuous passive observation.
+- Default bounded thresholds:
+  - `NO_ACTIONABLE_EVENT_MAX_CONSECUTIVE_RUNS=5`
+  - `NO_ACTIONABLE_EVENT_MAX_CONSECUTIVE_DAYS=3`
+  - `NO_ACTIONABLE_EVENT_LEDGER_MAX_ENTRIES=120`
+- Safety invariant:
+  - this lane writes only observation/audit artifacts.
+  - `brokerMutationAllowed=false`, `stateMutationAllowed=false`, `multiSubmitLaneAllowed=false`.
+  - broker mutation still requires `CONFIRM LIVE EXECUTION`.
+  - state mutation still requires `CONFIRM STATE OWNERSHIP RECOVERY`.
+
+Done-When:
+
+- A single no-actionable safe run ends as `no_actionable_event_observe_bounded` rather than open-ended monitoring.
+- Repeated no-actionable runs produce `stage0_6_quality_audit_required`.
+- If payload/reprice/protection/state-recovery events appear, the lane emits `actionable_event_present` and routes to targeted bottleneck analysis.
+- Artifact upload includes the escalation JSON/MD and ledger.

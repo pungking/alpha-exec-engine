@@ -74,6 +74,7 @@
     "ops:position-ownership-recovery-gate": "node scripts/build-position-ownership-recovery-approval-gate.mjs",
     "ops:position-ownership-state-migration-review": "node scripts/build-position-ownership-state-migration-review-plan.mjs",
     "ops:multi-oco-submit-gate": "node scripts/build-multi-oco-submit-safety-gate.mjs",
+    "ops:no-actionable-event": "node scripts/build-no-actionable-event-escalation.mjs",
     "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs"
   },
   "devDependencies": {
