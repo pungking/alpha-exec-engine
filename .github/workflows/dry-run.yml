@@ -1655,6 +1655,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build Stage6/fillability mismatch audit
+        if: always()
+        run: npm run ops:stage6-fillability-mismatch
+
+      - name: Publish Stage6/fillability mismatch audit summary
+        if: always()
+        run: |
+          if [[ -f state/stage6-fillability-mismatch-audit.md ]]; then
+            cat state/stage6-fillability-mismatch-audit.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Stage6 / Fillability Mismatch Audit" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/stage6-fillability-mismatch-audit.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build high-price min-one-share canary plan
         if: always()
         run: npm run ops:high-price:min-one-share-canary
@@ -2250,6 +2265,8 @@ jobs:
             state/fillability-report.md
             state/entry-reprice-policy-decision.json
             state/entry-reprice-policy-decision.md
+            state/stage6-fillability-mismatch-audit.json
+            state/stage6-fillability-mismatch-audit.md
             state/high-price-min-one-share-canary-plan.json
             state/high-price-min-one-share-canary-plan.md
             state/order-state-consistency-report.json
