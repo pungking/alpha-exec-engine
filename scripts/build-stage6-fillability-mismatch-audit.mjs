@@ -244,14 +244,7 @@ const summarize = ({ preview, audit, rows }) => {
     return acc;
   }, {});
   const mismatchRows = rows.filter((row) => row.stage6Executable && !row.payloadReady);
-  const stage6QualityReviewReady = mismatchRows.filter((row) =>
-    [
-      "ENTRY_POLICY_REVIEW_READY",
-      "WAIT_PULLBACK_ABOVE_ADAPTIVE_BAND",
-      "WAIT_PULLBACK_DISTANCE_TOO_FAR",
-      "FILLABILITY_POLICY_REVIEW_REQUIRED"
-    ].includes(row.mismatchVerdict)
-  ).length;
+  const stage6QualityReviewReady = mismatchRows.length;
   const brokerMutationAttempted = rows.some((row) => row.brokerMutationAttempted === true);
   const brokerMutationSubmitted = rows.some((row) => row.brokerMutationSubmitted === true);
   let overall = "pass_no_stage6_sidecar_mismatch";
