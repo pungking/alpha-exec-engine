@@ -76,7 +76,8 @@
     "ops:position-ownership-state-migration-review": "node scripts/build-position-ownership-state-migration-review-plan.mjs",
     "ops:multi-oco-submit-gate": "node scripts/build-multi-oco-submit-safety-gate.mjs",
     "ops:no-actionable-event": "node scripts/build-no-actionable-event-escalation.mjs",
-    "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs"
+    "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs",
+    "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

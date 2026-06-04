@@ -1648,7 +1648,7 @@ function runEnvGuard(): EnvCheckResult {
   }
 
   if (telegramSendEnabled) {
-    for (const key of ["TELEGRAM_TOKEN", "TELEGRAM_PRIMARY_CHAT_ID", "TELEGRAM_SIMULATION_CHAT_ID"]) {
+    for (const key of ["TELEGRAM_TOKEN", "TELEGRAM_SIMULATION_CHAT_ID"]) {
       if (!hasValue(process.env[key])) missing.push(key);
     }
   } else {
@@ -1826,7 +1826,6 @@ function printStartupSummary() {
     `SHADOW_DATA_BUS : enabled=${shadowDataBus.enabled} mode=${shadowDataBus.mode} sources=${formatShadowDataBusSources(shadowDataBus)} keys=${formatShadowDataBusKeyReadiness(shadowDataBus)}`
   );
   console.log(`ALPACA_BASE_URL  : ${process.env.ALPACA_BASE_URL || "(unset)"}`);
-  console.log(`TELEGRAM_PRIMARY : ${mask(process.env.TELEGRAM_PRIMARY_CHAT_ID || "")}`);
   console.log(`TELEGRAM_SIM     : ${mask(process.env.TELEGRAM_SIMULATION_CHAT_ID || "")}`);
   console.log(`TELEGRAM_ALERT   : ${mask(process.env.TELEGRAM_ALERT_CHAT_ID || "")}`);
   console.log(`GDRIVE_ROOT      : ${mask(process.env.GDRIVE_ROOT_FOLDER_ID || "")}`);
@@ -9623,7 +9622,6 @@ function resolveAlertChatId(): string {
   return (
     process.env.TELEGRAM_ALERT_CHAT_ID ||
     process.env.TELEGRAM_SIMULATION_CHAT_ID ||
-    process.env.TELEGRAM_PRIMARY_CHAT_ID ||
     ""
   );
 }

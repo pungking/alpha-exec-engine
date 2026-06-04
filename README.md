@@ -361,8 +361,8 @@ Use `.env.example` as baseline.
 - `GDRIVE_MARKET_SNAPSHOT_FOLDER_ID` (optional explicit folder for `MARKET_REGIME_SNAPSHOT.json`)
 - `GDRIVE_STAGE6_FOLDER`
 - `GDRIVE_REPORT_FOLDER`
-- `TELEGRAM_PRIMARY_CHAT_ID`
-- `TELEGRAM_SIMULATION_CHAT_ID`
+- `TELEGRAM_SIMULATION_CHAT_ID` (dry-run, monitoring, and report-only notifications)
+- `TELEGRAM_ALERT_CHAT_ID` (failure/incident notifications; falls back to simulation if unset)
 - `MARKET_GUARD_ENABLED`
 - `MARKET_GUARD_MODE` (`observe|active`)
 - `MARKET_GUARD_INTERVAL_MIN`

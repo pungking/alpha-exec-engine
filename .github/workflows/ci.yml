@@ -23,6 +23,8 @@ jobs:
         run: npm ci
       - name: Symbol-agnostic runtime guard
         run: npm run ops:safety:symbol-agnostic
+      - name: Telegram routing policy audit
+        run: npm run ops:safety:telegram-routing
       - name: Typecheck
         run: npm run typecheck
       - name: HF Verify (Unit + Replay Fixture)

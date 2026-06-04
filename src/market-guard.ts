@@ -1559,7 +1559,6 @@ function resolveAlertChatId(): string {
   return (
     process.env.TELEGRAM_ALERT_CHAT_ID ||
     process.env.TELEGRAM_SIMULATION_CHAT_ID ||
-    process.env.TELEGRAM_PRIMARY_CHAT_ID ||
     ""
   );
 }
