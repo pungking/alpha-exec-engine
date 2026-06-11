@@ -3218,7 +3218,10 @@ function buildStage6BlockerDecisionAudit(
 }
 
 function buildStage6PolicyAuditSummary(stage6: Stage6LoadResult): Record<string, unknown> {
-  const diagnosticRows = selectStage6DiagnosticCandidates(stage6);
+  const actionableVerdicts = resolveActionableVerdicts();
+  const allDiagnosticRows = selectStage6DiagnosticCandidates(stage6);
+  const diagnosticRows = allDiagnosticRows.filter((row) => actionableVerdicts.has(row.verdict));
+  const excludedNonActionableVerdictRows = allDiagnosticRows.length - diagnosticRows.length;
   const executablePicks = stage6.contractContext?.executablePicks.length ?? stage6.candidates.length;
   const modelTopRows = stage6.contractContext?.modelTop6 ?? stage6.modelTopCandidates;
   const reviewReadyRows = diagnosticRows.filter(isBreakoutRetestProofReviewReady);
@@ -3253,6 +3256,8 @@ function buildStage6PolicyAuditSummary(stage6: Stage6LoadResult): Record<string,
     executablePicks,
     modelTopRows: modelTopRows.length,
     diagnosticRows: diagnosticRows.length,
+    excludedNonActionableVerdictRows,
+    actionableVerdicts: formatActionableVerdicts(actionableVerdicts),
     breakoutRetestProofReviewReady: reviewReadyRows.length,
     breakoutRetestProofConfirmed: proofConfirmedRows.length,
     waitBreakoutRetestRequired: breakoutWaitRows.length,
@@ -3481,6 +3486,9 @@ function classifySkipReason(reason: string): string {
   }
   if (key.includes("idempotency") || key.includes("dedupe") || key.includes("duplicate")) return "dedupe";
   if (key.includes("stale")) return "stale_source";
+  if (key.includes("verdict_not_sidecar_actionable") || key.includes("non_actionable_verdict")) {
+    return "quality_gate";
+  }
   if (key.includes("breakout")) return "breakout";
   if (key.includes("structure")) return "structure";
   if (key.includes("entry_too_far") || key.includes("pullback") || key.includes("feasibility")) {
