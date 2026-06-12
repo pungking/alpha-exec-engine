@@ -185,7 +185,13 @@ type Stage6CandidateSummary = {
   hfSentimentNewestAgeHours: number | null;
   earningsDaysToEvent: number | null;
   breakoutRetestProofVerdict: string | null;
+  breakoutRetestProofConfirmed: boolean | null;
   breakoutRetestProofReviewReady: boolean | null;
+  targetRecalibrationVerdict: string | null;
+  riskGeometryPolicyVerdict: string | null;
+  zeroExecutableTuningLane: string | null;
+  zeroExecutableTuningVerdict: string | null;
+  zeroExecutablePrimaryTuningTarget: boolean | null;
   shadowIntel: Stage6ShadowIntelSummary | null;
 };
 
@@ -203,7 +209,13 @@ type Stage6BlockerSample = {
   expectedReturnPct: number | null;
   earningsDaysToEvent: number | null;
   breakoutRetestProofVerdict: string | null;
+  breakoutRetestProofConfirmed: boolean | null;
   breakoutRetestProofReviewReady: boolean | null;
+  targetRecalibrationVerdict: string | null;
+  riskGeometryPolicyVerdict: string | null;
+  zeroExecutableTuningLane: string | null;
+  zeroExecutableTuningVerdict: string | null;
+  zeroExecutablePrimaryTuningTarget: boolean | null;
   entry: string;
   target: string;
   stop: string;
@@ -292,6 +304,14 @@ type OrderDecisionAuditRecord = {
   riskDollars: number | null;
   highPriceAdjusted: boolean;
   sizingReason: string | null;
+  breakoutRetestProofVerdict: string | null;
+  breakoutRetestProofConfirmed: boolean | null;
+  breakoutRetestProofReviewReady: boolean | null;
+  targetRecalibrationVerdict: string | null;
+  riskGeometryPolicyVerdict: string | null;
+  zeroExecutableTuningLane: string | null;
+  zeroExecutableTuningVerdict: string | null;
+  zeroExecutablePrimaryTuningTarget: boolean | null;
   executionOverlay: ExecutionOverlayDecision | null;
   openOrderMonitor: OpenOrderMonitorDecision | null;
 };
@@ -3072,6 +3092,14 @@ function buildOrderDecisionAudit(
       riskDollars: payload?.entrySizing?.riskDollars ?? null,
       highPriceAdjusted: Boolean(payload?.entrySizing?.highPriceAdjusted),
       sizingReason: payload?.entrySizing?.reason ?? null,
+      breakoutRetestProofVerdict: row.breakoutRetestProofVerdict,
+      breakoutRetestProofConfirmed: row.breakoutRetestProofConfirmed,
+      breakoutRetestProofReviewReady: row.breakoutRetestProofReviewReady,
+      targetRecalibrationVerdict: row.targetRecalibrationVerdict,
+      riskGeometryPolicyVerdict: row.riskGeometryPolicyVerdict,
+      zeroExecutableTuningLane: row.zeroExecutableTuningLane,
+      zeroExecutableTuningVerdict: row.zeroExecutableTuningVerdict,
+      zeroExecutablePrimaryTuningTarget: row.zeroExecutablePrimaryTuningTarget,
       executionOverlay: null,
       openOrderMonitor: null
     };
@@ -3213,6 +3241,14 @@ function buildStage6BlockerDecisionAudit(
       riskDollars: null,
       highPriceAdjusted: false,
       sizingReason: null,
+      breakoutRetestProofVerdict: row.breakoutRetestProofVerdict,
+      breakoutRetestProofConfirmed: row.breakoutRetestProofConfirmed,
+      breakoutRetestProofReviewReady: row.breakoutRetestProofReviewReady,
+      targetRecalibrationVerdict: row.targetRecalibrationVerdict,
+      riskGeometryPolicyVerdict: row.riskGeometryPolicyVerdict,
+      zeroExecutableTuningLane: row.zeroExecutableTuningLane,
+      zeroExecutableTuningVerdict: row.zeroExecutableTuningVerdict,
+      zeroExecutablePrimaryTuningTarget: row.zeroExecutablePrimaryTuningTarget,
       executionOverlay: null,
       openOrderMonitor: null
     };
@@ -3602,7 +3638,13 @@ function buildStage6BlockerSamples(stage6: Stage6LoadResult, maxItems = 8): Stag
       expectedReturnPct: row.expectedReturnPct,
       earningsDaysToEvent: row.earningsDaysToEvent,
       breakoutRetestProofVerdict: row.breakoutRetestProofVerdict,
+      breakoutRetestProofConfirmed: row.breakoutRetestProofConfirmed,
       breakoutRetestProofReviewReady: row.breakoutRetestProofReviewReady,
+      targetRecalibrationVerdict: row.targetRecalibrationVerdict,
+      riskGeometryPolicyVerdict: row.riskGeometryPolicyVerdict,
+      zeroExecutableTuningLane: row.zeroExecutableTuningLane,
+      zeroExecutableTuningVerdict: row.zeroExecutableTuningVerdict,
+      zeroExecutablePrimaryTuningTarget: row.zeroExecutablePrimaryTuningTarget,
       entry: row.entry,
       target: row.target,
       stop: row.stop,
@@ -3617,7 +3659,9 @@ function formatStage6BlockerSamples(samples: Stage6BlockerSample[], maxItems = 6
     const distance = row.entryDistancePct == null ? "N/A" : `${row.entryDistancePct.toFixed(2)}%`;
     const er = row.expectedReturnPct == null ? "N/A" : `${row.expectedReturnPct.toFixed(0)}%`;
     const earnings = row.earningsDaysToEvent == null ? "N/A" : `D-${row.earningsDaysToEvent}`;
-    return `${row.symbol}:${row.finalDecision}/${row.decisionReason}->${row.skipHint}(M${rank},ER=${er},dist=${distance},earn=${earnings})`;
+    const lane = row.zeroExecutableTuningLane ? `,lane=${row.zeroExecutableTuningLane}` : "";
+    const proof = row.breakoutRetestProofConfirmed === true ? ",proof=confirmed" : "";
+    return `${row.symbol}:${row.finalDecision}/${row.decisionReason}->${row.skipHint}(M${rank},ER=${er},dist=${distance},earn=${earnings}${lane}${proof})`;
   });
   const suffix = samples.length > maxItems ? ` (+${samples.length - maxItems} more)` : "";
   return `${visible.join(", ")}${suffix}`;
@@ -4144,7 +4188,25 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
         typeof node.breakoutRetestProofVerdict === "string" && node.breakoutRetestProofVerdict.trim()
           ? node.breakoutRetestProofVerdict.trim().toUpperCase()
           : null;
+      const breakoutRetestProofConfirmedRaw = parseBooleanValue(node.breakoutRetestProofConfirmed);
       const breakoutRetestProofReviewReadyRaw = parseBooleanValue(node.breakoutRetestProofReviewReady);
+      const targetRecalibrationVerdictRaw =
+        typeof node.targetRecalibrationVerdict === "string" && node.targetRecalibrationVerdict.trim()
+          ? node.targetRecalibrationVerdict.trim().toUpperCase()
+          : null;
+      const riskGeometryPolicyVerdictRaw =
+        typeof node.riskGeometryPolicyVerdict === "string" && node.riskGeometryPolicyVerdict.trim()
+          ? node.riskGeometryPolicyVerdict.trim().toUpperCase()
+          : null;
+      const zeroExecutableTuningLaneRaw =
+        typeof node.zeroExecutableTuningLane === "string" && node.zeroExecutableTuningLane.trim()
+          ? node.zeroExecutableTuningLane.trim().toUpperCase()
+          : null;
+      const zeroExecutableTuningVerdictRaw =
+        typeof node.zeroExecutableTuningVerdict === "string" && node.zeroExecutableTuningVerdict.trim()
+          ? node.zeroExecutableTuningVerdict.trim().toUpperCase()
+          : null;
+      const zeroExecutablePrimaryTuningTargetRaw = parseBooleanValue(node.zeroExecutablePrimaryTuningTarget);
       const shadowIntel = parseStage6ShadowIntel(node);
       const instrumentType = normalizeStage6InstrumentType(node.instrumentType);
       const historyTier = normalizeStage6HistoryTier(node.historyTier);
@@ -4285,7 +4347,13 @@ function parseCandidateSummariesFromRaw(raw: unknown, maxItems: number | null = 
         earningsDaysToEvent:
           earningsDaysToEventRaw != null ? Number(earningsDaysToEventRaw.toFixed(0)) : null,
         breakoutRetestProofVerdict: breakoutRetestProofVerdictRaw,
+        breakoutRetestProofConfirmed: breakoutRetestProofConfirmedRaw,
         breakoutRetestProofReviewReady: breakoutRetestProofReviewReadyRaw,
+        targetRecalibrationVerdict: targetRecalibrationVerdictRaw,
+        riskGeometryPolicyVerdict: riskGeometryPolicyVerdictRaw,
+        zeroExecutableTuningLane: zeroExecutableTuningLaneRaw,
+        zeroExecutableTuningVerdict: zeroExecutableTuningVerdictRaw,
+        zeroExecutablePrimaryTuningTarget: zeroExecutablePrimaryTuningTargetRaw,
         shadowIntel
       };
     })
@@ -8842,7 +8910,13 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     hfSentimentNewestAgeHours: null,
     earningsDaysToEvent: null,
     breakoutRetestProofVerdict: null,
+    breakoutRetestProofConfirmed: null,
     breakoutRetestProofReviewReady: null,
+    targetRecalibrationVerdict: null,
+    riskGeometryPolicyVerdict: null,
+    zeroExecutableTuningLane: null,
+    zeroExecutableTuningVerdict: null,
+    zeroExecutablePrimaryTuningTarget: null,
     shadowIntel: null
   };
   const regimeDefault: RegimeSelection = {
