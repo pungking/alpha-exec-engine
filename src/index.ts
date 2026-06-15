@@ -3144,9 +3144,19 @@ function buildEffectiveSkipReasonCounts(dryExec: DryExecBuildResult): Record<str
   return buildDecisionAuditSkipReasonCounts(dryExec.decisionAudit);
 }
 
-function isBreakoutRetestProofConfirmed(verdict: string | null | undefined): boolean {
+function isBreakoutRetestProofConfirmedVerdict(verdict: string | null | undefined): boolean {
   const key = String(verdict || "").trim().toUpperCase();
-  return key === "BREAKOUT_RETEST_PROOF_CONFIRMED" || key === "PROOF_CONFIRMED" || key === "CONFIRMED";
+  return (
+    key === "BREAKOUT_RETEST_PROOF_CONFIRMED" ||
+    key === "BREAKOUT_RETEST_CONFIRMED_CURRENT_ENTRY_CANDIDATE" ||
+    key === "BREAKOUT_CONTINUATION_CONFIRMED_CURRENT_ENTRY_CANDIDATE" ||
+    key === "PROOF_CONFIRMED" ||
+    key === "CONFIRMED"
+  );
+}
+
+function isStage6BreakoutRetestProofConfirmed(row: Stage6CandidateSummary): boolean {
+  return row.breakoutRetestProofConfirmed === true || isBreakoutRetestProofConfirmedVerdict(row.breakoutRetestProofVerdict);
 }
 
 function isBreakoutRetestProofReviewReady(row: Stage6CandidateSummary): boolean {
@@ -3263,9 +3273,7 @@ function buildStage6PolicyAuditSummary(stage6: Stage6LoadResult): Record<string,
   const executablePicks = stage6.contractContext?.executablePicks.length ?? stage6.candidates.length;
   const modelTopRows = stage6.contractContext?.modelTop6 ?? stage6.modelTopCandidates;
   const reviewReadyRows = diagnosticRows.filter(isBreakoutRetestProofReviewReady);
-  const proofConfirmedRows = diagnosticRows.filter((row) =>
-    isBreakoutRetestProofConfirmed(row.breakoutRetestProofVerdict)
-  );
+  const proofConfirmedRows = diagnosticRows.filter(isStage6BreakoutRetestProofConfirmed);
   const breakoutWaitRows = diagnosticRows.filter(
     (row) => row.decisionReason === "wait_breakout_retest_required"
   );
@@ -3304,6 +3312,13 @@ function buildStage6PolicyAuditSummary(stage6: Stage6LoadResult): Record<string,
     riskGeometryBlocked: riskGeometryRows.length,
     policyVerdict,
     promotionGuard: "sidecar never promotes review-ready rows; Stage6 must emit proof-confirmed executable rows",
+    proofConfirmedSamples: proofConfirmedRows.slice(0, 6).map((row) => ({
+      symbol: row.symbol,
+      finalDecision: row.finalDecision,
+      decisionReason: row.decisionReason,
+      proofVerdict: row.breakoutRetestProofVerdict,
+      proofConfirmed: row.breakoutRetestProofConfirmed
+    })),
     reviewSamples: reviewReadyRows.slice(0, 6).map((row) => ({
       symbol: row.symbol,
       finalDecision: row.finalDecision,
