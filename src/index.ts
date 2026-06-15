@@ -3208,10 +3208,13 @@ function buildStage6BlockerDecisionAudit(
           )
         : { entry: entryOriginal ?? NaN, adjusted: false, capped: false, chasePct: 0 };
     const reason = mapStage6DecisionReasonToSkip(row.decisionReason);
+    const proofConfirmed = isStage6BreakoutRetestProofConfirmed(row);
     const proofReady = isBreakoutRetestProofReviewReady(row);
     const actionReason = reason === "stage6_wait_verdict_not_sidecar_actionable"
       ? "stage6_non_actionable_verdict_wait"
-      : proofReady
+      : proofConfirmed
+        ? "stage6_breakout_retest_proof_confirmed_promotion_disabled"
+        : proofReady
         ? "stage6_breakout_retest_proof_review_ready_report_only"
         : reason === "stage6_wait_breakout_retest_required"
         ? "stage6_breakout_retest_proof_not_confirmed"
