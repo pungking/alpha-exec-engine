@@ -2160,6 +2160,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build live readiness scorecard
+        if: always()
+        run: npm run ops:live-readiness
+
+      - name: Publish live readiness scorecard summary
+        if: always()
+        run: |
+          if [[ -f state/live-readiness-scorecard.md ]]; then
+            cat state/live-readiness-scorecard.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Live Readiness Scorecard" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/live-readiness-scorecard.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Sync dry-run summary to Notion
         if: always()
         continue-on-error: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED != 'true' && vars.NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED != 'true' && vars.NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED != 'true' && vars.NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED != 'true' }}
@@ -2297,6 +2312,8 @@ jobs:
             state/notion-performance-dashboard-schema-report.md
             state/ops-health-report.json
             state/ops-health-report.md
+            state/live-readiness-scorecard.json
+            state/live-readiness-scorecard.md
             state/validation-pack-auto-trigger.json
             state/validation-pack/**
             state/payload-probe/**
