@@ -421,6 +421,10 @@ const buildRows = (records, alpaca, preview = {}) => {
         maxRiskDollarsPerTrade <= 0 ||
         (oneShareRiskDollars != null && oneShareRiskDollars <= maxRiskDollarsPerTrade));
 
+    const highPricePolicyChangeWouldAllow =
+      classification.status === "BLOCKED_HIGH_PRICE_SIZE" &&
+      highPricePolicy === "skip" &&
+      minOneShareFeasibleUnderCaps === true;
     const baseRow = {
       symbol,
       status: classification.status,
@@ -469,10 +473,11 @@ const buildRows = (records, alpaca, preview = {}) => {
       minOneShareMaxNotional,
       maxRiskDollarsPerTrade,
       minOneShareFeasibleUnderCaps,
-      highPricePolicyChangeWouldAllow:
-        classification.status === "BLOCKED_HIGH_PRICE_SIZE" &&
-        highPricePolicy === "skip" &&
-        minOneShareFeasibleUnderCaps === true,
+      highPricePolicyChangeWouldAllow,
+      highPriceMinOneShareApprovalLane: highPricePolicyChangeWouldAllow
+        ? "HIGH_PRICE_MIN_ONE_SHARE_MANUAL_POLICY_REVIEW"
+        : null,
+      highPriceMinOneShareBrokerSubmitReady: false,
       fillCount: fills.length,
       fillQty: fills.reduce((acc, fill) => acc + (fill.qty || 0), 0),
       avgFillPrice:
@@ -521,6 +526,7 @@ const summarizeRows = (rows, preview, alpaca) => {
     row.terminalUnfilledTaxonomy.includes("pullback_not_filled")
   ).length;
   const reentryReviewRequired = rows.filter((row) => row.reentryApprovalRequired === true).length;
+  const highPriceManualPolicyReview = rows.filter((row) => row.highPricePolicyChangeWouldAllow).length;
 
   let overall = "pass";
   const findings = [];
@@ -608,7 +614,9 @@ const summarizeRows = (rows, preview, alpaca) => {
     reentryReviewRequired,
     entryTooFar,
     highPriceSizeBlocked,
-    highPricePolicyChangeWouldAllow: rows.filter((row) => row.highPricePolicyChangeWouldAllow).length,
+    highPricePolicyChangeWouldAllow: highPriceManualPolicyReview,
+    highPriceManualPolicyReview,
+    highPriceBrokerSubmitReady: 0,
     invalidQuoteCount,
     avgOpenCurrentVsLimitPct
   };
@@ -626,7 +634,7 @@ const buildMarkdown = (report) => {
     `- broker: \`available=${report.broker.available} reason=${report.broker.reason} open=${report.summary.openOrderCount} fills=${report.summary.fillActivityCount} attempted/submitted=${report.summary.brokerAttempted}/${report.summary.brokerSubmitted}\``
   );
   lines.push(
-    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} expiredTaxonomy=${report.summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${report.summary.reentryReviewRequired} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${report.summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
+    `- fillability: \`candidates=${report.summary.candidateCount} payloads=${report.summary.payloadCount} skipped=${report.summary.skippedCount} openWaiting=${report.summary.openWaiting} repricedWaiting=${report.summary.openRepricedWaiting} reprice=${report.summary.openReprice} cancel=${report.summary.openCancel} terminalUnfilled=${report.summary.terminalUnfilled} expiredTaxonomy=${report.summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${report.summary.reentryReviewRequired} entryTooFar=${report.summary.entryTooFar} highPriceSize=${report.summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${report.summary.highPricePolicyChangeWouldAllow} highPriceManualReview=${report.summary.highPriceManualPolicyReview} highPriceBrokerReady=${report.summary.highPriceBrokerSubmitReady} avgOpenDistance=${pct(report.summary.avgOpenCurrentVsLimitPct)}\``
   );
   if (report.summary.findings.length > 0) {
     lines.push("- findings:");
@@ -672,7 +680,7 @@ const main = async () => {
   fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   fs.writeFileSync(OUTPUT_MD, buildMarkdown(report), "utf8");
   console.log(
-    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} terminalUnfilled=${summary.terminalUnfilled} expiredTaxonomy=${summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${summary.reentryReviewRequired} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${summary.highPricePolicyChangeWouldAllow} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
+    `[FILLABILITY] overall=${summary.overall} candidates=${summary.candidateCount} payloads=${summary.payloadCount} skipped=${summary.skippedCount} open=${summary.openOrderCount} fills=${summary.fillActivityCount} reprice=${summary.openReprice} terminalUnfilled=${summary.terminalUnfilled} expiredTaxonomy=${summary.terminalUnfilledTaxonomySummary || "none"} reentryReview=${summary.reentryReviewRequired} entryTooFar=${summary.entryTooFar} highPriceSize=${summary.highPriceSizeBlocked} highPricePolicyWouldAllow=${summary.highPricePolicyChangeWouldAllow} highPriceManualReview=${summary.highPriceManualPolicyReview} highPriceBrokerReady=${summary.highPriceBrokerSubmitReady} avgOpenDistance=${fmt(summary.avgOpenCurrentVsLimitPct)}`
   );
 };
 

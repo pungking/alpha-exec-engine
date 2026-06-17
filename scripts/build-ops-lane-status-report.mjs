@@ -283,6 +283,10 @@ const buildReport = () => {
   );
   const minOneShareSelectedSymbol = asSymbol(highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol);
   const minOneShareEligible = toNum(highPriceMinOneShareCanaryPlan?.summary?.eligible) ?? 0;
+  const minOneShareApprovalOverall = highPriceMinOneShareCanaryPlan?.approvalGate?.overall || "N/A";
+  const minOneShareApprovalReady =
+    highPriceMinOneShareCanaryPlan?.approvalGate?.readyForSafePayloadProbe === true ||
+    highPriceMinOneShareCanaryPlan?.summary?.approvalCandidateReady === true;
   const payloadCount = toNum(preview?.payloadCount) ?? 0;
   const brokerAttempted = toNum(preview?.brokerSubmission?.attempted) ?? 0;
   const brokerSubmitted = toNum(preview?.brokerSubmission?.submitted) ?? 0;
@@ -438,13 +442,15 @@ const buildReport = () => {
                   ? "attempted_not_submitted"
                   : "payload_ready_not_submitted"
               : minOneShareSelectedSymbol
-                ? "safe_min_one_share_payload_probe_candidate"
+                ? minOneShareApprovalReady
+                  ? "manual_min_one_share_policy_approval_candidate"
+                  : "safe_min_one_share_payload_probe_candidate"
                 : highPriceSkippedRows.length
                   ? "blocked_high_price_sizing"
                   : "blocked_before_payload",
       count: orderDecisionRecords.length,
       symbols: uniqueSymbols(orderDecisionRecords),
-      evidence: `previewAgeMin=${previewAgeMin == null ? "N/A" : previewAgeMin.toFixed(1)} maxPreviewAgeMin=${MAX_PREVIEW_AGE_MIN} decisionAuditRows=${orderDecisionRecords.length} payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} minOneShareEligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} fillability=${fillability?.summary?.overall || "N/A"}`,
+      evidence: `previewAgeMin=${previewAgeMin == null ? "N/A" : previewAgeMin.toFixed(1)} maxPreviewAgeMin=${MAX_PREVIEW_AGE_MIN} decisionAuditRows=${orderDecisionRecords.length} payloads=${payloadCount} skipped=${preview?.skippedCount ?? "N/A"} brokerAttempted=${brokerAttempted} brokerSubmitted=${brokerSubmitted} readiness=${short(preview?.orderReadiness, 240)} highPriceSkipped=${highPriceSkippedRows.length} minOneShareEligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} minOneShareApproval=${minOneShareApprovalOverall} fillability=${fillability?.summary?.overall || "N/A"}`,
       nextAction:
         previewStale
           ? "Wait for the next fresh RTH sidecar run before interpreting payload readiness or broker-submit route state."
@@ -453,11 +459,29 @@ const buildReport = () => {
             : payloadCount > 0
               ? "Verify preflight/idempotency/broker visibility according to approval scope."
               : minOneShareSelectedSymbol
-                ? "Run safe dry-run min_one_share admission probe only; keep broker mutation disabled and verify payload generation."
+                ? "Review high-price min_one_share policy scope, then run safe dry-run admission probe only; keep broker mutation disabled and verify payload generation."
                 : highPriceSkippedRows.length
                   ? "Review high-price sizing policy/min-one-share constraints before tuning entry logic."
                   : "Route to orderReadiness/topSkip/fillability blocker classification.",
       safety: "safe_default_keeps_broker_submission_disabled_unless_approved"
+    }),
+    lane({
+      id: "track_7b_high_price_min_one_share_policy_review",
+      name: "High-Price Min-One-Share Policy Review Lane",
+      status: minOneShareApprovalReady
+        ? "manual_min_one_share_policy_approval_candidate"
+        : highPriceSkippedRows.length
+          ? "blocked_high_price_sizing"
+          : "clear",
+      count: minOneShareEligible || highPriceSkippedRows.length,
+      symbols: minOneShareSelectedSymbol ? [minOneShareSelectedSymbol] : uniqueSymbols(highPriceSkippedRows),
+      evidence: `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} approval=${minOneShareApprovalOverall} eligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} readyForSafeProbe=${minOneShareApprovalReady} readyForBrokerSubmit=${highPriceMinOneShareCanaryPlan?.approvalGate?.readyForBrokerSubmit ?? "N/A"} brokerAttempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} brokerSubmitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+      nextAction: minOneShareApprovalReady
+        ? "Manual policy review may run a safe min_one_share payload probe only. Broker submit remains unauthorized until a separate CONFIRM LIVE EXECUTION scope."
+        : highPriceSkippedRows.length
+          ? "Keep default skip until one-share notional/risk caps prove feasible."
+          : "No high-price sizing lane action required.",
+      safety: "report_only_no_broker_or_state_mutation_default_policy_skip"
     }),
     lane({
       id: "track_8_limited_multi_oco_repair_planner",

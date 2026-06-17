@@ -99,6 +99,11 @@ const buildCandidate = (row) => {
     highPricePolicy: row?.highPricePolicy || null,
     highPricePolicyChangeWouldAllow: policyWouldAllow,
     minOneShareFeasibleUnderCaps: feasibleByCaps,
+    manualPolicyApprovalCandidate: eligible,
+    approvalLane: eligible
+      ? "HIGH_PRICE_MIN_ONE_SHARE_MANUAL_POLICY_REVIEW"
+      : "HIGH_PRICE_MIN_ONE_SHARE_BLOCKED",
+    approvalRequiredBeforeExecution: eligible ? "separate_execution_approval_required" : null,
     brokerOpenStatus: broker.openStatus || null,
     brokerClosedStatus: broker.closedStatus || null,
     fillQty: broker.fillQty
@@ -124,13 +129,17 @@ const buildMarkdown = (report) => {
   lines.push(
     `- summary: \`candidates=${report.summary.candidates} eligible=${report.summary.eligible} selected=${report.summary.selectedSymbol || "N/A"} wouldProbe=${report.summary.wouldGeneratePayloadProbe} attempted=${report.summary.brokerMutationAttempted} submitted=${report.summary.brokerMutationSubmitted}\``
   );
+  lines.push(
+    `- approvalGate: \`overall=${report.approvalGate.overall} ready=${report.approvalGate.readyForSafePayloadProbe} brokerSubmitReady=${report.approvalGate.readyForBrokerSubmit} selected=${report.approvalGate.selectedSymbol || "N/A"}\``
+  );
   lines.push("- safety: `report-only; safe dry-run payload probe only; no broker mutation`");
+  lines.push("- default_policy: `ENTRY_HIGH_PRICE_POLICY=skip` remains unchanged; no automatic min_one_share promotion");
   lines.push("- recommended_safe_inputs: `run_verify_mode=safe_min_one_share_admission_probe run_entry_high_price_policy=min_one_share run_dry_max_orders_override=1 run_dry_max_total_notional_override=600 run_entry_min_one_share_max_notional=300 run_entry_max_risk_dollars_per_trade=25`");
-  lines.push("| Symbol | Eligible | One Share Notional | One Share Risk | Max Notional | Max Risk | RR | Blockers | Reason |");
-  lines.push("| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Symbol | Approval Lane | Eligible | One Share Notional | One Share Risk | Max Notional | Max Risk | RR | Blockers | Reason |");
+  lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |");
   for (const row of report.rows.slice(0, 60)) {
     lines.push(
-      `| ${row.symbol} | ${row.eligible ? "yes" : "no"} | ${fmt(row.oneShareNotional)} | ${fmt(row.oneShareRiskDollars)} | ${fmt(row.maxNotional)} | ${fmt(row.maxRisk)} | ${fmt(row.rrAtAdjustedEntry)} | ${row.blockers.join(",") || "none"} | ${short(row.reason, 90)} |`
+      `| ${row.symbol} | ${row.approvalLane} | ${row.eligible ? "yes" : "no"} | ${fmt(row.oneShareNotional)} | ${fmt(row.oneShareRiskDollars)} | ${fmt(row.maxNotional)} | ${fmt(row.maxRisk)} | ${fmt(row.rrAtAdjustedEntry)} | ${row.blockers.join(",") || "none"} | ${short(row.reason, 90)} |`
     );
   }
   lines.push("");
@@ -149,6 +158,39 @@ const main = () => {
   const overall = selected ? "ready_for_safe_payload_probe" : rows.length ? "blocked_no_eligible_candidate" : "no_fillability_rows";
   const brokerAttempted = false;
   const brokerSubmitted = false;
+  const approvalGate = {
+    overall: selected ? "manual_policy_review_required" : "not_ready",
+    selectedSymbol: selected?.symbol || null,
+    dynamicSelection: true,
+    defaultPolicy: "ENTRY_HIGH_PRICE_POLICY=skip",
+    proposedPolicy: "ENTRY_HIGH_PRICE_POLICY=min_one_share",
+    automaticPolicyChangeAllowed: false,
+    readyForSafePayloadProbe: Boolean(selected),
+    readyForBrokerSubmit: false,
+    requiredBeforeSafeProbe: selected
+      ? [
+          "workflow_dispatch_scope_only",
+          "READ_ONLY=true",
+          "EXEC_ENABLED=false",
+          "LIVE_ORDER_SUBMIT_ENABLED=false",
+          "max_orders=1",
+          "explicit_one_share_notional_and_risk_caps"
+        ]
+      : [],
+    requiredBeforeBrokerSubmit: [
+      "separate_safety_gate_warning",
+      "exact_CONFIRM_LIVE_EXECUTION_scope",
+      "preflight_pass",
+      "idempotency_pass",
+      "paper_broker_visibility_plan"
+    ],
+    blockedBy: selected
+      ? ["broker_submit_not_authorized", "safe_payload_probe_required_before_any_submit"]
+      : ["no_dynamic_high_price_candidate_that_fits_one_share_caps"],
+    nextAction: selected
+      ? "Run the safe min_one_share admission probe only; if it creates a payload with attempted=false/submitted=false, decide separately whether to request paper submit approval."
+      : "Keep default skip policy and wait for a high-price candidate that fits one-share notional/risk caps."
+  };
   const report = {
     generatedAt: new Date().toISOString(),
     overall,
@@ -175,7 +217,7 @@ const main = () => {
       safeDryRunPayloadCountAtLeast: selected ? 1 : 0,
       brokerMutationAttempted: false,
       brokerMutationSubmitted: false,
-      nextIfPayloadGenerated: "preflight_then_idempotency_then_broker_visibility_with_separate_execution_approval",
+      nextIfPayloadGenerated: "keep_attempted_false_submitted_false_then_request_separate_execution_approval_before_any_broker_submit",
       nextIfNoPayload: "inspect_orderReadiness_topSkip_fillability_and_portfolio_admission"
     },
     executionPolicy: {
@@ -186,12 +228,16 @@ const main = () => {
       stateMutationAllowed: false,
       stateMutationAttempted: false
     },
+    approvalGate,
     summary: {
       candidates: rows.length,
       eligible: eligibleRows.length,
       selectedSymbol: selected?.symbol || null,
       selectedOneShareNotional: selected?.oneShareNotional ?? null,
       selectedOneShareRiskDollars: selected?.oneShareRiskDollars ?? null,
+      manualPolicyApprovalCandidates: eligibleRows.length,
+      approvalCandidateReady: Boolean(selected),
+      readyForBrokerSubmit: false,
       wouldGeneratePayloadProbe: Boolean(selected),
       brokerMutationAttempted: brokerAttempted,
       brokerMutationSubmitted: brokerSubmitted,

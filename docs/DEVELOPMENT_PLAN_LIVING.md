@@ -1244,3 +1244,22 @@ Done-When:
 - Repeated no-actionable runs produce `stage0_6_quality_audit_required`.
 - If payload/reprice/protection/state-recovery events appear, the lane emits `actionable_event_present` and routes to targeted bottleneck analysis.
 - Artifact upload includes the escalation JSON/MD and ledger.
+
+### 2026-06-17 - High-Price Min-One-Share Manual Policy Review Gate
+
+- Scope: `alpha-exec-engine` / high-price sizing lane only; no broker or state mutation.
+- RTH evidence showed a high-price candidate can be blocked by fixed notional even when one-share notional and risk fit configured caps.
+- Kept the default policy conservative: `ENTRY_HIGH_PRICE_POLICY=skip` remains the default.
+- Strengthened `high-price-min-one-share-canary-plan` so it now separates:
+  - safe payload-probe readiness (`readyForSafePayloadProbe=true`),
+  - manual policy review requirement (`approvalGate.overall=manual_policy_review_required`),
+  - broker-submit readiness (`readyForBrokerSubmit=false` in this report-only lane).
+- Ops health/lane/Notion summaries now expose the manual policy review status so high-price symbols are not silently treated as useless, but also are not auto-promoted into broker-orderable flow.
+
+Done-When:
+
+- A high-price sizing block that fits one-share caps produces `approvalGate.overall=manual_policy_review_required`.
+- `executionPolicy.brokerMutationAllowed=false`, `brokerMutationAttempted=false`, and `brokerMutationSubmitted=false` remain fixed.
+- `ops-lane-status-report` classifies the lane as `manual_min_one_share_policy_approval_candidate` before any safe probe or broker-submit discussion.
+- `ops-lane-status-report` includes `track_7b_high_price_min_one_share_policy_review` with `manual_min_one_share_policy_approval_candidate` when a dynamic high-price row fits one-share caps.
+- Any later paper submit still requires a separate `CONFIRM LIVE EXECUTION` scope after safe probe evidence.

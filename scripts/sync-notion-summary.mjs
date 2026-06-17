@@ -1200,6 +1200,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
     `minOneShareCanary=${highPriceMinOneShareCanaryPlan?.overall || "N/A"}`,
     `minOneShareEligible=${highPriceMinOneShareCanaryPlan?.summary?.eligible ?? "N/A"}`,
     `minOneShareSelected=${highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol ?? "N/A"}`,
+    `minOneShareApproval=${highPriceMinOneShareCanaryPlan?.approvalGate?.overall || "N/A"}`,
     `laneStatus=${opsLaneStatus?.overall || "N/A"}`,
     `laneBlocked=${opsLaneStatus?.summary?.blockedCount ?? "N/A"}`,
     `guardMissing=${liveTotals?.guardMissingCount ?? "N/A"}`,
@@ -1410,7 +1411,7 @@ const buildPerformanceDashboardRow = ({ kind, runKey, statusRaw }) => {
         highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted === true ||
         highPriceMinOneShareCanaryPlan?.executionPolicy?.brokerMutationSubmitted === true,
       highPriceMinOneShareSummary: shortText(
-        `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} candidates=${highPriceMinOneShareCanaryPlan?.summary?.candidates ?? "N/A"} eligible=${highPriceMinOneShareCanaryPlan?.summary?.eligible ?? "N/A"} selected=${highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol ?? "N/A"} wouldProbe=${highPriceMinOneShareCanaryPlan?.summary?.wouldGeneratePayloadProbe ?? "N/A"} attempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${highPriceMinOneShareCanaryPlan?.executionPolicy?.mode || "N/A"}`,
+        `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} approval=${highPriceMinOneShareCanaryPlan?.approvalGate?.overall || "N/A"} candidates=${highPriceMinOneShareCanaryPlan?.summary?.candidates ?? "N/A"} eligible=${highPriceMinOneShareCanaryPlan?.summary?.eligible ?? "N/A"} selected=${highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol ?? "N/A"} wouldProbe=${highPriceMinOneShareCanaryPlan?.summary?.wouldGeneratePayloadProbe ?? "N/A"} brokerReady=${highPriceMinOneShareCanaryPlan?.summary?.readyForBrokerSubmit ?? "N/A"} attempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} submitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"} mode=${highPriceMinOneShareCanaryPlan?.executionPolicy?.mode || "N/A"}`,
         500
       ),
       opsLaneStatusOverall: shortText(opsLaneStatus?.overall || "N/A", 80),

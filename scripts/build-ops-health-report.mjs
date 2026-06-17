@@ -882,6 +882,14 @@ const main = () => {
     short(highPriceMinOneShareCanaryPlan?.summary?.selectedSymbol || "", 24) || null;
   const highPriceMinOneShareWouldProbe =
     highPriceMinOneShareCanaryPlan?.summary?.wouldGeneratePayloadProbe === true;
+  const highPriceMinOneShareApprovalOverall =
+    short(highPriceMinOneShareCanaryPlan?.approvalGate?.overall || "", 48) || null;
+  const highPriceMinOneShareApprovalReady =
+    highPriceMinOneShareCanaryPlan?.approvalGate?.readyForSafePayloadProbe === true ||
+    highPriceMinOneShareCanaryPlan?.summary?.approvalCandidateReady === true;
+  const highPriceMinOneShareBrokerReady =
+    highPriceMinOneShareCanaryPlan?.approvalGate?.readyForBrokerSubmit === true ||
+    highPriceMinOneShareCanaryPlan?.summary?.readyForBrokerSubmit === true;
   const highPriceMinOneShareAttempted =
     highPriceMinOneShareCanaryPlan?.executionPolicy?.brokerMutationAttempted === true ||
     highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted === true ||
@@ -940,8 +948,19 @@ const main = () => {
     addCheck(
       checks,
       "warn",
-      "high_price_min_one_share_safe_probe_candidate",
-      `safe dry-run min_one_share payload probe candidate selected=${highPriceMinOneShareSelectedSymbol || "N/A"} eligible=${highPriceMinOneShareEligible ?? "N/A"}; broker mutation must stay disabled`
+      highPriceMinOneShareApprovalReady
+        ? "high_price_min_one_share_manual_policy_review_required"
+        : "high_price_min_one_share_safe_probe_candidate",
+      `safe dry-run min_one_share payload probe candidate selected=${highPriceMinOneShareSelectedSymbol || "N/A"} eligible=${highPriceMinOneShareEligible ?? "N/A"} approval=${highPriceMinOneShareApprovalOverall || "N/A"} brokerReady=${highPriceMinOneShareBrokerReady}; broker mutation must stay disabled`
+    );
+  }
+
+  if (highPriceMinOneShareBrokerReady) {
+    addCheck(
+      checks,
+      "fail",
+      "high_price_min_one_share_broker_ready_without_approval",
+      "high-price min-one-share planner must not report broker-submit readiness from a report-only lane"
     );
   }
 
@@ -2458,6 +2477,9 @@ const main = () => {
       highPriceMinOneShareEligible,
       highPriceMinOneShareSelectedSymbol,
       highPriceMinOneShareWouldProbe,
+      highPriceMinOneShareApprovalOverall,
+      highPriceMinOneShareApprovalReady,
+      highPriceMinOneShareBrokerReady,
       highPriceMinOneShareAttempted,
       highPriceMinOneShareSubmitted,
       guardLevel,
