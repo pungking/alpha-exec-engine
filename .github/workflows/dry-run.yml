@@ -152,6 +152,11 @@ on:
         required: false
         default: ""
         type: string
+      run_portfolio_min_fillability_score:
+        description: "Override PORTFOLIO_MIN_FILLABILITY_SCORE for this manual run only (blank=keep default)"
+        required: false
+        default: ""
+        type: string
       validation_pack:
         description: "Run OFF/ON/STRICT entry feasibility checks in one workflow run"
         required: false
@@ -612,6 +617,7 @@ jobs:
           RUN_ENTRY_HIGH_PRICE_POLICY: ${{ inputs.run_entry_high_price_policy }}
           RUN_ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL: ${{ inputs.run_entry_min_one_share_max_notional }}
           RUN_ENTRY_MAX_RISK_DOLLARS_PER_TRADE: ${{ inputs.run_entry_max_risk_dollars_per_trade }}
+          RUN_PORTFOLIO_MIN_FILLABILITY_SCORE: ${{ inputs.run_portfolio_min_fillability_score }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -630,6 +636,7 @@ jobs:
           entry_high_price_policy_raw = (os.getenv("RUN_ENTRY_HIGH_PRICE_POLICY") or "").strip().lower()
           entry_min_one_share_max_raw = (os.getenv("RUN_ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL") or "").strip()
           entry_max_risk_raw = (os.getenv("RUN_ENTRY_MAX_RISK_DOLLARS_PER_TRADE") or "").strip()
+          portfolio_min_fillability_raw = (os.getenv("RUN_PORTFOLIO_MIN_FILLABILITY_SCORE") or "").strip()
           github_env = os.getenv("GITHUB_ENV")
           if not github_env:
             print("::error::GITHUB_ENV not found.")
@@ -756,6 +763,19 @@ jobs:
               "run_entry_max_risk_dollars_per_trade",
             )
             lines.append(f"ENTRY_MAX_RISK_DOLLARS_PER_TRADE={entry_max_risk}")
+
+          if portfolio_min_fillability_raw:
+            portfolio_min_fillability = parse_non_negative_float(
+              portfolio_min_fillability_raw,
+              "run_portfolio_min_fillability_score",
+            )
+            if portfolio_min_fillability > 100:
+              print(
+                "::error::run_portfolio_min_fillability_score must be <= 100, "
+                f"got={portfolio_min_fillability}"
+              )
+              sys.exit(1)
+            lines.append(f"PORTFOLIO_MIN_FILLABILITY_SCORE={portfolio_min_fillability}")
 
           if lines:
             print(f"[MANUAL_OVERRIDES] {' '.join(lines)}")
