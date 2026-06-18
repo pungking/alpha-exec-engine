@@ -204,6 +204,7 @@ function buildReport() {
     orderLedger: readJson("order-ledger.json", {}),
     orderIdempotency: readJson("order-idempotency.json", {}),
     orderState: readJson("order-state-consistency-report.json", {}),
+    terminalizationProposal: readJson("ledger-terminalization-proposal.json", {}),
     opsHealth: readJson("ops-health-report.json", {}),
     opsLaneStatus: readJson("ops-lane-status-report.json", {}),
     brokerChildReconciliation: readJson("broker-child-order-reconciliation.json", {}),
@@ -259,6 +260,9 @@ function buildReport() {
   if (terminalRequired > 0) ledgerBlockers.push(`ledger_terminal_reconciliation_required:${terminalRequired}`);
   if (submittedLedgerOrders.length !== submittedIdemOrders.length) ledgerWarnings.push("submitted_ledger_idempotency_count_mismatch_review");
   if (mliLifecycle.submittedEvidence && mliLifecycle.duplicateOpenCountOk !== true) ledgerBlockers.push("mli_duplicate_open_order_detected");
+  const terminalizationReady = asNumber(reports.terminalizationProposal?.summary?.proposalReady, asNumber(reports.opsHealth?.metrics?.ledgerTerminalizationReady, 0));
+  const terminalizationEntryReady = asNumber(reports.terminalizationProposal?.summary?.entryTerminalUnfilledReady, 0);
+  if (terminalRequired > 0 && terminalizationReady > 0) ledgerWarnings.push(`terminalization_proposal_ready:${terminalizationReady}`);
   const ledgerStatus = statusFrom({ blockers: ledgerBlockers, warnings: ledgerWarnings });
 
   const protectionBlockers = [];
@@ -331,6 +335,8 @@ function buildReport() {
       submittedLedgerOrders: submittedLedgerOrders.length,
       submittedIdempotencyOrders: submittedIdemOrders.length,
       mliDuplicateOpenCountOk: mliLifecycle.duplicateOpenCountOk,
+      terminalizationProposalReady: terminalizationReady,
+      entryTerminalUnfilledReady: terminalizationEntryReady,
     }),
     domain("protective_order_guard_metadata", protectionStatus, scoreFrom(protectionStatus), protectionBlockers, protectionWarnings, {
       missingStops,
