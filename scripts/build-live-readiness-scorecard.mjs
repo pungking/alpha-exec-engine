@@ -133,12 +133,16 @@ function buildMliLifecycle({ fillability, openOrderReprice, orderLedger, orderId
   const duplicateOpenCountOk = repriceRow?.checks?.duplicateOpenCountOk !== false;
   const repriceReady = repriceRow?.decision === "READY_FOR_APPROVAL" || openOrderReprice?.summary?.readyForApproval > 0;
   const hasOpenWaiting = fillRow?.status === "OPEN_WAITING" || stateRow?.normalized === "open";
+  const terminalState = String(stateRow?.terminalState || fillRow?.brokerClosedStatus || "").toLowerCase();
+  const fillabilityStatus = String(fillRow?.status || "").toUpperCase();
   const filled = brokerOpenFilledQty > 0 || String(stateRow?.normalized || "").toLowerCase() === "filled";
-  const terminal = ["expired", "canceled", "cancelled", "rejected"].includes(String(stateRow?.normalized || "").toLowerCase());
+  const terminal = fillabilityStatus === "TERMINAL_UNFILLED"
+    || ["expired", "canceled", "cancelled", "rejected"].includes(terminalState)
+    || stateRow?.terminalReconciliationRequired === true;
   const scoreLabel = filled
     ? "FILLED_COMPLETE"
     : terminal
-      ? "TERMINAL_RECONCILE_REQUIRED"
+      ? "TERMINAL_UNFILLED_RECONCILIATION_REQUIRED"
       : hasOpenWaiting
         ? "WAITING_OPEN_NOT_FILLED"
         : ledgerRow || idemRow
@@ -148,7 +152,7 @@ function buildMliLifecycle({ fillability, openOrderReprice, orderLedger, orderId
   const blockers = [];
   const warnings = [];
   if (!duplicateOpenCountOk) blockers.push("duplicate_open_order_detected");
-  if (terminal) blockers.push("mli_terminal_state_requires_reconciliation");
+  if (terminal) blockers.push(`mli_terminal_state_requires_reconciliation:${terminalState || fillabilityStatus || "unknown"}`);
   if (!ledgerRow || !idemRow) warnings.push("mli_ledger_or_idempotency_evidence_missing");
   if (hasOpenWaiting && !filled) warnings.push("mli_submitted_open_waiting_not_filled");
   if (repriceRow?.decision && !repriceReady) warnings.push(`reprice_not_ready:${repriceRow.decision}`);
@@ -164,6 +168,9 @@ function buildMliLifecycle({ fillability, openOrderReprice, orderLedger, orderId
     orderStateCategory: stateRow?.category || null,
     normalizedLifecycle: stateRow?.normalized || null,
     fillabilityStatus: fillRow?.status || null,
+    terminalState: terminalState || null,
+    terminalUnfilledTaxonomy: fillRow?.terminalUnfilledTaxonomy || [],
+    reentryPolicyDecision: fillRow?.reentryPolicyDecision || null,
     monitorStatus: fillRow?.monitorStatus || repriceRow?.monitorStatus || null,
     monitorReason: fillRow?.monitorReason || repriceRow?.monitorReason || null,
     brokerOpenStatus: fillRow?.brokerOpenStatus || repriceRow?.brokerOpenStatus || null,
@@ -177,9 +184,11 @@ function buildMliLifecycle({ fillability, openOrderReprice, orderLedger, orderId
     duplicateOpenCountOk,
     blockers,
     warnings,
-    nextCheckPolicy: hasOpenWaiting && !filled
-      ? "stop_rechecking_until_fill_expire_cancel_or_replace_approval_event"
-      : "evaluate_after_next_lifecycle_event",
+    nextCheckPolicy: terminal
+      ? "do_not_reenter_same_stage6_hash_until_fresh_stage6_or_explicit_retry_approval"
+      : hasOpenWaiting && !filled
+        ? "stop_rechecking_until_fill_expire_cancel_or_replace_approval_event"
+        : "evaluate_after_next_lifecycle_event",
   };
 }
 
