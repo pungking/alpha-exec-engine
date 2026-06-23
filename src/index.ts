@@ -3417,6 +3417,7 @@ function buildPayloadExpectationSummary(records: OrderDecisionAuditRecord[]): Re
     (categoryCounts.risk_geometry || 0) +
     (categoryCounts.entry_distance || 0) +
     (categoryCounts.sizing || 0) +
+    (categoryCounts.high_price_size || 0) +
     (categoryCounts.price_geometry || 0);
   const status =
     unheldExecutableRows.length === 0
@@ -3544,6 +3545,13 @@ function classifySkipReason(reason: string): string {
   if (key.includes("stale")) return "stale_source";
   if (key.includes("verdict_not_sidecar_actionable") || key.includes("non_actionable_verdict")) {
     return "quality_gate";
+  }
+  if (
+    key.includes("entry_notional_below_limit_price") ||
+    key.includes("entry_min_one_share_notional_above_cap") ||
+    key.includes("entry_min_one_share_risk_above_cap")
+  ) {
+    return "high_price_size";
   }
   if (key.includes("breakout")) return "breakout";
   if (key.includes("structure")) return "structure";
