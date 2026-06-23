@@ -287,6 +287,16 @@ const buildReport = () => {
   const minOneShareApprovalReady =
     highPriceMinOneShareCanaryPlan?.approvalGate?.readyForSafePayloadProbe === true ||
     highPriceMinOneShareCanaryPlan?.summary?.approvalCandidateReady === true;
+  const minOneShareFutureAutoEligible =
+    highPriceMinOneShareCanaryPlan?.approvalGate?.readyForFuturePaperAutoSubmit === true ||
+    highPriceMinOneShareCanaryPlan?.summary?.readyForFuturePaperAutoSubmit === true;
+  const minOneShareLaneStatus = minOneShareFutureAutoEligible
+    ? "auto_eligible_report_only"
+    : minOneShareApprovalOverall === "manual_review_required"
+      ? "manual_review_required"
+      : highPriceSkippedRows.length || highPriceMinOneShareCanaryPlan?.overall === "blocked"
+        ? "blocked"
+        : "clear";
   const payloadCount = toNum(preview?.payloadCount) ?? 0;
   const brokerAttempted = toNum(preview?.brokerSubmission?.attempted) ?? 0;
   const brokerSubmitted = toNum(preview?.brokerSubmission?.submitted) ?? 0;
@@ -468,15 +478,13 @@ const buildReport = () => {
     lane({
       id: "track_7b_high_price_min_one_share_policy_review",
       name: "High-Price Min-One-Share Policy Review Lane",
-      status: minOneShareApprovalReady
-        ? "manual_min_one_share_policy_approval_candidate"
-        : highPriceSkippedRows.length
-          ? "blocked_high_price_sizing"
-          : "clear",
+      status: minOneShareLaneStatus,
       count: minOneShareEligible || highPriceSkippedRows.length,
       symbols: minOneShareSelectedSymbol ? [minOneShareSelectedSymbol] : uniqueSymbols(highPriceSkippedRows),
-      evidence: `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} approval=${minOneShareApprovalOverall} eligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} readyForSafeProbe=${minOneShareApprovalReady} readyForBrokerSubmit=${highPriceMinOneShareCanaryPlan?.approvalGate?.readyForBrokerSubmit ?? "N/A"} brokerAttempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} brokerSubmitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
-      nextAction: minOneShareApprovalReady
+      evidence: `overall=${highPriceMinOneShareCanaryPlan?.overall || "N/A"} approval=${minOneShareApprovalOverall} eligible=${minOneShareEligible} selected=${minOneShareSelectedSymbol || "N/A"} futureAuto=${minOneShareFutureAutoEligible} readyForSafeProbe=${minOneShareApprovalReady} readyForBrokerSubmit=${highPriceMinOneShareCanaryPlan?.approvalGate?.readyForBrokerSubmit ?? "N/A"} brokerAttempted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationAttempted ?? "N/A"} brokerSubmitted=${highPriceMinOneShareCanaryPlan?.summary?.brokerMutationSubmitted ?? "N/A"}`,
+      nextAction: minOneShareFutureAutoEligible
+        ? "Report-only checks passed; paper broker submit still needs a separate CONFIRM LIVE EXECUTION scope."
+        : minOneShareApprovalReady
         ? "Manual policy review may run a safe min_one_share payload probe only. Broker submit remains unauthorized until a separate CONFIRM LIVE EXECUTION scope."
         : highPriceSkippedRows.length
           ? "Keep default skip until one-share notional/risk caps prove feasible."
