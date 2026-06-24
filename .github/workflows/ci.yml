@@ -25,6 +25,8 @@ jobs:
         run: npm run ops:safety:symbol-agnostic
       - name: Telegram routing policy audit
         run: npm run ops:safety:telegram-routing
+      - name: High-price min-one-share report-only self-test
+        run: node scripts/build-high-price-min-one-share-canary-plan.mjs --self-test
       - name: Typecheck
         run: npm run typecheck
       - name: HF Verify (Unit + Replay Fixture)

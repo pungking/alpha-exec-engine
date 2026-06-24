@@ -62,6 +62,11 @@ const idempotencyHasActiveOrder = (idempotency, stage6Hash, symbol) => {
   return Boolean(stage6Hash && symbol && idempotency?.orders?.[key]);
 };
 
+const isHighPriceCandidateRow = (row) =>
+  String(row?.status || "").trim() === "BLOCKED_HIGH_PRICE_SIZE" ||
+  row?.highPricePolicyChangeWouldAllow === true ||
+  String(row?.reason || "").includes("entry_notional_below_limit_price");
+
 const buildCandidate = (row, context = {}) => {
   const broker = detectTerminalOrActiveBrokerState(row);
   const symbol = asSymbol(row?.symbol);
@@ -220,10 +225,17 @@ const main = () => {
   const idempotency = readJson(FILES.idempotency);
   const stage6Hash = fillability?.summary?.stage6Hash || preview?.stage6Hash || null;
   const context = { preview, portfolioAdmission, idempotency, stage6Hash };
-  const rows = (Array.isArray(fillability?.rows) ? fillability.rows : []).map((row) => buildCandidate(row, context));
+  const fillabilityRows = Array.isArray(fillability?.rows) ? fillability.rows : [];
+  const rows = fillabilityRows.filter(isHighPriceCandidateRow).map((row) => buildCandidate(row, context));
   const eligibleRows = rows.filter((row) => row.eligible).sort(rankCandidates);
   const selected = eligibleRows[0] || null;
-  const overall = selected ? "auto_eligible_report_only" : rows.length ? "blocked" : "no_fillability_rows";
+  const overall = selected
+    ? "auto_eligible_report_only"
+    : rows.length
+      ? "blocked"
+      : fillabilityRows.length
+        ? "no_high_price_rows"
+        : "no_fillability_rows";
   const brokerAttempted = false;
   const brokerSubmitted = false;
   const approvalGate = {
@@ -371,6 +383,8 @@ const selfTest = () => {
   assert.equal(eligible.approvalLane, "AUTO_ELIGIBLE_REPORT_ONLY");
   assert.equal(eligible.highPriceMinOneShareBrokerSubmitReady, false);
   assert.equal(eligible.readyForFuturePaperAutoSubmit, true);
+  assert.equal(isHighPriceCandidateRow({ status: "NO_ACTIVE_ORDER", reason: "stage6_wait_structure_confirmation_required" }), false);
+  assert.equal(isHighPriceCandidateRow({ status: "BLOCKED_HIGH_PRICE_SIZE" }), true);
   console.log("[HIGH_PRICE_MIN_ONE_SHARE_CANARY] self-test pass");
 };
 
