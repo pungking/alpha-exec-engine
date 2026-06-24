@@ -96,6 +96,9 @@ const buildCandidate = (row, context = {}) => {
     portfolioMaxNewSymbolsPerDay != null &&
     portfolioActiveSymbolsBefore < portfolioMaxActiveSymbolsTotal &&
     portfolioNewSymbolsTodayBefore < portfolioMaxNewSymbolsPerDay;
+  const accountPortfolioCapPass = dailyMaxNotionalPass && portfolioCapacityPass;
+  const highPricePolicyChangeWouldAllowByAccountPortfolioCaps =
+    accountPortfolioCapPass && riskCapPass;
   const duplicateOrder = idempotencyHasActiveOrder(context.idempotency, context.stage6Hash, symbol);
   const idempotencyPass = !duplicateOrder;
   const guardAllowsEntry = context.preview?.guardControl?.blocked !== true && context.preview?.guardControl?.stale !== true;
@@ -164,8 +167,21 @@ const buildCandidate = (row, context = {}) => {
     highPricePolicyChangeWouldAllow: eligible,
     minOneShareFeasibleUnderCaps: notionalCapPass && riskCapPass,
     minOneShareMaxNotionalPass,
+    dailyMaxNotionalPass,
+    riskCapPass,
+    notionalCapPass,
+    portfolioConcentrationPass: portfolioCapacityPass,
+    accountPortfolioCapPass,
     accountPortfolioNotionalCapPass: dailyMaxNotionalPass,
-    highPricePolicyChangeWouldAllowByAccountPortfolioCaps: notionalCapPass && riskCapPass,
+    highPricePolicyChangeWouldAllowByAccountPortfolioCaps,
+    accountPortfolioCapEvidence: {
+      minOneShareMaxNotionalPass,
+      dailyMaxNotionalPass,
+      riskCapPass,
+      portfolioConcentrationPass: portfolioCapacityPass,
+      accountPortfolioCapPass,
+      wouldAllowUnderAccountPortfolioCaps: highPricePolicyChangeWouldAllowByAccountPortfolioCaps
+    },
     manualPolicyApprovalCandidate: false,
     approvalLane: eligible
       ? "AUTO_ELIGIBLE_REPORT_ONLY"
@@ -365,6 +381,36 @@ const selfTest = () => {
   );
   assert.equal(blocked.approvalLane, "HIGH_PRICE_MIN_ONE_SHARE_BLOCKED");
   assert.deepEqual(blocked.blockedBy.filter((item) => ["risk_cap"].includes(item)), ["risk_cap"]);
+  for (const field of [
+    "oneShareNotional",
+    "oneShareRiskDollars",
+    "requestedNotional",
+    "minOneShareMaxNotional",
+    "maxRiskDollarsPerTrade",
+    "dailyMaxNotionalCap",
+    "portfolioActiveSymbolsBefore",
+    "portfolioMaxActiveSymbolsTotal",
+    "portfolioNewSymbolsTodayBefore",
+    "portfolioMaxNewSymbolsPerDay",
+    "rrAtCurrent",
+    "rrAtAdjustedEntry",
+    "currentVsLimitPct",
+    "quoteValid",
+    "highPricePolicy",
+    "minOneShareFeasibleUnderCaps",
+    "highPricePolicyChangeWouldAllow",
+    "highPriceMinOneShareApprovalLane",
+    "highPriceMinOneShareBrokerSubmitReady",
+    "highPriceAutoEligibleReason",
+    "blockedBy",
+    "accountPortfolioCapEvidence"
+  ]) {
+    assert.ok(Object.hasOwn(blocked, field), `missing high-price evidence field: ${field}`);
+  }
+  assert.equal(blocked.accountPortfolioCapEvidence.minOneShareMaxNotionalPass, false);
+  assert.equal(blocked.accountPortfolioCapEvidence.dailyMaxNotionalPass, true);
+  assert.equal(blocked.accountPortfolioCapEvidence.riskCapPass, false);
+  assert.equal(blocked.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, false);
 
   const eligible = buildCandidate(
     {
@@ -383,6 +429,7 @@ const selfTest = () => {
   assert.equal(eligible.approvalLane, "AUTO_ELIGIBLE_REPORT_ONLY");
   assert.equal(eligible.highPriceMinOneShareBrokerSubmitReady, false);
   assert.equal(eligible.readyForFuturePaperAutoSubmit, true);
+  assert.equal(eligible.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, true);
   assert.equal(isHighPriceCandidateRow({ status: "NO_ACTIVE_ORDER", reason: "stage6_wait_structure_confirmation_required" }), false);
   assert.equal(isHighPriceCandidateRow({ status: "BLOCKED_HIGH_PRICE_SIZE" }), true);
   console.log("[HIGH_PRICE_MIN_ONE_SHARE_CANARY] self-test pass");
