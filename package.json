@@ -27,6 +27,7 @@
     "ops:entry-reprice-policy": "node scripts/build-entry-reprice-policy-decision.mjs",
     "ops:stage6-fillability-mismatch": "node scripts/build-stage6-fillability-mismatch-audit.mjs",
     "ops:high-price:min-one-share-canary": "node scripts/build-high-price-min-one-share-canary-plan.mjs",
+    "ops:high-price:min-one-share-fixtures": "node scripts/validate-high-price-min-one-share-fixtures.mjs",
     "ops:exec:blockers": "node scripts/build-execution-blocker-audit.mjs",
     "ops:notion:audit": "node scripts/build-notion-ops-audit.mjs",
     "ops:daily:report": "node scripts/build-ops-daily-report.mjs",
