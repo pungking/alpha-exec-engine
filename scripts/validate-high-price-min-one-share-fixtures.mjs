@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const plannerScript = path.join(__dirname, "build-high-price-min-one-share-canary-plan.mjs");
+const contractScript = path.join(__dirname, "validate-high-price-min-one-share-contract.mjs");
 
 const writeJson = (filePath, payload) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -17,6 +18,11 @@ const makeStateDir = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `high-price
 
 const runPlanner = (stateDir) => {
   execFileSync(process.execPath, [plannerScript], {
+    cwd: path.join(__dirname, ".."),
+    env: { ...process.env, HIGH_PRICE_MIN_ONE_SHARE_STATE_DIR: stateDir },
+    stdio: "pipe"
+  });
+  execFileSync(process.execPath, [contractScript], {
     cwd: path.join(__dirname, ".."),
     env: { ...process.env, HIGH_PRICE_MIN_ONE_SHARE_STATE_DIR: stateDir },
     stdio: "pipe"

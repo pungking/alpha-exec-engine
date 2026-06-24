@@ -1692,6 +1692,10 @@ jobs:
         if: always()
         run: npm run ops:high-price:min-one-share-canary
 
+      - name: Validate high-price min-one-share canary contract
+        if: always()
+        run: npm run ops:high-price:min-one-share-contract
+
       - name: Publish high-price min-one-share canary summary
         if: always()
         run: |
