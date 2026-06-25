@@ -69,6 +69,26 @@ const computeRiskReward = (entry, target, stop) => {
   return (t - e) / (e - s);
 };
 
+const computeTargetBufferPct = (current, target) => {
+  const c = toNum(current);
+  const t = toNum(target);
+  if (c == null || t == null || c <= 0) return null;
+  return ((t - c) / c) * 100;
+};
+
+const laneForVerdict = (verdict) => {
+  if (verdict === "PAYLOAD_READY") return "payload_ready";
+  if (verdict === "ENTRY_POLICY_REVIEW_READY") return "entry_reprice_review_ready";
+  if (verdict === "WAIT_PULLBACK_RR_BELOW_MIN") return "rr_at_current_below_min";
+  if (verdict === "WAIT_PULLBACK_TARGET_BUFFER_WEAK") return "target_buffer_weak";
+  if (verdict === "WAIT_PULLBACK_DISTANCE_TOO_FAR" || verdict === "WAIT_PULLBACK_ABOVE_ADAPTIVE_BAND") return "entry_distance";
+  if (verdict === "STAGE6_GEOMETRY_REVIEW_REQUIRED") return "risk_geometry";
+  if (verdict === "FILLABILITY_POLICY_REVIEW_REQUIRED") return "quality_gate";
+  if (verdict === "BLOCKED_BY_OTHER_GATE") return "top_skip_other";
+  if (verdict === "NO_STAGE6_EXECUTABLE") return "not_stage6_executable";
+  return "other";
+};
+
 const isExecutable = (row) => {
   const finalDecision = String(row?.finalDecision || "").trim().toUpperCase();
   const executionBucket = String(row?.executionBucket || "").trim().toUpperCase();
@@ -111,6 +131,11 @@ const classifyMismatch = (row, policy) => {
     action: "keep_stage6_limit_no_reprice",
     reason: `current_rr_${row.rrAtCurrent.toFixed(4)}_below_min_${policy.minRr.toFixed(2)}`
   };
+  if (row.targetBufferPct != null && row.targetBufferPct < policy.minTargetBufferPct) return {
+    mismatchVerdict: "WAIT_PULLBACK_TARGET_BUFFER_WEAK",
+    action: "keep_stage6_limit_or_route_to_stage6_target_recalibration",
+    reason: `target_buffer_${row.targetBufferPct.toFixed(2)}_below_min_${policy.minTargetBufferPct.toFixed(2)}`
+  };
   if (row.currentDistancePct != null && row.currentDistancePct > policy.maxPullbackDistancePct) return {
     mismatchVerdict: "WAIT_PULLBACK_DISTANCE_TOO_FAR",
     action: "keep_stage6_limit_or_recompute_entry",
@@ -150,7 +175,11 @@ const buildRows = ({ preview, audit, fillability, entryReprice }) => {
     toNum(entryReprice?.policy?.maxPullbackDistancePct) ??
     toNum(process.env.STAGE6_FILLABILITY_MISMATCH_MAX_PULLBACK_DISTANCE_PCT) ??
     6;
-  const policy = { minRr, maxAdaptiveDistancePct, maxPullbackDistancePct };
+  const minTargetBufferPct =
+    toNum(preview?.entryPricePolicy?.minTargetBufferPct) ??
+    toNum(process.env.STAGE6_FILLABILITY_MISMATCH_MIN_TARGET_BUFFER_PCT) ??
+    3;
+  const policy = { minRr, maxAdaptiveDistancePct, maxPullbackDistancePct, minTargetBufferPct };
 
   const rows = records.map((decision) => {
     const symbol = String(decision?.symbol || "").trim().toUpperCase();
@@ -174,12 +203,18 @@ const buildRows = ({ preview, audit, fillability, entryReprice }) => {
       toNum(decision?.riskRewardAfter) ??
       toNum(entryRow?.rrAtEntry) ??
       computeRiskReward(entry, target, stop);
+    const currentVsLimitPct = toNum(fillRow?.currentVsLimitPct);
     const currentDistancePct =
-      toNum(decision?.executionOverlay?.currentDistancePct) ??
+      currentVsLimitPct ??
       parseReasonNumber(decision?.reason, "dist") ??
       toNum(fillRow?.effectiveEntryDistancePct) ??
+      toNum(decision?.executionOverlay?.currentDistancePct) ??
       toNum(entryRow?.currentDistancePct);
-    const currentVsLimitPct = toNum(fillRow?.currentVsLimitPct);
+    const targetBufferPct =
+      computeTargetBufferPct(currentPrice, target) ??
+      toNum(decision?.openOrderMonitor?.targetBufferPct) ??
+      toNum(fillRow?.targetBufferPct) ??
+      null;
     const fillabilityScore = parseReasonNumber(decision?.reason, "score") ?? toNum(entryRow?.fillabilityScore);
     const fillabilityMin = parseReasonNumber(decision?.reason, "min") ?? toNum(entryRow?.fillabilityMin) ?? 60;
     const payloadReady = String(decision?.status || "").trim().toLowerCase() === "payload";
@@ -201,11 +236,17 @@ const buildRows = ({ preview, audit, fillability, entryReprice }) => {
       currentPrice,
       target,
       stop,
+      stage6EntryDistancePct: toNum(decision?.stage6EntryDistancePct),
       currentDistancePct,
       currentVsLimitPct,
       rrAtCurrent,
       rrAtEntry,
+      rrAtCurrentShortfall: rrAtCurrent == null ? null : Number(Math.max(0, minRr - rrAtCurrent).toFixed(4)),
+      rrAtCurrentDeterioration: rrAtCurrent == null || rrAtEntry == null ? null : Number((rrAtEntry - rrAtCurrent).toFixed(4)),
+      targetBufferPct: targetBufferPct == null ? null : Number(targetBufferPct.toFixed(4)),
+      targetBufferShortfallPct: targetBufferPct == null ? null : Number(Math.max(0, minTargetBufferPct - targetBufferPct).toFixed(4)),
       minRr,
+      minTargetBufferPct,
       fillabilityScore,
       fillabilityMin,
       fillabilityScoreGap: fillabilityScore == null ? null : Number((fillabilityScore - fillabilityMin).toFixed(4)),
@@ -220,7 +261,7 @@ const buildRows = ({ preview, audit, fillability, entryReprice }) => {
       brokerMutationSubmitted: false
     };
     const classified = classifyMismatch(base, policy);
-    return { ...base, ...classified };
+    return { ...base, ...classified, mismatchLane: laneForVerdict(classified.mismatchVerdict) };
   });
 
   rows.sort((a, b) => {
@@ -243,6 +284,11 @@ const summarize = ({ preview, audit, rows }) => {
     acc[row.mismatchVerdict] = (acc[row.mismatchVerdict] || 0) + 1;
     return acc;
   }, {});
+  const mismatchLaneCounts = rows.reduce((acc, row) => {
+    const lane = row.mismatchLane || "other";
+    acc[lane] = (acc[lane] || 0) + 1;
+    return acc;
+  }, {});
   const mismatchRows = rows.filter((row) => row.stage6Executable && !row.payloadReady);
   const stage6QualityReviewReady = mismatchRows.length;
   const brokerMutationAttempted = rows.some((row) => row.brokerMutationAttempted === true);
@@ -261,6 +307,8 @@ const summarize = ({ preview, audit, rows }) => {
     sidecarPayloadReadyRows: count((row) => row.payloadReady),
     mismatchRows: mismatchRows.length,
     fillabilityBelowFloorRows: count((row) => row.fillabilityBelowFloor),
+    rrAtCurrentBelowMinRows: count((row) => row.mismatchLane === "rr_at_current_below_min"),
+    targetBufferWeakRows: count((row) => row.mismatchLane === "target_buffer_weak"),
     rrCurrentPassRows: count((row) => row.rrAtCurrent != null && row.rrAtCurrent >= row.minRr),
     currentDistanceAboveAdaptiveRows: count((row) =>
       row.currentDistancePct != null && row.currentDistancePct > 0 && row.mismatchVerdict === "WAIT_PULLBACK_ABOVE_ADAPTIVE_BAND"
@@ -272,6 +320,7 @@ const summarize = ({ preview, audit, rows }) => {
     brokerMutationAttempted,
     brokerMutationSubmitted,
     decisions,
+    mismatchLaneCounts,
     overall
   };
 };
@@ -289,15 +338,16 @@ const buildMarkdown = (report) => {
     `- summary: \`rows=${report.summary.rows} executable=${report.summary.stage6ExecutableRows} payloadReady=${report.summary.sidecarPayloadReadyRows} mismatch=${report.summary.mismatchRows} fillabilityBlocked=${report.summary.fillabilityBelowFloorRows} stage6ReviewReady=${report.summary.stage6QualityReviewReady}\``
   );
   lines.push(
-    `- policy: \`minRR=${fmt(report.policy.minRr)} adaptiveMax=${pct(report.policy.maxAdaptiveDistancePct)} pullbackMax=${pct(report.policy.maxPullbackDistancePct)}\``
+    `- policy: \`minRR=${fmt(report.policy.minRr)} minTargetBuffer=${pct(report.policy.minTargetBufferPct)} adaptiveMax=${pct(report.policy.maxAdaptiveDistancePct)} pullbackMax=${pct(report.policy.maxPullbackDistancePct)}\``
   );
+  lines.push(`- lanes: \`${JSON.stringify(report.summary.mismatchLaneCounts)}\``);
   lines.push("- interpretation: `Stage6 executable rows blocked by sidecar fillability are analysis-quality review items, not broker-submit items.`");
   lines.push("");
-  lines.push("| Symbol | Verdict | Stage6 | Sidecar Block | Entry | Current | Dist | Cur/Lmt | RR@Current | Fillability | Mismatch Verdict | Action | Reason |");
-  lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |");
+  lines.push("| Symbol | Verdict | Stage6 | Lane | Sidecar Block | Entry | Current | Dist | Cur/Lmt | RR@Current | TargetBuf | Fillability | Mismatch Verdict | Action | Reason |");
+  lines.push("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |");
   for (const row of report.rows.slice(0, 30)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.verdict || "N/A"} | ${row.finalDecision || "N/A"} | ${row.fillabilityBelowFloor ? "fillability" : short(row.skipReason, 24) || "N/A"} | ${fmt(row.entry)} | ${fmt(row.currentPrice)} | ${pct(row.currentDistancePct)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.rrAtCurrent, 4)} | ${fmt(row.fillabilityScore, 1)}/${fmt(row.fillabilityMin, 1)} | ${row.mismatchVerdict} | ${row.action} | ${short(row.reason, 90) || "N/A"} |`
+      `| ${row.symbol || "N/A"} | ${row.verdict || "N/A"} | ${row.finalDecision || "N/A"} | ${row.mismatchLane || "N/A"} | ${row.fillabilityBelowFloor ? "fillability" : short(row.skipReason, 24) || "N/A"} | ${fmt(row.entry)} | ${fmt(row.currentPrice)} | ${pct(row.currentDistancePct)} | ${pct(row.currentVsLimitPct)} | ${fmt(row.rrAtCurrent, 4)} | ${pct(row.targetBufferPct)} | ${fmt(row.fillabilityScore, 1)}/${fmt(row.fillabilityMin, 1)} | ${row.mismatchVerdict} | ${row.action} | ${short(row.reason, 90) || "N/A"} |`
     );
   }
   lines.push("");
