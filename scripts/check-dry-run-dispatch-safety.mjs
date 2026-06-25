@@ -11,11 +11,9 @@ function assertContains(text, needle, label) {
 }
 
 assertContains(workflow, 'default: "safe_default"', "safe_default manual default");
-assertContains(workflow, "confirm_live_execution:", "manual approval input");
-assertContains(workflow, "expected_symbol:", "manual symbol scope input");
 assertContains(workflow, 'requested = "safe_default" if raw_requested == "auto" else raw_requested', "manual auto coerces safe");
-assertContains(workflow, "BROKER_MUTATION_APPROVAL", "approval env handoff");
-assertContains(workflow, "BROKER_MUTATION_EXPECTED_SYMBOL", "symbol env handoff");
+assertContains(workflow, "BROKER_MUTATION_APPROVAL: ''", "dry-run approval hard disabled");
+assertContains(workflow, "BROKER_MUTATION_EXPECTED_SYMBOL: ''", "dry-run symbol scope hard disabled");
 assertContains(source, 'const REQUIRED_BROKER_MUTATION_APPROVAL = "CONFIRM LIVE EXECUTION";', "exact approval phrase");
 assertContains(source, "resolveWorkflowDispatchBrokerMutationGate", "workflow dispatch broker gate");
 assertContains(source, "workflow_dispatch_approval_required", "approval required block reason");

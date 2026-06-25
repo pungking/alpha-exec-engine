@@ -15,16 +15,6 @@ on:
         options:
           - "false"
           - "true"
-      confirm_live_execution:
-        description: "Required exact phrase for any manual broker mutation"
-        required: false
-        default: ""
-        type: string
-      expected_symbol:
-        description: "Required symbol scope for any manual broker mutation"
-        required: false
-        default: ""
-        type: string
       run_verify_mode:
         description: "Manual safety/verification preset"
         required: false
@@ -281,8 +271,8 @@ jobs:
       ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
       LIVE_ORDER_SUBMIT_ENABLED: ${{ vars.LIVE_ORDER_SUBMIT_ENABLED }}
-      BROKER_MUTATION_APPROVAL: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_live_execution || '' }}
-      BROKER_MUTATION_EXPECTED_SYMBOL: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_symbol || '' }}
+      BROKER_MUTATION_APPROVAL: ''
+      BROKER_MUTATION_EXPECTED_SYMBOL: ''
       LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO: ${{ vars.LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO }}
       LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS: ${{ vars.LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS }}
       ENTRY_OPEN_ORDER_GUARD_ENABLED: ${{ vars.ENTRY_OPEN_ORDER_GUARD_ENABLED }}
