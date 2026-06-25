@@ -9068,6 +9068,37 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   );
 }
 
+const REQUIRED_BROKER_MUTATION_APPROVAL = "CONFIRM LIVE EXECUTION";
+
+function resolveWorkflowDispatchBrokerMutationGate(dryExec: DryExecBuildResult): {
+  allowed: boolean;
+  reason: string;
+} {
+  if (!isWorkflowDispatchEvent()) return { allowed: true, reason: "not_workflow_dispatch" };
+
+  const approval = String(process.env.BROKER_MUTATION_APPROVAL || "").trim();
+  if (approval !== REQUIRED_BROKER_MUTATION_APPROVAL) {
+    return { allowed: false, reason: "workflow_dispatch_approval_required" };
+  }
+
+  const expectedSymbol = String(process.env.BROKER_MUTATION_EXPECTED_SYMBOL || "")
+    .trim()
+    .toUpperCase();
+  if (!expectedSymbol) return { allowed: false, reason: "workflow_dispatch_expected_symbol_required" };
+  if (dryExec.payloads.length !== 1) {
+    return { allowed: false, reason: `workflow_dispatch_payload_scope_required(count=${dryExec.payloads.length})` };
+  }
+
+  const actualSymbol = String(dryExec.payloads[0]?.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (actualSymbol !== expectedSymbol) {
+    return { allowed: false, reason: `workflow_dispatch_symbol_scope_mismatch(${actualSymbol || "N/A"}!=${expectedSymbol})` };
+  }
+
+  return { allowed: true, reason: "workflow_dispatch_approval_scope_pass" };
+}
+
 async function submitOrdersToBroker(
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
@@ -9130,6 +9161,13 @@ async function submitOrdersToBroker(
   if (dryExec.payloads.length === 0) {
     summary.reason = "no_payload";
     summary.skipped = 0;
+    return summary;
+  }
+
+  const manualGate = resolveWorkflowDispatchBrokerMutationGate(dryExec);
+  if (!manualGate.allowed) {
+    summary.reason = manualGate.reason;
+    for (const row of Object.values(summary.orders)) row.reason = manualGate.reason;
     return summary;
   }
 

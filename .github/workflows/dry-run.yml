@@ -15,10 +15,20 @@ on:
         options:
           - "false"
           - "true"
+      confirm_live_execution:
+        description: "Required exact phrase for any manual broker mutation"
+        required: false
+        default: ""
+        type: string
+      expected_symbol:
+        description: "Required symbol scope for any manual broker mutation"
+        required: false
+        default: ""
+        type: string
       run_verify_mode:
         description: "Manual safety/verification preset"
         required: false
-        default: "auto"
+        default: "safe_default"
         type: choice
         options:
           - "auto"
@@ -271,6 +281,8 @@ jobs:
       ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
       LIVE_ORDER_SUBMIT_ENABLED: ${{ vars.LIVE_ORDER_SUBMIT_ENABLED }}
+      BROKER_MUTATION_APPROVAL: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_live_execution || '' }}
+      BROKER_MUTATION_EXPECTED_SYMBOL: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_symbol || '' }}
       LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO: ${{ vars.LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO }}
       LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS: ${{ vars.LIVE_ORDER_SUBMIT_REQUIRE_HF_LIVE_PROMOTION_PASS }}
       ENTRY_OPEN_ORDER_GUARD_ENABLED: ${{ vars.ENTRY_OPEN_ORDER_GUARD_ENABLED }}
@@ -473,7 +485,8 @@ jobs:
           import os
           import sys
 
-          requested = (os.getenv("RUN_VERIFY_MODE") or "auto").strip().lower()
+          raw_requested = (os.getenv("RUN_VERIFY_MODE") or "safe_default").strip().lower()
+          requested = "safe_default" if raw_requested == "auto" else raw_requested
           preset_map = {
               "auto": [],
               "safe_default": [
@@ -545,7 +558,7 @@ jobs:
 
           lines = list(preset_map[requested])
           lines.append(f"RUN_VERIFY_MODE_EFFECTIVE={requested}")
-          lines.append(f"RUN_VERIFY_MODE_REQUESTED={requested}")
+          lines.append(f"RUN_VERIFY_MODE_REQUESTED={raw_requested}")
 
           github_env = os.getenv("GITHUB_ENV")
           if not github_env:
@@ -555,7 +568,7 @@ jobs:
               f.write("\n".join(lines) + "\n")
 
           override_log = ",".join(lines[:-2]) if len(lines) > 2 else "none"
-          print(f"[VERIFY_MODE] requested={requested} applied={requested} overrides={override_log}")
+          print(f"[VERIFY_MODE] requested={raw_requested} applied={requested} overrides={override_log}")
           PY
 
       - name: Resolve lifecycle action types (manual)
