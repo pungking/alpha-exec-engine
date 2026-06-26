@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import assert from "node:assert/strict";
 
 const STATE_DIR = String(process.env.ENTRY_REPRICE_POLICY_STATE_DIR || "state").trim() || "state";
 const PREVIEW_PATH = `${STATE_DIR}/last-dry-exec-preview.json`;
@@ -147,6 +148,13 @@ const classifyPolicy = (row, policy) => {
   };
 };
 
+const classifyStatusTaxonomy = (row) => {
+  if (row.policyDecision === "WAIT_PULLBACK_RR_BELOW_MIN") return "RR_AT_CURRENT_WEAK";
+  if (String(row.policyDecision || "").startsWith("WAIT_PULLBACK")) return "WAIT_PULLBACK";
+  if (row.unheldExecutable && row.status === "skipped") return "OPEN_WAITING";
+  return "NO_ACTION";
+};
+
 const buildRows = ({ preview, audit, portfolioAdmission, fillability }) => {
   const minRr =
     toNum(preview?.entryPricePolicy?.minRr) ??
@@ -261,6 +269,7 @@ const buildRows = ({ preview, audit, portfolioAdmission, fillability }) => {
       policyDecision: classified.decision,
       policyAction: classified.action,
       policyReason: classified.reason,
+      statusTaxonomy: classifyStatusTaxonomy({ ...base, policyDecision: classified.decision }),
       fillabilityFloorAction: "KEEP_CURRENT_FLOOR",
       brokerMutationAttempted: false,
       brokerMutationSubmitted: false
@@ -343,7 +352,7 @@ const buildMarkdown = (report) => {
   lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
   for (const row of report.rows.slice(0, 30)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.policyDecision} | ${row.policyAction} | ${fmt(row.entry)} | ${fmt(row.currentPrice)} | ${pct(row.currentDistancePct)} | ${fmt(row.rrAtCurrent, 4)} | ${fmt(row.rrAtEntry, 4)} | ${fmt(row.fillabilityScore, 1)}/${fmt(row.fillabilityMin, 1)} | ${row.style || "N/A"} | ${short(row.policyReason || row.overlayReason || row.skipReason, 90) || "N/A"} |`
+      `| ${row.symbol || "N/A"} | ${row.statusTaxonomy || "N/A"}:${row.policyDecision} | ${row.policyAction} | ${fmt(row.entry)} | ${fmt(row.currentPrice)} | ${pct(row.currentDistancePct)} | ${fmt(row.rrAtCurrent, 4)} | ${fmt(row.rrAtEntry, 4)} | ${fmt(row.fillabilityScore, 1)}/${fmt(row.fillabilityMin, 1)} | ${row.style || "N/A"} | ${short(row.policyReason || row.overlayReason || row.skipReason, 90) || "N/A"} |`
     );
   }
   lines.push("");
@@ -391,4 +400,15 @@ const main = () => {
   );
 };
 
-main();
+const selfCheck = () => {
+  assert.equal(classifyStatusTaxonomy({ policyDecision: "WAIT_PULLBACK_RR_BELOW_MIN" }), "RR_AT_CURRENT_WEAK");
+  assert.equal(classifyStatusTaxonomy({ policyDecision: "WAIT_PULLBACK_DISTANCE_TOO_FAR" }), "WAIT_PULLBACK");
+  assert.equal(classifyStatusTaxonomy({ policyDecision: "NO_ACTION_REVIEW_OTHER_BLOCKER", unheldExecutable: true, status: "skipped" }), "OPEN_WAITING");
+};
+
+if (process.env.ENTRY_REPRICE_POLICY_SELF_CHECK === "1") {
+  selfCheck();
+  console.log("[ENTRY_REPRICE_POLICY_SELF_CHECK] pass");
+} else {
+  main();
+}
