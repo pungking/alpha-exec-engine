@@ -117,6 +117,35 @@ function collectMutationSignals(reports) {
   return signals;
 }
 
+function collectStateMutationSignals(reports) {
+  const signals = [];
+  const add = (name, attempted, applied) => {
+    signals.push({ name, attempted: asBool(attempted), applied: asBool(applied) });
+  };
+  add("fillStateReconciliation", reports.fillStateReconciliation?.summary?.stateMutationAttempted, reports.fillStateReconciliation?.summary?.stateMutationApplied);
+  add("guardSourceRecovery", reports.guardSourceRecovery?.summary?.stateMutationAttempted, reports.guardSourceRecovery?.summary?.stateMutationApplied);
+  add("guardMetadataLineage", reports.guardMetadataLineage?.summary?.stateMutationAttempted, reports.guardMetadataLineage?.summary?.stateMutationApplied);
+  add("positionOwnershipRecoveryDecision", reports.positionOwnershipRecoveryDecision?.summary?.stateMutationAttempted, reports.positionOwnershipRecoveryDecision?.summary?.stateMutationApplied);
+  add("positionOwnershipStateMigrationReview", reports.positionOwnershipStateMigrationReview?.summary?.stateMutationAttempted, reports.positionOwnershipStateMigrationReview?.summary?.stateMutationApplied);
+  return signals;
+}
+
+function uniqueSymbols(rows) {
+  return [...new Set(rows.map((row) => String(row?.symbol || "").toUpperCase()).filter(Boolean))].sort();
+}
+
+function blockerGroup(name, reports, { status = "pass", count = 0, rows = [], nextAction, safetyGate }) {
+  return {
+    name,
+    status,
+    count,
+    affectedSymbols: uniqueSymbols(rows).slice(0, 20),
+    nextAction,
+    safetyGate,
+    opsHealthDetail: reports.opsHealth?.blockerGroups?.[name]?.detail || null,
+  };
+}
+
 function buildMliLifecycle({ fillability, openOrderReprice, orderLedger, orderIdempotency, orderState }) {
   const fillRows = bySymbol(rowsArray(fillability), "MLI");
   const repriceRows = bySymbol(rowsArray(openOrderReprice), "MLI");
@@ -211,8 +240,11 @@ function buildReport() {
     positionProtectionAudit: readJson("position-protection-root-cause-audit.json", {}),
     guardMetadataLineage: readJson("guard-metadata-lineage-audit.json", {}),
     guardSourceRecovery: readJson("guard-source-recovery-plan.json", {}),
+    fillStateReconciliation: readJson("fill-state-reconciliation-audit.json", {}),
     noActionableEvent: readJson("no-actionable-event-escalation.json", {}),
     lastRun: readJson("last-run.json", {}),
+    lastOrderDecisionAudit: readJson("last-order-decision-audit.json", {}),
+    positionOwnershipRecoveryDecision: readJson("position-ownership-recovery-decision.json", {}),
     positionOwnershipStateMigrationReview: readJson("position-ownership-state-migration-review-plan.json", {}),
     multiOcoSubmitGate: readJson("multi-oco-submit-safety-gate.json", {}),
   };
@@ -221,8 +253,11 @@ function buildReport() {
   const stage6 = stage6Identity(reports);
   const readErrors = hasReadError(...Object.values(reports));
   const mutationSignals = collectMutationSignals(reports);
+  const stateMutationSignals = collectStateMutationSignals(reports);
   const currentBrokerMutationAttempted = mutationSignals.some((signal) => signal.attempted);
   const currentBrokerMutationSubmitted = mutationSignals.some((signal) => signal.submitted);
+  const currentStateMutationAttempted = stateMutationSignals.some((signal) => signal.attempted);
+  const currentStateMutationSubmitted = stateMutationSignals.some((signal) => signal.applied);
   const ledgerOrders = ordersArray(reports.orderLedger);
   const idempotencyOrders = ordersArray(reports.orderIdempotency);
   const submittedLedgerOrders = ledgerOrders.filter((order) => String(order?.status || "").toLowerCase() === "submitted" && order?.brokerOrderId);
@@ -285,6 +320,8 @@ function buildReport() {
   const mutationWarnings = [];
   if (currentBrokerMutationAttempted) mutationBlockers.push("current_run_broker_mutation_attempted");
   if (currentBrokerMutationSubmitted) mutationBlockers.push("current_run_broker_mutation_submitted");
+  if (currentStateMutationAttempted) mutationBlockers.push("current_run_state_mutation_attempted");
+  if (currentStateMutationSubmitted) mutationBlockers.push("current_run_state_mutation_submitted");
   const previewMode = reports.preview?.mode;
   const previewExplicitSafe = previewMode && typeof previewMode === "object"
     ? previewMode.readOnly === true && previewMode.execEnabled === false
@@ -349,7 +386,10 @@ function buildReport() {
     domain("broker_mutation_safety", mutationStatus, scoreFrom(mutationStatus), mutationBlockers, mutationWarnings, {
       currentBrokerMutationAttempted,
       currentBrokerMutationSubmitted,
+      currentStateMutationAttempted,
+      currentStateMutationSubmitted,
       mutationSignals,
+      stateMutationSignals,
     }),
     domain("stage6_entry_payload_quality", entryStatus, scoreFrom(entryStatus, entryStatus === "waiting" ? 60 : null), entryBlockers, entryWarnings, {
       payloadCount,
@@ -385,6 +425,78 @@ function buildReport() {
     brokerMutationSafety: domains.find((item) => item.name === "broker_mutation_safety")?.blockers || [],
   };
 
+  const stage6EntryRows = rowsArray(reports.lastOrderDecisionAudit).filter((row) => String(row?.status || "").toLowerCase() !== "payload");
+  const protectionRows = rowsArray(reports.brokerChildReconciliation).filter((row) =>
+    row?.severity !== "pass" || row?.stopChildMissing || row?.targetChildMissing || row?.guardMetadataMissing || row?.guardGeometryInvalid
+  );
+  const guardLineageRows = rowsArray(reports.guardMetadataLineage).filter((row) =>
+    !["LINEAGE_READY", "FRESH_VALID_SOURCE_AVAILABLE"].includes(row?.lineageStatus)
+    || !["FRESH_VALID_SOURCE_AVAILABLE"].includes(row?.rootCause)
+  );
+  const fillStateRows = [
+    ...rowsArray(reports.fillStateReconciliation).filter((row) =>
+      row?.requiresLedgerTerminalizationReview || row?.reconciliationDecision !== "FILL_STATE_CONFIRMED"
+    ),
+    ...rowsArray(reports.terminalizationProposal),
+  ];
+  const ownershipRows = [
+    ...rowsArray(reports.positionOwnershipStateMigrationReview),
+    ...rowsArray(reports.positionOwnershipRecoveryDecision).filter((row) =>
+      row?.manualExternalAdoptionReview || row?.stateRecoveryReviewReady || String(row?.ownershipRecoveryDecision || "").startsWith("DO_NOT")
+    ),
+  ];
+  const blockerGroupSeparation = {
+    stage6_entry_tuning: blockerGroup("stage6_entry_tuning", reports, {
+      status: reports.opsHealth?.blockerGroups?.stage6_entry_tuning?.status || entryStatus,
+      count: stage6EntryRows.length,
+      rows: stage6EntryRows,
+      nextAction: "keep in Stage6/entry policy tuning; do not treat as ops-health protection failure",
+      safetyGate: "analysis_only_no_broker_mutation",
+    }),
+    protection_guard_metadata: blockerGroup("protection_guard_metadata", reports, {
+      status: reports.opsHealth?.blockerGroups?.protection_guard_metadata?.status || protectionStatus,
+      count: protectionRows.length,
+      rows: protectionRows,
+      nextAction: "split child-missing into repair candidate, repair forbidden, or fresh-source-wait before any approval",
+      safetyGate: "CONFIRM LIVE EXECUTION required for protective OCO repair submit",
+    }),
+    guard_metadata_lineage: blockerGroup("guard_metadata_lineage", reports, {
+      status: guardLineageRows.length ? "warn" : "pass",
+      count: guardLineageRows.length,
+      rows: guardLineageRows,
+      nextAction: "recover only with fresh Stage6, position lifecycle, ledger, or recommendation source plus ownership proof",
+      safetyGate: "state-only review requires explicit CONFIRM STATE OWNERSHIP RECOVERY",
+    }),
+    ledger_fill_state: blockerGroup("ledger_fill_state", reports, {
+      status: reports.opsHealth?.blockerGroups?.ledger_fill_state?.status || ledgerStatus,
+      count: fillStateRows.length,
+      rows: fillStateRows,
+      nextAction: "proposal-only terminalization; require backup, diff, audit record, and post-verify before state apply",
+      safetyGate: "CONFIRM STATE LEDGER MIGRATION required for state mutation",
+    }),
+    ownership: blockerGroup("ownership", reports, {
+      status: reports.opsHealth?.blockerGroups?.ownership?.status || (ownershipRows.length ? "warn" : "pass"),
+      count: ownershipRows.length,
+      rows: ownershipRows,
+      nextAction: "external/manual positions remain blocked from automatic adoption",
+      safetyGate: "CONFIRM STATE OWNERSHIP RECOVERY required for state-only ownership migration",
+    }),
+    safety_mutation: blockerGroup("safety_mutation", reports, {
+      status: currentBrokerMutationAttempted || currentBrokerMutationSubmitted || currentStateMutationAttempted || currentStateMutationSubmitted ? "fail" : "pass",
+      count: mutationSignals.filter((row) => row.attempted || row.submitted).length + stateMutationSignals.filter((row) => row.attempted || row.applied).length,
+      rows: [],
+      nextAction: "keep all report-only lanes non-mutating",
+      safetyGate: "no mutation allowed in this scorecard",
+    }),
+    scheduler_data: blockerGroup("scheduler_data", reports, {
+      status: reports.opsHealth?.blockerGroups?.scheduler_data?.status || schedulerStatus,
+      count: schedulerBlockers.length + schedulerWarnings.length,
+      rows: [],
+      nextAction: "refresh Stage6/hash only if scheduler or preview stale evidence appears",
+      safetyGate: "analysis/dry-run only",
+    }),
+  };
+
   const observationStopRules = [
     {
       condition: "fresh_hash_same_no_actionable_event",
@@ -416,6 +528,8 @@ function buildReport() {
     reportOnly: true,
     brokerMutationAttempted: currentBrokerMutationAttempted,
     brokerMutationSubmitted: currentBrokerMutationSubmitted,
+    stateMutationAttempted: currentStateMutationAttempted,
+    stateMutationSubmitted: currentStateMutationSubmitted,
     finalVerdict,
     overallScore,
     paperPilotStatus: mliLifecycle.scoreLabel === "WAITING_OPEN_NOT_FILLED" ? "active_open_order_waiting" : mliLifecycle.scoreLabel,
@@ -431,8 +545,11 @@ function buildReport() {
       paperSubmittedEvidence: submittedLedgerOrders.length > 0 || submittedIdemOrders.length > 0,
       currentBrokerMutationAttempted,
       currentBrokerMutationSubmitted,
+      currentStateMutationAttempted,
+      currentStateMutationSubmitted,
     },
     categoryBlockers,
+    blockerGroupSeparation,
     domains,
     mliLifecycle,
     observationStopRules,
@@ -447,6 +564,7 @@ function renderMarkdown(report) {
   lines.push(`- overallScore: \`${report.overallScore}/100\``);
   lines.push(`- reportOnly: \`${report.reportOnly}\``);
   lines.push(`- brokerMutation: \`attempted=${report.brokerMutationAttempted} submitted=${report.brokerMutationSubmitted}\``);
+  lines.push(`- stateMutation: \`attempted=${report.stateMutationAttempted} submitted=${report.stateMutationSubmitted}\``);
   lines.push(`- stage6: \`${report.summary.stage6File || "N/A"}\` / \`${report.summary.stage6HashShort || "N/A"}\``);
   lines.push("");
   lines.push("### Domain Scores");
@@ -467,6 +585,13 @@ function renderMarkdown(report) {
   lines.push("### Blocker Split");
   for (const [name, blockers] of Object.entries(report.categoryBlockers)) {
     lines.push(`- ${name}: \`${blockers.length ? blockers.join(",") : "none"}\``);
+  }
+  lines.push("");
+  lines.push("### Blocker Group Separation");
+  lines.push("| Group | Status | Count | Symbols | Next Action | Safety Gate |");
+  lines.push("|---|---:|---:|---|---|---|");
+  for (const group of Object.values(report.blockerGroupSeparation || {})) {
+    lines.push(`| ${group.name} | \`${group.status}\` | ${group.count} | ${group.affectedSymbols.join(",") || "none"} | ${group.nextAction} | ${group.safetyGate} |`);
   }
   lines.push("");
   lines.push("### Observation Stop Rules");
