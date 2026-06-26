@@ -1800,6 +1800,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build ledger terminalization migration package
+        if: always()
+        run: npm run ops:ledger-terminalization-migration-package
+
+      - name: Publish ledger terminalization migration package summary
+        if: always()
+        run: |
+          if [[ -f state/ledger-terminalization-migration-package.md ]]; then
+            cat state/ledger-terminalization-migration-package.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Ledger Terminalization Migration Package" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/ledger-terminalization-migration-package.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build ledger filled migration plan
         if: always()
         run: npm run ops:ledger-filled-migration-plan
@@ -2271,6 +2286,8 @@ jobs:
             state/broker-fill-state-evidence.md
             state/ledger-terminalization-proposal.json
             state/ledger-terminalization-proposal.md
+            state/ledger-terminalization-migration-package.json
+            state/ledger-terminalization-migration-package.md
             state/ledger-filled-migration-plan.json
             state/ledger-filled-migration-plan.md
             state/ledger-filled-migration-apply-report.json
