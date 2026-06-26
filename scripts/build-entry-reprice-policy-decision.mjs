@@ -296,6 +296,11 @@ const summarize = ({ preview, rows }) => {
     acc[row.policyDecision] = (acc[row.policyDecision] || 0) + 1;
     return acc;
   }, {});
+  const statusTaxonomyCounts = rows.reduce((acc, row) => {
+    const key = row.statusTaxonomy || "NO_ACTION";
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
   const brokerMutationAttempted = rows.some((row) => row.brokerMutationAttempted === true);
   const brokerMutationSubmitted = rows.some((row) => row.brokerMutationSubmitted === true);
   const entryRepriceReviewReady = count((row) => row.policyDecision === "ENTRY_REPRICE_REVIEW_READY");
@@ -328,7 +333,8 @@ const summarize = ({ preview, rows }) => {
     fillabilityFloorChangeRecommended: false,
     brokerMutationAttempted,
     brokerMutationSubmitted,
-    decisions
+    decisions,
+    statusTaxonomyCounts
   };
 };
 
@@ -347,6 +353,7 @@ const buildMarkdown = (report) => {
   lines.push(
     `- summary: \`rows=${report.summary.rows} priceRr=${report.summary.priceRrCaseRows} ready=${report.summary.entryRepriceReviewReady} wait=${report.summary.waitPullbackRows} rrBelow=${report.summary.waitPullbackRrBelowMin} distanceWait=${report.summary.waitPullbackDistanceRows} geometryBlocked=${report.summary.blockedGeometry}\``
   );
+  lines.push(`- statusTaxonomy: \`${JSON.stringify(report.summary.statusTaxonomyCounts || {})}\``);
   lines.push("");
   lines.push("| Symbol | Decision | Action | Entry | Current | Dist | RR@Current | RR@Entry | Fillability | Style | Reason |");
   lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
