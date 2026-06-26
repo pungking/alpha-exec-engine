@@ -127,6 +127,82 @@ const fmt = (value, digits = 2) => {
   return Number(value).toFixed(digits);
 };
 
+const isPositive = (value) => {
+  if (value === true) return true;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+};
+
+const statusFrom = ({ fail = false, warn = false }) => (fail ? "fail" : warn ? "warn" : "pass");
+
+const isSchedulerDataCheck = (row) =>
+  /perf_gate|marker|dispatch|preview_stale|fresh_hash|stage6_source|scheduler/i.test(row.id);
+
+const buildBlockerGroups = (metrics, checks) => {
+  const unsafeCheckIds = checks
+    .filter((row) => row.status === "fail" && /unsafe|mutation|broker_ready_without_approval/i.test(row.id))
+    .map((row) => row.id);
+  return {
+    stage6_entry_tuning: {
+      status: statusFrom({
+        fail: false,
+        warn:
+          isPositive(metrics.stage6FillabilityMismatchReviewReady) ||
+          isPositive(metrics.entryRepricePolicyReady) ||
+          isPositive(metrics.entryRepricePolicyRrBelowMin) ||
+          isPositive(metrics.entryRepricePolicyDistanceWait) ||
+          isPositive(metrics.fillabilityEntryTooFar) ||
+          isPositive(metrics.fillabilityHighPriceSize)
+      }),
+      detail: `fillMismatchReview=${metrics.stage6FillabilityMismatchReviewReady ?? "N/A"} rrBelow=${metrics.entryRepricePolicyRrBelowMin ?? "N/A"} distanceWait=${metrics.entryRepricePolicyDistanceWait ?? "N/A"} entryTooFar=${metrics.fillabilityEntryTooFar ?? "N/A"} highPrice=${metrics.fillabilityHighPriceSize ?? "N/A"}`
+    },
+    protection_guard_metadata: {
+      status: statusFrom({
+        fail: isPositive(metrics.positionProtectionCritical) || isPositive(metrics.brokerChildReconciliationCriticalCount),
+        warn:
+          isPositive(metrics.positionProtectionGuardMetadataMissing) ||
+          isPositive(metrics.positionProtectionGuardMetadataStale) ||
+          isPositive(metrics.positionProtectionBrokerChildMissing) ||
+          isPositive(metrics.guardMetadataLineageMissing) ||
+          isPositive(metrics.guardMetadataLineageStale)
+      }),
+      detail: `critical=${metrics.positionProtectionCritical ?? "N/A"} childCritical=${metrics.brokerChildReconciliationCriticalCount ?? "N/A"} guardMissing=${metrics.positionProtectionGuardMetadataMissing ?? "N/A"} guardStale=${metrics.positionProtectionGuardMetadataStale ?? "N/A"} childMissing=${metrics.positionProtectionBrokerChildMissing ?? "N/A"}`
+    },
+    ledger_fill_state: {
+      status: statusFrom({
+        fail: isPositive(metrics.orderStateFailures),
+        warn:
+          isPositive(metrics.orderStateTerminalReconciliationRequired) ||
+          isPositive(metrics.fillStateReconciliationTerminalReview) ||
+          isPositive(metrics.ledgerTerminalizationReady) ||
+          isPositive(metrics.ledgerFilledMigrationReady)
+      }),
+      detail: `orderFailures=${metrics.orderStateFailures ?? "N/A"} terminalRecon=${metrics.orderStateTerminalReconciliationRequired ?? "N/A"} fillRecon=${metrics.fillStateReconciliationTerminalReview ?? "N/A"} terminalReady=${metrics.ledgerTerminalizationReady ?? "N/A"} filledMigrationReady=${metrics.ledgerFilledMigrationReady ?? "N/A"}`
+    },
+    ownership: {
+      status: statusFrom({
+        fail: false,
+        warn:
+          isPositive(metrics.ownershipGuardGapOwnershipReview) ||
+          isPositive(metrics.ownershipRecoveryExternalAdoptionReview) ||
+          isPositive(metrics.ownershipStateMigrationReviewRows)
+      }),
+      detail: `guardGapReview=${metrics.ownershipGuardGapOwnershipReview ?? "N/A"} externalAdoption=${metrics.ownershipRecoveryExternalAdoptionReview ?? "N/A"} migrationReview=${metrics.ownershipStateMigrationReviewRows ?? "N/A"}`
+    },
+    safety_mutation: {
+      status: statusFrom({ fail: unsafeCheckIds.length > 0 }),
+      detail: unsafeCheckIds.length ? unsafeCheckIds.join(",") : "broker/state mutation flags remain false in report-only lanes"
+    },
+    scheduler_data: {
+      status: statusFrom({
+        fail: false,
+        warn: checks.some((row) => isSchedulerDataCheck(row) && row.status !== "pass")
+      }),
+      detail: `stage6Hash=${metrics.stage6Hash ?? "N/A"} scheduler/perf warnings=${checks.filter((row) => isSchedulerDataCheck(row) && row.status !== "pass").length}`
+    }
+  };
+};
+
 const buildMarkdown = (report) => {
   const lines = [];
   lines.push("## Sidecar Ops Health");
@@ -180,6 +256,10 @@ const buildMarkdown = (report) => {
   );
   if (report.metrics.hfAlertReason) {
     lines.push(`- hf_alert_reason: \`${report.metrics.hfAlertReason}\``);
+  }
+  lines.push("- blocker_groups:");
+  for (const [name, group] of Object.entries(report.blockerGroups || {})) {
+    lines.push(`  - [${String(group.status || "unknown").toUpperCase()}] ${name}: ${group.detail}`);
   }
   lines.push("- checks:");
   for (const row of report.checks) {
@@ -2172,49 +2252,7 @@ const main = () => {
       ? "warn"
       : "pass";
 
-  const report = {
-    generatedAt: toIso(Date.now()),
-    kind,
-    overall,
-    files: {
-      preview: Boolean(preview),
-      guard: Boolean(guard),
-      guardControl: Boolean(guardControl),
-      perf: Boolean(perf),
-      orderStateConsistency: Boolean(orderStateConsistency),
-      brokerChildReconciliation: Boolean(brokerChildReconciliation),
-      positionProtectionAudit: Boolean(positionProtectionAudit),
-      guardMetadataRefreshPlan: Boolean(guardMetadataRefreshPlan),
-      guardMetadataLineageAudit: Boolean(guardMetadataLineageAudit),
-      guardSourceRecoveryPlan: Boolean(guardSourceRecoveryPlan),
-      fillStateReconciliationAudit: Boolean(fillStateReconciliationAudit),
-      brokerFillStateEvidence: Boolean(brokerFillStateEvidence),
-      ledgerTerminalizationProposal: Boolean(ledgerTerminalizationProposal),
-      ledgerFilledMigrationPlan: Boolean(ledgerFilledMigrationPlan),
-      ledgerFilledMigrationApply: Boolean(ledgerFilledMigrationApply),
-      guardedRepairPlan: Boolean(guardedRepairPlan),
-      persistentOcoRepairPlan: Boolean(persistentOcoRepairPlan),
-      limitedMultiOcoRepairPlan: Boolean(limitedMultiOcoRepairPlan),
-      positionOwnershipGuardGapAudit: Boolean(positionOwnershipGuardGapAudit),
-      positionOwnershipRecoveryDecision: Boolean(positionOwnershipRecoveryDecision),
-      positionOwnershipRecoveryApprovalGate: Boolean(positionOwnershipRecoveryApprovalGate),
-      positionOwnershipStateMigrationReviewPlan: Boolean(positionOwnershipStateMigrationReviewPlan),
-      multiOcoSubmitSafetyGate: Boolean(multiOcoSubmitSafetyGate),
-      persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
-      alpacaPayloadSchema: Boolean(alpacaPayloadSchema),
-      alpacaOcoResponseFixture: Boolean(alpacaOcoResponseFixture),
-      paperOcoCanaryCandidate: Boolean(paperOcoCanaryCandidate),
-      paperOcoApprovalGate: Boolean(paperOcoApprovalGate),
-      paperOcoSubmitGate: Boolean(paperOcoSubmitGate),
-      entryRepricePolicyDecision: Boolean(entryRepricePolicyDecision),
-      stage6FillabilityMismatchAudit: Boolean(stage6FillabilityMismatchAudit),
-      openOrderRepriceProposal: Boolean(openOrderRepriceProposal),
-      opsLaneStatus: Boolean(opsLaneStatus),
-      highPriceMinOneShareCanaryPlan: Boolean(highPriceMinOneShareCanaryPlan),
-      fillability: Boolean(fillability),
-      markerAudit: Boolean(markerAudit || preview?.hfMarkerAudit)
-    },
-    metrics: {
+  const metrics = {
       stage6Hash,
       payloadCount,
       skippedCount,
@@ -2491,7 +2529,52 @@ const main = () => {
       liveGuardMissingCount,
       liveFillStateMismatchCount,
       livePositionDetails: short(livePositionDetails, 1800) || null
+    };
+
+  const report = {
+    generatedAt: toIso(Date.now()),
+    kind,
+    overall,
+    files: {
+      preview: Boolean(preview),
+      guard: Boolean(guard),
+      guardControl: Boolean(guardControl),
+      perf: Boolean(perf),
+      orderStateConsistency: Boolean(orderStateConsistency),
+      brokerChildReconciliation: Boolean(brokerChildReconciliation),
+      positionProtectionAudit: Boolean(positionProtectionAudit),
+      guardMetadataRefreshPlan: Boolean(guardMetadataRefreshPlan),
+      guardMetadataLineageAudit: Boolean(guardMetadataLineageAudit),
+      guardSourceRecoveryPlan: Boolean(guardSourceRecoveryPlan),
+      fillStateReconciliationAudit: Boolean(fillStateReconciliationAudit),
+      brokerFillStateEvidence: Boolean(brokerFillStateEvidence),
+      ledgerTerminalizationProposal: Boolean(ledgerTerminalizationProposal),
+      ledgerFilledMigrationPlan: Boolean(ledgerFilledMigrationPlan),
+      ledgerFilledMigrationApply: Boolean(ledgerFilledMigrationApply),
+      guardedRepairPlan: Boolean(guardedRepairPlan),
+      persistentOcoRepairPlan: Boolean(persistentOcoRepairPlan),
+      limitedMultiOcoRepairPlan: Boolean(limitedMultiOcoRepairPlan),
+      positionOwnershipGuardGapAudit: Boolean(positionOwnershipGuardGapAudit),
+      positionOwnershipRecoveryDecision: Boolean(positionOwnershipRecoveryDecision),
+      positionOwnershipRecoveryApprovalGate: Boolean(positionOwnershipRecoveryApprovalGate),
+      positionOwnershipStateMigrationReviewPlan: Boolean(positionOwnershipStateMigrationReviewPlan),
+      multiOcoSubmitSafetyGate: Boolean(multiOcoSubmitSafetyGate),
+      persistentOcoOpenVerifyMulti: Boolean(persistentOcoOpenVerifyMulti),
+      alpacaPayloadSchema: Boolean(alpacaPayloadSchema),
+      alpacaOcoResponseFixture: Boolean(alpacaOcoResponseFixture),
+      paperOcoCanaryCandidate: Boolean(paperOcoCanaryCandidate),
+      paperOcoApprovalGate: Boolean(paperOcoApprovalGate),
+      paperOcoSubmitGate: Boolean(paperOcoSubmitGate),
+      entryRepricePolicyDecision: Boolean(entryRepricePolicyDecision),
+      stage6FillabilityMismatchAudit: Boolean(stage6FillabilityMismatchAudit),
+      openOrderRepriceProposal: Boolean(openOrderRepriceProposal),
+      opsLaneStatus: Boolean(opsLaneStatus),
+      highPriceMinOneShareCanaryPlan: Boolean(highPriceMinOneShareCanaryPlan),
+      fillability: Boolean(fillability),
+      markerAudit: Boolean(markerAudit || preview?.hfMarkerAudit)
     },
+    metrics,
+    blockerGroups: buildBlockerGroups(metrics, checks),
     checks
   };
 
