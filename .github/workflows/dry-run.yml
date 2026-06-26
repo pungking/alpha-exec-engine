@@ -2182,6 +2182,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build protection blocker reduction plan
+        if: always()
+        run: npm run ops:protection-blocker-reduction
+
+      - name: Publish protection blocker reduction plan summary
+        if: always()
+        run: |
+          if [[ -f state/protection-blocker-reduction-plan.md ]]; then
+            cat state/protection-blocker-reduction-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Protection Blocker Reduction Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/protection-blocker-reduction-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Sync dry-run summary to Notion
         if: always()
         continue-on-error: ${{ vars.NOTION_SIDECAR_SYNC_REQUIRED != 'true' && vars.NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED != 'true' && vars.NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED != 'true' && vars.NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED != 'true' && vars.NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED != 'true' }}
@@ -2321,6 +2336,8 @@ jobs:
             state/ops-health-report.md
             state/live-readiness-scorecard.json
             state/live-readiness-scorecard.md
+            state/protection-blocker-reduction-plan.json
+            state/protection-blocker-reduction-plan.md
             state/validation-pack-auto-trigger.json
             state/validation-pack/**
             state/payload-probe/**
