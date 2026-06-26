@@ -79,6 +79,7 @@
     "ops:multi-oco-submit-gate": "node scripts/build-multi-oco-submit-safety-gate.mjs",
     "ops:no-actionable-event": "node scripts/build-no-actionable-event-escalation.mjs",
     "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs",
+    "ops:test:live-readiness-blockers": "node scripts/test-live-readiness-blocker-separation.mjs",
     "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs",
     "ops:live-readiness": "node scripts/build-live-readiness-scorecard.mjs",
     "ops:test:dry-run-dispatch-safety": "node scripts/check-dry-run-dispatch-safety.mjs"
