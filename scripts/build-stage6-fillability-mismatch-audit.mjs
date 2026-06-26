@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import assert from "node:assert/strict";
 
 const STATE_DIR = String(process.env.STAGE6_FILLABILITY_MISMATCH_STATE_DIR || "state").trim() || "state";
 const PREVIEW_PATH = `${STATE_DIR}/last-dry-exec-preview.json`;
@@ -87,6 +88,24 @@ const laneForVerdict = (verdict) => {
   if (verdict === "BLOCKED_BY_OTHER_GATE") return "top_skip_other";
   if (verdict === "NO_STAGE6_EXECUTABLE") return "not_stage6_executable";
   return "other";
+};
+
+const laneForSkipReason = (reason) => {
+  const key = String(reason || "").toLowerCase();
+  if (key.includes("entry_notional_below_limit_price") || key.includes("min_one_share")) return "high_price_size";
+  if (key.includes("portfolio_fillability") || key.includes("quality") || key.includes("conviction") || key.includes("earnings")) return "quality_gate";
+  if (key.includes("pullback") || key.includes("entry") || key.includes("price")) return "entry_distance";
+  if (key.includes("geometry") || key.includes("stop") || key.includes("target") || key.includes("rr_") || key.includes("risk")) return "risk_geometry";
+  if (key.includes("idempotency") || key.includes("dedupe") || key.includes("duplicate")) return "dedupe";
+  if (key.includes("portfolio_held") || key.includes("already_held")) return "portfolio_held";
+  if (key.includes("stale")) return "stale_source";
+  if (key.includes("sizing") || key.includes("notional")) return "sizing";
+  return "top_skip_other";
+};
+
+const selfCheck = () => {
+  assert.equal(laneForSkipReason("entry_notional_below_limit_price[notional=100|limit=339]"), "high_price_size");
+  assert.equal(laneForSkipReason("conviction_below_floor[conv=68|floor=70]"), "quality_gate");
 };
 
 const isExecutable = (row) => {
@@ -261,7 +280,11 @@ const buildRows = ({ preview, audit, fillability, entryReprice }) => {
       brokerMutationSubmitted: false
     };
     const classified = classifyMismatch(base, policy);
-    return { ...base, ...classified, mismatchLane: laneForVerdict(classified.mismatchVerdict) };
+    const mismatchLane =
+      classified.mismatchVerdict === "BLOCKED_BY_OTHER_GATE"
+        ? laneForSkipReason(base.skipReason)
+        : laneForVerdict(classified.mismatchVerdict);
+    return { ...base, ...classified, mismatchLane };
   });
 
   rows.sort((a, b) => {
@@ -390,4 +413,9 @@ const main = () => {
   );
 };
 
-main();
+if (process.env.STAGE6_FILLABILITY_MISMATCH_SELF_CHECK === "1") {
+  selfCheck();
+  console.log("[STAGE6_FILLABILITY_MISMATCH_SELF_CHECK] pass");
+} else {
+  main();
+}
