@@ -70,6 +70,7 @@ jobs:
           npm run ops:fill-state-reconcile
           npm run ops:broker-fill-state-evidence
           npm run ops:ledger-terminalization-proposal
+          npm run ops:ledger-terminalization-migration-package
           npm run ops:ledger-filled-migration-plan
 
       - name: Apply state-only filled ledger migration
@@ -105,15 +106,18 @@ jobs:
           const terminal = JSON.parse(fs.readFileSync('state/ledger-terminalization-proposal.json', 'utf8'));
           const lanes = JSON.parse(fs.readFileSync('state/ops-lane-status-report.json', 'utf8'));
           const applyOk = apply.overall === 'state_migration_applied_and_verified' && apply.summary?.postVerifiedRows > 0;
-          const fillOk = Number(fill.summary?.ledgerTerminalizationReviewRequired || 0) === 0;
-          const terminalOk = Number(terminal.summary?.proposalReady || 0) === 0;
+          const selectedSymbols = new Set((apply.rows || []).filter((row) => row.stateMutationApplied).map((row) => row.symbol));
+          const fillRows = Array.isArray(fill.rows) ? fill.rows : [];
+          const terminalRows = Array.isArray(terminal.rows) ? terminal.rows : [];
+          const fillOk = [...selectedSymbols].every((symbol) => !fillRows.some((row) => row.symbol === symbol && row.requiresLedgerTerminalizationReview === true));
+          const terminalOk = [...selectedSymbols].every((symbol) => !terminalRows.some((row) => row.symbol === symbol && row.proposalReady === true));
           const repairLane = (lanes.lanes || []).find((lane) => lane.id === 'track_4_valid_guard_missing_child_repair_candidate');
           const repairBlocked = repairLane && String(repairLane.status || '').startsWith('blocked_');
-          if (!applyOk || !fillOk || !terminalOk || !repairBlocked) {
-            console.error(JSON.stringify({ applyOk, fillOk, terminalOk, repairBlocked, apply: apply.overall, fill: fill.summary, terminal: terminal.summary, repairLane }, null, 2));
+          if (!applyOk || selectedSymbols.size === 0 || !fillOk || !terminalOk || !repairBlocked) {
+            console.error(JSON.stringify({ applyOk, selectedSymbols: [...selectedSymbols], fillOk, terminalOk, repairBlocked, apply: apply.overall, fill: fill.summary, terminal: terminal.summary, repairLane }, null, 2));
             process.exit(1);
           }
-          console.log(JSON.stringify({ applyOk, fillOk, terminalOk, repairBlocked, repairStatus: repairLane.status }, null, 2));
+          console.log(JSON.stringify({ applyOk, selectedSymbols: [...selectedSymbols], fillOk, terminalOk, repairBlocked, repairStatus: repairLane.status }, null, 2));
           NODE
 
       - name: Publish migration summary
@@ -148,6 +152,8 @@ jobs:
             state/fill-state-reconciliation-audit.md
             state/ledger-terminalization-proposal.json
             state/ledger-terminalization-proposal.md
+            state/ledger-terminalization-migration-package.json
+            state/ledger-terminalization-migration-package.md
             state/guard-source-recovery-plan.json
             state/guard-source-recovery-plan.md
             state/position-lifecycle-guard-source-plan.json

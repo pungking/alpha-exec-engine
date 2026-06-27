@@ -84,6 +84,7 @@
     "ops:test:live-readiness-blockers": "node scripts/test-live-readiness-blocker-separation.mjs",
     "ops:test:protection-blocker-reduction": "node scripts/test-protection-blocker-reduction-plan.mjs",
     "ops:test:ledger-terminalization-migration-package": "node scripts/test-ledger-terminalization-migration-package.mjs",
+    "ops:test:ledger-filled-migration-apply": "node scripts/test-ledger-filled-migration-apply.mjs",
     "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs",
     "ops:live-readiness": "node scripts/build-live-readiness-scorecard.mjs",
     "ops:test:dry-run-dispatch-safety": "node scripts/check-dry-run-dispatch-safety.mjs"
