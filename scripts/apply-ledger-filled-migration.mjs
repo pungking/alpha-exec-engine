@@ -119,6 +119,9 @@ const selectRows = (planRows) => {
     rows = rows.filter((row) => allow.has(asSymbol(row?.symbol)));
   }
   rows = rows.sort((a, b) => asSymbol(a?.symbol).localeCompare(asSymbol(b?.symbol)));
+  if (SYMBOL_FILTER.length === 0 && Number.isFinite(MAX_ROWS) && MAX_ROWS > 0) {
+    rows = rows.slice(0, MAX_ROWS);
+  }
   return rows;
 };
 
@@ -158,6 +161,7 @@ const main = () => {
   const addGlobalGate = (id, pass, detail) => globalGates.push({ id, status: pass ? "PASS" : "BLOCK", detail: short(detail, 360) });
 
   addGlobalGate("plan_present", Boolean(plan), `plan=${FILES.plan}`);
+  addGlobalGate("approval_phrase_exact", !APPLY_REQUESTED || APPROVAL === REQUIRED_APPROVAL, `approvalProvided=${APPROVAL === REQUIRED_APPROVAL}`);
   addGlobalGate("order_ledger_present", Boolean(orderLedger?.orders), `orderLedger=${FILES.orderLedger}`);
   addGlobalGate("idempotency_present", Boolean(idempotency?.orders), `idempotency=${FILES.idempotency}`);
   addGlobalGate("ready_rows_present", rows.length > 0, `selectedRows=${rows.length}`);
