@@ -87,7 +87,8 @@
     "ops:test:ledger-filled-migration-apply": "node scripts/test-ledger-filled-migration-apply.mjs",
     "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs",
     "ops:live-readiness": "node scripts/build-live-readiness-scorecard.mjs",
-    "ops:test:dry-run-dispatch-safety": "node scripts/check-dry-run-dispatch-safety.mjs"
+    "ops:test:dry-run-dispatch-safety": "node scripts/check-dry-run-dispatch-safety.mjs",
+    "ops:test:persistent-oco-stop-only": "node scripts/test-persistent-oco-stop-only-classification.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

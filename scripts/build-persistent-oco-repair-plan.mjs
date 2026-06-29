@@ -64,10 +64,13 @@ const candidates = rows
     const effectiveStop = toNum(lifecycleSource?.stopPrice ?? row?.effectiveStopPrice ?? row?.plannedStopPrice);
     const effectiveTarget = toNum(lifecycleSource?.targetPrice ?? row?.effectiveTargetPrice ?? row?.plannedTargetPrice);
     const current = toNum(row?.currentPrice);
-    const bothMissing = row?.stopChildMissing === true && row?.targetChildMissing === true;
+    const stopMissing = row?.stopChildMissing === true;
+    const targetMissing = row?.targetChildMissing === true;
+    const bothMissing = stopMissing && targetMissing;
     const brokerSellOrderCount = toNum(row?.brokerSellOrderCount) ?? 0;
     const brokerStopPresent = row?.brokerStopPresent === true;
     const brokerTargetPresent = row?.brokerTargetPresent === true;
+    const stopOnlyMissing = stopMissing && !targetMissing && brokerTargetPresent;
     const brokerChildrenComplete = brokerStopPresent && brokerTargetPresent;
     const filled = String(row?.normalizedFillState || "").toLowerCase() === "filled";
     const guardOk = row?.guardMetadataMissing !== true;
@@ -100,7 +103,7 @@ const candidates = rows
         blockers.push("fill_state_reconciliation_required");
       }
       if (!filled) blockers.push("position_not_filled");
-      if (!bothMissing) blockers.push("requires_stop_and_target_missing");
+      if (!bothMissing) blockers.push(stopOnlyMissing ? "stop_only_repair_requires_separate_lane" : "requires_stop_and_target_missing");
       if (bothMissing && brokerSellOrderCount > 0) blockers.push("broker_sell_order_count_conflicts_with_missing_children");
       if (!guardOk) blockers.push("guard_metadata_missing");
       if (!geometryOk) blockers.push("invalid_stop_current_target_geometry");
@@ -136,8 +139,10 @@ const candidates = rows
       lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
       lifecycleOriginalGuardSource: lifecycleSource?.originalSourceType || row?.lifecycleOriginalGuardSource || null,
       lifecycleOriginalGeneratedAt: lifecycleSource?.originalGeneratedAt || row?.lifecycleOriginalGeneratedAt || null,
-      stopChildMissing: row?.stopChildMissing === true,
-      targetChildMissing: row?.targetChildMissing === true,
+      stopChildMissing: stopMissing,
+      targetChildMissing: targetMissing,
+      childRepairPattern: bothMissing ? "stop_and_target_missing" : stopOnlyMissing ? "stop_only_missing_target_present" : targetMissing && brokerStopPresent ? "target_only_missing_stop_present" : "not_repairable_by_persistent_oco",
+      stopOnlyRepairReviewReady: stopOnlyMissing && filled && guardOk && geometryOk && row?.fillStateReconciliation?.repairBlocked !== true,
       brokerStopPresent,
       brokerTargetPresent,
       brokerSellOrderCount,
@@ -213,6 +218,7 @@ const report = {
     guardMetadataStale: candidates.filter((row) => row.guardMetadataRisk?.stale).length,
     guardMetadataBreached: candidates.filter((row) => row.guardMetadataRisk?.stopBreached || row.guardMetadataRisk?.targetBreached).length,
     guardMetadataNearBreached: candidates.filter((row) => row.guardMetadataRisk?.nearStopBreach || row.guardMetadataRisk?.nearTargetBreach).length,
+    stopOnlyRepairReviewReady: candidates.filter((row) => row.stopOnlyRepairReviewReady).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false
   },
@@ -222,7 +228,9 @@ const report = {
   },
   nextAction: selected
     ? "request a separate approved paper-only persistent OCO repair submit for the selected row; no auto-cancel"
-    : "wait for an eligible filled position with both stop and target child missing"
+    : candidates.some((row) => row.stopOnlyRepairReviewReady)
+      ? "review stop-only repair lane separately; do not submit OCO because target child already exists"
+      : "wait for an eligible filled position with both stop and target child missing"
 };
 
 const md = [
@@ -233,7 +241,7 @@ const md = [
   `- selected: \`${selected ? `${selected.symbol} qty=${selected.repairQty} stop=${selected.plannedStopPrice} target=${selected.plannedTargetPrice}` : "N/A"}\``,
   "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; GTC required; no POST unless separately approved`",
   "- rows:",
-  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} ownership=${row.ownershipClassification || "N/A"} fill=${row.fillStateReconciliation?.status || "N/A"} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} source=${row.effectiveGuardSource || "N/A"} geometry=${row.geometry.valid ? "valid" : "invalid"} guardRisk=${row.guardMetadataRisk?.status || "N/A"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
+  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} ownership=${row.ownershipClassification || "N/A"} fill=${row.fillStateReconciliation?.status || "N/A"} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} source=${row.effectiveGuardSource || "N/A"} geometry=${row.geometry.valid ? "valid" : "invalid"} guardRisk=${row.guardMetadataRisk?.status || "N/A"} pattern=${row.childRepairPattern || "N/A"} stopOnlyReview=${row.stopOnlyRepairReviewReady ? "yes" : "no"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
   ""
 ].join("\n");
 
