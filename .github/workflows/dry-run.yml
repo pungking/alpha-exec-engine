@@ -2047,6 +2047,21 @@ jobs:
             echo "" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
+      - name: Build stop-only OCO conversion plan
+        if: always()
+        run: npm run ops:stop-only-oco-conversion-plan
+
+      - name: Publish stop-only OCO conversion plan summary
+        if: always()
+        run: |
+          if [[ -f state/stop-only-oco-conversion-plan.md ]]; then
+            cat state/stop-only-oco-conversion-plan.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "## Stop-Only OCO Conversion Plan" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- status: \`missing state/stop-only-oco-conversion-plan.md\`" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
       - name: Build limited multi persistent OCO repair plan
         if: always()
         run: npm run ops:limited-multi-oco-plan
@@ -2318,6 +2333,8 @@ jobs:
             state/paper-oco-canary-submit-ledger.json
             state/persistent-oco-repair-plan.json
             state/persistent-oco-repair-plan.md
+            state/stop-only-oco-conversion-plan.json
+            state/stop-only-oco-conversion-plan.md
             state/limited-multi-oco-repair-plan.json
             state/limited-multi-oco-repair-plan.md
             state/position-ownership-guard-gap-audit.json

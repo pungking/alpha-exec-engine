@@ -94,6 +94,7 @@ jobs:
           npm run ops:guard-source-recovery
           npm run ops:guarded-repair-plan
           npm run ops:persistent-oco-plan
+          npm run ops:stop-only-oco-conversion-plan
           npm run ops:lane-status
           npm run ops:health
 
@@ -132,6 +133,7 @@ jobs:
             cat state/fill-state-reconciliation-audit.md || true
             cat state/position-lifecycle-guard-source-plan.md || true
             cat state/guard-source-recovery-plan.md || true
+            cat state/stop-only-oco-conversion-plan.md || true
             cat state/ops-lane-status-report.md || true
             cat state/ops-health-report.md || true
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -162,6 +164,8 @@ jobs:
             state/guarded-child-order-repair-plan.md
             state/persistent-oco-repair-plan.json
             state/persistent-oco-repair-plan.md
+            state/stop-only-oco-conversion-plan.json
+            state/stop-only-oco-conversion-plan.md
             state/ops-lane-status-report.json
             state/ops-lane-status-report.md
             state/ops-health-report.json
