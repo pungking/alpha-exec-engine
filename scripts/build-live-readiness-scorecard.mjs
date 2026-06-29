@@ -520,6 +520,22 @@ function buildReport() {
     },
   ];
 
+  const boundedVerification = {
+    mode: "symbol_agnostic_one_shot",
+    tickerSymbolsAreEvidenceOnly: true,
+    maxFreshSidecarChecksPerHash: 1,
+    followUpOnlyWhen: [
+      "fresh_hash_not_consumed_or_preview_stale",
+      "decision_audit_missing_or_empty_when_candidates_exist",
+      "payload_expectation_or_top_skip_categories_missing_or_opaque",
+      "broker_or_state_mutation_signal_detected",
+      "new_unclassified_lane_detected",
+      "approval_ready_lane_detected"
+    ],
+    noEventResult: "stop_after_one_safe_run_return_to_stage6_or_protection_audits",
+    repeatedNoExecutableAction: "stage6_producer_tuning_not_sidecar_polling"
+  };
+
   const overallScore = Math.round(domains.reduce((sum, item) => sum + item.score, 0) / domains.length);
   return {
     schemaVersion: "1.0.0",
@@ -553,6 +569,7 @@ function buildReport() {
     domains,
     mliLifecycle,
     observationStopRules,
+    boundedVerification,
   };
 }
 
@@ -566,6 +583,7 @@ function renderMarkdown(report) {
   lines.push(`- brokerMutation: \`attempted=${report.brokerMutationAttempted} submitted=${report.brokerMutationSubmitted}\``);
   lines.push(`- stateMutation: \`attempted=${report.stateMutationAttempted} submitted=${report.stateMutationSubmitted}\``);
   lines.push(`- stage6: \`${report.summary.stage6File || "N/A"}\` / \`${report.summary.stage6HashShort || "N/A"}\``);
+  lines.push(`- boundedVerification: \`${report.boundedVerification.mode}; maxFreshSidecarChecksPerHash=${report.boundedVerification.maxFreshSidecarChecksPerHash}; symbols=evidence_only\``);
   lines.push("");
   lines.push("### Domain Scores");
   lines.push("| Domain | Status | Score | Blockers | Warnings |");
