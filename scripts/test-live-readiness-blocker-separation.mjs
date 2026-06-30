@@ -64,10 +64,26 @@ assert.equal(report.brokerMutationAttempted, false);
 assert.equal(report.brokerMutationSubmitted, false);
 assert.equal(report.stateMutationAttempted, false);
 assert.equal(report.stateMutationSubmitted, false);
+assert.equal(report.safety.brokerMutationAllowed, false);
+assert.equal(report.safety.stateMutationAllowed, false);
+assert.equal(report.safety.multiSubmitAllowed, false);
+assert.equal(report.safety.multiSubmitAttempted, false);
+assert.equal(report.safety.multiSubmitSubmitted, false);
 assert.equal(report.boundedVerification.mode, "symbol_agnostic_one_shot");
 assert.equal(report.boundedVerification.tickerSymbolsAreEvidenceOnly, true);
 assert.equal(report.boundedVerification.maxFreshSidecarChecksPerHash, 1);
 assert.ok(report.boundedVerification.followUpOnlyWhen.includes("approval_ready_lane_detected"));
+const requiredGroups = [
+  "stage6_entry_tuning",
+  "protection_guard_metadata",
+  "ledger_fill_state",
+  "ownership",
+  "safety_mutation",
+  "scheduler_data",
+];
+for (const group of requiredGroups) {
+  assert.ok(report.blockerGroupSeparation[group], `missing blocker group ${group}`);
+}
 assert.equal(report.blockerGroupSeparation.protection_guard_metadata.status, "fail");
 assert.deepEqual(report.blockerGroupSeparation.stage6_entry_tuning.affectedSymbols, ["AAA"]);
 assert.deepEqual(report.blockerGroupSeparation.protection_guard_metadata.affectedSymbols, ["BBB"]);
