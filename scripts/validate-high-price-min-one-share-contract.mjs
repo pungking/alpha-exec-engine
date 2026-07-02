@@ -23,6 +23,9 @@ const allowedLanes = new Set([
 const requiredRowFields = [
   "oneShareNotional",
   "oneShareRiskDollars",
+  "capPolicyReview",
+  "capShortfalls",
+  "requiredCapsForOneShare",
   "requestedNotional",
   "minOneShareMaxNotional",
   "maxRiskDollarsPerTrade",
@@ -77,6 +80,8 @@ const assertRowContract = (row) => {
     "object",
     `${row.symbol}.accountPortfolioCapEvidence must be an object`
   );
+  assert.equal(typeof row.capShortfalls, "object", `${row.symbol}.capShortfalls must be an object`);
+  assert.equal(typeof row.requiredCapsForOneShare, "object", `${row.symbol}.requiredCapsForOneShare must be an object`);
   assert.equal(
     row.highPricePolicyChangeWouldAllow,
     row.highPriceMinOneShareApprovalLane === "AUTO_ELIGIBLE_REPORT_ONLY",

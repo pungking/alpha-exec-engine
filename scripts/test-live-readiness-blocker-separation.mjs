@@ -58,6 +58,7 @@ writeJson("high-price-min-one-share-canary-plan.json", {
     candidates: 1,
     eligible: 0,
     selectedSymbol: null,
+    capPolicyReviewRequired: 1,
     readyForBrokerSubmit: false,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
@@ -70,7 +71,11 @@ writeJson("high-price-min-one-share-canary-plan.json", {
     brokerMutationSubmitted: false,
     stateMutationAttempted: false,
   },
-  rows: [{ symbol: "META", blockedBy: ["notional_cap", "risk_cap", "daily_notional_cap"] }],
+  rows: [{
+    symbol: "META",
+    capPolicyReview: "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW",
+    blockedBy: ["notional_cap", "risk_cap", "daily_notional_cap"],
+  }],
 });
 
 execFileSync(process.execPath, ["scripts/build-live-readiness-scorecard.mjs"], {
@@ -113,6 +118,7 @@ assert.deepEqual(report.blockerGroupSeparation.ownership.affectedSymbols, ["EEE"
 assert.deepEqual(report.blockerGroupSeparation.high_price_min_one_share.affectedSymbols, ["META"]);
 const highPriceDomain = report.domains.find((item) => item.name === "high_price_min_one_share_policy");
 assert.equal(highPriceDomain.status, "waiting");
+assert.equal(highPriceDomain.evidence.capPolicyReviewRequired, 1);
 assert.deepEqual(highPriceDomain.evidence.blockedBy, ["daily_notional_cap", "notional_cap", "risk_cap"]);
 assert.equal(highPriceDomain.evidence.brokerMutationAttempted, false);
 assert.equal(highPriceDomain.evidence.brokerMutationSubmitted, false);

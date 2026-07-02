@@ -78,6 +78,9 @@ const assertHighPriceEvidenceFields = (row) => {
   for (const field of [
     "oneShareNotional",
     "oneShareRiskDollars",
+    "capPolicyReview",
+    "capShortfalls",
+    "requiredCapsForOneShare",
     "requestedNotional",
     "minOneShareMaxNotional",
     "maxRiskDollarsPerTrade",
@@ -102,6 +105,8 @@ const assertHighPriceEvidenceFields = (row) => {
     assert.ok(Object.hasOwn(row, field), `missing high-price evidence field: ${field}`);
   }
 };
+const assertNear = (actual, expected, label) =>
+  assert.ok(Math.abs(actual - expected) < 1e-9, `${label}: expected ${expected}, got ${actual}`);
 
 const highPriceRow = (overrides = {}) => ({
   symbol: "GOOG",
@@ -160,6 +165,12 @@ const runBlockedFixture = () => {
   assert.ok(row.blockedBy.includes("risk_cap"));
   assert.ok(row.blockedBy.includes("daily_notional_cap"));
   assert.equal(row.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, false);
+  assert.equal(row.capPolicyReview, "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW");
+  assertNear(row.capShortfalls.minOneShareMaxNotional, 46.76, "minOneShareMaxNotional shortfall");
+  assertNear(row.capShortfalls.dailyMaxTotalNotional, 146.76, "dailyMaxTotalNotional shortfall");
+  assertNear(row.capShortfalls.maxRiskDollarsPerTrade, 14.93, "maxRiskDollarsPerTrade shortfall");
+  assert.equal(row.requiredCapsForOneShare.minOneShareMaxNotional, 346.76);
+  assert.equal(report.summary.capPolicyReviewRequired, 1);
 };
 
 const runEligibleFixture = () => {
@@ -192,6 +203,11 @@ const runEligibleFixture = () => {
   assert.equal(row.highPriceAutoEligibleReason, "all_report_only_checks_passed");
   assert.deepEqual(row.blockedBy, []);
   assert.equal(row.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, true);
+  assert.equal(row.capPolicyReview, "CAP_POLICY_PASS_REPORT_ONLY");
+  assert.equal(row.capShortfalls.minOneShareMaxNotional, 0);
+  assert.equal(row.capShortfalls.dailyMaxTotalNotional, 0);
+  assert.equal(row.capShortfalls.maxRiskDollarsPerTrade, 0);
+  assert.equal(report.summary.capPolicyReviewRequired, 0);
 };
 
 runNoHighPriceFixture();

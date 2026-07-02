@@ -378,6 +378,10 @@ function buildReport() {
   const highPriceSubmitted = highPriceSummary.brokerMutationSubmitted === true || highPriceExecution.brokerMutationSubmitted === true;
   const highPriceStateAttempted = highPriceSummary.stateMutationAttempted === true || highPriceExecution.stateMutationAttempted === true;
   const highPriceBlockedBy = [...new Set(highPriceRows.flatMap((row) => Array.isArray(row?.blockedBy) ? row.blockedBy : []))].sort();
+  const highPriceCapPolicyReviewRequired = asNumber(
+    highPriceSummary.capPolicyReviewRequired,
+    highPriceRows.filter((row) => row?.capPolicyReview === "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW").length
+  );
   if (highPriceAttempted) highPriceBlockers.push("high_price_broker_mutation_attempted");
   if (highPriceSubmitted) highPriceBlockers.push("high_price_broker_mutation_submitted");
   if (highPriceStateAttempted) highPriceBlockers.push("high_price_state_mutation_attempted");
@@ -442,6 +446,7 @@ function buildReport() {
       candidates: highPriceCandidates,
       eligible: highPriceEligible,
       selectedSymbol: highPriceSummary.selectedSymbol || null,
+      capPolicyReviewRequired: highPriceCapPolicyReviewRequired,
       blockedBy: highPriceBlockedBy,
       readyForBrokerSubmit: highPriceReadyForBrokerSubmit,
       brokerMutationAttempted: highPriceAttempted,

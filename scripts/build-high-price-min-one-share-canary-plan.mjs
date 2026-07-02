@@ -42,6 +42,12 @@ const fmt = (value, digits = 2) => {
   const n = toNum(value);
   return n == null ? "N/A" : n.toFixed(digits);
 };
+const shortfall = (required, current) => {
+  if (required == null || current == null) return null;
+  return Number(Math.max(0, required - current).toFixed(4));
+};
+const assertNear = (actual, expected, label) =>
+  assert.ok(Math.abs(actual - expected) < 1e-9, `${label}: expected ${expected}, got ${actual}`);
 
 const boolish = (value) => value === true || String(value).toLowerCase() === "true";
 const pass = (value) => value === true;
@@ -85,6 +91,11 @@ const buildCandidate = (row, context = {}) => {
     oneShareNotional != null && dailyMaxNotionalCap != null && oneShareNotional <= dailyMaxNotionalCap;
   const notionalCapPass = minOneShareMaxNotionalPass || dailyMaxNotionalPass;
   const riskCapPass = oneShareRiskDollars != null && maxRisk != null && oneShareRiskDollars <= maxRisk;
+  const capShortfalls = {
+    minOneShareMaxNotional: shortfall(oneShareNotional, maxNotional),
+    dailyMaxTotalNotional: shortfall(oneShareNotional, dailyMaxNotionalCap),
+    maxRiskDollarsPerTrade: shortfall(oneShareRiskDollars, maxRisk)
+  };
   const rrAtCurrent = toNum(row?.rrAtCurrent);
   const rrAtAdjustedEntry = toNum(row?.rrAtAdjustedEntry);
   const rrPass = rrAtCurrent != null && minRr != null && rrAtCurrent >= minRr;
@@ -133,6 +144,12 @@ const buildCandidate = (row, context = {}) => {
     Object.values(autoEligibilityChecks).every(Boolean) &&
     !broker.activeOpen &&
     !broker.terminalSubmitted;
+  const capPolicyReview =
+    eligible
+      ? "CAP_POLICY_PASS_REPORT_ONLY"
+      : blockedBy.some((item) => ["notional_cap", "risk_cap", "daily_notional_cap"].includes(item))
+        ? "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW"
+        : "NOT_CAP_BLOCKED";
   return {
     symbol,
     status,
@@ -148,6 +165,13 @@ const buildCandidate = (row, context = {}) => {
     activeLimit: toNum(row?.activeLimit),
     oneShareNotional,
     oneShareRiskDollars,
+    capPolicyReview,
+    capShortfalls,
+    requiredCapsForOneShare: {
+      minOneShareMaxNotional: oneShareNotional,
+      dailyMaxTotalNotional: oneShareNotional,
+      maxRiskDollarsPerTrade: oneShareRiskDollars
+    },
     requestedNotional: toNum(row?.requestedNotional),
     minOneShareMaxNotional: maxNotional,
     maxRiskDollarsPerTrade: maxRisk,
@@ -220,11 +244,16 @@ const buildMarkdown = (report) => {
   lines.push("- safety: `report-only; no payload generation; no broker mutation`");
   lines.push("- default_policy: `ENTRY_HIGH_PRICE_POLICY=skip` remains unchanged; no automatic min_one_share promotion");
   lines.push("- recommended_safe_inputs: `run_verify_mode=safe_min_one_share_admission_probe run_entry_high_price_policy=min_one_share run_dry_max_orders_override=1 run_dry_max_total_notional_override=600 run_entry_min_one_share_max_notional=300 run_entry_max_risk_dollars_per_trade=25`");
-  lines.push("| Symbol | Approval Lane | Future Paper Auto | One Share Notional | One Share Risk | Max Notional | Max Risk | RR@Current | Blocked By | Reason |");
-  lines.push("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |");
+  lines.push("| Symbol | Approval Lane | Cap Review | Future Paper Auto | One Share Notional | One Share Risk | Max Notional | Max Risk | Cap Shortfall | RR@Current | Blocked By | Reason |");
+  lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |");
   for (const row of report.rows.slice(0, 60)) {
+    const capGap = [
+      `notional=${fmt(row.capShortfalls?.minOneShareMaxNotional)}`,
+      `daily=${fmt(row.capShortfalls?.dailyMaxTotalNotional)}`,
+      `risk=${fmt(row.capShortfalls?.maxRiskDollarsPerTrade)}`
+    ].join(" ");
     lines.push(
-      `| ${row.symbol} | ${row.approvalLane} | ${row.readyForFuturePaperAutoSubmit ? "yes" : "no"} | ${fmt(row.oneShareNotional)} | ${fmt(row.oneShareRiskDollars)} | ${fmt(row.minOneShareMaxNotional)} | ${fmt(row.maxRiskDollarsPerTrade)} | ${fmt(row.rrAtCurrent)} | ${row.blockedBy.join(",") || "none"} | ${short(row.reason, 90)} |`
+      `| ${row.symbol} | ${row.approvalLane} | ${row.capPolicyReview} | ${row.readyForFuturePaperAutoSubmit ? "yes" : "no"} | ${fmt(row.oneShareNotional)} | ${fmt(row.oneShareRiskDollars)} | ${fmt(row.minOneShareMaxNotional)} | ${fmt(row.maxRiskDollarsPerTrade)} | ${capGap} | ${fmt(row.rrAtCurrent)} | ${row.blockedBy.join(",") || "none"} | ${short(row.reason, 90)} |`
     );
   }
   lines.push("");
@@ -329,6 +358,7 @@ const main = () => {
     summary: {
       candidates: rows.length,
       eligible: eligibleRows.length,
+      capPolicyReviewRequired: rows.filter((row) => row.capPolicyReview === "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW").length,
       selectedSymbol: selected?.symbol || null,
       selectedOneShareNotional: selected?.oneShareNotional ?? null,
       selectedOneShareRiskDollars: selected?.oneShareRiskDollars ?? null,
@@ -384,6 +414,9 @@ const selfTest = () => {
   for (const field of [
     "oneShareNotional",
     "oneShareRiskDollars",
+    "capPolicyReview",
+    "capShortfalls",
+    "requiredCapsForOneShare",
     "requestedNotional",
     "minOneShareMaxNotional",
     "maxRiskDollarsPerTrade",
@@ -411,6 +444,9 @@ const selfTest = () => {
   assert.equal(blocked.accountPortfolioCapEvidence.dailyMaxNotionalPass, true);
   assert.equal(blocked.accountPortfolioCapEvidence.riskCapPass, false);
   assert.equal(blocked.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, false);
+  assert.equal(blocked.capPolicyReview, "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW");
+  assertNear(blocked.capShortfalls.minOneShareMaxNotional, 46.76, "minOneShareMaxNotional shortfall");
+  assertNear(blocked.capShortfalls.maxRiskDollarsPerTrade, 14.93, "maxRiskDollarsPerTrade shortfall");
 
   const eligible = buildCandidate(
     {
@@ -430,6 +466,9 @@ const selfTest = () => {
   assert.equal(eligible.highPriceMinOneShareBrokerSubmitReady, false);
   assert.equal(eligible.readyForFuturePaperAutoSubmit, true);
   assert.equal(eligible.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, true);
+  assert.equal(eligible.capPolicyReview, "CAP_POLICY_PASS_REPORT_ONLY");
+  assert.equal(eligible.capShortfalls.minOneShareMaxNotional, 0);
+  assert.equal(eligible.capShortfalls.maxRiskDollarsPerTrade, 0);
   assert.equal(isHighPriceCandidateRow({ status: "NO_ACTIVE_ORDER", reason: "stage6_wait_structure_confirmation_required" }), false);
   assert.equal(isHighPriceCandidateRow({ status: "BLOCKED_HIGH_PRICE_SIZE" }), true);
   console.log("[HIGH_PRICE_MIN_ONE_SHARE_CANARY] self-test pass");
