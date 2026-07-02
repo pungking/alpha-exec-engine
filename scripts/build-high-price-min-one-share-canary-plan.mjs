@@ -52,6 +52,24 @@ const assertNear = (actual, expected, label) =>
 const boolish = (value) => value === true || String(value).toLowerCase() === "true";
 const pass = (value) => value === true;
 
+const CAP_SCENARIOS = [
+  { name: "current", source: "current_row_and_preview_caps" },
+  {
+    name: "conservative",
+    source: "report_only_policy_probe",
+    minOneShareMaxNotional: 600,
+    dailyMaxTotalNotional: 600,
+    maxRiskDollarsPerTrade: 50
+  },
+  {
+    name: "aggressive",
+    source: "report_only_policy_probe",
+    minOneShareMaxNotional: 600,
+    dailyMaxTotalNotional: 600,
+    maxRiskDollarsPerTrade: 75
+  }
+];
+
 const detectTerminalOrActiveBrokerState = (row) => {
   const openStatus = String(row?.brokerOpenStatus || "").trim().toLowerCase();
   const closedStatus = String(row?.brokerClosedStatus || "").trim().toLowerCase();
@@ -72,6 +90,72 @@ const isHighPriceCandidateRow = (row) =>
   String(row?.status || "").trim() === "BLOCKED_HIGH_PRICE_SIZE" ||
   row?.highPricePolicyChangeWouldAllow === true ||
   String(row?.reason || "").includes("entry_notional_below_limit_price");
+
+const buildCapScenario = ({
+  scenario,
+  oneShareNotional,
+  oneShareRiskDollars,
+  currentCaps,
+  baseChecks,
+  broker,
+  status,
+  policySkippable
+}) => {
+  const minOneShareMaxNotional = toNum(scenario.minOneShareMaxNotional ?? currentCaps.minOneShareMaxNotional);
+  const dailyMaxTotalNotional = toNum(scenario.dailyMaxTotalNotional ?? currentCaps.dailyMaxTotalNotional);
+  const maxRiskDollarsPerTrade = toNum(scenario.maxRiskDollarsPerTrade ?? currentCaps.maxRiskDollarsPerTrade);
+  const minOneShareMaxNotionalPass =
+    oneShareNotional != null && minOneShareMaxNotional != null && oneShareNotional <= minOneShareMaxNotional;
+  const dailyMaxTotalNotionalPass =
+    oneShareNotional != null && dailyMaxTotalNotional != null && oneShareNotional <= dailyMaxTotalNotional;
+  const riskCapPass =
+    oneShareRiskDollars != null && maxRiskDollarsPerTrade != null && oneShareRiskDollars <= maxRiskDollarsPerTrade;
+  const capEligible = minOneShareMaxNotionalPass && dailyMaxTotalNotionalPass && riskCapPass;
+  const blockedBy = [];
+  if (status !== "BLOCKED_HIGH_PRICE_SIZE") blockedBy.push(`status_${status || "missing"}`);
+  if (!policySkippable) blockedBy.push("policy_change_not_allowed");
+  if (!minOneShareMaxNotionalPass) blockedBy.push("notional_cap");
+  if (!dailyMaxTotalNotionalPass) blockedBy.push("daily_notional_cap");
+  if (!riskCapPass) blockedBy.push("risk_cap");
+  if (!baseChecks.quoteValid) blockedBy.push("quote");
+  if (!baseChecks.rrPass) blockedBy.push("rr");
+  if (!baseChecks.portfolioCapacityPass) blockedBy.push("portfolio_cap");
+  if (!baseChecks.idempotencyPass) blockedBy.push("idempotency");
+  if (!baseChecks.guardAllowsEntry) blockedBy.push("guard_blocked");
+  if (broker.activeOpen) blockedBy.push(`active_open_order_${broker.openStatus}`);
+  if (broker.terminalSubmitted) blockedBy.push(`terminal_or_filled_${broker.closedStatus || broker.openStatus || "filled"}`);
+  return {
+    name: scenario.name,
+    source: scenario.source,
+    minOneShareMaxNotional,
+    dailyMaxTotalNotional,
+    maxRiskDollarsPerTrade,
+    oneShareNotional,
+    oneShareRiskDollars,
+    requiredCapsForOneShare: {
+      minOneShareMaxNotional: oneShareNotional,
+      dailyMaxTotalNotional: oneShareNotional,
+      maxRiskDollarsPerTrade: oneShareRiskDollars
+    },
+    shortfalls: {
+      minOneShareMaxNotional: shortfall(oneShareNotional, minOneShareMaxNotional),
+      dailyMaxTotalNotional: shortfall(oneShareNotional, dailyMaxTotalNotional),
+      maxRiskDollarsPerTrade: shortfall(oneShareRiskDollars, maxRiskDollarsPerTrade)
+    },
+    minOneShareMaxNotionalPass,
+    dailyMaxTotalNotionalPass,
+    riskCapPass,
+    capEligible,
+    reportOnlyEligible:
+      capEligible &&
+      status === "BLOCKED_HIGH_PRICE_SIZE" &&
+      policySkippable &&
+      Object.values(baseChecks).every(Boolean) &&
+      !broker.activeOpen &&
+      !broker.terminalSubmitted,
+    blockedBy
+  };
+};
 
 const buildCandidate = (row, context = {}) => {
   const broker = detectTerminalOrActiveBrokerState(row);
@@ -115,6 +199,7 @@ const buildCandidate = (row, context = {}) => {
   const guardAllowsEntry = context.preview?.guardControl?.blocked !== true && context.preview?.guardControl?.stale !== true;
   const status = String(row?.status || "").trim();
   const policySkippable = String(row?.highPricePolicy || "").trim() === "skip";
+  const baseChecks = { quoteValid, rrPass, portfolioCapacityPass, idempotencyPass, guardAllowsEntry };
   const autoEligibilityChecks = {
     quoteValid,
     rrAtCurrentPass: rrPass,
@@ -125,6 +210,22 @@ const buildCandidate = (row, context = {}) => {
     idempotencyPass,
     guardAllowsEntry
   };
+  const capScenarios = CAP_SCENARIOS.map((scenario) =>
+    buildCapScenario({
+      scenario,
+      oneShareNotional,
+      oneShareRiskDollars,
+      currentCaps: {
+        minOneShareMaxNotional: maxNotional,
+        dailyMaxTotalNotional: dailyMaxNotionalCap,
+        maxRiskDollarsPerTrade: maxRisk
+      },
+      baseChecks,
+      broker,
+      status,
+      policySkippable
+    })
+  );
   const blockedBy = [];
   if (status !== "BLOCKED_HIGH_PRICE_SIZE") blockedBy.push(`status_${status || "missing"}`);
   if (!policySkippable) blockedBy.push("policy_change_not_allowed");
@@ -166,6 +267,7 @@ const buildCandidate = (row, context = {}) => {
     oneShareNotional,
     oneShareRiskDollars,
     capPolicyReview,
+    capScenarios,
     capShortfalls,
     requiredCapsForOneShare: {
       minOneShareMaxNotional: oneShareNotional,
@@ -229,6 +331,20 @@ const rankCandidates = (a, b) => {
   return a.symbol.localeCompare(b.symbol);
 };
 
+const buildCapScenarioCounts = (rows) =>
+  Object.fromEntries(
+    CAP_SCENARIOS.map((scenario) => {
+      const scenarioRows = rows.map((row) => row.capScenarios?.find((item) => item.name === scenario.name)).filter(Boolean);
+      return [
+        scenario.name,
+        {
+          capEligible: scenarioRows.filter((item) => item.capEligible).length,
+          reportOnlyEligible: scenarioRows.filter((item) => item.reportOnlyEligible).length
+        }
+      ];
+    })
+  );
+
 const buildMarkdown = (report) => {
   const lines = [];
   lines.push("## High-Price Min-One-Share Canary Plan");
@@ -244,6 +360,11 @@ const buildMarkdown = (report) => {
   lines.push("- safety: `report-only; no payload generation; no broker mutation`");
   lines.push("- default_policy: `ENTRY_HIGH_PRICE_POLICY=skip` remains unchanged; no automatic min_one_share promotion");
   lines.push("- recommended_safe_inputs: `run_verify_mode=safe_min_one_share_admission_probe run_entry_high_price_policy=min_one_share run_dry_max_orders_override=1 run_dry_max_total_notional_override=600 run_entry_min_one_share_max_notional=300 run_entry_max_risk_dollars_per_trade=25`");
+  lines.push(
+    `- capScenarioCounts: \`${Object.entries(report.summary.capScenarioCounts || {})
+      .map(([name, counts]) => `${name}=cap:${counts.capEligible}/report:${counts.reportOnlyEligible}`)
+      .join(" ")}\``
+  );
   lines.push("| Symbol | Approval Lane | Cap Review | Future Paper Auto | One Share Notional | One Share Risk | Max Notional | Max Risk | Cap Shortfall | RR@Current | Blocked By | Reason |");
   lines.push("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- | --- |");
   for (const row of report.rows.slice(0, 60)) {
@@ -255,6 +376,17 @@ const buildMarkdown = (report) => {
     lines.push(
       `| ${row.symbol} | ${row.approvalLane} | ${row.capPolicyReview} | ${row.readyForFuturePaperAutoSubmit ? "yes" : "no"} | ${fmt(row.oneShareNotional)} | ${fmt(row.oneShareRiskDollars)} | ${fmt(row.minOneShareMaxNotional)} | ${fmt(row.maxRiskDollarsPerTrade)} | ${capGap} | ${fmt(row.rrAtCurrent)} | ${row.blockedBy.join(",") || "none"} | ${short(row.reason, 90)} |`
     );
+  }
+  lines.push("");
+  lines.push("| Symbol | Current | Conservative | Aggressive |");
+  lines.push("| --- | --- | --- | --- |");
+  for (const row of report.rows.slice(0, 60)) {
+    const cell = (name) => {
+      const scenario = row.capScenarios?.find((item) => item.name === name);
+      if (!scenario) return "N/A";
+      return `cap=${scenario.capEligible ? "yes" : "no"} report=${scenario.reportOnlyEligible ? "yes" : "no"} blocked=${scenario.blockedBy.join(",") || "none"}`;
+    };
+    lines.push(`| ${row.symbol} | ${cell("current")} | ${cell("conservative")} | ${cell("aggressive")} |`);
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
@@ -274,6 +406,7 @@ const main = () => {
   const rows = fillabilityRows.filter(isHighPriceCandidateRow).map((row) => buildCandidate(row, context));
   const eligibleRows = rows.filter((row) => row.eligible).sort(rankCandidates);
   const selected = eligibleRows[0] || null;
+  const capScenarioCounts = buildCapScenarioCounts(rows);
   const overall = selected
     ? "auto_eligible_report_only"
     : rows.length
@@ -358,6 +491,7 @@ const main = () => {
     summary: {
       candidates: rows.length,
       eligible: eligibleRows.length,
+      capScenarioCounts,
       capPolicyReviewRequired: rows.filter((row) => row.capPolicyReview === "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW").length,
       selectedSymbol: selected?.symbol || null,
       selectedOneShareNotional: selected?.oneShareNotional ?? null,
@@ -436,6 +570,7 @@ const selfTest = () => {
     "highPriceMinOneShareBrokerSubmitReady",
     "highPriceAutoEligibleReason",
     "blockedBy",
+    "capScenarios",
     "accountPortfolioCapEvidence"
   ]) {
     assert.ok(Object.hasOwn(blocked, field), `missing high-price evidence field: ${field}`);
@@ -445,6 +580,9 @@ const selfTest = () => {
   assert.equal(blocked.accountPortfolioCapEvidence.riskCapPass, false);
   assert.equal(blocked.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, false);
   assert.equal(blocked.capPolicyReview, "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW");
+  assert.equal(blocked.capScenarios.find((item) => item.name === "current").capEligible, false);
+  assert.equal(blocked.capScenarios.find((item) => item.name === "conservative").capEligible, true);
+  assert.equal(blocked.capScenarios.find((item) => item.name === "aggressive").capEligible, true);
   assertNear(blocked.capShortfalls.minOneShareMaxNotional, 46.76, "minOneShareMaxNotional shortfall");
   assertNear(blocked.capShortfalls.maxRiskDollarsPerTrade, 14.93, "maxRiskDollarsPerTrade shortfall");
 
@@ -467,6 +605,7 @@ const selfTest = () => {
   assert.equal(eligible.readyForFuturePaperAutoSubmit, true);
   assert.equal(eligible.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, true);
   assert.equal(eligible.capPolicyReview, "CAP_POLICY_PASS_REPORT_ONLY");
+  assert.equal(eligible.capScenarios.find((item) => item.name === "current").reportOnlyEligible, true);
   assert.equal(eligible.capShortfalls.minOneShareMaxNotional, 0);
   assert.equal(eligible.capShortfalls.maxRiskDollarsPerTrade, 0);
   assert.equal(isHighPriceCandidateRow({ status: "NO_ACTIVE_ORDER", reason: "stage6_wait_structure_confirmation_required" }), false);

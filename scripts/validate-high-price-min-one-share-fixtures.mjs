@@ -79,6 +79,7 @@ const assertHighPriceEvidenceFields = (row) => {
     "oneShareNotional",
     "oneShareRiskDollars",
     "capPolicyReview",
+    "capScenarios",
     "capShortfalls",
     "requiredCapsForOneShare",
     "requestedNotional",
@@ -166,11 +167,21 @@ const runBlockedFixture = () => {
   assert.ok(row.blockedBy.includes("daily_notional_cap"));
   assert.equal(row.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, false);
   assert.equal(row.capPolicyReview, "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW");
+  assert.equal(row.capScenarios.find((item) => item.name === "current").capEligible, false);
+  assert.equal(row.capScenarios.find((item) => item.name === "conservative").capEligible, true);
+  assert.equal(row.capScenarios.find((item) => item.name === "conservative").reportOnlyEligible, true);
+  assert.equal(row.capScenarios.find((item) => item.name === "aggressive").capEligible, true);
+  assert.equal(row.capScenarios.find((item) => item.name === "aggressive").reportOnlyEligible, true);
   assertNear(row.capShortfalls.minOneShareMaxNotional, 46.76, "minOneShareMaxNotional shortfall");
   assertNear(row.capShortfalls.dailyMaxTotalNotional, 146.76, "dailyMaxTotalNotional shortfall");
   assertNear(row.capShortfalls.maxRiskDollarsPerTrade, 14.93, "maxRiskDollarsPerTrade shortfall");
   assert.equal(row.requiredCapsForOneShare.minOneShareMaxNotional, 346.76);
   assert.equal(report.summary.capPolicyReviewRequired, 1);
+  assert.deepEqual(report.summary.capScenarioCounts, {
+    current: { capEligible: 0, reportOnlyEligible: 0 },
+    conservative: { capEligible: 1, reportOnlyEligible: 1 },
+    aggressive: { capEligible: 1, reportOnlyEligible: 1 }
+  });
 };
 
 const runEligibleFixture = () => {
@@ -204,10 +215,16 @@ const runEligibleFixture = () => {
   assert.deepEqual(row.blockedBy, []);
   assert.equal(row.accountPortfolioCapEvidence.wouldAllowUnderAccountPortfolioCaps, true);
   assert.equal(row.capPolicyReview, "CAP_POLICY_PASS_REPORT_ONLY");
+  assert.equal(row.capScenarios.find((item) => item.name === "current").reportOnlyEligible, true);
   assert.equal(row.capShortfalls.minOneShareMaxNotional, 0);
   assert.equal(row.capShortfalls.dailyMaxTotalNotional, 0);
   assert.equal(row.capShortfalls.maxRiskDollarsPerTrade, 0);
   assert.equal(report.summary.capPolicyReviewRequired, 0);
+  assert.deepEqual(report.summary.capScenarioCounts, {
+    current: { capEligible: 1, reportOnlyEligible: 1 },
+    conservative: { capEligible: 1, reportOnlyEligible: 1 },
+    aggressive: { capEligible: 1, reportOnlyEligible: 1 }
+  });
 };
 
 runNoHighPriceFixture();

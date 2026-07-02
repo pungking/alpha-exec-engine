@@ -24,6 +24,7 @@ const requiredRowFields = [
   "oneShareNotional",
   "oneShareRiskDollars",
   "capPolicyReview",
+  "capScenarios",
   "capShortfalls",
   "requiredCapsForOneShare",
   "requestedNotional",
@@ -80,6 +81,28 @@ const assertRowContract = (row) => {
     "object",
     `${row.symbol}.accountPortfolioCapEvidence must be an object`
   );
+  assert.ok(Array.isArray(row.capScenarios), `${row.symbol}.capScenarios must be an array`);
+  for (const scenario of row.capScenarios) {
+    for (const field of [
+      "name",
+      "minOneShareMaxNotional",
+      "dailyMaxTotalNotional",
+      "maxRiskDollarsPerTrade",
+      "oneShareNotional",
+      "oneShareRiskDollars",
+      "requiredCapsForOneShare",
+      "shortfalls",
+      "minOneShareMaxNotionalPass",
+      "dailyMaxTotalNotionalPass",
+      "riskCapPass",
+      "capEligible",
+      "reportOnlyEligible",
+      "blockedBy"
+    ]) {
+      assert.ok(Object.hasOwn(scenario, field), `${row.symbol}.capScenarios.${scenario.name || "UNKNOWN"} missing ${field}`);
+    }
+    assert.ok(Array.isArray(scenario.blockedBy), `${row.symbol}.capScenarios.${scenario.name}.blockedBy must be an array`);
+  }
   assert.equal(typeof row.capShortfalls, "object", `${row.symbol}.capShortfalls must be an object`);
   assert.equal(typeof row.requiredCapsForOneShare, "object", `${row.symbol}.requiredCapsForOneShare must be an object`);
   assert.equal(

@@ -369,6 +369,7 @@ function buildReport() {
   const highPriceWarnings = [];
   const highPriceRows = rowsArray(reports.highPriceMinOneShare);
   const highPriceSummary = reports.highPriceMinOneShare?.summary || {};
+  const highPriceCapScenarioCounts = highPriceSummary.capScenarioCounts || {};
   const highPriceApproval = reports.highPriceMinOneShare?.approvalGate || {};
   const highPriceExecution = reports.highPriceMinOneShare?.executionPolicy || {};
   const highPriceCandidates = asNumber(highPriceSummary.candidates, 0);
@@ -447,6 +448,7 @@ function buildReport() {
       eligible: highPriceEligible,
       selectedSymbol: highPriceSummary.selectedSymbol || null,
       capPolicyReviewRequired: highPriceCapPolicyReviewRequired,
+      capScenarioCounts: highPriceCapScenarioCounts,
       blockedBy: highPriceBlockedBy,
       readyForBrokerSubmit: highPriceReadyForBrokerSubmit,
       brokerMutationAttempted: highPriceAttempted,

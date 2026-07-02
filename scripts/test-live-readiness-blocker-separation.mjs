@@ -59,6 +59,11 @@ writeJson("high-price-min-one-share-canary-plan.json", {
     eligible: 0,
     selectedSymbol: null,
     capPolicyReviewRequired: 1,
+    capScenarioCounts: {
+      current: { capEligible: 0, reportOnlyEligible: 0 },
+      conservative: { capEligible: 0, reportOnlyEligible: 0 },
+      aggressive: { capEligible: 1, reportOnlyEligible: 1 },
+    },
     readyForBrokerSubmit: false,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
@@ -74,6 +79,12 @@ writeJson("high-price-min-one-share-canary-plan.json", {
   rows: [{
     symbol: "META",
     capPolicyReview: "CAP_INCREASE_REQUIRED_BEFORE_MANUAL_SUBMIT_REVIEW",
+    capScenarios: [{
+      name: "aggressive",
+      capEligible: true,
+      reportOnlyEligible: true,
+      blockedBy: [],
+    }],
     blockedBy: ["notional_cap", "risk_cap", "daily_notional_cap"],
   }],
 });
@@ -119,6 +130,7 @@ assert.deepEqual(report.blockerGroupSeparation.high_price_min_one_share.affected
 const highPriceDomain = report.domains.find((item) => item.name === "high_price_min_one_share_policy");
 assert.equal(highPriceDomain.status, "waiting");
 assert.equal(highPriceDomain.evidence.capPolicyReviewRequired, 1);
+assert.deepEqual(highPriceDomain.evidence.capScenarioCounts.aggressive, { capEligible: 1, reportOnlyEligible: 1 });
 assert.deepEqual(highPriceDomain.evidence.blockedBy, ["daily_notional_cap", "notional_cap", "risk_cap"]);
 assert.equal(highPriceDomain.evidence.brokerMutationAttempted, false);
 assert.equal(highPriceDomain.evidence.brokerMutationSubmitted, false);
