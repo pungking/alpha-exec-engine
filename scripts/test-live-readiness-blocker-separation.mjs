@@ -52,6 +52,26 @@ writeJson("position-ownership-state-migration-review-plan.json", {
   summary: { stateMutationAttempted: false, stateMutationApplied: false },
   rows: [{ symbol: "EEE" }],
 });
+writeJson("high-price-min-one-share-canary-plan.json", {
+  overall: "blocked",
+  summary: {
+    candidates: 1,
+    eligible: 0,
+    selectedSymbol: null,
+    readyForBrokerSubmit: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+  },
+  approvalGate: { readyForBrokerSubmit: false },
+  executionPolicy: {
+    brokerMutationAllowed: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+  },
+  rows: [{ symbol: "META", blockedBy: ["notional_cap", "risk_cap", "daily_notional_cap"] }],
+});
 
 execFileSync(process.execPath, ["scripts/build-live-readiness-scorecard.mjs"], {
   env: { ...process.env, LIVE_READINESS_STATE_DIR: stateDir },
@@ -90,5 +110,11 @@ assert.deepEqual(report.blockerGroupSeparation.protection_guard_metadata.affecte
 assert.deepEqual(report.blockerGroupSeparation.guard_metadata_lineage.affectedSymbols, ["CCC"]);
 assert.deepEqual(report.blockerGroupSeparation.ledger_fill_state.affectedSymbols, ["DDD"]);
 assert.deepEqual(report.blockerGroupSeparation.ownership.affectedSymbols, ["EEE"]);
+assert.deepEqual(report.blockerGroupSeparation.high_price_min_one_share.affectedSymbols, ["META"]);
+const highPriceDomain = report.domains.find((item) => item.name === "high_price_min_one_share_policy");
+assert.equal(highPriceDomain.status, "waiting");
+assert.deepEqual(highPriceDomain.evidence.blockedBy, ["daily_notional_cap", "notional_cap", "risk_cap"]);
+assert.equal(highPriceDomain.evidence.brokerMutationAttempted, false);
+assert.equal(highPriceDomain.evidence.brokerMutationSubmitted, false);
 
 console.log("[LIVE_READINESS_BLOCKER_SEPARATION_TEST] pass");

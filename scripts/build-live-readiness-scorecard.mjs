@@ -247,6 +247,7 @@ function buildReport() {
     positionOwnershipRecoveryDecision: readJson("position-ownership-recovery-decision.json", {}),
     positionOwnershipStateMigrationReview: readJson("position-ownership-state-migration-review-plan.json", {}),
     multiOcoSubmitGate: readJson("multi-oco-submit-safety-gate.json", {}),
+    highPriceMinOneShare: readJson("high-price-min-one-share-canary-plan.json", {}),
   };
 
   const generatedAt = new Date().toISOString();
@@ -328,6 +329,17 @@ function buildReport() {
     : typeof previewMode === "string"
       ? previewMode.includes("READ_ONLY=true") && previewMode.includes("EXEC_ENABLED=false")
       : true;
+  const runtimeModeEvidence = previewMode && typeof previewMode === "object"
+    ? {
+        readOnly: previewMode.readOnly,
+        execEnabled: previewMode.execEnabled,
+        liveMode: previewMode.liveMode,
+        simulationLiveParity: previewMode.simulationLiveParity,
+        brokerSubmissionEnabled: reports.preview?.brokerSubmission?.enabled ?? null,
+        brokerSubmissionActive: reports.preview?.brokerSubmission?.active ?? null,
+        brokerSubmissionReason: reports.preview?.brokerSubmission?.reason ?? null,
+      }
+    : { raw: previewMode ?? null };
   if (!previewExplicitSafe) mutationWarnings.push("preview_mode_not_explicit_read_only");
   const mutationStatus = statusFrom({ blockers: mutationBlockers, warnings: mutationWarnings });
 
@@ -352,6 +364,27 @@ function buildReport() {
   if (reports.openOrderReprice?.summary?.brokerMutationAttempted || reports.openOrderReprice?.summary?.brokerMutationSubmitted) repriceBlockers.push("open_order_reprice_mutation_signal_detected");
   if (mliLifecycle.repriceDecision && mliLifecycle.repriceDecision !== "READY_FOR_APPROVAL") repriceWarnings.push(`mli_reprice_wait:${mliLifecycle.repriceDecision}`);
   const repriceStatus = statusFrom({ blockers: repriceBlockers, warnings: repriceWarnings });
+
+  const highPriceBlockers = [];
+  const highPriceWarnings = [];
+  const highPriceRows = rowsArray(reports.highPriceMinOneShare);
+  const highPriceSummary = reports.highPriceMinOneShare?.summary || {};
+  const highPriceApproval = reports.highPriceMinOneShare?.approvalGate || {};
+  const highPriceExecution = reports.highPriceMinOneShare?.executionPolicy || {};
+  const highPriceCandidates = asNumber(highPriceSummary.candidates, 0);
+  const highPriceEligible = asNumber(highPriceSummary.eligible, 0);
+  const highPriceReadyForBrokerSubmit = highPriceSummary.readyForBrokerSubmit === true || highPriceApproval.readyForBrokerSubmit === true;
+  const highPriceAttempted = highPriceSummary.brokerMutationAttempted === true || highPriceExecution.brokerMutationAttempted === true;
+  const highPriceSubmitted = highPriceSummary.brokerMutationSubmitted === true || highPriceExecution.brokerMutationSubmitted === true;
+  const highPriceStateAttempted = highPriceSummary.stateMutationAttempted === true || highPriceExecution.stateMutationAttempted === true;
+  const highPriceBlockedBy = [...new Set(highPriceRows.flatMap((row) => Array.isArray(row?.blockedBy) ? row.blockedBy : []))].sort();
+  if (highPriceAttempted) highPriceBlockers.push("high_price_broker_mutation_attempted");
+  if (highPriceSubmitted) highPriceBlockers.push("high_price_broker_mutation_submitted");
+  if (highPriceStateAttempted) highPriceBlockers.push("high_price_state_mutation_attempted");
+  if (highPriceReadyForBrokerSubmit) highPriceBlockers.push("high_price_broker_ready_from_report_only_lane");
+  if (highPriceEligible > 0) highPriceWarnings.push(`high_price_manual_approval_candidate:${highPriceEligible}`);
+  if (highPriceCandidates > 0 && highPriceEligible === 0) highPriceWarnings.push(`high_price_blocked_by_caps:${highPriceBlockedBy.join("|") || "unknown"}`);
+  const highPriceStatus = statusFrom({ blockers: highPriceBlockers, warnings: highPriceWarnings });
 
   const domains = [
     domain("scheduler_fresh_hash", schedulerStatus, scoreFrom(schedulerStatus), schedulerBlockers, schedulerWarnings, stage6),
@@ -388,6 +421,7 @@ function buildReport() {
       currentBrokerMutationSubmitted,
       currentStateMutationAttempted,
       currentStateMutationSubmitted,
+      runtimeMode: runtimeModeEvidence,
       mutationSignals,
       stateMutationSignals,
     }),
@@ -402,6 +436,17 @@ function buildReport() {
       mliRepriceDecision: mliLifecycle.repriceDecision,
       brokerMutationAttempted: reports.openOrderReprice?.summary?.brokerMutationAttempted ?? false,
       brokerMutationSubmitted: reports.openOrderReprice?.summary?.brokerMutationSubmitted ?? false,
+    }),
+    domain("high_price_min_one_share_policy", highPriceStatus, scoreFrom(highPriceStatus, highPriceStatus === "waiting" ? 60 : null), highPriceBlockers, highPriceWarnings, {
+      overall: reports.highPriceMinOneShare?.overall || null,
+      candidates: highPriceCandidates,
+      eligible: highPriceEligible,
+      selectedSymbol: highPriceSummary.selectedSymbol || null,
+      blockedBy: highPriceBlockedBy,
+      readyForBrokerSubmit: highPriceReadyForBrokerSubmit,
+      brokerMutationAttempted: highPriceAttempted,
+      brokerMutationSubmitted: highPriceSubmitted,
+      stateMutationAttempted: highPriceStateAttempted,
     }),
   ];
 
@@ -423,6 +468,7 @@ function buildReport() {
     ],
     schedulerFreshHash: domains.find((item) => item.name === "scheduler_fresh_hash")?.blockers || [],
     brokerMutationSafety: domains.find((item) => item.name === "broker_mutation_safety")?.blockers || [],
+    highPriceSizing: domains.find((item) => item.name === "high_price_min_one_share_policy")?.blockers || [],
   };
 
   const stage6EntryRows = rowsArray(reports.lastOrderDecisionAudit).filter((row) => String(row?.status || "").toLowerCase() !== "payload");
@@ -452,6 +498,13 @@ function buildReport() {
       rows: stage6EntryRows,
       nextAction: "keep in Stage6/entry policy tuning; do not treat as ops-health protection failure",
       safetyGate: "analysis_only_no_broker_mutation",
+    }),
+    high_price_min_one_share: blockerGroup("high_price_min_one_share", reports, {
+      status: highPriceStatus,
+      count: highPriceRows.length,
+      rows: highPriceRows,
+      nextAction: "keep report-only; broker submit requires scoped CONFIRM LIVE EXECUTION and passing notional/risk/daily caps",
+      safetyGate: "CONFIRM LIVE EXECUTION required for any paper broker submit",
     }),
     protection_guard_metadata: blockerGroup("protection_guard_metadata", reports, {
       status: reports.opsHealth?.blockerGroups?.protection_guard_metadata?.status || protectionStatus,
