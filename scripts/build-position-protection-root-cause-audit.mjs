@@ -1,5 +1,10 @@
 import fs from "node:fs";
-import { classifyProtectionOwnership, resolveEffectiveGuardMetadata } from "./lib/position-protection-classification.mjs";
+import {
+  PROTECTION_LANES,
+  classifyProtectionLane,
+  classifyProtectionOwnership,
+  resolveEffectiveGuardMetadata
+} from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.POSITION_PROTECTION_AUDIT_STATE_DIR || "state").trim() || "state";
 const PERFORMANCE_PATH = `${STATE_DIR}/performance-dashboard.json`;
@@ -225,6 +230,40 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
   }
 
   const effectiveGuardMetadataStale = guardMetadataStale && !brokerChildrenComplete;
+  const guardSourceFreshness = brokerChildrenComplete
+    ? "fresh"
+    : missingGuardMetadata
+      ? "missing"
+      : effectiveGuardMetadataStale
+        ? "stale"
+        : "fresh";
+  const protectionClassification = classifyProtectionLane({
+    qty,
+    brokerStopPresent,
+    brokerTargetPresent,
+    ownershipClassification: ownership.ownershipClass,
+    fillStateRepairBlocked,
+    guardMetadataMissing: missingGuardMetadata,
+    guardMetadataStale: effectiveGuardMetadataStale,
+    geometryValid: !invalidGeometry,
+    brokerChildMissing
+  });
+  const sourcePrecedenceClass = guardSourceFreshness !== "fresh"
+    ? "stale_or_missing_metadata"
+    : effectiveGuard.source === "broker_children"
+      ? "broker_nested_evidence"
+      : effectiveGuard.source === "position_lifecycle_revalidated_guard"
+        ? "fresh_position_lifecycle"
+        : ["recommendation_ledger", "stage6_20trade_loop", "order_ledger"].includes(effectiveGuard.source)
+          ? "fresh_order_or_recommendation_lineage"
+          : "fresh_state_metadata";
+  const sourcePrecedenceRank = {
+    broker_nested_evidence: 1,
+    fresh_position_lifecycle: 2,
+    fresh_order_or_recommendation_lineage: 3,
+    fresh_state_metadata: 3,
+    stale_or_missing_metadata: 4
+  }[sourcePrecedenceClass];
   const severity = invalidGeometry || stopChildMissing
     ? "critical"
     : missingGuardMetadata || effectiveGuardMetadataStale || targetChildMissing || nearStopBreach || nearTargetBreach || fillStateRepairBlocked
@@ -258,6 +297,8 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     effectiveGuardSource: effectiveGuard.source,
     effectiveGuardGeneratedAt: effectiveGuard.generatedAt,
     sourcePrecedence: effectiveGuard.sourcePrecedence,
+    sourcePrecedenceClass,
+    sourcePrecedenceRank,
     lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
     lifecycleOriginalGuardSource: effectiveGuard.originalSourceType || null,
     lifecycleOriginalGeneratedAt: effectiveGuard.originalGeneratedAt || null,
@@ -277,6 +318,8 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     missingGuardMetadata,
     guardMetadataStale: effectiveGuardMetadataStale,
     rawGuardMetadataStale: guardMetadataStale,
+    guardSourceFreshness,
+    guardSourceFresh: guardSourceFreshness === "fresh",
     geometry: {
       valid: !invalidGeometry,
       stopAboveOrAtCurrent,
@@ -291,6 +334,7 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     normalizedFillState,
     ledgerStatus,
     idempotencyBrokerStatus,
+    idempotencyStatus: idempotencyBrokerStatus || (idempotencyRow ? "record_present_status_unknown" : "not_recorded"),
     fillabilityStatus,
     orderStateStatus: orderStateRow?.status || null,
     ownershipClassification: ownership.ownershipClass,
@@ -300,6 +344,11 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     severity,
     rootCauses: [...new Set(rootCauses)],
     repairLaneDecision,
+    protectionLane: protectionClassification.protectionLane,
+    blockerDomain: protectionClassification.blockerDomain,
+    repairEligible: protectionClassification.repairEligible,
+    blockedReason: protectionClassification.blockedReason,
+    nextAction: protectionClassification.nextAction,
     nextActions: [...new Set(nextActions)],
     evidence: short(
       `source=${plannedStopSource || plannedTargetSource || "none"} ledgerUpdatedAt=${plannedLedgerUpdatedAt || "N/A"} stage6=${position?.plannedStage6File || ledgerRow?.stage6File || "N/A"} brokerStop=${brokerStopPresent} brokerTarget=${brokerTargetPresent}`,
@@ -309,6 +358,9 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
 };
 
 const countBy = (rows, predicate) => rows.filter(predicate).length;
+const countProtectionLanes = (rows) => Object.fromEntries(
+  Object.values(PROTECTION_LANES).map((lane) => [lane, countBy(rows, (row) => row.protectionLane === lane)])
+);
 const countCauses = (rows) => {
   const out = {};
   for (const row of rows) {
@@ -326,15 +378,16 @@ const buildMarkdown = (report) => {
   lines.push(`- overall: \`${String(report.overall).toUpperCase()}\``);
   lines.push(`- scope: \`${report.scope}\``);
   lines.push(
-    `- summary: \`positions=${report.summary.positions} critical=${report.summary.critical} warnings=${report.summary.warnings} guardMissing=${report.summary.guardMetadataMissing} guardStale=${report.summary.guardMetadataStale} invalidGeometry=${report.summary.invalidGeometry} brokerChildMissing=${report.summary.brokerChildMissing} fillRecon=${report.summary.fillStateReconciliationRequired} ownershipReview=${report.summary.positionOwnershipReviewRequired} brokerChildrenNoAction=${report.summary.brokerChildrenPresentNoAction} stopDrift=${report.summary.stopCurrentDrift}\``
+    `- summary: \`positions=${report.summary.positions} classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protectionBlockers=${report.summary.protectionBlockerRows} ownershipBlockers=${report.summary.ownershipBlockerRows} ledgerBlockers=${report.summary.ledgerBlockerRows} manualApproval=${report.summary.manualApprovalCandidates}\``
   );
+  lines.push(`- lanes: \`${Object.entries(report.summary.protectionLaneCounts).map(([key, value]) => `${key}:${value}`).join(", ")}\``);
   lines.push(`- root_causes: \`${Object.entries(report.rootCauseCounts).map(([key, value]) => `${key}:${value}`).join(", ") || "none"}\``);
   lines.push("- safety: `report-only; no broker mutation; invalid or stale guard metadata blocks repair lanes`");
-  lines.push("| Symbol | Severity | Repair Decision | Ownership | Fill State | Source | Current | Stop | Target | Guard Age Min | Geometry | Broker Stop | Broker Target | Root Causes | Next Actions |");
-  lines.push("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Domain | Ownership | Fill State | Source | Freshness | Current | Stop | Target | Geometry | Broker Stop | Broker Target | Idempotency | Eligible | Blocked Reason | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.severity.toUpperCase()} | ${row.repairLaneDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${row.effectiveGuardSource || "N/A"} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${fmt(row.metadataAgeMin)} | ${row.geometry.valid ? "valid" : "invalid"} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${short(row.rootCauses.join(","), 220)} | ${short(row.nextActions.join(","), 220)} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane} | ${row.blockerDomain} | ${row.ownershipClassification || "N/A"} | ${row.fillStateReconciliation?.status || "N/A"} | ${row.effectiveGuardSource || "N/A"} | ${row.guardSourceFreshness} | ${fmt(row.currentPrice)} | ${fmt(row.plannedStopPrice)} | ${fmt(row.plannedTargetPrice)} | ${row.geometry.valid ? "valid" : "invalid"} | ${row.brokerStopPresent ? "present" : "missing"} | ${row.brokerTargetPresent ? "present" : "missing"} | ${row.idempotencyStatus} | ${row.repairEligible ? "yes" : "no"} | ${row.blockedReason || "none"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -403,7 +456,14 @@ const main = () => {
     reportOnlyRepairCandidates: countBy(
       rows,
       (row) => row.repairLaneDecision === "REPORT_ONLY_REPAIR_CANDIDATE_REQUIRES_APPROVAL"
-    )
+    ),
+    classifiedRows: countBy(rows, (row) => Object.values(PROTECTION_LANES).includes(row.protectionLane)),
+    unclassifiedRows: countBy(rows, (row) => !Object.values(PROTECTION_LANES).includes(row.protectionLane)),
+    protectionLaneCounts: countProtectionLanes(rows),
+    protectionBlockerRows: countBy(rows, (row) => row.blockerDomain === "protection"),
+    ownershipBlockerRows: countBy(rows, (row) => row.blockerDomain === "ownership"),
+    ledgerBlockerRows: countBy(rows, (row) => row.blockerDomain === "ledger_fill_state"),
+    manualApprovalCandidates: countBy(rows, (row) => row.protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE)
   };
   const overall = !performance?.live?.available
     ? "warn"
@@ -439,8 +499,24 @@ const main = () => {
       brokerMutationAllowed: false,
       brokerMutationAttempted: false,
       brokerMutationSubmitted: false,
+      stateMutationAllowed: false,
+      stateMutationAttempted: false,
+      stateMutationSubmitted: false,
       blocksRepairOnInvalidGeometry: true,
       blocksRepairOnStaleGuardMetadata: true
+    },
+    classificationContract: {
+      version: "1.0.0",
+      allowedLanes: Object.values(PROTECTION_LANES),
+      sourcePrecedence: [
+        "broker_nested_evidence",
+        "fresh_position_lifecycle",
+        "fresh_order_or_recommendation_lineage",
+        "stale_or_missing_metadata"
+      ],
+      blockerDomains: ["none", "protection", "ownership", "ledger_fill_state"],
+      singleLanePerRow: true,
+      tickerSymbolsAreEvidenceOnly: true
     },
     summary,
     rootCauseCounts: countCauses(rows),

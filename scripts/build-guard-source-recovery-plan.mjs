@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.GUARD_SOURCE_RECOVERY_STATE_DIR || "state").trim() || "state";
 const FILES = {
@@ -30,16 +31,11 @@ const writeJson = (filePath, payload) => {
 };
 
 const asSymbol = (value) => String(value || "").trim().toUpperCase();
-const short = (value, max = 220) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const toNum = (value) => {
   if (value === null || value === undefined) return null;
   if (typeof value === "string" && !value.trim()) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
-};
-const fmt = (value, digits = 2) => {
-  const n = toNum(value);
-  return n == null ? "N/A" : n.toFixed(digits);
 };
 const ageMinutes = (iso, nowMs = Date.now()) => {
   const t = Date.parse(String(iso || ""));
@@ -49,6 +45,23 @@ const ageMinutes = (iso, nowMs = Date.now()) => {
 const round = (value, digits = 2) => {
   const n = toNum(value);
   return n == null ? null : Number(n.toFixed(digits));
+};
+
+const laneFromDecision = (decision) => {
+  if (decision.recoveryDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT") {
+    return PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED;
+  }
+  if (["BLOCK_FILL_STATE_RECONCILIATION_FIRST", "BLOCK_POSITION_OWNERSHIP_REVIEW"].includes(decision.recoveryDecision)) {
+    return PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED;
+  }
+  if (decision.recoveryDecision === "BLOCK_INVALID_GUARD_GEOMETRY") {
+    return PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR;
+  }
+  if (decision.recoveryDecision.startsWith("FRESH_SOURCE_REQUIRED")) {
+    return PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED;
+  }
+  if (decision.repairEligibleNow) return PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE;
+  return null;
 };
 
 const indexRows = (rows) => {
@@ -161,6 +174,11 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reco
 
 const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow }) => {
   const decision = rowDecision({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow });
+  const protectionLane = protectionRow?.protectionLane || laneFromDecision(decision);
+  const repairEligibleNow =
+    protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE &&
+    protectionRow?.repairEligible !== false &&
+    decision.repairEligibleNow;
   const selected = refreshRow?.selectedSource || null;
   const sourceAgeMin = selected?.ageMin ?? round(ageMinutes(selected?.generatedAt));
   const blockerSource =
@@ -194,6 +212,12 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
         stage6File: selected.stage6File || null
       }
       : null,
+    sourcePrecedence: protectionRow?.sourcePrecedence || null,
+    sourcePrecedenceClass: protectionRow?.sourcePrecedenceClass || null,
+    sourcePrecedenceRank: protectionRow?.sourcePrecedenceRank || null,
+    guardSourceFreshness: selected
+      ? selected.fresh === true ? "fresh" : "stale"
+      : protectionRow?.guardSourceFreshness || "missing",
     brokerChildren: {
       stopPresent: refreshRow?.broker?.stopPresent === true || reconciliationRow?.brokerStopPresent === true,
       targetPresent: refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true,
@@ -201,7 +225,21 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     },
     recoveryDecision: decision.recoveryDecision,
     recoveryReady: decision.recoveryReady,
-    repairEligibleNow: decision.repairEligibleNow,
+    protectionLane,
+    blockerDomain: protectionRow?.blockerDomain || (
+      decision.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"
+        ? "ledger_fill_state"
+        : protectionLane === PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED
+          ? "ownership"
+          : protectionLane === PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED
+            ? "none"
+            : "protection"
+    ),
+    repairEligibleNow,
+    blockedReason: protectionRow?.blockedReason || decision.blockers[0] || null,
+    nextAction: protectionRow?.nextAction || decision.methods[0] || "inspect_guard_source_evidence",
+    geometry: protectionRow?.geometry || null,
+    idempotencyStatus: protectionRow?.idempotencyStatus || "not_recorded",
     recommendedSourceRecoveryMethods: decision.methods,
     blockers: [...new Set(blockerSource.filter((blocker) => !(fillStateConfirmed && blocker === "fill_state_reconciliation_required")))],
     brokerMutationAllowed: false,
@@ -222,14 +260,15 @@ const buildMarkdown = (report) => {
   lines.push(`- overall: \`${String(report.overall).toUpperCase()}\``);
   lines.push(`- scope: \`${report.scope}\``);
   lines.push(
-    `- summary: \`rows=${report.summary.rows} freshRequired=${report.summary.freshSourceRequired} fillRecon=${report.summary.fillStateReconciliationRequired} ownershipReview=${report.summary.positionOwnershipReviewRequired} invalidGeometry=${report.summary.invalidGeometry} brokerChildrenNoAction=${report.summary.brokerChildrenPresentNoAction} repairEligibleNow=${report.summary.repairEligibleNow}\``
+    `- summary: \`rows=${report.summary.rows} classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protection=${report.summary.protectionBlockerRows} ownership=${report.summary.ownershipBlockerRows} ledger=${report.summary.ledgerBlockerRows} manualApproval=${report.summary.manualApprovalCandidates}\``
   );
+  lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Recovery Decision | Ownership | Fill State | Source | Fresh | Age Min | Stop | Target | Broker Children | Repair Eligible | Methods | Blockers |");
-  lines.push("| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Domain | Recovery Decision | Ownership | Fill State | Source | Fresh | Geometry | Broker Children | Idempotency | Repair Eligible | Blocked Reason | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.recoveryDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateStatus || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.selectedSource?.fresh ? "yes" : "no"} | ${fmt(row.selectedSource?.ageMin)} | ${fmt(row.selectedSource?.stopPrice)} | ${fmt(row.selectedSource?.targetPrice)} | stop=${row.brokerChildren.stopPresent ? "present" : "missing"},target=${row.brokerChildren.targetPresent ? "present" : "missing"} | ${row.repairEligibleNow ? "yes" : "no"} | ${short(row.recommendedSourceRecoveryMethods.join(","), 180)} | ${short(row.blockers.join(","), 180) || "none"} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.recoveryDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateStatus || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.guardSourceFreshness} | ${row.geometry?.valid === false ? "invalid" : "valid"} | stop=${row.brokerChildren.stopPresent ? "present" : "missing"},target=${row.brokerChildren.targetPresent ? "present" : "missing"} | ${row.idempotencyStatus} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.blockedReason || "none"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -237,6 +276,9 @@ const buildMarkdown = (report) => {
 };
 
 const count = (rows, predicate) => rows.filter(predicate).length;
+const laneCounts = (rows) => Object.fromEntries(
+  Object.values(PROTECTION_LANES).map((lane) => [lane, count(rows, (row) => row.protectionLane === lane)])
+);
 
 const main = () => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -273,11 +315,28 @@ const main = () => {
     brokerChildrenPresentNoAction: count(rows, (row) => row.recoveryDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT"),
     recoveryReady: count(rows, (row) => row.recoveryReady),
     repairEligibleNow: count(rows, (row) => row.repairEligibleNow),
+    classifiedRows: count(rows, (row) => Object.values(PROTECTION_LANES).includes(row.protectionLane)),
+    unclassifiedRows: count(rows, (row) => !Object.values(PROTECTION_LANES).includes(row.protectionLane)),
+    protectionLaneCounts: laneCounts(rows),
+    protectionBlockerRows: count(rows, (row) => row.blockerDomain === "protection"),
+    ownershipBlockerRows: count(rows, (row) => row.blockerDomain === "ownership"),
+    ledgerBlockerRows: count(rows, (row) => row.blockerDomain === "ledger_fill_state"),
+    manualApprovalCandidates: count(rows, (row) => row.protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
-    stateMutationAttempted: false
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
   };
-  const overall = !performance?.live?.available
+  const rootProtectionBlockers = toNum(protectionAudit?.summary?.protectionBlockerRows);
+  const classificationConsistency = {
+    rootCauseProtectionBlockerRows: rootProtectionBlockers,
+    recoveryProtectionBlockerRows: summary.protectionBlockerRows,
+    blockerCountMatchesRootCause:
+      rootProtectionBlockers == null || rootProtectionBlockers === summary.protectionBlockerRows
+  };
+  const overall = summary.unclassifiedRows > 0 || !classificationConsistency.blockerCountMatchesRootCause
+    ? "classification_inconsistent"
+    : !performance?.live?.available
     ? "warn"
     : summary.repairEligibleNow > 0
       ? "manual_review_ready"
@@ -305,8 +364,10 @@ const main = () => {
       brokerMutationSubmitted: false,
       stateMutationAllowed: false,
       stateMutationAttempted: false,
+      stateMutationSubmitted: false,
       requiresSeparateApprovalForStateWrite: true
     },
+    classificationConsistency,
     summary,
     rows
   };

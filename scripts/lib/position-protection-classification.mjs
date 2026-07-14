@@ -15,6 +15,94 @@ const isWorkingStatus = (value) =>
 
 const firstPresent = (...values) => values.find((value) => value !== null && value !== undefined && String(value).trim() !== "");
 
+export const PROTECTION_LANES = Object.freeze({
+  BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED: "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED",
+  FRESH_GUARD_SOURCE_REQUIRED: "FRESH_GUARD_SOURCE_REQUIRED",
+  INVALID_GUARD_GEOMETRY_NO_REPAIR: "INVALID_GUARD_GEOMETRY_NO_REPAIR",
+  OWNERSHIP_PROOF_REQUIRED: "OWNERSHIP_PROOF_REQUIRED",
+  MANUAL_APPROVAL_CANDIDATE: "MANUAL_APPROVAL_CANDIDATE"
+});
+
+export const classifyProtectionLane = ({
+  qty = 0,
+  brokerStopPresent = false,
+  brokerTargetPresent = false,
+  ownershipClassification = null,
+  fillStateRepairBlocked = false,
+  guardMetadataMissing = false,
+  guardMetadataStale = false,
+  geometryValid = true,
+  brokerChildMissing = false
+}) => {
+  if (toNum(qty) <= 0 || (brokerStopPresent && brokerTargetPresent)) {
+    return {
+      protectionLane: PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED,
+      blockerDomain: "none",
+      repairEligible: false,
+      blockedReason: null,
+      nextAction: "monitor_only"
+    };
+  }
+
+  if (ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION") {
+    return {
+      protectionLane: PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED,
+      blockerDomain: "ownership",
+      repairEligible: false,
+      blockedReason: "position_not_sidecar_managed",
+      nextAction: "establish_sidecar_ownership_proof_before_protection_review"
+    };
+  }
+
+  if (ownershipClassification !== "SIDECAR_MANAGED_FILLED" || fillStateRepairBlocked) {
+    return {
+      protectionLane: PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED,
+      blockerDomain: "ledger_fill_state",
+      repairEligible: false,
+      blockedReason: "fill_state_reconciliation_required",
+      nextAction: "reconcile_ledger_and_fill_state_before_protection_review"
+    };
+  }
+
+  if (guardMetadataMissing || guardMetadataStale) {
+    return {
+      protectionLane: PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED,
+      blockerDomain: "protection",
+      repairEligible: false,
+      blockedReason: guardMetadataMissing ? "guard_metadata_missing" : "guard_metadata_stale",
+      nextAction: "obtain_fresh_guard_source_before_repair_review"
+    };
+  }
+
+  if (!geometryValid) {
+    return {
+      protectionLane: PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR,
+      blockerDomain: "protection",
+      repairEligible: false,
+      blockedReason: "invalid_stop_current_target_geometry",
+      nextAction: "route_to_guard_geometry_root_cause_no_repair"
+    };
+  }
+
+  if (!brokerChildMissing) {
+    return {
+      protectionLane: PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED,
+      blockerDomain: "none",
+      repairEligible: false,
+      blockedReason: null,
+      nextAction: "monitor_only"
+    };
+  }
+
+  return {
+    protectionLane: PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE,
+    blockerDomain: "protection",
+    repairEligible: true,
+    blockedReason: "broker_protection_child_missing",
+    nextAction: "manual_approval_review_only"
+  };
+};
+
 export const classifyProtectionOwnership = ({
   position = {},
   reconciliationRow = {},

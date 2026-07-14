@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { evaluateGuardMetadataRisk } from "./lib/guard-metadata-risk.mjs";
+import { PROTECTION_LANES, classifyProtectionLane } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.PERSISTENT_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const RECON_PATH = `${STATE_DIR}/broker-child-order-reconciliation.json`;
 const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
+const PROTECTION_AUDIT_PATH = `${STATE_DIR}/position-protection-root-cause-audit.json`;
 const OUTPUT_JSON = `${STATE_DIR}/persistent-oco-repair-plan.json`;
 const OUTPUT_MD = `${STATE_DIR}/persistent-oco-repair-plan.md`;
 const PERSISTENT_REPAIR_TIME_IN_FORCE = "gtc";
@@ -51,12 +53,15 @@ const clientOrderId = ({ symbol, repairQty, plannedStop, plannedTarget }) => {
 const maxQty = Math.max(1, Math.trunc(Number(process.env.PERSISTENT_OCO_REPAIR_MAX_QTY || "1") || 1));
 const recon = readJson(RECON_PATH);
 const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
+const protectionAudit = readJson(PROTECTION_AUDIT_PATH);
 const rows = Array.isArray(recon?.rows) ? recon.rows : [];
 const lifecycleBySymbol = new Map((Array.isArray(lifecyclePlan?.rows) ? lifecyclePlan.rows : []).map((row) => [asSymbol(row?.symbol), row]));
+const protectionBySymbol = new Map((Array.isArray(protectionAudit?.rows) ? protectionAudit.rows : []).map((row) => [asSymbol(row?.symbol), row]));
 const candidates = rows
   .map((row) => {
     const symbol = asSymbol(row?.symbol);
     const lifecycleRow = lifecycleBySymbol.get(symbol) || null;
+    const protectionRow = protectionBySymbol.get(symbol) || null;
     const lifecycleSource = lifecycleRow?.lifecycleReady === true ? lifecycleRow.lifecycleSource : null;
     const qty = toNum(row?.qty);
     const plannedStop = toNum(lifecycleSource?.stopPrice ?? row?.plannedStopPrice);
@@ -93,6 +98,25 @@ const candidates = rows
       }
       : rawGuardMetadataRisk;
     const repairQty = qty != null ? Math.min(Math.trunc(qty), maxQty) : null;
+    const protectionClassification = protectionRow?.protectionLane
+      ? {
+        protectionLane: protectionRow.protectionLane,
+        blockerDomain: protectionRow.blockerDomain,
+        repairEligible: protectionRow.repairEligible === true,
+        blockedReason: protectionRow.blockedReason || null,
+        nextAction: protectionRow.nextAction || "inspect_position_protection_audit"
+      }
+      : classifyProtectionLane({
+        qty,
+        brokerStopPresent,
+        brokerTargetPresent,
+        ownershipClassification: row?.ownershipClassification,
+        fillStateRepairBlocked: row?.fillStateReconciliation?.repairBlocked === true,
+        guardMetadataMissing: row?.guardMetadataMissing === true,
+        guardMetadataStale: guardMetadataRisk.stale,
+        geometryValid: geometryOk,
+        brokerChildMissing: stopMissing || targetMissing
+      });
     const blockers = [];
     if (!symbol) blockers.push("missing_symbol");
     if (brokerChildrenComplete) {
@@ -136,6 +160,8 @@ const candidates = rows
       effectiveTargetPrice: effectiveTarget,
       effectiveGuardSource: lifecycleSource?.type || row?.effectiveGuardSource || row?.plannedStopSource || row?.plannedTargetSource || null,
       sourcePrecedence: row?.sourcePrecedence || null,
+      sourcePrecedenceClass: protectionRow?.sourcePrecedenceClass || null,
+      sourcePrecedenceRank: protectionRow?.sourcePrecedenceRank || null,
       lifecycleGuardSourceReady: lifecycleRow?.lifecycleReady === true,
       lifecycleOriginalGuardSource: lifecycleSource?.originalSourceType || row?.lifecycleOriginalGuardSource || null,
       lifecycleOriginalGeneratedAt: lifecycleSource?.originalGeneratedAt || row?.lifecycleOriginalGeneratedAt || null,
@@ -163,6 +189,13 @@ const candidates = rows
       normalizedFillState: row?.normalizedFillState || null,
       ownershipClassification: row?.ownershipClassification || null,
       fillStateReconciliation: row?.fillStateReconciliation || null,
+      protectionLane: protectionClassification.protectionLane,
+      blockerDomain: protectionClassification.blockerDomain,
+      repairEligible: protectionClassification.repairEligible,
+      blockedReason: protectionClassification.blockedReason,
+      nextAction: protectionClassification.nextAction,
+      guardSourceFreshness: protectionRow?.guardSourceFreshness || (guardMetadataRisk.stale ? "stale" : guardOk ? "fresh" : "missing"),
+      idempotencyStatus: protectionRow?.idempotencyStatus || row?.idempotencyBrokerStatus || "not_recorded",
       blockers,
       readiness: brokerChildrenComplete
         ? "NO_ACTION_BROKER_CHILDREN_PRESENT"
@@ -181,7 +214,22 @@ const candidates = rows
   })
   .filter((row) => row.symbol);
 
-const eligible = candidates.filter((row) => row.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL");
+const count = (predicate) => candidates.filter(predicate).length;
+const protectionLaneCounts = Object.fromEntries(
+  Object.values(PROTECTION_LANES).map((lane) => [lane, count((row) => row.protectionLane === lane)])
+);
+const protectionBlockerRows = count((row) => row.blockerDomain === "protection");
+const unclassifiedRows = count((row) => !Object.values(PROTECTION_LANES).includes(row.protectionLane));
+const rootProtectionBlockerRows = toNum(protectionAudit?.summary?.protectionBlockerRows);
+const blockerCountMatchesRootCause =
+  rootProtectionBlockerRows == null || rootProtectionBlockerRows === protectionBlockerRows;
+const classificationConsistent = unclassifiedRows === 0 && blockerCountMatchesRootCause;
+const eligible = candidates.filter((row) =>
+  classificationConsistent &&
+  row.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL" &&
+  row.protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE &&
+  row.repairEligible
+);
 eligible.sort((a, b) => {
   const an = (a.currentPrice ?? Number.POSITIVE_INFINITY) * (a.repairQty ?? 1);
   const bn = (b.currentPrice ?? Number.POSITIVE_INFINITY) * (b.repairQty ?? 1);
@@ -189,7 +237,11 @@ eligible.sort((a, b) => {
   return String(a.symbol).localeCompare(String(b.symbol));
 });
 const selected = eligible[0] || null;
-const overall = selected ? "manual_approval_required" : "blocked_no_eligible_row";
+const overall = !classificationConsistent
+  ? "classification_inconsistent"
+  : selected
+    ? "manual_approval_required"
+    : "blocked_no_eligible_row";
 const report = {
   generatedAt: new Date().toISOString(),
   overall,
@@ -198,6 +250,11 @@ const report = {
     mode: "persistent_oco_repair_plan_report_only",
     targetEnvironment: "PAPER",
     brokerMutationAllowed: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAllowed: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
     autoCancel: false,
     oneRowOnly: true,
     timeInForce: PERSISTENT_REPAIR_TIME_IN_FORCE,
@@ -219,12 +276,27 @@ const report = {
     guardMetadataBreached: candidates.filter((row) => row.guardMetadataRisk?.stopBreached || row.guardMetadataRisk?.targetBreached).length,
     guardMetadataNearBreached: candidates.filter((row) => row.guardMetadataRisk?.nearStopBreach || row.guardMetadataRisk?.nearTargetBreach).length,
     stopOnlyRepairReviewReady: candidates.filter((row) => row.stopOnlyRepairReviewReady).length,
+    classifiedRows: count((row) => Object.values(PROTECTION_LANES).includes(row.protectionLane)),
+    unclassifiedRows,
+    protectionLaneCounts,
+    protectionBlockerRows,
+    ownershipBlockerRows: count((row) => row.blockerDomain === "ownership"),
+    ledgerBlockerRows: count((row) => row.blockerDomain === "ledger_fill_state"),
+    manualApprovalCandidates: count((row) => row.protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE),
     brokerMutationAttempted: false,
-    brokerMutationSubmitted: false
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
+  },
+  classificationConsistency: {
+    rootCauseProtectionBlockerRows: rootProtectionBlockerRows,
+    persistentPlanProtectionBlockerRows: protectionBlockerRows,
+    blockerCountMatchesRootCause
   },
   source: {
     brokerChildReconciliationOverall: recon?.overall || null,
-    positionLifecycleGuardSourceOverall: lifecyclePlan?.overall || null
+    positionLifecycleGuardSourceOverall: lifecyclePlan?.overall || null,
+    positionProtectionAuditOverall: protectionAudit?.overall || null
   },
   nextAction: selected
     ? "request a separate approved paper-only persistent OCO repair submit for the selected row; no auto-cancel"
@@ -239,9 +311,10 @@ const md = [
   `- overall: \`${String(report.overall).toUpperCase()}\``,
   `- scope: \`${report.scope}\``,
   `- selected: \`${selected ? `${selected.symbol} qty=${selected.repairQty} stop=${selected.plannedStopPrice} target=${selected.plannedTargetPrice}` : "N/A"}\``,
+  `- classification: \`classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protection=${report.summary.protectionBlockerRows} ownership=${report.summary.ownershipBlockerRows} ledger=${report.summary.ledgerBlockerRows} countConsistency=${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``,
   "- safety: `report-only plan; PAPER only; one row only; no auto-cancel; GTC required; no POST unless separately approved`",
   "- rows:",
-  ...candidates.map((row) => `  - ${row.symbol}: ${row.readiness} safety=${row.safetyDecision} ownership=${row.ownershipClassification || "N/A"} fill=${row.fillStateReconciliation?.status || "N/A"} qty=${row.qty} repairQty=${row.repairQty ?? "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} source=${row.effectiveGuardSource || "N/A"} geometry=${row.geometry.valid ? "valid" : "invalid"} guardRisk=${row.guardMetadataRisk?.status || "N/A"} pattern=${row.childRepairPattern || "N/A"} stopOnlyReview=${row.stopOnlyRepairReviewReady ? "yes" : "no"} blockers=${short(row.blockers.join(",") || "none", 180)}`),
+  ...candidates.map((row) => `  - ${row.symbol}: lane=${row.protectionLane} domain=${row.blockerDomain} ${row.readiness} safety=${row.safetyDecision} ownership=${row.ownershipClassification || "N/A"} fill=${row.fillStateReconciliation?.status || "N/A"} protected=${row.brokerStopPresent && row.brokerTargetPresent} source=${row.effectiveGuardSource || "N/A"} freshness=${row.guardSourceFreshness} geometry=${row.geometry.valid ? "valid" : "invalid"} idempotency=${row.idempotencyStatus} eligible=${row.repairEligible} blockedReason=${row.blockedReason || "none"} next=${row.nextAction} blockers=${short(row.blockers.join(",") || "none", 180)}`),
   ""
 ].join("\n");
 

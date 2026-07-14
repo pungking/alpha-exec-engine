@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
+import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = process.env.LIVE_READINESS_STATE_DIR || process.env.STATE_DIR || "state";
 const OUTPUT_JSON = path.join(STATE_DIR, "live-readiness-scorecard.json");
@@ -112,6 +113,7 @@ function collectMutationSignals(reports) {
   add("opsLaneStatus", reports.opsLaneStatus?.summary?.brokerMutationAttempted, reports.opsLaneStatus?.summary?.brokerMutationSubmitted);
   add("guardSourceRecovery", reports.guardSourceRecovery?.summary?.brokerMutationAttempted, reports.guardSourceRecovery?.summary?.brokerMutationSubmitted);
   add("guardMetadataLineage", reports.guardMetadataLineage?.summary?.brokerMutationAttempted, reports.guardMetadataLineage?.summary?.brokerMutationSubmitted);
+  add("persistentOcoRepair", reports.persistentOcoRepair?.summary?.brokerMutationAttempted, reports.persistentOcoRepair?.summary?.brokerMutationSubmitted);
   add("positionOwnershipStateMigrationReview", reports.positionOwnershipStateMigrationReview?.summary?.brokerMutationAttempted, reports.positionOwnershipStateMigrationReview?.summary?.brokerMutationSubmitted);
   add("multiOcoSubmitGate", reports.multiOcoSubmitGate?.summary?.brokerMutationAttempted, reports.multiOcoSubmitGate?.summary?.brokerMutationSubmitted);
   return signals;
@@ -125,6 +127,7 @@ function collectStateMutationSignals(reports) {
   add("fillStateReconciliation", reports.fillStateReconciliation?.summary?.stateMutationAttempted, reports.fillStateReconciliation?.summary?.stateMutationApplied);
   add("guardSourceRecovery", reports.guardSourceRecovery?.summary?.stateMutationAttempted, reports.guardSourceRecovery?.summary?.stateMutationApplied);
   add("guardMetadataLineage", reports.guardMetadataLineage?.summary?.stateMutationAttempted, reports.guardMetadataLineage?.summary?.stateMutationApplied);
+  add("persistentOcoRepair", reports.persistentOcoRepair?.summary?.stateMutationAttempted, reports.persistentOcoRepair?.summary?.stateMutationSubmitted);
   add("positionOwnershipRecoveryDecision", reports.positionOwnershipRecoveryDecision?.summary?.stateMutationAttempted, reports.positionOwnershipRecoveryDecision?.summary?.stateMutationApplied);
   add("positionOwnershipStateMigrationReview", reports.positionOwnershipStateMigrationReview?.summary?.stateMutationAttempted, reports.positionOwnershipStateMigrationReview?.summary?.stateMutationApplied);
   return signals;
@@ -132,6 +135,16 @@ function collectStateMutationSignals(reports) {
 
 function uniqueSymbols(rows) {
   return [...new Set(rows.map((row) => String(row?.symbol || "").toUpperCase()).filter(Boolean))].sort();
+}
+
+function uniqueRowsBySymbol(rows) {
+  const byKey = new Map();
+  for (const [index, row] of rows.entries()) {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    const key = symbol || `row-${index}`;
+    if (!byKey.has(key)) byKey.set(key, row);
+  }
+  return [...byKey.values()];
 }
 
 function blockerGroup(name, reports, { status = "pass", count = 0, rows = [], nextAction, safetyGate }) {
@@ -240,6 +253,7 @@ function buildReport() {
     positionProtectionAudit: readJson("position-protection-root-cause-audit.json", {}),
     guardMetadataLineage: readJson("guard-metadata-lineage-audit.json", {}),
     guardSourceRecovery: readJson("guard-source-recovery-plan.json", {}),
+    persistentOcoRepair: readJson("persistent-oco-repair-plan.json", {}),
     fillStateReconciliation: readJson("fill-state-reconciliation-audit.json", {}),
     noActionableEvent: readJson("no-actionable-event-escalation.json", {}),
     lastRun: readJson("last-run.json", {}),
@@ -309,10 +323,42 @@ function buildReport() {
   const guardStale = asNumber(reports.positionProtectionAudit?.summary?.guardMetadataStale, asNumber(reports.opsHealth?.metrics?.positionProtectionGuardMetadataStale, 0));
   const invalidGeometry = asNumber(reports.positionProtectionAudit?.summary?.invalidGeometry, asNumber(reports.opsHealth?.metrics?.positionProtectionInvalidGeometry, 0));
   const repairEligible = asNumber(reports.guardSourceRecovery?.summary?.repairEligibleNow, asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryRepairEligible, 0));
-  if (missingStops > 0) protectionBlockers.push(`broker_stop_child_missing:${missingStops}`);
-  if (missingTargets > 0) protectionBlockers.push(`broker_target_child_missing:${missingTargets}`);
-  if (guardMissing > 0) protectionBlockers.push(`guard_metadata_missing:${guardMissing}`);
-  if (invalidGeometry > 0) protectionBlockers.push(`guard_geometry_invalid:${invalidGeometry}`);
+  const allProtectionRows = rowsArray(reports.positionProtectionAudit);
+  const validProtectionLanes = new Set(Object.values(PROTECTION_LANES));
+  const canonicalProtectionRows = allProtectionRows.filter((row) => validProtectionLanes.has(row?.protectionLane));
+  const canonicalProtectionAvailable = canonicalProtectionRows.length > 0;
+  const unclassifiedProtectionRows = canonicalProtectionAvailable
+    ? allProtectionRows.filter((row) => !validProtectionLanes.has(row?.protectionLane)).length
+    : asNumber(reports.positionProtectionAudit?.summary?.unclassifiedRows, 0);
+  const protectionLaneCounts = Object.fromEntries(
+    Object.values(PROTECTION_LANES).map((lane) => [
+      lane,
+      canonicalProtectionRows.filter((row) => row.protectionLane === lane).length
+    ])
+  );
+  const canonicalProtectionBlockerRows = canonicalProtectionAvailable
+    ? canonicalProtectionRows.filter((row) => row.blockerDomain === "protection").length
+    : asNumber(reports.positionProtectionAudit?.summary?.protectionBlockerRows, 0);
+  const reportProtectionBlockerCounts = {
+    rootCause: reports.positionProtectionAudit?.summary?.protectionBlockerRows,
+    guardSourceRecovery: reports.guardSourceRecovery?.summary?.protectionBlockerRows,
+    persistentOcoRepair: reports.persistentOcoRepair?.summary?.protectionBlockerRows
+  };
+  const availableProtectionBlockerCounts = Object.values(reportProtectionBlockerCounts)
+    .map((value) => asNumber(value, Number.NaN))
+    .filter(Number.isFinite);
+  const allAvailableProtectionCountsMatch =
+    availableProtectionBlockerCounts.length <= 1 || new Set(availableProtectionBlockerCounts).size === 1;
+  if (canonicalProtectionAvailable) {
+    if (canonicalProtectionBlockerRows > 0) protectionBlockers.push(`protection_lane_blockers:${canonicalProtectionBlockerRows}`);
+    if (unclassifiedProtectionRows > 0) protectionBlockers.push(`unclassified_protection_rows:${unclassifiedProtectionRows}`);
+    if (!allAvailableProtectionCountsMatch) protectionBlockers.push("protection_report_blocker_count_mismatch");
+  } else {
+    if (missingStops > 0) protectionBlockers.push(`broker_stop_child_missing:${missingStops}`);
+    if (missingTargets > 0) protectionBlockers.push(`broker_target_child_missing:${missingTargets}`);
+    if (guardMissing > 0) protectionBlockers.push(`guard_metadata_missing:${guardMissing}`);
+    if (invalidGeometry > 0) protectionBlockers.push(`guard_geometry_invalid:${invalidGeometry}`);
+  }
   if (guardStale > 0) protectionWarnings.push(`guard_metadata_stale:${guardStale}`);
   if (repairEligible > 0) protectionWarnings.push(`repair_eligible_report_only:${repairEligible}`);
   const protectionStatus = statusFrom({ blockers: protectionBlockers, warnings: protectionWarnings });
@@ -420,6 +466,11 @@ function buildReport() {
       guardStale,
       invalidGeometry,
       repairEligible,
+      protectionBlockerRows: canonicalProtectionBlockerRows,
+      protectionLaneCounts,
+      unclassifiedProtectionRows,
+      reportProtectionBlockerCounts,
+      allAvailableProtectionCountsMatch,
     }),
     domain("broker_mutation_safety", mutationStatus, scoreFrom(mutationStatus), mutationBlockers, mutationWarnings, {
       currentBrokerMutationAttempted,
@@ -479,25 +530,29 @@ function buildReport() {
   };
 
   const stage6EntryRows = rowsArray(reports.lastOrderDecisionAudit).filter((row) => String(row?.status || "").toLowerCase() !== "payload");
-  const protectionRows = rowsArray(reports.brokerChildReconciliation).filter((row) =>
-    row?.severity !== "pass" || row?.stopChildMissing || row?.targetChildMissing || row?.guardMetadataMissing || row?.guardGeometryInvalid
-  );
+  const protectionRows = canonicalProtectionAvailable
+    ? canonicalProtectionRows.filter((row) => row.blockerDomain === "protection")
+    : rowsArray(reports.brokerChildReconciliation).filter((row) =>
+      row?.severity !== "pass" || row?.stopChildMissing || row?.targetChildMissing || row?.guardMetadataMissing || row?.guardGeometryInvalid
+    );
   const guardLineageRows = rowsArray(reports.guardMetadataLineage).filter((row) =>
     !["LINEAGE_READY", "FRESH_VALID_SOURCE_AVAILABLE"].includes(row?.lineageStatus)
     || !["FRESH_VALID_SOURCE_AVAILABLE"].includes(row?.rootCause)
   );
-  const fillStateRows = [
+  const fillStateRows = uniqueRowsBySymbol([
+    ...canonicalProtectionRows.filter((row) => row.blockerDomain === "ledger_fill_state"),
     ...rowsArray(reports.fillStateReconciliation).filter((row) =>
       row?.requiresLedgerTerminalizationReview || row?.reconciliationDecision !== "FILL_STATE_CONFIRMED"
     ),
     ...rowsArray(reports.terminalizationProposal),
-  ];
-  const ownershipRows = [
+  ]);
+  const ownershipRows = uniqueRowsBySymbol([
+    ...canonicalProtectionRows.filter((row) => row.blockerDomain === "ownership"),
     ...rowsArray(reports.positionOwnershipStateMigrationReview),
     ...rowsArray(reports.positionOwnershipRecoveryDecision).filter((row) =>
       row?.manualExternalAdoptionReview || row?.stateRecoveryReviewReady || String(row?.ownershipRecoveryDecision || "").startsWith("DO_NOT")
     ),
-  ];
+  ]);
   const blockerGroupSeparation = {
     stage6_entry_tuning: blockerGroup("stage6_entry_tuning", reports, {
       status: reports.opsHealth?.blockerGroups?.stage6_entry_tuning?.status || entryStatus,
@@ -597,6 +652,20 @@ function buildReport() {
   };
 
   const overallScore = Math.round(domains.reduce((sum, item) => sum + item.score, 0) / domains.length);
+  const protectionClassification = {
+    sourceReport: canonicalProtectionAvailable ? "position-protection-root-cause-audit.json" : "legacy_raw_blocker_fallback",
+    classifiedRows: canonicalProtectionRows.length,
+    unclassifiedRows: unclassifiedProtectionRows,
+    protectionLaneCounts,
+    protectionBlockerRows: canonicalProtectionBlockerRows,
+    ownershipBlockerRows: canonicalProtectionRows.filter((row) => row.blockerDomain === "ownership").length,
+    ledgerBlockerRows: canonicalProtectionRows.filter((row) => row.blockerDomain === "ledger_fill_state").length,
+    manualApprovalCandidates: protectionLaneCounts[PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE] || 0,
+    reportConsistency: {
+      counts: reportProtectionBlockerCounts,
+      allAvailableCountsMatch: allAvailableProtectionCountsMatch
+    }
+  };
   return {
     schemaVersion: "1.0.0",
     generatedAt,
@@ -637,6 +706,7 @@ function buildReport() {
     },
     categoryBlockers,
     blockerGroupSeparation,
+    protectionClassification,
     domains,
     mliLifecycle,
     observationStopRules,
@@ -662,6 +732,11 @@ function renderMarkdown(report) {
   for (const item of report.domains) {
     lines.push(`| ${item.name} | \`${item.status}\` | ${item.score} | ${item.blockers.length} | ${item.warnings.length} |`);
   }
+  lines.push("");
+  lines.push("### Protection Classification");
+  lines.push(`- source: \`${report.protectionClassification.sourceReport}\``);
+  lines.push(`- rows: \`classified=${report.protectionClassification.classifiedRows} unclassified=${report.protectionClassification.unclassifiedRows} protection=${report.protectionClassification.protectionBlockerRows} ownership=${report.protectionClassification.ownershipBlockerRows} ledger=${report.protectionClassification.ledgerBlockerRows}\``);
+  lines.push(`- reportCountConsistency: \`${report.protectionClassification.reportConsistency.allAvailableCountsMatch ? "pass" : "fail"}\``);
   lines.push("");
   lines.push("### MLI Lifecycle");
   const mli = report.mliLifecycle;

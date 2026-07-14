@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
 
 const STATE_DIR = String(process.env.OPS_HEALTH_STATE_DIR || "state").trim() || "state";
 const OUTPUT_JSON = `${STATE_DIR}/ops-health-report.json`;
@@ -158,15 +159,22 @@ const buildBlockerGroups = (metrics, checks) => {
     },
     protection_guard_metadata: {
       status: statusFrom({
-        fail: isPositive(metrics.positionProtectionCritical) || isPositive(metrics.brokerChildReconciliationCriticalCount),
-        warn:
-          isPositive(metrics.positionProtectionGuardMetadataMissing) ||
-          isPositive(metrics.positionProtectionGuardMetadataStale) ||
-          isPositive(metrics.positionProtectionBrokerChildMissing) ||
-          isPositive(metrics.guardMetadataLineageMissing) ||
-          isPositive(metrics.guardMetadataLineageStale)
+        fail: metrics.positionProtectionCanonicalAvailable
+          ? isPositive(metrics.positionProtectionBlockerRows) ||
+            isPositive(metrics.positionProtectionUnclassifiedRows) ||
+            metrics.positionProtectionReportCountsMatch === false
+          : isPositive(metrics.positionProtectionCritical) || isPositive(metrics.brokerChildReconciliationCriticalCount),
+        warn: metrics.positionProtectionCanonicalAvailable
+          ? false
+          : isPositive(metrics.positionProtectionGuardMetadataMissing) ||
+            isPositive(metrics.positionProtectionGuardMetadataStale) ||
+            isPositive(metrics.positionProtectionBrokerChildMissing) ||
+            isPositive(metrics.guardMetadataLineageMissing) ||
+            isPositive(metrics.guardMetadataLineageStale)
       }),
-      detail: `critical=${metrics.positionProtectionCritical ?? "N/A"} childCritical=${metrics.brokerChildReconciliationCriticalCount ?? "N/A"} guardMissing=${metrics.positionProtectionGuardMetadataMissing ?? "N/A"} guardStale=${metrics.positionProtectionGuardMetadataStale ?? "N/A"} childMissing=${metrics.positionProtectionBrokerChildMissing ?? "N/A"}`
+      detail: metrics.positionProtectionCanonicalAvailable
+        ? `protection=${metrics.positionProtectionBlockerRows ?? "N/A"} classified=${metrics.positionProtectionClassifiedRows ?? "N/A"} unknown=${metrics.positionProtectionUnclassifiedRows ?? "N/A"} freshRequired=${metrics.positionProtectionFreshSourceRequired ?? "N/A"} invalidNoRepair=${metrics.positionProtectionInvalidGeometryNoRepair ?? "N/A"} manualApproval=${metrics.positionProtectionManualApprovalCandidates ?? "N/A"} countConsistency=${metrics.positionProtectionReportCountsMatch ? "pass" : "fail"}`
+        : `legacy critical=${metrics.positionProtectionCritical ?? "N/A"} childCritical=${metrics.brokerChildReconciliationCriticalCount ?? "N/A"} guardMissing=${metrics.positionProtectionGuardMetadataMissing ?? "N/A"} guardStale=${metrics.positionProtectionGuardMetadataStale ?? "N/A"} childMissing=${metrics.positionProtectionBrokerChildMissing ?? "N/A"}`
     },
     ledger_fill_state: {
       status: statusFrom({
@@ -175,9 +183,10 @@ const buildBlockerGroups = (metrics, checks) => {
           isPositive(metrics.orderStateTerminalReconciliationRequired) ||
           isPositive(metrics.fillStateReconciliationTerminalReview) ||
           isPositive(metrics.ledgerTerminalizationReady) ||
-          isPositive(metrics.ledgerFilledMigrationReady)
+          isPositive(metrics.ledgerFilledMigrationReady) ||
+          isPositive(metrics.positionProtectionLedgerBlockerRows)
       }),
-      detail: `orderFailures=${metrics.orderStateFailures ?? "N/A"} terminalRecon=${metrics.orderStateTerminalReconciliationRequired ?? "N/A"} fillRecon=${metrics.fillStateReconciliationTerminalReview ?? "N/A"} terminalReady=${metrics.ledgerTerminalizationReady ?? "N/A"} filledMigrationReady=${metrics.ledgerFilledMigrationReady ?? "N/A"}`
+      detail: `orderFailures=${metrics.orderStateFailures ?? "N/A"} terminalRecon=${metrics.orderStateTerminalReconciliationRequired ?? "N/A"} fillRecon=${metrics.fillStateReconciliationTerminalReview ?? "N/A"} terminalReady=${metrics.ledgerTerminalizationReady ?? "N/A"} filledMigrationReady=${metrics.ledgerFilledMigrationReady ?? "N/A"} protectionLedger=${metrics.positionProtectionLedgerBlockerRows ?? "N/A"}`
     },
     ownership: {
       status: statusFrom({
@@ -185,9 +194,10 @@ const buildBlockerGroups = (metrics, checks) => {
         warn:
           isPositive(metrics.ownershipGuardGapOwnershipReview) ||
           isPositive(metrics.ownershipRecoveryExternalAdoptionReview) ||
-          isPositive(metrics.ownershipStateMigrationReviewRows)
+          isPositive(metrics.ownershipStateMigrationReviewRows) ||
+          isPositive(metrics.positionProtectionOwnershipBlockerRows)
       }),
-      detail: `guardGapReview=${metrics.ownershipGuardGapOwnershipReview ?? "N/A"} externalAdoption=${metrics.ownershipRecoveryExternalAdoptionReview ?? "N/A"} migrationReview=${metrics.ownershipStateMigrationReviewRows ?? "N/A"}`
+      detail: `guardGapReview=${metrics.ownershipGuardGapOwnershipReview ?? "N/A"} externalAdoption=${metrics.ownershipRecoveryExternalAdoptionReview ?? "N/A"} migrationReview=${metrics.ownershipStateMigrationReviewRows ?? "N/A"} protectionOwnership=${metrics.positionProtectionOwnershipBlockerRows ?? "N/A"}`
     },
     safety_mutation: {
       status: statusFrom({ fail: unsafeCheckIds.length > 0 }),
@@ -220,6 +230,9 @@ const buildMarkdown = (report) => {
   }
   lines.push(
     `- guard_source_recovery: \`overall=${report.metrics.guardSourceRecoveryOverall ?? "N/A"} freshRequired=${report.metrics.guardSourceRecoveryFreshRequired ?? "N/A"} fillRecon=${report.metrics.guardSourceRecoveryFillRecon ?? "N/A"} ownershipReview=${report.metrics.guardSourceRecoveryOwnershipReview ?? "N/A"} repairEligible=${report.metrics.guardSourceRecoveryRepairEligible ?? "N/A"} attempted=${report.metrics.guardSourceRecoveryAttempted ?? "N/A"} submitted=${report.metrics.guardSourceRecoverySubmitted ?? "N/A"}\``
+  );
+  lines.push(
+    `- protection_classification: \`canonical=${report.metrics.positionProtectionCanonicalAvailable === true} classified=${report.metrics.positionProtectionClassifiedRows ?? "N/A"} unknown=${report.metrics.positionProtectionUnclassifiedRows ?? "N/A"} protection=${report.metrics.positionProtectionBlockerRows ?? "N/A"} ownership=${report.metrics.positionProtectionOwnershipBlockerRows ?? "N/A"} ledger=${report.metrics.positionProtectionLedgerBlockerRows ?? "N/A"} manualApproval=${report.metrics.positionProtectionManualApprovalCandidates ?? "N/A"} reportCounts=${report.metrics.positionProtectionReportCountsMatch ? "pass" : "fail"}\``
   );
   lines.push(
     `- fill_state_reconciliation: \`overall=${report.metrics.fillStateReconciliationOverall ?? "N/A"} openLedger=${report.metrics.fillStateReconciliationOpenLedger ?? "N/A"} terminalReview=${report.metrics.fillStateReconciliationTerminalReview ?? "N/A"} confirmedFilled=${report.metrics.fillStateReconciliationConfirmedFilled ?? "N/A"} external=${report.metrics.fillStateReconciliationExternal ?? "N/A"} attempted=${report.metrics.fillStateReconciliationAttempted ?? "N/A"} submitted=${report.metrics.fillStateReconciliationSubmitted ?? "N/A"}\``
@@ -517,6 +530,32 @@ const main = () => {
   const positionProtectionBrokerChildMissing = toNum(positionProtectionAudit?.summary?.brokerChildMissing);
   const positionProtectionBrokerStopMissing = toNum(positionProtectionAudit?.summary?.brokerStopMissing);
   const positionProtectionBrokerTargetMissing = toNum(positionProtectionAudit?.summary?.brokerTargetMissing);
+  const positionProtectionClassifiedRows = toNum(positionProtectionAudit?.summary?.classifiedRows);
+  const positionProtectionUnclassifiedRows = toNum(positionProtectionAudit?.summary?.unclassifiedRows);
+  const positionProtectionCanonicalAvailable =
+    positionProtectionClassifiedRows != null && positionProtectionUnclassifiedRows != null;
+  const positionProtectionBlockerRows = toNum(positionProtectionAudit?.summary?.protectionBlockerRows);
+  const positionProtectionOwnershipBlockerRows = toNum(positionProtectionAudit?.summary?.ownershipBlockerRows);
+  const positionProtectionLedgerBlockerRows = toNum(positionProtectionAudit?.summary?.ledgerBlockerRows);
+  const positionProtectionFreshSourceRequired = toNum(
+    positionProtectionAudit?.summary?.protectionLaneCounts?.[PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED]
+  );
+  const positionProtectionInvalidGeometryNoRepair = toNum(
+    positionProtectionAudit?.summary?.protectionLaneCounts?.[PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR]
+  );
+  const positionProtectionManualApprovalCandidates = toNum(
+    positionProtectionAudit?.summary?.protectionLaneCounts?.[PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE]
+  );
+  const positionProtectionReportBlockerCounts = {
+    rootCause: positionProtectionBlockerRows,
+    guardSourceRecovery: toNum(guardSourceRecoveryPlan?.summary?.protectionBlockerRows),
+    persistentOcoRepair: toNum(persistentOcoRepairPlan?.summary?.protectionBlockerRows)
+  };
+  const availablePositionProtectionReportCounts = Object.values(positionProtectionReportBlockerCounts)
+    .filter((value) => value != null);
+  const positionProtectionReportCountsMatch =
+    availablePositionProtectionReportCounts.length <= 1 ||
+    new Set(availablePositionProtectionReportCounts).size === 1;
   const guardMetadataRefreshOverall = short(guardMetadataRefreshPlan?.overall || "", 48) || null;
   const guardMetadataRefreshReady = toNum(guardMetadataRefreshPlan?.summary?.refreshReady);
   const guardMetadataRefreshBlocked = toNum(guardMetadataRefreshPlan?.summary?.blocked);
@@ -1121,7 +1160,11 @@ const main = () => {
     );
   }
 
-  if (brokerChildReconciliationCriticalCount != null && brokerChildReconciliationCriticalCount > 0) {
+  if (
+    !positionProtectionCanonicalAvailable &&
+    brokerChildReconciliationCriticalCount != null &&
+    brokerChildReconciliationCriticalCount > 0
+  ) {
     addCheck(
       checks,
       "fail",
@@ -1131,6 +1174,7 @@ const main = () => {
   }
 
   if (
+    !positionProtectionCanonicalAvailable &&
     brokerChildReconciliationCriticalCount === 0 &&
     brokerChildReconciliationWarningCount != null &&
     brokerChildReconciliationWarningCount > 0
@@ -1143,14 +1187,39 @@ const main = () => {
     );
   }
 
-  if (positionProtectionAuditOverall === "fail" || (positionProtectionCritical ?? 0) > 0) {
+  if (positionProtectionCanonicalAvailable && positionProtectionUnclassifiedRows > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "position_protection_classification_incomplete",
+      `position protection classification contains unknown rows=${positionProtectionUnclassifiedRows}; report-only repair review remains blocked`
+    );
+  }
+
+  if (positionProtectionCanonicalAvailable && !positionProtectionReportCountsMatch) {
+    addCheck(
+      checks,
+      "fail",
+      "position_protection_report_count_mismatch",
+      `canonical protection blocker counts disagree across reports: ${JSON.stringify(positionProtectionReportBlockerCounts)}`
+    );
+  }
+
+  if (positionProtectionCanonicalAvailable && (positionProtectionBlockerRows ?? 0) > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "position_protection_root_cause_fail",
+      `canonical protection blockers=${positionProtectionBlockerRows}, freshSourceRequired=${positionProtectionFreshSourceRequired ?? "N/A"}, invalidGeometryNoRepair=${positionProtectionInvalidGeometryNoRepair ?? "N/A"}, manualApprovalCandidates=${positionProtectionManualApprovalCandidates ?? "N/A"}`
+    );
+  } else if (!positionProtectionCanonicalAvailable && (positionProtectionAuditOverall === "fail" || (positionProtectionCritical ?? 0) > 0)) {
     addCheck(
       checks,
       "fail",
       "position_protection_root_cause_fail",
       `position protection audit found critical=${positionProtectionCritical ?? "N/A"}, guardMissing=${positionProtectionGuardMetadataMissing ?? "N/A"}, stale=${positionProtectionGuardMetadataStale ?? "N/A"}, invalidGeometry=${positionProtectionInvalidGeometry ?? "N/A"}, brokerChildMissing=${positionProtectionBrokerChildMissing ?? "N/A"}`
     );
-  } else if (positionProtectionAuditOverall === "warn" || (positionProtectionWarnings ?? 0) > 0) {
+  } else if (!positionProtectionCanonicalAvailable && (positionProtectionAuditOverall === "warn" || (positionProtectionWarnings ?? 0) > 0)) {
     addCheck(
       checks,
       "warn",
@@ -1159,7 +1228,7 @@ const main = () => {
     );
   }
 
-  if (positionProtectionInvalidGeometry != null && positionProtectionInvalidGeometry > 0) {
+  if (!positionProtectionCanonicalAvailable && positionProtectionInvalidGeometry != null && positionProtectionInvalidGeometry > 0) {
     addCheck(
       checks,
       "fail",
@@ -1168,7 +1237,7 @@ const main = () => {
     );
   }
 
-  if (positionProtectionGuardMetadataMissing != null && positionProtectionGuardMetadataMissing > 0) {
+  if (!positionProtectionCanonicalAvailable && positionProtectionGuardMetadataMissing != null && positionProtectionGuardMetadataMissing > 0) {
     addCheck(
       checks,
       "warn",
@@ -1177,7 +1246,7 @@ const main = () => {
     );
   }
 
-  if (positionProtectionGuardMetadataStale != null && positionProtectionGuardMetadataStale > 0) {
+  if (!positionProtectionCanonicalAvailable && positionProtectionGuardMetadataStale != null && positionProtectionGuardMetadataStale > 0) {
     addCheck(
       checks,
       "warn",
@@ -2311,6 +2380,17 @@ const main = () => {
       positionProtectionBrokerChildMissing,
       positionProtectionBrokerStopMissing,
       positionProtectionBrokerTargetMissing,
+      positionProtectionCanonicalAvailable,
+      positionProtectionClassifiedRows,
+      positionProtectionUnclassifiedRows,
+      positionProtectionBlockerRows,
+      positionProtectionOwnershipBlockerRows,
+      positionProtectionLedgerBlockerRows,
+      positionProtectionFreshSourceRequired,
+      positionProtectionInvalidGeometryNoRepair,
+      positionProtectionManualApprovalCandidates,
+      positionProtectionReportBlockerCounts,
+      positionProtectionReportCountsMatch,
       guardMetadataRefreshOverall,
       guardMetadataRefreshReady,
       guardMetadataRefreshBlocked,

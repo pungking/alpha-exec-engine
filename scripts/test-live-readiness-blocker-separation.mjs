@@ -35,6 +35,48 @@ writeJson("broker-child-order-reconciliation.json", {
   summary: { missingStopChildren: 1, missingTargetChildren: 1 },
   rows: [{ symbol: "BBB", severity: "fail", stopChildMissing: true, targetChildMissing: true }],
 });
+writeJson("position-protection-root-cause-audit.json", {
+  summary: {
+    protectionBlockerRows: 2,
+    ownershipBlockerRows: 1,
+    ledgerBlockerRows: 1,
+    classifiedRows: 4,
+    unclassifiedRows: 0,
+    protectionLaneCounts: {
+      BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED: 0,
+      FRESH_GUARD_SOURCE_REQUIRED: 1,
+      INVALID_GUARD_GEOMETRY_NO_REPAIR: 0,
+      OWNERSHIP_PROOF_REQUIRED: 2,
+      MANUAL_APPROVAL_CANDIDATE: 1,
+    },
+  },
+  rows: [
+    { symbol: "BBB", protectionLane: "MANUAL_APPROVAL_CANDIDATE", blockerDomain: "protection", repairEligible: true },
+    { symbol: "CCC", protectionLane: "FRESH_GUARD_SOURCE_REQUIRED", blockerDomain: "protection", repairEligible: false },
+    { symbol: "DDD", protectionLane: "OWNERSHIP_PROOF_REQUIRED", blockerDomain: "ledger_fill_state", repairEligible: false },
+    { symbol: "EEE", protectionLane: "OWNERSHIP_PROOF_REQUIRED", blockerDomain: "ownership", repairEligible: false },
+  ],
+});
+writeJson("guard-source-recovery-plan.json", {
+  summary: {
+    protectionBlockerRows: 2,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
+  },
+  rows: [],
+});
+writeJson("persistent-oco-repair-plan.json", {
+  summary: {
+    protectionBlockerRows: 2,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
+  },
+  rows: [],
+});
 writeJson("guard-metadata-lineage-audit.json", {
   summary: { missingNoSource: 1, staleSourceOnly: 0, brokerMutationAttempted: false, brokerMutationSubmitted: false, stateMutationAttempted: false },
   rows: [{ symbol: "CCC", lineageStatus: "LINEAGE_GAP", rootCause: "NO_SOURCE_WITH_STOP_TARGET" }],
@@ -121,8 +163,9 @@ for (const group of requiredGroups) {
   assert.ok(report.blockerGroupSeparation[group], `missing blocker group ${group}`);
 }
 assert.equal(report.blockerGroupSeparation.protection_guard_metadata.status, "fail");
+assert.equal(report.blockerGroupSeparation.protection_guard_metadata.count, 2);
 assert.deepEqual(report.blockerGroupSeparation.stage6_entry_tuning.affectedSymbols, ["AAA"]);
-assert.deepEqual(report.blockerGroupSeparation.protection_guard_metadata.affectedSymbols, ["BBB"]);
+assert.deepEqual(report.blockerGroupSeparation.protection_guard_metadata.affectedSymbols, ["BBB", "CCC"]);
 assert.deepEqual(report.blockerGroupSeparation.guard_metadata_lineage.affectedSymbols, ["CCC"]);
 assert.deepEqual(report.blockerGroupSeparation.ledger_fill_state.affectedSymbols, ["DDD"]);
 assert.deepEqual(report.blockerGroupSeparation.ownership.affectedSymbols, ["EEE"]);
@@ -134,5 +177,10 @@ assert.deepEqual(highPriceDomain.evidence.capScenarioCounts.aggressive, { capEli
 assert.deepEqual(highPriceDomain.evidence.blockedBy, ["daily_notional_cap", "notional_cap", "risk_cap"]);
 assert.equal(highPriceDomain.evidence.brokerMutationAttempted, false);
 assert.equal(highPriceDomain.evidence.brokerMutationSubmitted, false);
+assert.equal(report.protectionClassification.unclassifiedRows, 0);
+assert.equal(report.protectionClassification.protectionBlockerRows, 2);
+assert.equal(report.protectionClassification.reportConsistency.allAvailableCountsMatch, true);
+const protectionDomain = report.domains.find((item) => item.name === "protective_order_guard_metadata");
+assert.deepEqual(protectionDomain.blockers, ["protection_lane_blockers:2"]);
 
 console.log("[LIVE_READINESS_BLOCKER_SEPARATION_TEST] pass");
