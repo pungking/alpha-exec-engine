@@ -208,6 +208,7 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
     brokerMutationSubmitted: false,
     stateMutationAllowed: false,
     stateMutationAttempted: false,
+    stateMutationSubmitted: false,
     reason: lifecycleReady
       ? "existing stale guard source revalidated by current position lifecycle; repair still requires separate approval"
       : `blocked:${blockers.join(",") || "unknown"}`
@@ -272,7 +273,8 @@ const main = () => {
     staleSourcesRevalidated: rows.filter((row) => row.lifecycleReady && row.warnings.includes("original_guard_source_was_stale_revalidated_by_lifecycle_only")).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
-    stateMutationAttempted: false
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
   };
   const overall = !performance?.live?.available
     ? "warn"
@@ -302,6 +304,7 @@ const main = () => {
       brokerMutationSubmitted: false,
       stateMutationAllowed: false,
       stateMutationAttempted: false,
+      stateMutationSubmitted: false,
       protectiveRepairRequiresSeparateApproval: true
     },
     summary,

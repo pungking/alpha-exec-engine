@@ -229,7 +229,7 @@ const buildMarkdown = (report) => {
     lines.push(`- live_position_monitor: \`${report.metrics.livePositionDetails}\``);
   }
   lines.push(
-    `- guard_source_recovery: \`overall=${report.metrics.guardSourceRecoveryOverall ?? "N/A"} freshRequired=${report.metrics.guardSourceRecoveryFreshRequired ?? "N/A"} fillRecon=${report.metrics.guardSourceRecoveryFillRecon ?? "N/A"} ownershipReview=${report.metrics.guardSourceRecoveryOwnershipReview ?? "N/A"} repairEligible=${report.metrics.guardSourceRecoveryRepairEligible ?? "N/A"} attempted=${report.metrics.guardSourceRecoveryAttempted ?? "N/A"} submitted=${report.metrics.guardSourceRecoverySubmitted ?? "N/A"}\``
+    `- guard_source_recovery: \`overall=${report.metrics.guardSourceRecoveryOverall ?? "N/A"} freshRequired=${report.metrics.guardSourceRecoveryFreshRequired ?? "N/A"} materialization=${report.metrics.guardSourceRecoveryMaterializationRequired ?? "N/A"} noFresh=${report.metrics.guardSourceRecoveryNoFreshSource ?? "N/A"} invalid=${report.metrics.guardSourceRecoverySourceInvalidGeometry ?? report.metrics.guardSourceRecoveryInvalidGeometry ?? "N/A"} repairEligible=${report.metrics.guardSourceRecoveryRepairEligible ?? "N/A"} unknown=${report.metrics.guardSourceRecoveryStatusUnknown ?? "N/A"} precedenceViolations=${report.metrics.guardSourceRecoveryPrecedenceViolations ?? "N/A"} attempted=${report.metrics.guardSourceRecoveryAttempted ?? "N/A"} submitted=${report.metrics.guardSourceRecoverySubmitted ?? "N/A"}\``
   );
   lines.push(
     `- protection_classification: \`canonical=${report.metrics.positionProtectionCanonicalAvailable === true} classified=${report.metrics.positionProtectionClassifiedRows ?? "N/A"} unknown=${report.metrics.positionProtectionUnclassifiedRows ?? "N/A"} protection=${report.metrics.positionProtectionBlockerRows ?? "N/A"} ownership=${report.metrics.positionProtectionOwnershipBlockerRows ?? "N/A"} ledger=${report.metrics.positionProtectionLedgerBlockerRows ?? "N/A"} manualApproval=${report.metrics.positionProtectionManualApprovalCandidates ?? "N/A"} reportCounts=${report.metrics.positionProtectionReportCountsMatch ? "pass" : "fail"}\``
@@ -604,6 +604,19 @@ const main = () => {
   const guardSourceRecoveryOwnershipReview = toNum(guardSourceRecoveryPlan?.summary?.positionOwnershipReviewRequired);
   const guardSourceRecoveryInvalidGeometry = toNum(guardSourceRecoveryPlan?.summary?.invalidGeometry);
   const guardSourceRecoveryRepairEligible = toNum(guardSourceRecoveryPlan?.summary?.repairEligibleNow);
+  const guardSourceRecoveryStatusCounts = guardSourceRecoveryPlan?.summary?.recoveryStatusCounts || {};
+  const guardSourceRecoveryFreshStatusCounts = guardSourceRecoveryPlan?.summary?.freshSourceRecoveryStatusCounts || {};
+  const guardSourceRecoveryStatusUnknown = toNum(guardSourceRecoveryPlan?.summary?.recoveryStatusUnknown);
+  const guardSourceRecoveryMaterializationRequired = toNum(
+    guardSourceRecoveryPlan?.summary?.sourceMaterializationRequired
+  );
+  const guardSourceRecoveryNoFreshSource = toNum(guardSourceRecoveryPlan?.summary?.noFreshSourceAvailable);
+  const guardSourceRecoverySourceInvalidGeometry = toNum(
+    guardSourceRecoveryPlan?.summary?.recoverySourceInvalidGeometry
+  );
+  const guardSourceRecoveryPrecedenceViolations = toNum(
+    guardSourceRecoveryPlan?.summary?.sourcePrecedenceViolations
+  );
   const guardSourceRecoveryAttempted =
     guardSourceRecoveryPlan?.executionPolicy?.brokerMutationAttempted === true ||
     guardSourceRecoveryPlan?.summary?.brokerMutationAttempted === true ||
@@ -611,7 +624,9 @@ const main = () => {
     guardSourceRecoveryPlan?.summary?.stateMutationAttempted === true;
   const guardSourceRecoverySubmitted =
     guardSourceRecoveryPlan?.executionPolicy?.brokerMutationSubmitted === true ||
-    guardSourceRecoveryPlan?.summary?.brokerMutationSubmitted === true;
+    guardSourceRecoveryPlan?.summary?.brokerMutationSubmitted === true ||
+    guardSourceRecoveryPlan?.executionPolicy?.stateMutationSubmitted === true ||
+    guardSourceRecoveryPlan?.summary?.stateMutationSubmitted === true;
   const guardSourceRecoveryBrokerMutationAllowed =
     guardSourceRecoveryPlan?.executionPolicy?.brokerMutationAllowed === true;
   const guardSourceRecoveryStateMutationAllowed =
@@ -1352,11 +1367,62 @@ const main = () => {
   }
 
   if ((guardSourceRecoveryFreshRequired ?? 0) > 0) {
+    if (
+      (guardSourceRecoveryMaterializationRequired ?? 0) === 0 &&
+      (guardSourceRecoveryNoFreshSource ?? 0) === 0 &&
+      (guardSourceRecoverySourceInvalidGeometry ?? 0) === 0
+    ) {
+      addCheck(
+        checks,
+        "warn",
+        "guard_source_recovery_fresh_source_required",
+        `${guardSourceRecoveryFreshRequired} held position(s) require classified fresh-source recovery evidence before protective repair can be reconsidered`
+      );
+    }
+  }
+
+  if ((guardSourceRecoveryStatusUnknown ?? 0) > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "guard_source_recovery_status_unknown",
+      `${guardSourceRecoveryStatusUnknown} guard-source row(s) lack a recognized recovery status`
+    );
+  }
+
+  if ((guardSourceRecoveryPrecedenceViolations ?? 0) > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "guard_source_recovery_precedence_violation",
+      `${guardSourceRecoveryPrecedenceViolations} guard-source row(s) violate configured source precedence`
+    );
+  }
+
+  if ((guardSourceRecoveryMaterializationRequired ?? 0) > 0) {
     addCheck(
       checks,
       "warn",
-      "guard_source_recovery_fresh_source_required",
-      `${guardSourceRecoveryFreshRequired} held position(s) require fresh Stage6 or position-lifecycle guard source before protective repair can be reconsidered`
+      "guard_source_recovery_materialization_required",
+      `${guardSourceRecoveryMaterializationRequired} fresh recovery source(s) are report-only candidates and are not repair-eligible until separately approved state materialization is verified`
+    );
+  }
+
+  if ((guardSourceRecoveryNoFreshSource ?? 0) > 0) {
+    addCheck(
+      checks,
+      "warn",
+      "guard_source_recovery_no_fresh_source",
+      `${guardSourceRecoveryNoFreshSource} protection blocker(s) have no fresh usable Stage6/lifecycle source; inspect the row-level lineage root cause and next action`
+    );
+  }
+
+  if ((guardSourceRecoverySourceInvalidGeometry ?? 0) > 0) {
+    addCheck(
+      checks,
+      "fail",
+      "guard_source_recovery_source_invalid_geometry",
+      `${guardSourceRecoverySourceInvalidGeometry} recovery source(s) have invalid stop/current/target geometry and cannot enter repair review`
     );
   }
 
@@ -2415,6 +2481,13 @@ const main = () => {
       guardSourceRecoveryOwnershipReview,
       guardSourceRecoveryInvalidGeometry,
       guardSourceRecoveryRepairEligible,
+      guardSourceRecoveryStatusCounts,
+      guardSourceRecoveryFreshStatusCounts,
+      guardSourceRecoveryStatusUnknown,
+      guardSourceRecoveryMaterializationRequired,
+      guardSourceRecoveryNoFreshSource,
+      guardSourceRecoverySourceInvalidGeometry,
+      guardSourceRecoveryPrecedenceViolations,
       guardSourceRecoveryAttempted,
       guardSourceRecoverySubmitted,
       fillStateReconciliationOverall,

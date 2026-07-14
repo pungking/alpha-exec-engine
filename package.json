@@ -84,6 +84,7 @@
     "ops:test:live-readiness-blockers": "node scripts/test-live-readiness-blocker-separation.mjs",
     "ops:test:protection-lanes": "node scripts/test-position-protection-lane-classification.mjs",
     "ops:test:protection-report": "node scripts/test-position-protection-report-classification.mjs",
+    "ops:test:guard-source-recovery-status": "node scripts/test-guard-source-recovery-status.mjs",
     "ops:test:protection-blocker-reduction": "node scripts/test-protection-blocker-reduction-plan.mjs",
     "ops:test:ledger-terminalization-migration-package": "node scripts/test-ledger-terminalization-migration-package.mjs",
     "ops:test:ledger-filled-migration-apply": "node scripts/test-ledger-filled-migration-apply.mjs",

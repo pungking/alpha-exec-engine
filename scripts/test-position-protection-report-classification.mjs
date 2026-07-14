@@ -157,6 +157,15 @@ const recovery = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-re
 const persistent = JSON.parse(fs.readFileSync(path.join(stateDir, "persistent-oco-repair-plan.json"), "utf8"));
 const opsHealth = JSON.parse(fs.readFileSync(path.join(stateDir, "ops-health-report.json"), "utf8"));
 const liveReadiness = JSON.parse(fs.readFileSync(path.join(stateDir, "live-readiness-scorecard.json"), "utf8"));
+assert.equal(recovery.summary.recoveryStatusUnknown, 0);
+assert.equal(
+  Object.values(recovery.summary.recoveryStatusCounts).reduce((sum, value) => sum + value, 0),
+  recovery.summary.rows
+);
+assert.equal(opsHealth.metrics.guardSourceRecoveryStatusUnknown, 0);
+assert.deepEqual(opsHealth.metrics.guardSourceRecoveryStatusCounts, recovery.summary.recoveryStatusCounts);
+assert.deepEqual(liveReadiness.protectionClassification.recoveryStatusCounts, recovery.summary.recoveryStatusCounts);
+assert.equal(liveReadiness.protectionClassification.recoveryStatusUnknown, 0);
 for (const downstream of [recovery, persistent]) {
   assert.equal(downstream.summary.unclassifiedRows, 0);
   assert.equal(downstream.summary.protectionBlockerRows, report.summary.protectionBlockerRows);

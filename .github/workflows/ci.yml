@@ -27,6 +27,7 @@ jobs:
         run: |
           npm run ops:test:protection-lanes
           npm run ops:test:protection-report
+          npm run ops:test:guard-source-recovery-status
           npm run ops:test:live-readiness-blockers
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety

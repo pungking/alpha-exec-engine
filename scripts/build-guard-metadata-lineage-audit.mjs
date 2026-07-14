@@ -378,7 +378,8 @@ const main = () => {
     }, {}),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
-    stateMutationAttempted: false
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
   };
   const overall = summary.invalidGeometry > 0
     ? "invalid_geometry"
@@ -399,7 +400,8 @@ const main = () => {
       brokerMutationAttempted: false,
       brokerMutationSubmitted: false,
       stateMutationAllowed: false,
-      stateMutationAttempted: false
+      stateMutationAttempted: false,
+      stateMutationSubmitted: false
     },
     summary,
     rows

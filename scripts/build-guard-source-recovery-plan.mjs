@@ -47,6 +47,86 @@ const round = (value, digits = 2) => {
   return n == null ? null : Number(n.toFixed(digits));
 };
 
+const RECOVERY_STATUSES = Object.freeze({
+  CURRENT_SOURCE_FRESH: "CURRENT_SOURCE_FRESH",
+  RECOVERY_SOURCE_READY_REPORT_ONLY: "RECOVERY_SOURCE_READY_REPORT_ONLY",
+  RECOVERY_SOURCE_MATERIALIZATION_REQUIRED: "RECOVERY_SOURCE_MATERIALIZATION_REQUIRED",
+  NO_FRESH_SOURCE_AVAILABLE: "NO_FRESH_SOURCE_AVAILABLE",
+  RECOVERY_SOURCE_INVALID_GEOMETRY: "RECOVERY_SOURCE_INVALID_GEOMETRY"
+});
+const SOURCE_PRIORITY = [
+  "broker_children",
+  "position_lifecycle_revalidated_guard",
+  "recommendation_ledger",
+  "stage6_20trade_loop",
+  "order_ledger"
+];
+const idempotencyReady = (status) => {
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "filled" || normalized === "reconciled_filled";
+};
+
+const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
+  const rankOf = (type) => {
+    const rank = sourcePriority.indexOf(String(type || ""));
+    return rank >= 0 ? rank + 1 : sourcePriority.length + 1;
+  };
+  const selectedType = refreshRow?.selectedSource?.type || null;
+  const ready = (Array.isArray(refreshRow?.sourceCandidates) ? refreshRow.sourceCandidates : [])
+    .filter((candidate) => candidate?.fresh === true && candidate?.hasBothPrices === true)
+    .sort((a, b) => rankOf(a?.type) - rankOf(b?.type));
+  const expectedType = ready[0]?.type || selectedType;
+  return {
+    configuredPriority: sourcePriority,
+    selectedType,
+    selectedRank: selectedType ? rankOf(selectedType) : null,
+    expectedType: expectedType || null,
+    expectedRank: expectedType ? rankOf(expectedType) : null,
+    violation: Boolean(selectedType && expectedType && selectedType !== expectedType)
+  };
+};
+
+const recoveryRootCause = ({ status, lineageRow, refreshRow, preview }) => {
+  if (status === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH || status === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY) {
+    return null;
+  }
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED) {
+    return "recovery_source_not_materialized";
+  }
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY) {
+    return "source_geometry_unusable";
+  }
+  const lineageCause = String(lineageRow?.rootCause || "");
+  if (["SOURCE_TIMESTAMP_MISSING", "SOURCE_AGE_EXCEEDED"].includes(lineageCause)) {
+    return "source_timestamp_stale";
+  }
+  const candidates = Array.isArray(refreshRow?.sourceCandidates) ? refreshRow.sourceCandidates : [];
+  const latestHash = String(preview?.stage6Hash || "").trim();
+  const stage6Candidates = candidates.filter((candidate) => candidate?.stage6Hash || candidate?.stage6File);
+  if (latestHash && !stage6Candidates.some((candidate) => String(candidate?.stage6Hash || "").trim() === latestHash)) {
+    return "latest_stage6_symbol_or_hash_mismatch";
+  }
+  if (!candidates.some((candidate) => candidate?.type === "position_lifecycle_revalidated_guard")) {
+    return "lifecycle_source_missing";
+  }
+  return "recommendation_or_order_ledger_source_missing";
+};
+
+const nextActionForRecovery = (status, rootCause) => {
+  if (status === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH) return "monitor_current_fresh_guard_source";
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY) return "manual_protective_repair_review_report_only";
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED) {
+    return "prepare_separate_state_only_materialization_review_no_mutation";
+  }
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY) {
+    return "route_to_guard_geometry_root_cause_no_repair";
+  }
+  if (rootCause === "source_timestamp_stale") return "wait_for_fresh_stage6_or_lifecycle_guard_source";
+  if (rootCause === "latest_stage6_symbol_or_hash_mismatch") return "trace_latest_stage6_symbol_hash_lineage";
+  if (rootCause === "lifecycle_source_missing") return "rebuild_position_lifecycle_guard_source_report_only";
+  return "trace_recommendation_order_ledger_guard_source";
+};
+
 const laneFromDecision = (decision) => {
   if (decision.recoveryDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT") {
     return PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED;
@@ -172,15 +252,50 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reco
   };
 };
 
-const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow }) => {
+const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow, preview, sourcePriority }) => {
   const decision = rowDecision({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow });
   const protectionLane = protectionRow?.protectionLane || laneFromDecision(decision);
+  const brokerChildrenComplete = (
+    refreshRow?.broker?.stopPresent === true || reconciliationRow?.brokerStopPresent === true
+  ) && (
+    refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true
+  );
+  const currentSourceFresh = brokerChildrenComplete || protectionRow?.guardSourceFresh === true ||
+    protectionRow?.guardSourceFreshness === "fresh";
+  const selectedSourceFresh = refreshRow?.selectedSourceFresh === true || refreshRow?.selectedSource?.fresh === true;
+  const selectedStop = toNum(refreshRow?.selectedSource?.stopPrice);
+  const selectedTarget = toNum(refreshRow?.selectedSource?.targetPrice);
+  const selectedCurrent = toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice);
+  const selectedSourceGeometryValid = refreshRow?.selectedSourceGeometryValid === true || (
+    refreshRow?.selectedSourceGeometryValid == null &&
+    selectedStop != null && selectedCurrent != null && selectedTarget != null &&
+    selectedStop < selectedCurrent && selectedCurrent < selectedTarget
+  );
+  const recoverySourceReady = refreshRow?.refreshReady === true && selectedSourceFresh && selectedSourceGeometryValid;
+  const recoveryStatus =
+    protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE && currentSourceFresh && recoverySourceReady
+      ? RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY
+      : currentSourceFresh
+        ? RECOVERY_STATUSES.CURRENT_SOURCE_FRESH
+        : selectedSourceFresh && (!selectedSourceGeometryValid || protectionLane === PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR)
+          ? RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY
+          : recoverySourceReady
+            ? RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED
+            : RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE;
+  const idempotencyStatus = protectionRow?.idempotencyStatus || refreshRow?.lineage?.idempotencyBrokerStatus || "not_recorded";
+  const idempotencyPass = idempotencyReady(idempotencyStatus);
   const repairEligibleNow =
+    recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY &&
     protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE &&
     protectionRow?.repairEligible !== false &&
+    protectionRow?.geometry?.valid !== false &&
+    idempotencyPass &&
     decision.repairEligibleNow;
   const selected = refreshRow?.selectedSource || null;
   const sourceAgeMin = selected?.ageMin ?? round(ageMinutes(selected?.generatedAt));
+  const precedence = sourcePrecedenceEvidence(refreshRow, sourcePriority);
+  const normalizedRootCause = recoveryRootCause({ status: recoveryStatus, lineageRow, refreshRow, preview });
+  const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause);
   const blockerSource =
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE" ||
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_NO_DYNAMIC_SOURCE_FOUND" ||
@@ -212,19 +327,34 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
         stage6File: selected.stage6File || null
       }
       : null,
+    currentSource: {
+      type: protectionRow?.effectiveGuardSource || null,
+      generatedAt: protectionRow?.effectiveGuardGeneratedAt || protectionRow?.plannedLedgerUpdatedAt || null,
+      fresh: currentSourceFresh,
+      stopPrice: toNum(protectionRow?.plannedStopPrice),
+      targetPrice: toNum(protectionRow?.plannedTargetPrice),
+      stage6Hash: protectionRow?.plannedStage6Hash || null,
+      stage6File: protectionRow?.plannedStage6File || null
+    },
     sourcePrecedence: protectionRow?.sourcePrecedence || null,
     sourcePrecedenceClass: protectionRow?.sourcePrecedenceClass || null,
     sourcePrecedenceRank: protectionRow?.sourcePrecedenceRank || null,
-    guardSourceFreshness: selected
-      ? selected.fresh === true ? "fresh" : "stale"
-      : protectionRow?.guardSourceFreshness || "missing",
+    guardSourceFreshness: protectionRow?.guardSourceFreshness || (currentSourceFresh ? "fresh" : "missing"),
+    recoverySourceFreshness: selected ? (selectedSourceFresh ? "fresh" : "stale") : "missing",
+    sourcePrecedenceEvidence: precedence,
     brokerChildren: {
       stopPresent: refreshRow?.broker?.stopPresent === true || reconciliationRow?.brokerStopPresent === true,
       targetPresent: refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true,
       sourceActive: reconciliationRow?.brokerChildrenSourceActive === true
     },
     recoveryDecision: decision.recoveryDecision,
-    recoveryReady: decision.recoveryReady,
+    recoveryStatus,
+    recoveryRootCause: normalizedRootCause,
+    recoveryReady: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY ||
+      recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
+    currentSourceFresh,
+    recoverySourceReady,
+    stateMaterializationRequired: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     protectionLane,
     blockerDomain: protectionRow?.blockerDomain || (
       decision.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"
@@ -237,9 +367,16 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     ),
     repairEligibleNow,
     blockedReason: protectionRow?.blockedReason || decision.blockers[0] || null,
-    nextAction: protectionRow?.nextAction || decision.methods[0] || "inspect_guard_source_evidence",
+    nextAction,
     geometry: protectionRow?.geometry || null,
-    idempotencyStatus: protectionRow?.idempotencyStatus || "not_recorded",
+    recoveryGeometry: {
+      valid: selectedSourceGeometryValid,
+      stopPrice: toNum(selected?.stopPrice),
+      currentPrice: toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice),
+      targetPrice: toNum(selected?.targetPrice)
+    },
+    idempotencyStatus,
+    idempotencyPass,
     recommendedSourceRecoveryMethods: decision.methods,
     blockers: [...new Set(blockerSource.filter((blocker) => !(fillStateConfirmed && blocker === "fill_state_reconciliation_required")))],
     brokerMutationAllowed: false,
@@ -247,9 +384,10 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     brokerMutationSubmitted: false,
     stateMutationAllowed: false,
     stateMutationAttempted: false,
+    stateMutationSubmitted: false,
     reason: decision.blockers.length
-      ? `blocked:${decision.blockers.join(",")}`
-      : "report_only_source_recovery_classified"
+      ? `status=${recoveryStatus}; blocked:${decision.blockers.join(",")}`
+      : `status=${recoveryStatus}; report_only_source_recovery_classified`
   };
 };
 
@@ -260,15 +398,17 @@ const buildMarkdown = (report) => {
   lines.push(`- overall: \`${String(report.overall).toUpperCase()}\``);
   lines.push(`- scope: \`${report.scope}\``);
   lines.push(
-    `- summary: \`rows=${report.summary.rows} classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protection=${report.summary.protectionBlockerRows} ownership=${report.summary.ownershipBlockerRows} ledger=${report.summary.ledgerBlockerRows} manualApproval=${report.summary.manualApprovalCandidates}\``
+    `- summary: \`rows=${report.summary.rows} classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protection=${report.summary.protectionBlockerRows} ownership=${report.summary.ownershipBlockerRows} ledger=${report.summary.ledgerBlockerRows} materialization=${report.summary.sourceMaterializationRequired} noFresh=${report.summary.noFreshSourceAvailable} invalidRecovery=${report.summary.recoverySourceInvalidGeometry} repairEligible=${report.summary.repairEligibleNow}\``
   );
+  lines.push(`- recovery_status_counts: \`${JSON.stringify(report.summary.recoveryStatusCounts)}\``);
+  lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Domain | Recovery Decision | Ownership | Fill State | Source | Fresh | Geometry | Broker Children | Idempotency | Repair Eligible | Blocked Reason | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Domain | Source | Current Fresh | Recovery Fresh | Materialize | Geometry | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.recoveryDecision} | ${row.ownershipClassification || "N/A"} | ${row.fillStateStatus || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.guardSourceFreshness} | ${row.geometry?.valid === false ? "invalid" : "valid"} | stop=${row.brokerChildren.stopPresent ? "present" : "missing"},target=${row.brokerChildren.targetPresent ? "present" : "missing"} | ${row.idempotencyStatus} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.blockedReason || "none"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -278,6 +418,9 @@ const buildMarkdown = (report) => {
 const count = (rows, predicate) => rows.filter(predicate).length;
 const laneCounts = (rows) => Object.fromEntries(
   Object.values(PROTECTION_LANES).map((lane) => [lane, count(rows, (row) => row.protectionLane === lane)])
+);
+const recoveryStatusCounts = (rows) => Object.fromEntries(
+  Object.values(RECOVERY_STATUSES).map((status) => [status, count(rows, (row) => row.recoveryStatus === status)])
 );
 
 const main = () => {
@@ -289,6 +432,9 @@ const main = () => {
   const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const preview = readJson(FILES.preview);
+  const sourcePriority = Array.isArray(guardRefresh?.config?.sourcePriority) && guardRefresh.config.sourcePriority.length
+    ? guardRefresh.config.sourcePriority.map((value) => String(value || "").trim()).filter(Boolean)
+    : SOURCE_PRIORITY;
 
   const refreshRows = Array.isArray(guardRefresh?.rows) ? guardRefresh.rows : [];
   const protectionBySymbol = indexRows(protectionAudit?.rows);
@@ -302,19 +448,31 @@ const main = () => {
       protectionRow: protectionBySymbol.get(symbol) || null,
       lineageRow: lineageBySymbol.get(symbol) || null,
       fillStateRow: fillStateBySymbol.get(symbol) || null,
-      reconciliationRow: reconciliationBySymbol.get(symbol) || null
+      reconciliationRow: reconciliationBySymbol.get(symbol) || null,
+      preview,
+      sourcePriority
     });
   });
+  const freshSourceRows = rows.filter((row) => row.protectionLane === PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED);
 
   const summary = {
     rows: rows.length,
-    freshSourceRequired: count(rows, (row) => row.recoveryDecision.startsWith("FRESH_SOURCE_REQUIRED")),
+    freshSourceRequired: freshSourceRows.length,
     fillStateReconciliationRequired: count(rows, (row) => row.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"),
     positionOwnershipReviewRequired: count(rows, (row) => row.recoveryDecision === "BLOCK_POSITION_OWNERSHIP_REVIEW"),
     invalidGeometry: count(rows, (row) => row.recoveryDecision === "BLOCK_INVALID_GUARD_GEOMETRY"),
     brokerChildrenPresentNoAction: count(rows, (row) => row.recoveryDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT"),
     recoveryReady: count(rows, (row) => row.recoveryReady),
     repairEligibleNow: count(rows, (row) => row.repairEligibleNow),
+    recoveryStatusCounts: recoveryStatusCounts(rows),
+    freshSourceRecoveryStatusCounts: recoveryStatusCounts(freshSourceRows),
+    recoveryStatusUnknown: count(rows, (row) => !Object.values(RECOVERY_STATUSES).includes(row.recoveryStatus)),
+    currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
+    recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
+    sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
+    noFreshSourceAvailable: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE),
+    recoverySourceInvalidGeometry: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY),
+    sourcePrecedenceViolations: count(rows, (row) => row.sourcePrecedenceEvidence?.violation === true),
     classifiedRows: count(rows, (row) => Object.values(PROTECTION_LANES).includes(row.protectionLane)),
     unclassifiedRows: count(rows, (row) => !Object.values(PROTECTION_LANES).includes(row.protectionLane)),
     protectionLaneCounts: laneCounts(rows),
@@ -328,13 +486,19 @@ const main = () => {
     stateMutationSubmitted: false
   };
   const rootProtectionBlockers = toNum(protectionAudit?.summary?.protectionBlockerRows);
+  const recoveryStatusTotal = Object.values(summary.recoveryStatusCounts).reduce((total, value) => total + value, 0);
+  const freshSourceStatusTotal = Object.values(summary.freshSourceRecoveryStatusCounts).reduce((total, value) => total + value, 0);
   const classificationConsistency = {
     rootCauseProtectionBlockerRows: rootProtectionBlockers,
     recoveryProtectionBlockerRows: summary.protectionBlockerRows,
     blockerCountMatchesRootCause:
-      rootProtectionBlockers == null || rootProtectionBlockers === summary.protectionBlockerRows
+      rootProtectionBlockers == null || rootProtectionBlockers === summary.protectionBlockerRows,
+    recoveryStatusCountMatchesRows: recoveryStatusTotal === summary.rows,
+    freshSourceStatusCountMatchesLane: freshSourceStatusTotal === summary.freshSourceRequired
   };
-  const overall = summary.unclassifiedRows > 0 || !classificationConsistency.blockerCountMatchesRootCause
+  const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
+    summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
+    !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"
     : !performance?.live?.available
     ? "warn"

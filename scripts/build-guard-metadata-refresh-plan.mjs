@@ -380,7 +380,8 @@ const main = () => {
     repairReevaluationCandidates: count(rows, (row) => row.afterRefreshRepairDecision === "REPORT_ONLY_REPAIR_REEVALUATION_CANDIDATE"),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
-    stateMutationAttempted: false
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
   };
   const overall = !performance?.live?.available
     ? "warn"
@@ -424,6 +425,7 @@ const main = () => {
       brokerMutationSubmitted: false,
       stateMutationAllowed: false,
       stateMutationAttempted: false,
+      stateMutationSubmitted: false,
       requiresSeparateApprovalForStateWrite: true
     },
     summary,

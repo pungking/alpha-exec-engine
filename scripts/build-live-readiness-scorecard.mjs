@@ -323,6 +323,26 @@ function buildReport() {
   const guardStale = asNumber(reports.positionProtectionAudit?.summary?.guardMetadataStale, asNumber(reports.opsHealth?.metrics?.positionProtectionGuardMetadataStale, 0));
   const invalidGeometry = asNumber(reports.positionProtectionAudit?.summary?.invalidGeometry, asNumber(reports.opsHealth?.metrics?.positionProtectionInvalidGeometry, 0));
   const repairEligible = asNumber(reports.guardSourceRecovery?.summary?.repairEligibleNow, asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryRepairEligible, 0));
+  const recoveryStatusCounts = reports.guardSourceRecovery?.summary?.recoveryStatusCounts ||
+    reports.opsHealth?.metrics?.guardSourceRecoveryStatusCounts || {};
+  const freshSourceRecoveryStatusCounts = reports.guardSourceRecovery?.summary?.freshSourceRecoveryStatusCounts ||
+    reports.opsHealth?.metrics?.guardSourceRecoveryFreshStatusCounts || {};
+  const recoveryStatusUnknown = asNumber(
+    reports.guardSourceRecovery?.summary?.recoveryStatusUnknown,
+    asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryStatusUnknown, 0)
+  );
+  const recoverySourcePrecedenceViolations = asNumber(
+    reports.guardSourceRecovery?.summary?.sourcePrecedenceViolations,
+    asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryPrecedenceViolations, 0)
+  );
+  const recoveryMaterializationRequired = asNumber(
+    reports.guardSourceRecovery?.summary?.sourceMaterializationRequired,
+    asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryMaterializationRequired, 0)
+  );
+  const recoveryNoFreshSource = asNumber(
+    reports.guardSourceRecovery?.summary?.noFreshSourceAvailable,
+    asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryNoFreshSource, 0)
+  );
   const allProtectionRows = rowsArray(reports.positionProtectionAudit);
   const validProtectionLanes = new Set(Object.values(PROTECTION_LANES));
   const canonicalProtectionRows = allProtectionRows.filter((row) => validProtectionLanes.has(row?.protectionLane));
@@ -361,6 +381,14 @@ function buildReport() {
   }
   if (guardStale > 0) protectionWarnings.push(`guard_metadata_stale:${guardStale}`);
   if (repairEligible > 0) protectionWarnings.push(`repair_eligible_report_only:${repairEligible}`);
+  if (recoveryMaterializationRequired > 0) {
+    protectionWarnings.push(`recovery_source_materialization_required:${recoveryMaterializationRequired}`);
+  }
+  if (recoveryNoFreshSource > 0) protectionWarnings.push(`recovery_source_unavailable:${recoveryNoFreshSource}`);
+  if (recoveryStatusUnknown > 0) protectionBlockers.push(`recovery_status_unknown:${recoveryStatusUnknown}`);
+  if (recoverySourcePrecedenceViolations > 0) {
+    protectionBlockers.push(`recovery_source_precedence_violation:${recoverySourcePrecedenceViolations}`);
+  }
   const protectionStatus = statusFrom({ blockers: protectionBlockers, warnings: protectionWarnings });
 
   const mutationBlockers = [];
@@ -661,6 +689,12 @@ function buildReport() {
     ownershipBlockerRows: canonicalProtectionRows.filter((row) => row.blockerDomain === "ownership").length,
     ledgerBlockerRows: canonicalProtectionRows.filter((row) => row.blockerDomain === "ledger_fill_state").length,
     manualApprovalCandidates: protectionLaneCounts[PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE] || 0,
+    recoveryStatusCounts,
+    freshSourceRecoveryStatusCounts,
+    recoveryStatusUnknown,
+    recoverySourcePrecedenceViolations,
+    recoveryMaterializationRequired,
+    recoveryNoFreshSource,
     reportConsistency: {
       counts: reportProtectionBlockerCounts,
       allAvailableCountsMatch: allAvailableProtectionCountsMatch
@@ -736,6 +770,8 @@ function renderMarkdown(report) {
   lines.push("### Protection Classification");
   lines.push(`- source: \`${report.protectionClassification.sourceReport}\``);
   lines.push(`- rows: \`classified=${report.protectionClassification.classifiedRows} unclassified=${report.protectionClassification.unclassifiedRows} protection=${report.protectionClassification.protectionBlockerRows} ownership=${report.protectionClassification.ownershipBlockerRows} ledger=${report.protectionClassification.ledgerBlockerRows}\``);
+  lines.push(`- recovery: \`unknown=${report.protectionClassification.recoveryStatusUnknown} materialization=${report.protectionClassification.recoveryMaterializationRequired} noFresh=${report.protectionClassification.recoveryNoFreshSource} precedenceViolations=${report.protectionClassification.recoverySourcePrecedenceViolations}\``);
+  lines.push(`- recoveryStatusCounts: \`${JSON.stringify(report.protectionClassification.recoveryStatusCounts)}\``);
   lines.push(`- reportCountConsistency: \`${report.protectionClassification.reportConsistency.allAvailableCountsMatch ? "pass" : "fail"}\``);
   lines.push("");
   lines.push("### MLI Lifecycle");
