@@ -273,7 +273,7 @@ jobs:
       ALLOW_ENTRY_OUTSIDE_RTH: ${{ github.event_name == 'workflow_dispatch' && inputs.run_allow_entry_outside_rth || vars.ALLOW_ENTRY_OUTSIDE_RTH }}
       PREFLIGHT_BLOCKING_HARD_FAIL: ${{ vars.PREFLIGHT_BLOCKING_HARD_FAIL }}
       PREFLIGHT_SOFT_CODES: ${{ vars.PREFLIGHT_SOFT_CODES }}
-      ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
+      ORDER_LIFECYCLE_ENABLED: "false"
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
       LIVE_ORDER_SUBMIT_ENABLED: "false"
       BROKER_MUTATION_APPROVAL: ''

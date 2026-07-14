@@ -53,6 +53,7 @@ assertJobEnvEquals(
 assertJobEnvEquals(workflow, "GUARD_EXECUTE_TIGHTEN_STOPS", '"false"', "dry-run automatic tighten stops");
 assertJobEnvEquals(workflow, "GUARD_EXECUTE_REDUCE_POSITIONS", '"false"', "dry-run automatic reduce positions");
 assertJobEnvEquals(workflow, "GUARD_EXECUTE_FLATTEN", '"false"', "dry-run automatic flatten");
+assertJobEnvEquals(workflow, "ORDER_LIFECYCLE_ENABLED", '"false"', "dry-run automatic order ledger mutation");
 
 for (const [key, expected] of Object.entries({
   ALPHA_ENV: "DRY_RUN",
@@ -79,6 +80,7 @@ assertContains(source, "workflow_dispatch_paper_environment_required", "paper-on
 assertContains(source, "workflow_dispatch_expected_symbol_required", "symbol required block reason");
 assertContains(source, "workflow_dispatch_payload_scope_required", "single payload scope block reason");
 assertContains(source, "workflow_dispatch_symbol_scope_mismatch", "symbol mismatch block reason");
+assertContains(source, "if (existing && entryResetDaily && persistEffective)", "non-persistent idempotency daily reset guard");
 assertContains(ciWorkflow, "npm run ops:test:dry-run-dispatch-safety", "CI automatic safety contract");
 assertContains(paperOcoWorkflow, "ALPHA_ENV: PAPER", "paper OCO explicit PAPER environment");
 assertContains(paperOcoWorkflow, '!= "CONFIRM LIVE EXECUTION"', "paper OCO exact approval phrase");
