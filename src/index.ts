@@ -9074,11 +9074,20 @@ function resolveWorkflowDispatchBrokerMutationGate(dryExec: DryExecBuildResult):
   allowed: boolean;
   reason: string;
 } {
-  if (!isWorkflowDispatchEvent()) return { allowed: true, reason: "not_workflow_dispatch" };
+  if (!isWorkflowDispatchEvent()) {
+    return { allowed: false, reason: "automatic_trigger_broker_mutation_forbidden" };
+  }
 
   const approval = String(process.env.BROKER_MUTATION_APPROVAL || "").trim();
   if (approval !== REQUIRED_BROKER_MUTATION_APPROVAL) {
     return { allowed: false, reason: "workflow_dispatch_approval_required" };
+  }
+
+  const alphaEnvironment = String(process.env.ALPHA_ENV || "")
+    .trim()
+    .toUpperCase();
+  if (alphaEnvironment !== "PAPER") {
+    return { allowed: false, reason: "workflow_dispatch_paper_environment_required" };
   }
 
   const expectedSymbol = String(process.env.BROKER_MUTATION_EXPECTED_SYMBOL || "")

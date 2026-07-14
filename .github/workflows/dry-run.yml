@@ -206,14 +206,19 @@ jobs:
     timeout-minutes: 10
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      ALPHA_ENV: DRY_RUN
       RUN_VERIFY_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_verify_mode || 'auto' }}
       LEDGER_FILLED_MIGRATION_APPLY: "false"
       LEDGER_FILLED_MIGRATION_SYMBOLS: ""
       LEDGER_FILLED_MIGRATION_MAX_ROWS: "1"
       LEDGER_FILLED_MIGRATION_APPROVAL: ""
-      EXEC_ENABLED: ${{ vars.EXEC_ENABLED }}
-      READ_ONLY: ${{ vars.READ_ONLY }}
-      SIMULATION_LIVE_PARITY: ${{ vars.SIMULATION_LIVE_PARITY }}
+      EXEC_ENABLED: "false"
+      READ_ONLY: "true"
+      SIMULATION_LIVE_PARITY: "false"
+      MARKET_GUARD_MODE: observe
+      GUARD_EXECUTE_TIGHTEN_STOPS: "false"
+      GUARD_EXECUTE_REDUCE_POSITIONS: "false"
+      GUARD_EXECUTE_FLATTEN: "false"
       POLICY_VERSION: stage6-exec-v1.0-rc1
       TZ: ${{ vars.TZ }}
       DRY_NOTIONAL_PER_TRADE: ${{ vars.DRY_NOTIONAL_PER_TRADE }}
@@ -270,7 +275,7 @@ jobs:
       PREFLIGHT_SOFT_CODES: ${{ vars.PREFLIGHT_SOFT_CODES }}
       ORDER_LIFECYCLE_ENABLED: ${{ vars.ORDER_LIFECYCLE_ENABLED }}
       ORDER_LEDGER_TTL_DAYS: ${{ vars.ORDER_LEDGER_TTL_DAYS }}
-      LIVE_ORDER_SUBMIT_ENABLED: ${{ vars.LIVE_ORDER_SUBMIT_ENABLED }}
+      LIVE_ORDER_SUBMIT_ENABLED: "false"
       BROKER_MUTATION_APPROVAL: ''
       BROKER_MUTATION_EXPECTED_SYMBOL: ''
       LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO: ${{ vars.LIVE_ORDER_SUBMIT_REQUIRE_PERF_GATE_GO }}
@@ -282,7 +287,7 @@ jobs:
       ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS: ${{ vars.ENTRY_OPEN_ORDER_REPLACE_MAX_CHASE_BPS }}
       ENTRY_OPEN_ORDER_REPLACE_COOLDOWN_MINUTES: ${{ vars.ENTRY_OPEN_ORDER_REPLACE_COOLDOWN_MINUTES }}
       ENTRY_OPEN_ORDER_REPLACE_MAX_PER_SYMBOL_PER_DAY: ${{ vars.ENTRY_OPEN_ORDER_REPLACE_MAX_PER_SYMBOL_PER_DAY }}
-      FORCE_SEND_ONCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_force_send_once || vars.FORCE_SEND_ONCE }}
+      FORCE_SEND_ONCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_force_send_once || 'false' }}
       TELEGRAM_HEARTBEAT_ON_DEDUPE: ${{ vars.TELEGRAM_HEARTBEAT_ON_DEDUPE }}
       TELEGRAM_MAX_MESSAGE_LENGTH: ${{ vars.TELEGRAM_MAX_MESSAGE_LENGTH }}
       POSITION_LIFECYCLE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.run_position_lifecycle_enabled || vars.POSITION_LIFECYCLE_ENABLED }}

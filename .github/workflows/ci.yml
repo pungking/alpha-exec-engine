@@ -23,6 +23,8 @@ jobs:
         run: npm ci
       - name: Symbol-agnostic runtime guard
         run: npm run ops:safety:symbol-agnostic
+      - name: Automatic trigger execution safety contract
+        run: npm run ops:test:dry-run-dispatch-safety
       - name: Telegram routing policy audit
         run: npm run ops:safety:telegram-routing
       - name: High-price min-one-share report-only self-test
