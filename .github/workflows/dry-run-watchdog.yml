@@ -25,8 +25,6 @@ jobs:
       WATCHDOG_ENABLED: ${{ vars.SIDECAR_WATCHDOG_ENABLED }}
       WATCHDOG_STALE_MINUTES: ${{ vars.SIDECAR_WATCHDOG_STALE_MINUTES }}
       WATCHDOG_LOOKBACK_MINUTES: ${{ vars.SIDECAR_WATCHDOG_LOOKBACK_MINUTES }}
-      WATCHDOG_TARGET_WORKFLOW: ${{ vars.SIDECAR_WATCHDOG_TARGET_WORKFLOW }}
-      WATCHDOG_TARGET_BRANCH: ${{ vars.SIDECAR_WATCHDOG_BRANCH }}
     steps:
       - name: Evaluate dry-run freshness
         id: eval
@@ -49,11 +47,8 @@ jobs:
             const enabled = parseBool(process.env.WATCHDOG_ENABLED, true);
             const staleMinutes = parseNumber(process.env.WATCHDOG_STALE_MINUTES, 30, 10, 240);
             const lookbackMinutes = parseNumber(process.env.WATCHDOG_LOOKBACK_MINUTES, 180, 30, 1440);
-            const targetWorkflow = (process.env.WATCHDOG_TARGET_WORKFLOW || "dry-run.yml").trim();
-            const refBranch =
-              (process.env.WATCHDOG_TARGET_BRANCH || "").trim() ||
-              context.ref.replace("refs/heads/", "") ||
-              "main";
+            const targetWorkflow = "dry-run.yml";
+            const refBranch = context.payload.repository?.default_branch || "main";
 
             core.setOutput("target_workflow", targetWorkflow);
             core.setOutput("target_branch", refBranch);

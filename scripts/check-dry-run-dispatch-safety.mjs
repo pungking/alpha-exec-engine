@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 const workflow = fs.readFileSync(".github/workflows/dry-run.yml", "utf8");
+const watchdogWorkflow = fs.readFileSync(".github/workflows/dry-run-watchdog.yml", "utf8");
 const marketGuardWorkflow = fs.readFileSync(".github/workflows/market-guard.yml", "utf8");
 const ciWorkflow = fs.readFileSync(".github/workflows/ci.yml", "utf8");
 const paperOcoWorkflow = fs.readFileSync(".github/workflows/paper-oco-submit-canary.yml", "utf8");
@@ -70,6 +71,20 @@ for (const [key, expected] of Object.entries({
 
 assertContains(workflow, 'default: "safe_default"', "safe_default manual default");
 assertContains(workflow, 'requested = "safe_default" if raw_requested == "auto" else raw_requested', "manual auto coerces safe");
+assertContains(watchdogWorkflow, 'const targetWorkflow = "dry-run.yml";', "watchdog fixed dry-run target");
+assertContains(
+  watchdogWorkflow,
+  'const refBranch = context.payload.repository?.default_branch || "main";',
+  "watchdog default-branch target",
+);
+if (watchdogWorkflow.includes("WATCHDOG_TARGET_WORKFLOW") || watchdogWorkflow.includes("WATCHDOG_TARGET_BRANCH")) {
+  console.error("[DRY_RUN_DISPATCH_SAFETY] watchdog target must not inherit repository variables");
+  process.exitCode = 1;
+}
+if (/gh workflow run[\s\S]{0,240}\s-f\s/.test(watchdogWorkflow)) {
+  console.error("[DRY_RUN_DISPATCH_SAFETY] watchdog fallback must not override workflow_dispatch inputs");
+  process.exitCode = 1;
+}
 assertContains(workflow, "BROKER_MUTATION_APPROVAL: ''", "dry-run approval hard disabled");
 assertContains(workflow, "BROKER_MUTATION_EXPECTED_SYMBOL: ''", "dry-run symbol scope hard disabled");
 assertContains(source, 'const REQUIRED_BROKER_MUTATION_APPROVAL = "CONFIRM LIVE EXECUTION";', "exact approval phrase");
