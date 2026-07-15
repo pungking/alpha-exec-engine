@@ -272,6 +272,20 @@ writeJson("fill-state-reconciliation-audit.json", {
   }))
 });
 writeJson("broker-child-order-reconciliation.json", { rows: [] });
+writeJson("order-ledger.json", {
+  orders: {
+    "latest-hash:MAT:buy": {
+      idempotencyKey: "latest-hash:MAT:buy",
+      symbol: "MAT",
+      status: "filled",
+      stage6Hash: "latest-hash",
+      stage6File: "latest-stage6.json",
+      stopLossPrice: 90,
+      takeProfitPrice: 120,
+      updatedAt: stale
+    }
+  }
+});
 
 execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
   env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
@@ -313,6 +327,46 @@ assert.deepEqual(bySymbol.get("MAT")?.stateMaterializationPrerequisites, {
   repairEligibleNow: false,
   stateMutationAllowed: false
 });
+const materializationPackage = bySymbol.get("MAT")?.stateMaterializationPackage;
+assert.equal(materializationPackage?.proposalStatus, "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY");
+assert.deepEqual(materializationPackage?.selectionContract, {
+  reviewReady: true,
+  recoveryDisposition: "FRESH_SOURCE_MATERIALIZATION_REQUIRED",
+  repairEligibleNow: false,
+  dynamicSelection: true
+});
+assert.equal(materializationPackage?.currentStateSnapshot?.stateFile, "order-ledger.json");
+assert.equal(materializationPackage?.currentStateSnapshot?.recordKey, "latest-hash:MAT:buy");
+assert.match(materializationPackage?.currentStateSnapshot?.recordSha256 || "", /^[a-f0-9]{64}$/);
+assert.match(materializationPackage?.currentStateSnapshot?.fileSha256 || "", /^[a-f0-9]{64}$/);
+assert.equal(materializationPackage?.selectedFreshSourceLineage?.sourceType, "position_lifecycle_revalidated_guard");
+assert.equal(materializationPackage?.selectedFreshSourceLineage?.stage6Hash, "latest-hash");
+assert.deepEqual(materializationPackage?.materializationFields, [
+  "stopLossPrice",
+  "takeProfitPrice",
+  "stage6Hash",
+  "stage6File",
+  "updatedAt"
+]);
+assert.ok(materializationPackage?.proposedDiff?.length > 0);
+assert.equal(
+  materializationPackage?.proposedDiff?.every((change) => materializationPackage.materializationFields.includes(change.field)),
+  true
+);
+assert.equal(materializationPackage?.backupPlan?.requiredBeforeApply, true);
+assert.match(materializationPackage?.backupPlan?.backupPathTemplate || "", /order-ledger\.json\.before$/);
+assert.equal(materializationPackage?.auditRecordPreview?.stateMutationApplied, false);
+assert.equal(materializationPackage?.auditRecordPreview?.sourceStage6Hash, "latest-hash");
+assert.equal(materializationPackage?.postVerifyChecks?.length > 0, true);
+assert.equal(materializationPackage?.rollbackPlan?.restoreAtomically, true);
+assert.equal(materializationPackage?.evidence?.idempotencyPass, true);
+assert.equal(materializationPackage?.evidence?.idempotencyStatus, "filled");
+assert.equal(materializationPackage?.evidence?.ownershipPass, true);
+assert.equal(materializationPackage?.evidence?.ownershipClassification, "SIDECAR_MANAGED_FILLED");
+assert.equal(materializationPackage?.evidence?.fillStatePass, true);
+assert.equal(materializationPackage?.evidence?.fillStateStatus, "FILL_STATE_CONFIRMED");
+assert.equal(materializationPackage?.requiredApprovalPhrase, "CONFIRM STATE GUARD MATERIALIZATION");
+assert.equal(materializationPackage?.stateMutationAllowed, false);
 assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("NONE")?.recoveryDisposition, "NO_CURRENT_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
@@ -338,6 +392,9 @@ assert.equal(bySymbol.get("TTL_BAD")?.recoveryOwner, "guard_geometry_producer");
 assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.invalidComponents, ["stop"]);
 assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.rootCauses, ["stop_not_below_current"]);
 assert.equal(bySymbol.get("TTL_BAD")?.nextAction, "route_to_guard_geometry_root_cause_no_repair");
+for (const symbol of ["BAD", "TTL_BAD", "DISP", "MISS"]) {
+  assert.equal(bySymbol.get(symbol)?.stateMaterializationPackage, null);
+}
 assert.equal(bySymbol.get("PROD")?.recoveryRootCause, "source_producer_missing");
 assert.equal(bySymbol.get("PROD")?.blockerDomain, "protection");
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.producedAt, now);
@@ -367,6 +424,10 @@ assert.equal(report.summary.producerMissingOwnershipLaneLeaks, 0);
 assert.equal(report.summary.materializationPrerequisiteRows, 1);
 assert.equal(report.summary.materializationReviewReady, 1);
 assert.equal(report.summary.materializationPrerequisiteUnclassified, 0);
+assert.equal(report.summary.materializationPackageRows, 1);
+assert.equal(report.summary.materializationPackagesReady, 1);
+assert.equal(report.summary.materializationPackageEvidenceMissing, 0);
+assert.equal(report.summary.materializationPackageExcludedLaneLeaks, 0);
 assert.equal(report.summary.geometryRootCauseRows, 2);
 assert.equal(report.summary.geometryRootCauseUnclassified, 0);
 assert.deepEqual(report.summary.geometryInvalidComponentCounts, {

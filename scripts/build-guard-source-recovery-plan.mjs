@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
 
@@ -10,6 +11,7 @@ const FILES = {
   lifecycleGuardSource: `${STATE_DIR}/position-lifecycle-guard-source-plan.json`,
   fillStateReconciliation: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
+  orderLedger: `${STATE_DIR}/order-ledger.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
 };
 const OUTPUT_JSON = `${STATE_DIR}/guard-source-recovery-plan.json`;
@@ -47,6 +49,20 @@ const round = (value, digits = 2) => {
   const n = toNum(value);
   return n == null ? null : Number(n.toFixed(digits));
 };
+const sha256 = (value) => crypto.createHash("sha256").update(String(value ?? ""), "utf8").digest("hex");
+const MATERIALIZATION_FIELDS = Object.freeze([
+  "stopLossPrice",
+  "takeProfitPrice",
+  "stage6Hash",
+  "stage6File",
+  "updatedAt"
+]);
+const MATERIALIZATION_PACKAGE_STATUSES = Object.freeze([
+  "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY",
+  "BLOCKED_CURRENT_STATE_RECORD_MISSING",
+  "BLOCKED_NO_MATERIALIZATION_DIFF"
+]);
+const REQUIRED_STATE_MATERIALIZATION_APPROVAL = "CONFIRM STATE GUARD MATERIALIZATION";
 
 const RECOVERY_STATUSES = Object.freeze({
   CURRENT_SOURCE_FRESH: "CURRENT_SOURCE_FRESH",
@@ -413,6 +429,165 @@ const stateMaterializationPrerequisites = ({
   };
 };
 
+const ledgerRecordForMaterialization = ({ orderLedger, symbol, stage6Hash, stage6File }) => {
+  const candidates = Object.entries(orderLedger?.orders || {})
+    .filter(([, record]) => asSymbol(record?.symbol) === symbol)
+    .filter(([, record]) => stage6Hash
+      ? String(record?.stage6Hash || "") === String(stage6Hash)
+      : stage6File
+        ? String(record?.stage6File || "") === String(stage6File)
+        : false)
+    .sort((a, b) => {
+      const bAt = Date.parse(String(b[1]?.updatedAt || b[1]?.createdAt || ""));
+      const aAt = Date.parse(String(a[1]?.updatedAt || a[1]?.createdAt || ""));
+      return (Number.isFinite(bAt) ? bAt : 0) - (Number.isFinite(aAt) ? aAt : 0) || a[0].localeCompare(b[0]);
+    });
+  return candidates.length ? { key: candidates[0][0], record: candidates[0][1] } : null;
+};
+
+const stateMaterializationPackage = ({
+  symbol,
+  prerequisites,
+  disposition,
+  repairEligibleNow,
+  selected,
+  sourceLineage,
+  orderLedger,
+  orderLedgerFileSha256,
+  idempotencyStatus,
+  idempotencyPass,
+  ownershipClassification,
+  ownershipPass,
+  fillStateStatus,
+  fillStatePass,
+  generatedAt
+}) => {
+  const dynamicallySelected = prerequisites?.reviewReady === true &&
+    disposition === RECOVERY_DISPOSITIONS.FRESH_SOURCE_MATERIALIZATION_REQUIRED &&
+    repairEligibleNow === false;
+  if (!dynamicallySelected) return null;
+
+  const current = ledgerRecordForMaterialization({
+    orderLedger,
+    symbol,
+    stage6Hash: sourceLineage.expectedStage6Hash,
+    stage6File: sourceLineage.expectedStage6File
+  });
+  const before = current
+    ? Object.fromEntries(MATERIALIZATION_FIELDS.map((field) => [field, current.record?.[field] ?? null]))
+    : null;
+  const after = {
+    stopLossPrice: toNum(selected?.stopPrice),
+    takeProfitPrice: toNum(selected?.targetPrice),
+    stage6Hash: selected?.stage6Hash || null,
+    stage6File: selected?.stage6File || null,
+    updatedAt: selected?.generatedAt || null
+  };
+  const proposedDiff = before
+    ? MATERIALIZATION_FIELDS
+      .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+      .map((field) => ({ field, before: before[field], after: after[field] }))
+    : [];
+  const evidenceMissing = [];
+  if (!current) evidenceMissing.push("current_order_ledger_record_missing");
+  if (current && proposedDiff.length === 0) evidenceMissing.push("no_guard_state_diff");
+  const proposalStatus = !current
+    ? "BLOCKED_CURRENT_STATE_RECORD_MISSING"
+    : proposedDiff.length === 0
+      ? "BLOCKED_NO_MATERIALIZATION_DIFF"
+      : "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY";
+  const backupDir = `${STATE_DIR}/migration-backups/<timestamp>`;
+  const currentRecordHash = current ? sha256(JSON.stringify({ key: current.key, record: current.record })) : null;
+  const proposedRecordHash = current
+    ? sha256(JSON.stringify({ key: current.key, record: { ...current.record, ...after } }))
+    : null;
+
+  return {
+    proposalStatus,
+    reportOnly: true,
+    selectionContract: {
+      reviewReady: true,
+      recoveryDisposition: disposition,
+      repairEligibleNow: false,
+      dynamicSelection: true
+    },
+    currentStateSnapshot: current
+      ? {
+          stateFile: "order-ledger.json",
+          recordKey: current.key,
+          fileSha256: orderLedgerFileSha256,
+          recordSha256: currentRecordHash,
+          guardFields: before
+        }
+      : null,
+    selectedFreshSourceLineage: {
+      sourceType: sourceLineage.sourceType,
+      producedAt: sourceLineage.producedAt,
+      receivedAt: sourceLineage.receivedAt,
+      ttlMin: sourceLineage.ttlMin,
+      expiresAt: sourceLineage.expiresAt,
+      stage6Hash: sourceLineage.stage6Hash,
+      stage6File: sourceLineage.stage6File,
+      dispatchStatus: sourceLineage.dispatchStatus,
+      positionLineageMatchesCurrentPosition: sourceLineage.positionLineageMatchesCurrentPosition,
+      lifecycle: sourceLineage.lifecycle
+    },
+    materializationFields: [...MATERIALIZATION_FIELDS],
+    proposedDiff,
+    proposedRecordSha256: proposedRecordHash,
+    evidence: {
+      idempotencyStatus,
+      idempotencyPass,
+      ownershipClassification,
+      ownershipPass,
+      fillStateStatus,
+      fillStatePass
+    },
+    evidenceMissing,
+    backupPlan: {
+      requiredBeforeApply: true,
+      backupPathTemplate: `${backupDir}/order-ledger.json.before`,
+      auditRecordPathTemplate: `${backupDir}/guard-source-materialization-audit.json`,
+      preserveFailedStatePathTemplate: `${backupDir}/order-ledger.json.failed`
+    },
+    auditRecordPreview: {
+      type: "guard_source_state_materialization",
+      generatedAt,
+      symbol,
+      recordKey: current?.key || null,
+      sourceType: sourceLineage.sourceType,
+      sourceProducedAt: sourceLineage.producedAt,
+      sourceStage6Hash: sourceLineage.stage6Hash,
+      sourceStage6File: sourceLineage.stage6File,
+      beforeRecordSha256: currentRecordHash,
+      proposedRecordSha256: proposedRecordHash,
+      changedFields: proposedDiff.map((change) => change.field),
+      stateMutationApplied: false
+    },
+    postVerifyChecks: [
+      "approved order-ledger record hash matched before write",
+      "only proposed guard metadata fields changed",
+      "idempotency, ownership, and fill-state evidence remained unchanged",
+      "guard-source recovery no longer reports state materialization required for the selected row",
+      "repairEligibleNow remains false until a separate protective repair review"
+    ],
+    rollbackPlan: {
+      restoreAtomically: true,
+      restoreFrom: `${backupDir}/order-ledger.json.before`,
+      preserveFailedStateAt: `${backupDir}/order-ledger.json.failed`,
+      rerunReports: ["performance-dashboard", "position-protection-root-cause-audit", "guard-source-recovery-plan"]
+    },
+    requiredApprovalPhrase: REQUIRED_STATE_MATERIALIZATION_APPROVAL,
+    approvalScope: "alpha-exec-engine state-only selected dynamic guard-source row; no broker mutation",
+    stateMutationAllowed: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
+    brokerMutationAllowed: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false
+  };
+};
+
 const laneFromDecision = (decision) => {
   if (decision.recoveryDecision === "NO_ACTION_BROKER_CHILDREN_PRESENT") {
     return PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED;
@@ -547,6 +722,9 @@ const buildRow = ({
   reconciliationRow,
   preview,
   sourcePriority,
+  orderLedger,
+  orderLedgerFileSha256,
+  generatedAt,
   previousRow,
   refreshReceivedAt,
   ttlMin,
@@ -604,6 +782,7 @@ const buildRow = ({
   const fillStateConfirmed =
     fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
     fillStateRow?.requiresLedgerTerminalizationReview !== true;
+  const fillStateStatus = fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || null;
   const repairEligibleNow =
     recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY &&
     protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE &&
@@ -678,13 +857,30 @@ const buildRow = ({
   );
   const owner = recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
   const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
+  const materializationPackage = stateMaterializationPackage({
+    symbol,
+    prerequisites: materializationPrerequisites,
+    disposition,
+    repairEligibleNow,
+    selected,
+    sourceLineage,
+    orderLedger,
+    orderLedgerFileSha256,
+    idempotencyStatus,
+    idempotencyPass,
+    ownershipClassification,
+    ownershipPass,
+    fillStateStatus,
+    fillStatePass: fillStateConfirmed,
+    generatedAt
+  });
   return {
     symbol,
     positionLineageKey,
     currentPrice: toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice),
     qty: toNum(refreshRow?.qty ?? protectionRow?.qty ?? reconciliationRow?.qty),
     ownershipClassification,
-    fillStateStatus: fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || null,
+    fillStateStatus,
     refreshDecision: refreshRow?.refreshDecision || null,
     lineageFreshnessStatus: lineageRow?.freshnessStatus || lineageRow?.lineageStatus || null,
     lineageRootCause: lineageRow?.rootCause || null,
@@ -739,6 +935,7 @@ const buildRow = ({
     sourcePreservation: preservation,
     stateMaterializationRequired: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     stateMaterializationPrerequisites: materializationPrerequisites,
+    stateMaterializationPackage: materializationPackage,
     protectionLane,
     blockerDomain,
     repairEligibleNow,
@@ -788,17 +985,18 @@ const buildMarkdown = (report) => {
   lines.push(`- source_root_causes: \`${JSON.stringify(report.summary.sourceRootCauseCounts)}\``);
   lines.push(`- recovery_dispositions: \`${JSON.stringify(report.summary.recoveryDispositionCounts)}\``);
   lines.push(`- materialization_prerequisites: \`rows=${report.summary.materializationPrerequisiteRows} reviewReady=${report.summary.materializationReviewReady} failures=${report.summary.materializationPrerequisiteFailures} unclassified=${report.summary.materializationPrerequisiteUnclassified}\``);
+  lines.push(`- materialization_packages: \`rows=${report.summary.materializationPackageRows} ready=${report.summary.materializationPackagesReady} missing=${report.summary.materializationPackageMissing} evidenceMissing=${report.summary.materializationPackageEvidenceMissing} excludedLeaks=${report.summary.materializationPackageExcludedLaneLeaks}\``);
   lines.push(`- geometry_root_causes: \`${JSON.stringify(report.summary.geometryRootCauseCounts)}\``);
   lines.push(`- geometry_components: \`${JSON.stringify(report.summary.geometryInvalidComponentCounts)}\``);
   lines.push(`- source_preservation: \`${JSON.stringify(report.summary.sourcePreservationStatusCounts)}\``);
   lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Package | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.stateMaterializationPackage?.proposalStatus || "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -830,6 +1028,9 @@ const main = () => {
   const lifecycleGuardSource = readJson(FILES.lifecycleGuardSource);
   const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
+  const orderLedger = readJson(FILES.orderLedger);
+  const orderLedgerText = fs.existsSync(FILES.orderLedger) ? fs.readFileSync(FILES.orderLedger, "utf8") : null;
+  const orderLedgerFileSha256 = orderLedgerText == null ? null : sha256(orderLedgerText);
   const preview = readJson(FILES.preview);
   const sourcePriority = Array.isArray(guardRefresh?.config?.sourcePriority) && guardRefresh.config.sourcePriority.length
     ? guardRefresh.config.sourcePriority.map((value) => String(value || "").trim()).filter(Boolean)
@@ -856,6 +1057,9 @@ const main = () => {
       reconciliationRow: reconciliationBySymbol.get(symbol) || null,
       preview,
       sourcePriority,
+      orderLedger,
+      orderLedgerFileSha256,
+      generatedAt,
       previousRow: previousBySymbol.get(symbol) || null,
       refreshReceivedAt,
       ttlMin,
@@ -864,6 +1068,7 @@ const main = () => {
   });
   const freshSourceRows = rows.filter((row) => row.protectionLane === PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED);
   const materializationRows = rows.filter((row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED);
+  const materializationPackages = rows.filter((row) => row.stateMaterializationPackage);
   const geometryRootCauseRows = rows.filter((row) => row.recoveryDisposition === RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE);
 
   const summary = {
@@ -899,6 +1104,21 @@ const main = () => {
     materializationReviewReady: count(materializationRows, (row) => row.stateMaterializationPrerequisites?.reviewReady === true),
     materializationPrerequisiteFailures: count(materializationRows, (row) => (row.stateMaterializationPrerequisites?.prerequisiteFailures || []).length > 0),
     materializationPrerequisiteUnclassified: count(materializationRows, (row) => !row.stateMaterializationPrerequisites),
+    materializationPackageRows: materializationPackages.length,
+    materializationPackagesReady: count(materializationPackages, (row) => row.stateMaterializationPackage?.proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"),
+    materializationPackageMissing: count(materializationRows, (row) => row.stateMaterializationPrerequisites?.reviewReady === true && !row.stateMaterializationPackage),
+    materializationPackageEvidenceMissing: count(materializationPackages, (row) => (row.stateMaterializationPackage?.evidenceMissing || []).length > 0),
+    materializationPackageExcludedLaneLeaks: count(rows, (row) => row.stateMaterializationPackage && !(
+      row.stateMaterializationPrerequisites?.reviewReady === true &&
+      row.recoveryDisposition === RECOVERY_DISPOSITIONS.FRESH_SOURCE_MATERIALIZATION_REQUIRED &&
+      row.repairEligibleNow === false
+    )),
+    materializationPackageDiffOutsideGuardFields: count(materializationPackages, (row) =>
+      (row.stateMaterializationPackage?.proposedDiff || []).some((change) => !MATERIALIZATION_FIELDS.includes(change?.field))
+    ),
+    materializationPackageUnclassified: count(materializationPackages, (row) =>
+      !MATERIALIZATION_PACKAGE_STATUSES.includes(row.stateMaterializationPackage?.proposalStatus)
+    ),
     geometryRootCauseRows: geometryRootCauseRows.length,
     geometryRootCauseCounts: geometryRootCauseRows.reduce((counts, row) => {
       for (const reason of row.recoveryGeometry?.rootCauses || []) counts[reason] = (counts[reason] || 0) + 1;
@@ -950,6 +1170,11 @@ const main = () => {
       && summary.ttlExpiredClassifiedCurrentSourceFresh === 0
       && summary.producerMissingOwnershipLaneLeaks === 0,
     materializationPrerequisitesClassified: summary.materializationPrerequisiteUnclassified === 0,
+    materializationPackagesComplete: summary.materializationPackageMissing === 0 &&
+      summary.materializationPackageEvidenceMissing === 0 &&
+      summary.materializationPackageExcludedLaneLeaks === 0 &&
+      summary.materializationPackageDiffOutsideGuardFields === 0 &&
+      summary.materializationPackageUnclassified === 0,
     geometryRootCausesClassified: summary.geometryRootCauseUnclassified === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
@@ -958,6 +1183,9 @@ const main = () => {
     summary.repairEligibleWithoutOwnershipPass > 0 || summary.repairEligibleWithoutFillStatePass > 0 ||
     summary.dispatchMismatchRepairEligible > 0 || summary.ttlExpiredClassifiedCurrentSourceFresh > 0 ||
     summary.producerMissingOwnershipLaneLeaks > 0 || summary.materializationPrerequisiteUnclassified > 0 ||
+    summary.materializationPackageMissing > 0 || summary.materializationPackageEvidenceMissing > 0 ||
+    summary.materializationPackageExcludedLaneLeaks > 0 || summary.materializationPackageDiffOutsideGuardFields > 0 ||
+    summary.materializationPackageUnclassified > 0 ||
     summary.geometryRootCauseUnclassified > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
