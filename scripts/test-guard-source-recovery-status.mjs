@@ -111,8 +111,8 @@ const dispatchMismatch = source({
 });
 const invalid = source({
   type: "stage6_20trade_loop",
-  stopPrice: 105,
-  targetPrice: 130,
+  stopPrice: 90,
+  targetPrice: 95,
   stage6Hash: "latest-hash",
   stage6File: "latest-stage6.json"
 });
@@ -295,6 +295,24 @@ assert.equal(bySymbol.get("MAT")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MAT")?.stateMaterializationRequired, true);
 assert.equal(bySymbol.get("MAT")?.recoveryRootCause, "state_materialization_missing");
 assert.equal(bySymbol.get("MAT")?.recoveryDisposition, "FRESH_SOURCE_MATERIALIZATION_REQUIRED");
+assert.deepEqual(bySymbol.get("MAT")?.stateMaterializationPrerequisites, {
+  applicable: true,
+  mode: "report_only",
+  recoverySourceAvailable: true,
+  recoverySourceFresh: true,
+  recoverySourceDispatchValid: true,
+  recoverySourceLineageMatchesCurrentPosition: true,
+  recoverySourceGeometryValid: true,
+  idempotencyPass: true,
+  ownershipPass: true,
+  fillStatePass: true,
+  recoverySourceAppliedToCurrentState: false,
+  prerequisiteFailures: [],
+  missingEvidence: ["fresh_recovery_source_not_applied_to_current_state"],
+  reviewReady: true,
+  repairEligibleNow: false,
+  stateMutationAllowed: false
+});
 assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("NONE")?.recoveryDisposition, "NO_CURRENT_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
@@ -312,8 +330,13 @@ assert.equal(bySymbol.get("MISS")?.recoveryOwner, "position_ownership_proof");
 assert.equal(bySymbol.get("MISS")?.blockerDomain, "ownership");
 assert.equal(bySymbol.get("BAD")?.recoveryRootCause, "source_geometry_unusable");
 assert.equal(bySymbol.get("BAD")?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
+assert.deepEqual(bySymbol.get("BAD")?.recoveryGeometry?.invalidComponents, ["target"]);
+assert.deepEqual(bySymbol.get("BAD")?.recoveryGeometry?.rootCauses, ["target_not_above_current"]);
 assert.equal(bySymbol.get("TTL_BAD")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("TTL_BAD")?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
+assert.equal(bySymbol.get("TTL_BAD")?.recoveryOwner, "guard_geometry_producer");
+assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.invalidComponents, ["stop"]);
+assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.rootCauses, ["stop_not_below_current"]);
 assert.equal(bySymbol.get("TTL_BAD")?.nextAction, "route_to_guard_geometry_root_cause_no_repair");
 assert.equal(bySymbol.get("PROD")?.recoveryRootCause, "source_producer_missing");
 assert.equal(bySymbol.get("PROD")?.blockerDomain, "protection");
@@ -341,6 +364,17 @@ assert.equal(report.summary.repairEligibleWithoutFillStatePass, 0);
 assert.equal(report.summary.dispatchMismatchRepairEligible, 0);
 assert.equal(report.summary.ttlExpiredClassifiedCurrentSourceFresh, 0);
 assert.equal(report.summary.producerMissingOwnershipLaneLeaks, 0);
+assert.equal(report.summary.materializationPrerequisiteRows, 1);
+assert.equal(report.summary.materializationReviewReady, 1);
+assert.equal(report.summary.materializationPrerequisiteUnclassified, 0);
+assert.equal(report.summary.geometryRootCauseRows, 2);
+assert.equal(report.summary.geometryRootCauseUnclassified, 0);
+assert.deepEqual(report.summary.geometryInvalidComponentCounts, {
+  stop: 1,
+  current: 0,
+  target: 1,
+  producer: 0
+});
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
 assert.equal(report.summary.stateMutationAttempted, false);
