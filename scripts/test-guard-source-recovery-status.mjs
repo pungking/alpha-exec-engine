@@ -7,6 +7,7 @@ import path from "node:path";
 
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "guard-source-recovery-status-"));
 const now = new Date().toISOString();
+const recent = new Date(Date.parse(now) - (10 * 60_000)).toISOString();
 const stale = "2020-01-01T00:00:00.000Z";
 const writeJson = (name, payload) => fs.writeFileSync(
   path.join(stateDir, name),
@@ -111,6 +112,7 @@ const dispatchMismatch = source({
 });
 const invalid = source({
   type: "stage6_20trade_loop",
+  generatedAt: recent,
   stopPrice: 90,
   targetPrice: 95,
   stage6Hash: "latest-hash",
@@ -125,11 +127,57 @@ const ttlInvalid = source({
   stage6Hash: "latest-hash",
   stage6File: "latest-stage6.json"
 });
+const producerInvalid = source({
+  type: "stage6_20trade_loop",
+  generatedAt: recent,
+  stopPrice: 105,
+  targetPrice: 120,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const lifecycleInvalid = source({
+  type: "position_lifecycle_revalidated_guard",
+  generatedAt: recent,
+  stopPrice: 105,
+  targetPrice: 120,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const basisInvalid = source({
+  type: "stage6_20trade_loop",
+  generatedAt: recent,
+  stopPrice: 90,
+  targetPrice: 95,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const evidenceMissingInvalid = source({
+  type: "stage6_20trade_loop",
+  generatedAt: recent,
+  stopPrice: 90,
+  targetPrice: 95,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
 
-writeJson("performance-dashboard.json", { generatedAt: now, live: { available: true } });
+const geometrySymbols = ["BAD", "TTL_BAD", "SRC_BAD", "LIFE_BAD", "BASIS_BAD", "EVIDENCE_BAD"];
+writeJson("performance-dashboard.json", {
+  generatedAt: now,
+  live: {
+    available: true,
+    positions: geometrySymbols.map((symbol) => ({
+      symbol,
+      currentPrice: 100,
+      currentPriceObservedAt: now,
+      currentPriceBasis: "broker_position_current_price",
+      marketTimezone: "America/New_York",
+      adjustmentType: symbol === "BASIS_BAD" ? "unadjusted" : "split_adjusted"
+    }))
+  }
+});
 writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
 writeJson("position-protection-root-cause-audit.json", {
-  summary: { protectionBlockerRows: 8 },
+  summary: { protectionBlockerRows: 12 },
   rows: [
     protectionRow("CURR", {
       effectiveGuardSource: "recommendation_ledger",
@@ -172,6 +220,10 @@ writeJson("position-protection-root-cause-audit.json", {
     }),
     protectionRow("BAD"),
     protectionRow("TTL_BAD"),
+    protectionRow("SRC_BAD"),
+    protectionRow("LIFE_BAD"),
+    protectionRow("BASIS_BAD"),
+    protectionRow("EVIDENCE_BAD"),
     protectionRow("PROD")
   ]
 });
@@ -209,6 +261,34 @@ const refreshPlan = {
       afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
       blockers: ["selected_source_stale", "selected_source_invalid_geometry"]
     }),
+    refreshRow("SRC_BAD", producerInvalid, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_invalid_geometry"]
+    }),
+    refreshRow("LIFE_BAD", lifecycleInvalid, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_invalid_geometry"]
+    }),
+    refreshRow("BASIS_BAD", basisInvalid, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_invalid_geometry"]
+    }),
+    refreshRow("EVIDENCE_BAD", evidenceMissingInvalid, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_invalid_geometry"]
+    }),
     refreshRow("PROD", null, {
       refreshReady: false,
       refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
@@ -229,6 +309,10 @@ writeJson("guard-metadata-lineage-audit.json", {
     { symbol: "MISS", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" },
     { symbol: "BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "TTL_BAD", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
+    { symbol: "SRC_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
+    { symbol: "LIFE_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
+    { symbol: "BASIS_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
+    { symbol: "EVIDENCE_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "PROD", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" }
   ]
 });
@@ -261,11 +345,34 @@ writeJson("position-lifecycle-guard-source-plan.json", {
         stage6Hash: lifecycleMismatch.stage6Hash,
         stage6File: lifecycleMismatch.stage6File
       }
+    },
+    {
+      symbol: "LIFE_BAD",
+      lifecycleReady: true,
+      lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
+      originalSource: {
+        type: "stage6_20trade_loop",
+        generatedAt: recent,
+        stopPrice: 90,
+        targetPrice: 120,
+        stage6Hash: "latest-hash",
+        stage6File: "latest-stage6.json"
+      },
+      lifecycleSource: {
+        type: "position_lifecycle_revalidated_guard",
+        generatedAt: recent,
+        stopPrice: 105,
+        targetPrice: 120,
+        originalSourceType: "stage6_20trade_loop",
+        originalGeneratedAt: recent,
+        stage6Hash: "latest-hash",
+        stage6File: "latest-stage6.json"
+      }
     }
   ]
 });
 writeJson("fill-state-reconciliation-audit.json", {
-  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD", "TTL_BAD", "PROD"].map((symbol) => ({
+  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD", "TTL_BAD", "SRC_BAD", "LIFE_BAD", "BASIS_BAD", "EVIDENCE_BAD", "PROD"].map((symbol) => ({
     symbol,
     reconciliationDecision: "FILL_STATE_CONFIRMED",
     requiresLedgerTerminalizationReview: false
@@ -283,6 +390,46 @@ writeJson("order-ledger.json", {
       stopLossPrice: 90,
       takeProfitPrice: 120,
       updatedAt: stale
+    },
+    "latest-hash:TTL_BAD:buy": {
+      idempotencyKey: "latest-hash:TTL_BAD:buy",
+      symbol: "TTL_BAD",
+      status: "filled",
+      stage6Hash: "latest-hash",
+      stage6File: "latest-stage6.json",
+      limitPrice: 120,
+      stopLossPrice: 105,
+      takeProfitPrice: 130,
+      createdAt: stale,
+      updatedAt: stale,
+      priceBasis: "order_limit_price",
+      marketTimezone: "America/New_York",
+      adjustmentType: "split_adjusted"
+    }
+  }
+});
+writeJson("recommendation-ledger.json", { rows: [] });
+writeJson("stage6-20trade-loop.json", {
+  rows: {
+    "latest-hash:BAD:buy": {
+      symbol: "BAD", stage6Hash: "latest-hash", stage6File: "latest-stage6.json", runDate: recent,
+      entryPlanned: 92, stopPlanned: 90, targetPlanned: 95,
+      priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
+    },
+    "latest-hash:SRC_BAD:buy": {
+      symbol: "SRC_BAD", stage6Hash: "latest-hash", stage6File: "latest-stage6.json", runDate: recent,
+      entryPlanned: 100, stopPlanned: 105, targetPlanned: 120,
+      priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
+    },
+    "latest-hash:LIFE_BAD:buy": {
+      symbol: "LIFE_BAD", stage6Hash: "latest-hash", stage6File: "latest-stage6.json", runDate: recent,
+      entryPlanned: 100, stopPlanned: 90, targetPlanned: 120,
+      priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
+    },
+    "latest-hash:BASIS_BAD:buy": {
+      symbol: "BASIS_BAD", stage6Hash: "latest-hash", stage6File: "latest-stage6.json", runDate: recent,
+      entryPlanned: 92, stopPlanned: 90, targetPlanned: 95,
+      priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
     }
   }
 });
@@ -388,11 +535,44 @@ assert.deepEqual(bySymbol.get("BAD")?.recoveryGeometry?.invalidComponents, ["tar
 assert.deepEqual(bySymbol.get("BAD")?.recoveryGeometry?.rootCauses, ["target_not_above_current"]);
 assert.equal(bySymbol.get("TTL_BAD")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("TTL_BAD")?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
-assert.equal(bySymbol.get("TTL_BAD")?.recoveryOwner, "guard_geometry_producer");
 assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.invalidComponents, ["stop"]);
 assert.deepEqual(bySymbol.get("TTL_BAD")?.recoveryGeometry?.rootCauses, ["stop_not_below_current"]);
-assert.equal(bySymbol.get("TTL_BAD")?.nextAction, "route_to_guard_geometry_root_cause_no_repair");
-for (const symbol of ["BAD", "TTL_BAD", "DISP", "MISS"]) {
+const expectedGeometryClassifications = {
+  BAD: "CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE",
+  TTL_BAD: "CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE",
+  SRC_BAD: "STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE",
+  LIFE_BAD: "POSITION_LIFECYCLE_TRANSFORM_DRIFT",
+  BASIS_BAD: "SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH",
+  EVIDENCE_BAD: "SOURCE_GEOMETRY_EVIDENCE_MISSING"
+};
+for (const [symbol, classification] of Object.entries(expectedGeometryClassifications)) {
+  const row = bySymbol.get(symbol);
+  assert.equal(row?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
+  assert.equal(row?.geometryDriftAudit?.geometryDriftClassification, classification);
+  assert.ok(row?.geometryDriftAudit?.geometryDriftOwner);
+  assert.ok(row?.geometryDriftAudit?.blockedReason);
+  assert.ok(row?.geometryDriftAudit?.nextAction);
+  assert.equal(row?.repairEligibleNow, false);
+}
+assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
+assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.evaluationGeometry?.targetAboveCurrent, false);
+assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
+assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.evaluationGeometry?.stopBelowCurrent, false);
+assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, false);
+assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.producerHandoff?.targetRepository, "US_Alpha_Seeker");
+assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.producerHandoff?.mode, "report_only");
+assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.producerHandoff, null);
+assert.equal(bySymbol.get("LIFE_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
+assert.equal(bySymbol.get("LIFE_BAD")?.geometryDriftAudit?.lifecycleTransform?.outputGeometry?.valid, false);
+assert.equal(bySymbol.get("BASIS_BAD")?.geometryDriftAudit?.evidenceCompleteness, "INCOMPARABLE");
+assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.evidenceCompleteness, "MISSING_CORE_EVIDENCE");
+assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.stopPrice, 90);
+assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.targetPrice, 95);
+assert.equal(
+  bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.expiresAt,
+  new Date(Date.parse(recent) + (30 * 60_000)).toISOString()
+);
+for (const symbol of [...Object.keys(expectedGeometryClassifications), "DISP", "MISS"]) {
   assert.equal(bySymbol.get(symbol)?.stateMaterializationPackage, null);
 }
 assert.equal(bySymbol.get("PROD")?.recoveryRootCause, "source_producer_missing");
@@ -428,14 +608,23 @@ assert.equal(report.summary.materializationPackageRows, 1);
 assert.equal(report.summary.materializationPackagesReady, 1);
 assert.equal(report.summary.materializationPackageEvidenceMissing, 0);
 assert.equal(report.summary.materializationPackageExcludedLaneLeaks, 0);
-assert.equal(report.summary.geometryRootCauseRows, 2);
+assert.equal(report.summary.geometryRootCauseRows, 6);
 assert.equal(report.summary.geometryRootCauseUnclassified, 0);
 assert.deepEqual(report.summary.geometryInvalidComponentCounts, {
-  stop: 1,
+  stop: 3,
   current: 0,
-  target: 1,
+  target: 3,
   producer: 0
 });
+assert.deepEqual(report.summary.geometryDriftClassificationCounts, {
+  CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE: 2,
+  STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE: 1,
+  POSITION_LIFECYCLE_TRANSFORM_DRIFT: 1,
+  SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH: 1,
+  SOURCE_GEOMETRY_EVIDENCE_MISSING: 1
+});
+assert.equal(report.summary.geometryDriftUnclassified, 0);
+assert.equal(report.classificationConsistency.geometryDriftClassified, true);
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
 assert.equal(report.summary.stateMutationAttempted, false);

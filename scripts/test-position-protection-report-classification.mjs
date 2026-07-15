@@ -180,6 +180,15 @@ assert.equal(opsHealth.metrics.guardSourceRecoveryStatusUnknown, 0);
 assert.deepEqual(opsHealth.metrics.guardSourceRecoveryStatusCounts, recovery.summary.recoveryStatusCounts);
 assert.deepEqual(liveReadiness.protectionClassification.recoveryStatusCounts, recovery.summary.recoveryStatusCounts);
 assert.equal(liveReadiness.protectionClassification.recoveryStatusUnknown, 0);
+assert.deepEqual(
+  liveReadiness.protectionClassification.geometryDriftClassificationCounts,
+  recovery.summary.geometryDriftClassificationCounts
+);
+assert.deepEqual(
+  liveReadiness.protectionClassification.geometryDriftOwnerCounts,
+  recovery.summary.geometryDriftOwnerCounts
+);
+assert.equal(liveReadiness.protectionClassification.geometryDriftUnclassified, 0);
 for (const downstream of [recovery, persistent]) {
   assert.equal(downstream.summary.unclassifiedRows, 0);
   assert.equal(downstream.summary.protectionBlockerRows, report.summary.protectionBlockerRows);

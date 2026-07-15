@@ -12,6 +12,8 @@ const FILES = {
   fillStateReconciliation: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   orderLedger: `${STATE_DIR}/order-ledger.json`,
+  recommendationLedger: `${STATE_DIR}/recommendation-ledger.json`,
+  stage6TradeLoop: `${STATE_DIR}/stage6-20trade-loop.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
 };
 const OUTPUT_JSON = `${STATE_DIR}/guard-source-recovery-plan.json`;
@@ -92,6 +94,13 @@ const RECOVERY_DISPOSITIONS = Object.freeze({
   FRESH_SOURCE_MATERIALIZATION_REQUIRED: "FRESH_SOURCE_MATERIALIZATION_REQUIRED",
   NO_CURRENT_SOURCE_AVAILABLE: "NO_CURRENT_SOURCE_AVAILABLE",
   SOURCE_GEOMETRY_UNUSABLE: "SOURCE_GEOMETRY_UNUSABLE"
+});
+const GEOMETRY_DRIFT_CLASSIFICATIONS = Object.freeze({
+  STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE: "STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE",
+  POSITION_LIFECYCLE_TRANSFORM_DRIFT: "POSITION_LIFECYCLE_TRANSFORM_DRIFT",
+  CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE: "CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE",
+  SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH: "SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH",
+  SOURCE_GEOMETRY_EVIDENCE_MISSING: "SOURCE_GEOMETRY_EVIDENCE_MISSING"
 });
 const STAGE6_DISPATCH_SOURCES = new Set([
   "position_lifecycle_revalidated_guard",
@@ -386,6 +395,290 @@ const recoveryGeometryEvidence = ({ producerReportedValid, valid, stopPrice, cur
     targetAboveCurrent,
     invalidComponents,
     rootCauses
+  };
+};
+
+const artifactRows = (payload, key) => {
+  const value = payload?.[key];
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return Object.values(value);
+  return [];
+};
+
+const sameStage6Identity = (row, selected) => {
+  const rowHash = row?.stage6Hash || null;
+  const rowFile = row?.stage6File || row?.latestStage6File || null;
+  const selectedHash = selected?.stage6Hash || null;
+  const selectedFile = selected?.stage6File || null;
+  if (selectedHash && rowHash) return String(selectedHash) === String(rowHash);
+  if (selectedFile && rowFile) return String(selectedFile) === String(rowFile);
+  return !selectedHash && !selectedFile;
+};
+
+const latestMatchingRow = (rows, symbol, selected, observedAt) => rows
+  .filter((row) => asSymbol(row?.symbol) === symbol && sameStage6Identity(row, selected))
+  .sort((a, b) => Date.parse(String(observedAt(b) || "")) - Date.parse(String(observedAt(a) || "")))[0] || null;
+
+const sourceEvidenceRecord = ({ symbol, selected, recommendationLedger, stage6TradeLoop, orderLedger }) => {
+  const loopRow = latestMatchingRow(
+    artifactRows(stage6TradeLoop, "rows"), symbol, selected, (row) => row?.runDate
+  );
+  const recommendationRow = latestMatchingRow(
+    artifactRows(recommendationLedger, "recommendations").length
+      ? artifactRows(recommendationLedger, "recommendations")
+      : artifactRows(recommendationLedger, "rows"),
+    symbol,
+    selected,
+    (row) => row?.updatedAt || row?.lastSeenAt
+  );
+  const orderRow = latestMatchingRow(
+    artifactRows(orderLedger, "orders"), symbol, selected, (row) => row?.filledAt || row?.createdAt || row?.updatedAt
+  );
+  const byType = {
+    stage6_20trade_loop: loopRow,
+    recommendation_ledger: recommendationRow,
+    order_ledger: orderRow
+  };
+  const preferred = selected?.type === "position_lifecycle_revalidated_guard"
+    ? loopRow || recommendationRow || orderRow
+    : byType[selected?.type] || loopRow || recommendationRow || orderRow;
+  if (!preferred) return null;
+  if (preferred === loopRow) return { type: "stage6_20trade_loop", row: preferred };
+  if (preferred === recommendationRow) return { type: "recommendation_ledger", row: preferred };
+  return { type: "order_ledger", row: preferred };
+};
+
+const priceGeometry = ({ stopPrice, currentPrice, targetPrice }) => {
+  const stop = toNum(stopPrice);
+  const current = toNum(currentPrice);
+  const target = toNum(targetPrice);
+  const stopBelowCurrent = stop != null && current != null ? stop < current : null;
+  const targetAboveCurrent = target != null && current != null ? target > current : null;
+  const targetAboveStop = target != null && stop != null ? target > stop : null;
+  const risk = stop != null && current != null ? current - stop : null;
+  const reward = target != null && current != null ? target - current : null;
+  return {
+    stopPrice: stop,
+    currentPrice: current,
+    targetPrice: target,
+    stopBelowCurrent,
+    targetAboveCurrent,
+    targetAboveStop,
+    stopDistancePct: current > 0 && stop != null ? round(((current - stop) / current) * 100, 4) : null,
+    targetDistancePct: current > 0 && target != null ? round(((target - current) / current) * 100, 4) : null,
+    riskReward: risk > 0 && reward != null ? round(reward / risk, 4) : null,
+    valid: stopBelowCurrent === true && targetAboveCurrent === true && targetAboveStop === true
+  };
+};
+
+const sourceSnapshot = ({ symbol, selected, sourceLineage, recommendationLedger, stage6TradeLoop, orderLedger, ttlMin }) => {
+  const evidence = sourceEvidenceRecord({ symbol, selected, recommendationLedger, stage6TradeLoop, orderLedger });
+  const row = evidence?.row || null;
+  const type = evidence?.type || selected?.type || null;
+  const currentPrice = type === "stage6_20trade_loop"
+    ? toNum(row?.entryFilled ?? row?.entryPlanned)
+    : type === "recommendation_ledger"
+      ? toNum(row?.currentPrice ?? row?.entry)
+      : type === "order_ledger"
+        ? toNum(row?.avgFillPrice ?? row?.filledAvgPrice ?? row?.fillPrice ?? row?.limitPrice)
+        : null;
+  const stopPrice = type === "stage6_20trade_loop"
+    ? toNum(row?.stopPlanned ?? selected?.stopPrice)
+    : type === "recommendation_ledger"
+      ? toNum(row?.stop ?? selected?.stopPrice)
+      : type === "order_ledger"
+        ? toNum(row?.stopLossPrice ?? selected?.stopPrice)
+        : toNum(selected?.stopPrice);
+  const targetPrice = type === "stage6_20trade_loop"
+    ? toNum(row?.targetPlanned ?? selected?.targetPrice)
+    : type === "recommendation_ledger"
+      ? toNum(row?.target ?? selected?.targetPrice)
+      : type === "order_ledger"
+        ? toNum(row?.takeProfitPrice ?? selected?.targetPrice)
+        : toNum(selected?.targetPrice);
+  const producedAt = type === "stage6_20trade_loop"
+    ? row?.runDate
+    : type === "recommendation_ledger"
+      ? row?.updatedAt || row?.lastSeenAt
+      : type === "order_ledger"
+        ? row?.filledAt || row?.createdAt || row?.updatedAt
+        : selected?.generatedAt;
+  const effectiveProducedAt = producedAt || selected?.generatedAt || null;
+  return {
+    sourceType: type,
+    producedAt: effectiveProducedAt,
+    receivedAt: sourceLineage?.receivedAt || null,
+    ttlMin,
+    expiresAt: addMinutes(effectiveProducedAt, ttlMin),
+    stage6Hash: row?.stage6Hash || selected?.stage6Hash || null,
+    stage6File: row?.stage6File || row?.latestStage6File || selected?.stage6File || null,
+    dispatchStatus: sourceLineage?.dispatchStatus || null,
+    stopPrice,
+    currentPrice,
+    targetPrice,
+    priceBasis: row?.priceBasis || (type === "stage6_20trade_loop" ? "stage6_entry" : type === "recommendation_ledger" ? "recommendation_entry" : type === "order_ledger" ? "order_fill_or_limit" : null),
+    marketTimezone: row?.marketTimezone || row?.market_timezone || null,
+    adjustmentType: row?.adjustmentType || row?.adjustment_type || null,
+    evidenceRecordFound: Boolean(row)
+  };
+};
+
+const lifecycleTransformEvidence = ({ lifecycleRow, selected, source, evaluation }) => {
+  const applied = selected?.type === "position_lifecycle_revalidated_guard" && lifecycleRow?.lifecycleReady === true;
+  const input = lifecycleRow?.originalSource || source;
+  const output = lifecycleRow?.lifecycleSource || null;
+  const currentPrice = toNum(lifecycleRow?.currentPrice ?? evaluation?.currentPrice ?? source?.currentPrice);
+  const inputGeometry = priceGeometry({
+    stopPrice: input?.stopPrice ?? source?.stopPrice,
+    currentPrice,
+    targetPrice: input?.targetPrice ?? source?.targetPrice
+  });
+  const outputGeometry = output ? priceGeometry({
+    stopPrice: output?.stopPrice,
+    currentPrice,
+    targetPrice: output?.targetPrice
+  }) : null;
+  const changed = Boolean(output && (
+    toNum(input?.stopPrice ?? source?.stopPrice) !== toNum(output?.stopPrice) ||
+    toNum(input?.targetPrice ?? source?.targetPrice) !== toNum(output?.targetPrice)
+  ));
+  return {
+    applied,
+    inputSourceType: input?.type || source?.sourceType || null,
+    inputGeneratedAt: input?.generatedAt || source?.producedAt || null,
+    outputSourceType: output?.type || null,
+    outputGeneratedAt: output?.generatedAt || null,
+    changed,
+    inputGeometry,
+    outputGeometry
+  };
+};
+
+const geometryDriftAudit = ({
+  disposition,
+  symbol,
+  selected,
+  sourceLineage,
+  lifecycleRow,
+  performancePosition,
+  performanceGeneratedAt,
+  recommendationLedger,
+  stage6TradeLoop,
+  orderLedger,
+  ttlMin,
+  recoveryGeometry
+}) => {
+  if (disposition !== RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE) return null;
+  const source = sourceSnapshot({ symbol, selected, sourceLineage, recommendationLedger, stage6TradeLoop, orderLedger, ttlMin });
+  const evaluation = {
+    observedAt: performancePosition?.currentPriceObservedAt || performancePosition?.observedAt || performanceGeneratedAt || null,
+    currentPrice: toNum(performancePosition?.currentPrice ?? recoveryGeometry?.currentPrice),
+    priceBasis: performancePosition?.currentPriceBasis || "broker_position_current_price",
+    marketTimezone: performancePosition?.marketTimezone || performancePosition?.market_timezone || null,
+    adjustmentType: performancePosition?.adjustmentType || performancePosition?.adjustment_type || null,
+    stopPrice: toNum(recoveryGeometry?.stopPrice),
+    targetPrice: toNum(recoveryGeometry?.targetPrice)
+  };
+  const sourceGeometry = priceGeometry(source);
+  const evaluationGeometry = priceGeometry(evaluation);
+  const lifecycleTransform = lifecycleTransformEvidence({ lifecycleRow, selected, source, evaluation });
+  const missingCore = [
+    ["source_type", source.sourceType],
+    ["source_produced_at", source.producedAt],
+    ["source_received_at", source.receivedAt],
+    ["source_stage6_identity", source.stage6Hash || source.stage6File],
+    ["source_stop_price", source.stopPrice],
+    ["source_current_price", source.currentPrice],
+    ["source_target_price", source.targetPrice],
+    ["evaluation_observed_at", evaluation.observedAt],
+    ["evaluation_current_price", evaluation.currentPrice]
+  ].filter(([, value]) => value == null).map(([field]) => field);
+  const optionalMissing = [
+    ["source_price_basis", source.priceBasis],
+    ["source_market_timezone", source.marketTimezone],
+    ["source_adjustment_type", source.adjustmentType],
+    ["evaluation_price_basis", evaluation.priceBasis],
+    ["evaluation_market_timezone", evaluation.marketTimezone],
+    ["evaluation_adjustment_type", evaluation.adjustmentType]
+  ].filter(([, value]) => value == null).map(([field]) => field);
+  const sourceTime = Date.parse(String(source.producedAt || ""));
+  const evaluationTime = Date.parse(String(evaluation.observedAt || ""));
+  const timestampMismatch = Number.isFinite(sourceTime) && Number.isFinite(evaluationTime) && evaluationTime < sourceTime;
+  const timezoneMismatch = Boolean(source.marketTimezone && evaluation.marketTimezone && source.marketTimezone !== evaluation.marketTimezone);
+  const adjustmentMismatch = Boolean(source.adjustmentType && evaluation.adjustmentType && source.adjustmentType !== evaluation.adjustmentType);
+  const mismatchReasons = [
+    timestampMismatch ? "evaluation_precedes_source" : null,
+    timezoneMismatch ? "market_timezone_mismatch" : null,
+    adjustmentMismatch ? "adjustment_type_mismatch" : null
+  ].filter(Boolean);
+  let classification;
+  if (missingCore.length) {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_GEOMETRY_EVIDENCE_MISSING;
+  } else if (mismatchReasons.length) {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH;
+  } else if (!sourceGeometry.valid && ["stage6_20trade_loop", "recommendation_ledger"].includes(source.sourceType)) {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE;
+  } else if (sourceGeometry.valid && lifecycleTransform.applied && lifecycleTransform.changed && lifecycleTransform.outputGeometry?.valid === false) {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.POSITION_LIFECYCLE_TRANSFORM_DRIFT;
+  } else if (sourceGeometry.valid && !evaluationGeometry.valid) {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE;
+  } else {
+    classification = GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_GEOMETRY_EVIDENCE_MISSING;
+    if (!missingCore.length) missingCore.push("attributable_geometry_transition");
+  }
+  const contract = {
+    [GEOMETRY_DRIFT_CLASSIFICATIONS.STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE]: {
+      owner: "us_alpha_seeker_stage6_producer",
+      blockedReason: "canonical_stage6_geometry_invalid_at_source",
+      nextAction: "handoff_stage6_geometry_evidence_report_only"
+    },
+    [GEOMETRY_DRIFT_CLASSIFICATIONS.POSITION_LIFECYCLE_TRANSFORM_DRIFT]: {
+      owner: "alpha_exec_engine_position_lifecycle_transform",
+      blockedReason: "position_lifecycle_transform_invalidated_geometry",
+      nextAction: "fix_lifecycle_transform_before_recovery_review"
+    },
+    [GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE]: {
+      owner: "position_risk_review",
+      blockedReason: "current_price_crossed_valid_source_guard",
+      nextAction: "keep_no_repair_route_to_position_risk_review"
+    },
+    [GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH]: {
+      owner: "data_lineage_contract",
+      blockedReason: mismatchReasons.join(",") || "source_price_basis_or_timestamp_mismatch",
+      nextAction: "reconcile_price_basis_and_timestamp_before_geometry_review"
+    },
+    [GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_GEOMETRY_EVIDENCE_MISSING]: {
+      owner: "geometry_evidence_collection",
+      blockedReason: `missing:${missingCore.join(",")}`,
+      nextAction: "collect_source_time_geometry_evidence_before_attribution"
+    }
+  }[classification];
+  return {
+    geometryDriftClassification: classification,
+    geometryDriftOwner: contract.owner,
+    evidenceCompleteness: missingCore.length ? "MISSING_CORE_EVIDENCE" : mismatchReasons.length ? "INCOMPARABLE" : optionalMissing.length ? "PARTIAL_OPTIONAL_METADATA_MISSING" : "COMPLETE",
+    evidenceMissing: [...missingCore, ...optionalMissing],
+    comparisonMismatchReasons: mismatchReasons,
+    sourceSnapshot: source,
+    evaluationSnapshot: evaluation,
+    lifecycleTransform,
+    sourceGeometry,
+    evaluationGeometry,
+    producerHandoff: classification === GEOMETRY_DRIFT_CLASSIFICATIONS.STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE
+      ? {
+          mode: "report_only",
+          targetRepository: "US_Alpha_Seeker",
+          stage6Hash: source.stage6Hash,
+          stage6File: source.stage6File,
+          sourceProducedAt: source.producedAt,
+          sourceGeometry,
+          brokerMutationAllowed: false,
+          stateMutationAllowed: false
+        }
+      : null,
+    blockedReason: contract.blockedReason,
+    nextAction: contract.nextAction,
+    repairEligibleNow: false
   };
 };
 
@@ -720,9 +1013,13 @@ const buildRow = ({
   lifecycleRow,
   fillStateRow,
   reconciliationRow,
+  performancePosition,
+  performanceGeneratedAt,
   preview,
   sourcePriority,
   orderLedger,
+  recommendationLedger,
+  stage6TradeLoop,
   orderLedgerFileSha256,
   generatedAt,
   previousRow,
@@ -855,8 +1152,22 @@ const buildRow = ({
           ? "none"
           : "protection"
   );
-  const owner = recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
-  const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
+  const driftAudit = geometryDriftAudit({
+    disposition,
+    symbol,
+    selected,
+    sourceLineage,
+    lifecycleRow,
+    performancePosition,
+    performanceGeneratedAt,
+    recommendationLedger,
+    stage6TradeLoop,
+    orderLedger,
+    ttlMin,
+    recoveryGeometry
+  });
+  const owner = driftAudit?.geometryDriftOwner || recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
+  const nextAction = driftAudit?.nextAction || nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
   const materializationPackage = stateMaterializationPackage({
     symbol,
     prerequisites: materializationPrerequisites,
@@ -939,10 +1250,11 @@ const buildRow = ({
     protectionLane,
     blockerDomain,
     repairEligibleNow,
-    blockedReason: protectionRow?.blockedReason || decision.blockers[0] || null,
+    blockedReason: driftAudit?.blockedReason || protectionRow?.blockedReason || decision.blockers[0] || null,
     nextAction,
     geometry: protectionRow?.geometry || null,
     recoveryGeometry,
+    geometryDriftAudit: driftAudit,
     idempotencyStatus,
     idempotencyPass,
     repairEligibilityContract: {
@@ -988,15 +1300,17 @@ const buildMarkdown = (report) => {
   lines.push(`- materialization_packages: \`rows=${report.summary.materializationPackageRows} ready=${report.summary.materializationPackagesReady} missing=${report.summary.materializationPackageMissing} evidenceMissing=${report.summary.materializationPackageEvidenceMissing} excludedLeaks=${report.summary.materializationPackageExcludedLaneLeaks}\``);
   lines.push(`- geometry_root_causes: \`${JSON.stringify(report.summary.geometryRootCauseCounts)}\``);
   lines.push(`- geometry_components: \`${JSON.stringify(report.summary.geometryInvalidComponentCounts)}\``);
+  lines.push(`- geometry_drift_classifications: \`${JSON.stringify(report.summary.geometryDriftClassificationCounts)}\``);
+  lines.push(`- geometry_drift_owners: \`${JSON.stringify(report.summary.geometryDriftOwnerCounts)}\``);
   lines.push(`- source_preservation: \`${JSON.stringify(report.summary.sourcePreservationStatusCounts)}\``);
   lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Package | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Geometry Drift | Evidence | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Package | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.stateMaterializationPackage?.proposalStatus || "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.geometryDriftAudit?.geometryDriftClassification || "N/A"} | ${row.geometryDriftAudit?.evidenceCompleteness || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.stateMaterializationPackage?.proposalStatus || "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -1029,6 +1343,8 @@ const main = () => {
   const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const orderLedger = readJson(FILES.orderLedger);
+  const recommendationLedger = readJson(FILES.recommendationLedger);
+  const stage6TradeLoop = readJson(FILES.stage6TradeLoop);
   const orderLedgerText = fs.existsSync(FILES.orderLedger) ? fs.readFileSync(FILES.orderLedger, "utf8") : null;
   const orderLedgerFileSha256 = orderLedgerText == null ? null : sha256(orderLedgerText);
   const preview = readJson(FILES.preview);
@@ -1041,6 +1357,7 @@ const main = () => {
 
   const refreshRows = Array.isArray(guardRefresh?.rows) ? guardRefresh.rows : [];
   const previousBySymbol = indexRows(previousPlan?.rows);
+  const performanceBySymbol = indexRows(performance?.live?.positions);
   const protectionBySymbol = indexRows(protectionAudit?.rows);
   const lineageBySymbol = indexRows(guardLineage?.rows);
   const lifecycleBySymbol = indexRows(lifecycleGuardSource?.rows);
@@ -1055,9 +1372,13 @@ const main = () => {
       lifecycleRow: lifecycleBySymbol.get(symbol) || null,
       fillStateRow: fillStateBySymbol.get(symbol) || null,
       reconciliationRow: reconciliationBySymbol.get(symbol) || null,
+      performancePosition: performanceBySymbol.get(symbol) || null,
+      performanceGeneratedAt: performance?.generatedAt || null,
       preview,
       sourcePriority,
       orderLedger,
+      recommendationLedger,
+      stage6TradeLoop,
       orderLedgerFileSha256,
       generatedAt,
       previousRow: previousBySymbol.get(symbol) || null,
@@ -1131,6 +1452,14 @@ const main = () => {
         count(geometryRootCauseRows, (row) => row.recoveryGeometry?.invalidComponents?.includes(component))
       ])
     ),
+    geometryDriftClassificationCounts: valueCounts(geometryRootCauseRows, (row) => row.geometryDriftAudit?.geometryDriftClassification),
+    geometryDriftOwnerCounts: valueCounts(geometryRootCauseRows, (row) => row.geometryDriftAudit?.geometryDriftOwner),
+    geometryDriftUnclassified: count(geometryRootCauseRows, (row) =>
+      !Object.values(GEOMETRY_DRIFT_CLASSIFICATIONS).includes(row.geometryDriftAudit?.geometryDriftClassification)
+    ),
+    geometryDriftEvidenceMissing: count(geometryRootCauseRows, (row) =>
+      row.geometryDriftAudit?.evidenceCompleteness === "MISSING_CORE_EVIDENCE"
+    ),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
     recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
     sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
@@ -1175,7 +1504,8 @@ const main = () => {
       summary.materializationPackageExcludedLaneLeaks === 0 &&
       summary.materializationPackageDiffOutsideGuardFields === 0 &&
       summary.materializationPackageUnclassified === 0,
-    geometryRootCausesClassified: summary.geometryRootCauseUnclassified === 0
+    geometryRootCausesClassified: summary.geometryRootCauseUnclassified === 0,
+    geometryDriftClassified: summary.geometryDriftUnclassified === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
     summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 || summary.recoveryDispositionUnclassified > 0 ||
@@ -1186,7 +1516,7 @@ const main = () => {
     summary.materializationPackageMissing > 0 || summary.materializationPackageEvidenceMissing > 0 ||
     summary.materializationPackageExcludedLaneLeaks > 0 || summary.materializationPackageDiffOutsideGuardFields > 0 ||
     summary.materializationPackageUnclassified > 0 ||
-    summary.geometryRootCauseUnclassified > 0 ||
+    summary.geometryRootCauseUnclassified > 0 || summary.geometryDriftUnclassified > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"

@@ -327,6 +327,9 @@ function buildReport() {
     reports.opsHealth?.metrics?.guardSourceRecoveryStatusCounts || {};
   const freshSourceRecoveryStatusCounts = reports.guardSourceRecovery?.summary?.freshSourceRecoveryStatusCounts ||
     reports.opsHealth?.metrics?.guardSourceRecoveryFreshStatusCounts || {};
+  const geometryDriftClassificationCounts = reports.guardSourceRecovery?.summary?.geometryDriftClassificationCounts || {};
+  const geometryDriftOwnerCounts = reports.guardSourceRecovery?.summary?.geometryDriftOwnerCounts || {};
+  const geometryDriftUnclassified = asNumber(reports.guardSourceRecovery?.summary?.geometryDriftUnclassified, 0);
   const recoveryStatusUnknown = asNumber(
     reports.guardSourceRecovery?.summary?.recoveryStatusUnknown,
     asNumber(reports.opsHealth?.metrics?.guardSourceRecoveryStatusUnknown, 0)
@@ -386,6 +389,7 @@ function buildReport() {
   }
   if (recoveryNoFreshSource > 0) protectionWarnings.push(`recovery_source_unavailable:${recoveryNoFreshSource}`);
   if (recoveryStatusUnknown > 0) protectionBlockers.push(`recovery_status_unknown:${recoveryStatusUnknown}`);
+  if (geometryDriftUnclassified > 0) protectionBlockers.push(`geometry_drift_unclassified:${geometryDriftUnclassified}`);
   if (recoverySourcePrecedenceViolations > 0) {
     protectionBlockers.push(`recovery_source_precedence_violation:${recoverySourcePrecedenceViolations}`);
   }
@@ -691,6 +695,9 @@ function buildReport() {
     manualApprovalCandidates: protectionLaneCounts[PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE] || 0,
     recoveryStatusCounts,
     freshSourceRecoveryStatusCounts,
+    geometryDriftClassificationCounts,
+    geometryDriftOwnerCounts,
+    geometryDriftUnclassified,
     recoveryStatusUnknown,
     recoverySourcePrecedenceViolations,
     recoveryMaterializationRequired,
