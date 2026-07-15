@@ -221,7 +221,14 @@ export const resolveEffectiveGuardMetadata = ({
   const lifecycleSource = lifecycleRow?.lifecycleReady === true ? lifecycleRow.lifecycleSource : null;
   const lifecycleStopPrice = toNum(lifecycleSource?.stopPrice);
   const lifecycleTargetPrice = toNum(lifecycleSource?.targetPrice);
-  if (lifecycleStopPrice != null && lifecycleTargetPrice != null) {
+  const expectedStage6Hash = firstPresent(position?.plannedStage6Hash, reconciliationRow?.plannedStage6Hash);
+  const expectedStage6File = firstPresent(position?.plannedStage6File, reconciliationRow?.plannedStage6File);
+  const lifecycleLineageMatches = expectedStage6Hash
+    ? asText(lifecycleSource?.stage6Hash) === asText(expectedStage6Hash)
+    : expectedStage6File
+      ? asText(lifecycleSource?.stage6File) === asText(expectedStage6File)
+      : false;
+  if (lifecycleStopPrice != null && lifecycleTargetPrice != null && lifecycleLineageMatches) {
     return {
       stopPrice: lifecycleStopPrice,
       targetPrice: lifecycleTargetPrice,

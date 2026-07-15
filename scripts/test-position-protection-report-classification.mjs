@@ -44,7 +44,19 @@ writeJson("order-ledger.json", { orders: {} });
 writeJson("order-idempotency.json", { orders: {} });
 writeJson("fillability-report.json", { rows: [] });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "fixture-hash", stage6File: "fixture.json" });
-writeJson("position-lifecycle-guard-source-plan.json", { rows: [] });
+writeJson("position-lifecycle-guard-source-plan.json", {
+  rows: [{
+    symbol: "BBB",
+    lifecycleReady: true,
+    lifecycleSource: {
+      type: "position_lifecycle_revalidated_guard",
+      generatedAt: now,
+      stopPrice: 89,
+      targetPrice: 121,
+      stage6Hash: "different-position-hash"
+    }
+  }]
+});
 
 execFileSync(process.execPath, ["scripts/build-position-protection-root-cause-audit.mjs"], {
   env: { ...process.env, POSITION_PROTECTION_AUDIT_STATE_DIR: stateDir },
@@ -65,6 +77,8 @@ assert.equal(report.summary.protectionBlockerRows, 3);
 assert.equal(report.summary.ownershipBlockerRows, 1);
 assert.equal(report.summary.ledgerBlockerRows, 1);
 assert.equal(report.summary.manualApprovalCandidates, 1);
+assert.equal(report.rows.find((row) => row.symbol === "BBB")?.protectionLane, "FRESH_GUARD_SOURCE_REQUIRED");
+assert.notEqual(report.rows.find((row) => row.symbol === "BBB")?.effectiveGuardSource, "position_lifecycle_revalidated_guard");
 assert.equal(report.executionPolicy.brokerMutationAttempted, false);
 assert.equal(report.executionPolicy.brokerMutationSubmitted, false);
 assert.equal(report.executionPolicy.stateMutationAttempted, false);
