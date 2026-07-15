@@ -193,8 +193,7 @@ export const resolveEffectiveGuardMetadata = ({
   position = {},
   reconciliationRow = {},
   ledgerRow = null,
-  performanceGeneratedAt = null,
-  lifecycleRow = null
+  performanceGeneratedAt = null
 }) => {
   const brokerStopPresent = position?.brokerStopPresent === true || reconciliationRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || reconciliationRow?.brokerTargetPresent === true;
@@ -215,30 +214,6 @@ export const resolveEffectiveGuardMetadata = ({
       sourcePrecedence: "broker_children_over_state_guard_metadata",
       brokerChildrenComplete: true,
       staleStateMetadataIgnored: true
-    };
-  }
-
-  const lifecycleSource = lifecycleRow?.lifecycleReady === true ? lifecycleRow.lifecycleSource : null;
-  const lifecycleStopPrice = toNum(lifecycleSource?.stopPrice);
-  const lifecycleTargetPrice = toNum(lifecycleSource?.targetPrice);
-  const expectedStage6Hash = firstPresent(position?.plannedStage6Hash, reconciliationRow?.plannedStage6Hash);
-  const expectedStage6File = firstPresent(position?.plannedStage6File, reconciliationRow?.plannedStage6File);
-  const lifecycleLineageMatches = expectedStage6Hash
-    ? asText(lifecycleSource?.stage6Hash) === asText(expectedStage6Hash)
-    : expectedStage6File
-      ? asText(lifecycleSource?.stage6File) === asText(expectedStage6File)
-      : false;
-  if (lifecycleStopPrice != null && lifecycleTargetPrice != null && lifecycleLineageMatches) {
-    return {
-      stopPrice: lifecycleStopPrice,
-      targetPrice: lifecycleTargetPrice,
-      source: lifecycleSource?.type || "position_lifecycle_revalidated_guard",
-      generatedAt: lifecycleSource?.generatedAt || null,
-      sourcePrecedence: "position_lifecycle_revalidated_guard_over_stale_state_metadata",
-      brokerChildrenComplete: false,
-      staleStateMetadataIgnored: true,
-      originalSourceType: lifecycleSource?.originalSourceType || null,
-      originalGeneratedAt: lifecycleSource?.originalGeneratedAt || null
     };
   }
 

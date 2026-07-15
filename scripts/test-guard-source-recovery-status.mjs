@@ -83,7 +83,7 @@ const refreshRow = (symbol, selectedSource, overrides = {}) => ({
 
 const current = source({ type: "recommendation_ledger" });
 const ready = source({
-  type: "position_lifecycle_revalidated_guard",
+  type: "order_ledger",
   stage6Hash: "latest-hash",
   stage6File: "latest-stage6.json"
 });
@@ -116,17 +116,30 @@ const invalid = source({
   stage6Hash: "latest-hash",
   stage6File: "latest-stage6.json"
 });
+const ttlInvalid = source({
+  type: "order_ledger",
+  generatedAt: stale,
+  fresh: false,
+  stopPrice: 105,
+  targetPrice: 130,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
 
 writeJson("performance-dashboard.json", { generatedAt: now, live: { available: true } });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
 writeJson("position-protection-root-cause-audit.json", {
-  summary: { protectionBlockerRows: 7 },
+  summary: { protectionBlockerRows: 8 },
   rows: [
-    protectionRow("CURR", { guardSourceFresh: true, guardSourceFreshness: "fresh" }),
+    protectionRow("CURR", {
+      effectiveGuardSource: "recommendation_ledger",
+      guardSourceFresh: true,
+      guardSourceFreshness: "fresh"
+    }),
     protectionRow("READY", {
       protectionLane: "MANUAL_APPROVAL_CANDIDATE",
       blockerDomain: "none",
-      effectiveGuardSource: "position_lifecycle_revalidated_guard",
+      effectiveGuardSource: "order_ledger",
       guardSourceFresh: true,
       guardSourceFreshness: "fresh",
       repairEligible: true,
@@ -150,8 +163,16 @@ writeJson("position-protection-root-cause-audit.json", {
     }),
     protectionRow("NONE"),
     protectionRow("DISP"),
-    protectionRow("MISS"),
-    protectionRow("BAD")
+    protectionRow("MISS", {
+      ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION",
+      protectionLane: "OWNERSHIP_PROOF_REQUIRED",
+      blockerDomain: "ownership",
+      blockedReason: "position_not_sidecar_managed",
+      nextAction: "establish_sidecar_ownership_proof_before_guard_recovery"
+    }),
+    protectionRow("BAD"),
+    protectionRow("TTL_BAD"),
+    protectionRow("PROD")
   ]
 });
 const refreshPlan = {
@@ -168,6 +189,7 @@ const refreshPlan = {
     refreshRow("NONE", unavailable),
     refreshRow("DISP", dispatchMismatch),
     refreshRow("MISS", null, {
+      ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION",
       refreshReady: false,
       refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
       afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
@@ -179,6 +201,19 @@ const refreshPlan = {
       refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
       afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
       blockers: ["selected_source_invalid_geometry"]
+    }),
+    refreshRow("TTL_BAD", ttlInvalid, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_STALE",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_stale", "selected_source_invalid_geometry"]
+    }),
+    refreshRow("PROD", null, {
+      refreshReady: false,
+      refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["no_guard_refresh_source"]
     })
   ]
 };
@@ -192,7 +227,9 @@ writeJson("guard-metadata-lineage-audit.json", {
     { symbol: "NONE", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
     { symbol: "DISP", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "MISS", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" },
-    { symbol: "BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" }
+    { symbol: "BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
+    { symbol: "TTL_BAD", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
+    { symbol: "PROD", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" }
   ]
 });
 writeJson("position-lifecycle-guard-source-plan.json", {
@@ -228,7 +265,7 @@ writeJson("position-lifecycle-guard-source-plan.json", {
   ]
 });
 writeJson("fill-state-reconciliation-audit.json", {
-  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD"].map((symbol) => ({
+  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD", "TTL_BAD", "PROD"].map((symbol) => ({
     symbol,
     reconciliationDecision: "FILL_STATE_CONFIRMED",
     requiresLedgerTerminalizationReview: false
@@ -257,17 +294,29 @@ assert.equal(bySymbol.get("MAT")?.currentSourceFresh, false);
 assert.equal(bySymbol.get("MAT")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MAT")?.stateMaterializationRequired, true);
 assert.equal(bySymbol.get("MAT")?.recoveryRootCause, "state_materialization_missing");
+assert.equal(bySymbol.get("MAT")?.recoveryDisposition, "FRESH_SOURCE_MATERIALIZATION_REQUIRED");
 assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
+assert.equal(bySymbol.get("NONE")?.recoveryDisposition, "NO_CURRENT_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
 assert.equal(bySymbol.get("DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("DISP")?.recoveryDisposition, "EXPECTED_STALE_SOURCE_BLOCK");
 assert.equal(bySymbol.get("DISP")?.sourceLineage?.dispatchStatus, "MISMATCH");
 assert.equal(bySymbol.get("LIFE")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("LIFE")?.recoveryDisposition, "LIFECYCLE_LINEAGE_PROPAGATION_DEFECT");
 assert.equal(bySymbol.get("LIFE")?.sourceLineage?.dispatchStatus, "MISMATCH");
 assert.equal(bySymbol.get("LIFE")?.sourcePreservation?.lineageKeyMatchesCurrentPosition, false);
 assert.equal(bySymbol.get("LIFE")?.repairEligibilityContract?.sourceLineageMatchesCurrentPosition, false);
 assert.equal(bySymbol.get("LIFE")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MISS")?.recoveryRootCause, "source_producer_missing");
+assert.equal(bySymbol.get("MISS")?.recoveryOwner, "position_ownership_proof");
+assert.equal(bySymbol.get("MISS")?.blockerDomain, "ownership");
 assert.equal(bySymbol.get("BAD")?.recoveryRootCause, "source_geometry_unusable");
+assert.equal(bySymbol.get("BAD")?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
+assert.equal(bySymbol.get("TTL_BAD")?.recoveryRootCause, "source_ttl_expired");
+assert.equal(bySymbol.get("TTL_BAD")?.recoveryDisposition, "SOURCE_GEOMETRY_UNUSABLE");
+assert.equal(bySymbol.get("TTL_BAD")?.nextAction, "route_to_guard_geometry_root_cause_no_repair");
+assert.equal(bySymbol.get("PROD")?.recoveryRootCause, "source_producer_missing");
+assert.equal(bySymbol.get("PROD")?.blockerDomain, "protection");
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.producedAt, now);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.receivedAt, now);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.ttlMin, 30);
@@ -278,11 +327,20 @@ assert.equal(bySymbol.get("MAT")?.sourceLineage?.lifecycle?.originalSourceType, 
 assert.equal(bySymbol.get("MAT")?.sourcePreservation?.status, "PRESERVED_ACTIVE_REPORT_ONLY");
 assert.equal(bySymbol.get("MAT")?.sourcePreservation?.lineageKeyMatchesCurrentPosition, true);
 assert.equal(bySymbol.get("MAT")?.sourcePreservation?.usedForRepairEligibility, false);
+assert.equal(bySymbol.get("READY")?.repairEligibilityContract?.currentSourceApplied, true);
+assert.equal(bySymbol.get("READY")?.repairEligibilityContract?.ownershipPass, true);
+assert.equal(bySymbol.get("READY")?.repairEligibilityContract?.fillStatePass, true);
 assert.equal(report.summary.recoveryStatusUnknown, 0);
 assert.equal(report.summary.sourceRootCauseUnknown, 0);
 assert.equal(report.summary.sourcePreservationUnknown, 0);
+assert.equal(report.summary.recoveryDispositionUnclassified, 0);
 assert.equal(report.summary.sourcePrecedenceViolations, 0);
 assert.equal(report.summary.repairEligibleWithLineageMismatch, 0);
+assert.equal(report.summary.repairEligibleWithoutOwnershipPass, 0);
+assert.equal(report.summary.repairEligibleWithoutFillStatePass, 0);
+assert.equal(report.summary.dispatchMismatchRepairEligible, 0);
+assert.equal(report.summary.ttlExpiredClassifiedCurrentSourceFresh, 0);
+assert.equal(report.summary.producerMissingOwnershipLaneLeaks, 0);
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
 assert.equal(report.summary.stateMutationAttempted, false);

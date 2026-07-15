@@ -92,7 +92,14 @@ const sourceFromRefresh = (refreshRow) => {
   };
 };
 
-const firstSource = (...sources) => sources.find((source) => source?.stopPrice != null && source?.targetPrice != null) || null;
+const hasGuardPrices = (source) => source?.stopPrice != null && source?.targetPrice != null;
+
+const matchesPositionLineage = (source, expectedHash, expectedFile) => {
+  if (!hasGuardPrices(source)) return false;
+  if (expectedHash) return Boolean(source?.stage6Hash) && String(source.stage6Hash) === String(expectedHash);
+  if (expectedFile) return Boolean(source?.stage6File) && String(source.stage6File) === String(expectedFile);
+  return false;
+};
 
 const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow, generatedAt, performanceAgeMin }) => {
   const symbol = asSymbol(position?.symbol || refreshRow?.symbol || brokerRow?.symbol || protectionRow?.symbol);
@@ -101,6 +108,8 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
   const brokerStopPresent = position?.brokerStopPresent === true || refreshRow?.broker?.stopPresent === true || brokerRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || refreshRow?.broker?.targetPresent === true || brokerRow?.brokerTargetPresent === true;
   const selectedSource = sourceFromRefresh(refreshRow);
+  const expectedStage6Hash = position?.plannedStage6Hash || brokerRow?.plannedStage6Hash || null;
+  const expectedStage6File = position?.plannedStage6File || brokerRow?.plannedStage6File || null;
   const positionSource = {
     type: position?.plannedStopSource || position?.plannedTargetSource || "performance_dashboard_planned_guard",
     stopPrice: toNum(position?.plannedStopPrice ?? position?.stopPrice),
@@ -121,7 +130,11 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
     stage6File: brokerRow?.plannedStage6File || null,
     detail: `protectionStatus=${brokerRow?.protectionStatus || "N/A"}`
   };
-  const source = firstSource(selectedSource, positionSource, brokerSource);
+  const selectedIsReportOnlyLifecycle = selectedSource?.type === "position_lifecycle_revalidated_guard";
+  const source = [selectedSource, positionSource, brokerSource].find((candidate) =>
+    !((candidate === selectedSource) && selectedIsReportOnlyLifecycle) &&
+    matchesPositionLineage(candidate, expectedStage6Hash, expectedStage6File)
+  ) || null;
   const stop = toNum(source?.stopPrice);
   const target = toNum(source?.targetPrice);
   const stopBelowCurrent = stop != null && currentPrice != null && stop < currentPrice;
@@ -148,12 +161,15 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
   const blockers = [];
   const warnings = [];
 
+  if (selectedIsReportOnlyLifecycle) warnings.push("report_only_lifecycle_source_rejected_as_revalidation_input");
+
   if (!symbol) blockers.push("missing_symbol");
   if (qty <= 0) blockers.push("no_open_position");
   if (ownership !== "SIDECAR_MANAGED_FILLED") blockers.push("position_not_confirmed_sidecar_managed_filled");
   if (!fillConfirmed) blockers.push("fill_state_not_confirmed");
   if (performanceAgeMin == null || performanceAgeMin > config.maxPerformanceAgeMin) blockers.push("performance_dashboard_stale");
   if (!staleGuardSource) blockers.push("no_stale_guard_source_to_revalidate");
+  if (!expectedStage6Hash && !expectedStage6File) blockers.push("current_position_stage6_lineage_missing");
   if (!source) blockers.push("no_existing_guard_source_with_stop_target");
   if (!stopBelowCurrent || !targetAboveCurrent || !targetAboveStop) blockers.push("invalid_stop_current_target_geometry");
   if (stopDistancePct != null && stopDistancePct < config.minStopDistancePct) blockers.push("stop_too_near_current_for_lifecycle_revalidation");
@@ -173,6 +189,18 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
     },
     ownershipClassification: ownership,
     fillStateStatus: fillConfirmed ? "FILL_STATE_CONFIRMED" : (fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || null),
+    lineageDecision: source
+      ? "CURRENT_POSITION_LINEAGE_MATCH"
+      : expectedStage6Hash || expectedStage6File
+        ? "SOURCE_LINEAGE_MISMATCH"
+        : "CURRENT_POSITION_LINEAGE_MISSING",
+    lineageEvidence: {
+      expectedStage6Hash,
+      expectedStage6File,
+      selectedStage6Hash: selectedSource?.stage6Hash || null,
+      selectedStage6File: selectedSource?.stage6File || null,
+      selectedSourceRejectedAsReportOnlyLifecycle: selectedIsReportOnlyLifecycle
+    },
     originalSource: source,
     lifecycleSource: lifecycleReady
       ? {
@@ -180,8 +208,8 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
           generatedAt,
           stopPrice: stop,
           targetPrice: target,
-          stage6Hash: source?.stage6Hash || position?.plannedStage6Hash || brokerRow?.plannedStage6Hash || null,
-          stage6File: source?.stage6File || position?.plannedStage6File || brokerRow?.plannedStage6File || null,
+          stage6Hash: source?.stage6Hash || expectedStage6Hash,
+          stage6File: source?.stage6File || expectedStage6File,
           originalSourceType: source?.type || null,
           originalGeneratedAt: source?.generatedAt || null,
           originalAgeMin: source?.ageMin ?? round(ageMinutes(source?.generatedAt), 2),
@@ -271,6 +299,7 @@ const main = () => {
     lifecycleReady: rows.filter((row) => row.lifecycleReady).length,
     blocked: rows.filter((row) => !row.lifecycleReady).length,
     staleSourcesRevalidated: rows.filter((row) => row.lifecycleReady && row.warnings.includes("original_guard_source_was_stale_revalidated_by_lifecycle_only")).length,
+    lineageMismatchSourcesRejected: rows.filter((row) => row.warnings.includes("report_only_lifecycle_source_rejected_as_revalidation_input")).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
     stateMutationAttempted: false,
