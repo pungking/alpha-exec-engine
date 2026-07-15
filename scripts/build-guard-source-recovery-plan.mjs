@@ -7,6 +7,7 @@ const FILES = {
   protectionAudit: `${STATE_DIR}/position-protection-root-cause-audit.json`,
   guardRefresh: `${STATE_DIR}/guard-metadata-refresh-plan.json`,
   guardLineage: `${STATE_DIR}/guard-metadata-lineage-audit.json`,
+  lifecycleGuardSource: `${STATE_DIR}/position-lifecycle-guard-source-plan.json`,
   fillStateReconciliation: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
@@ -54,6 +55,19 @@ const RECOVERY_STATUSES = Object.freeze({
   NO_FRESH_SOURCE_AVAILABLE: "NO_FRESH_SOURCE_AVAILABLE",
   RECOVERY_SOURCE_INVALID_GEOMETRY: "RECOVERY_SOURCE_INVALID_GEOMETRY"
 });
+const SOURCE_ROOT_CAUSES = Object.freeze({
+  STATE_MATERIALIZATION_MISSING: "state_materialization_missing",
+  SOURCE_PRODUCER_MISSING: "source_producer_missing",
+  STAGE6_DISPATCH_MISMATCH: "stage6_dispatch_mismatch",
+  SOURCE_TTL_EXPIRED: "source_ttl_expired",
+  SOURCE_GEOMETRY_UNUSABLE: "source_geometry_unusable"
+});
+const PRESERVATION_STATUSES = Object.freeze({
+  ACTIVE: "PRESERVED_ACTIVE_REPORT_ONLY",
+  EXPIRED: "PRESERVED_EXPIRED_EVIDENCE_ONLY",
+  NONE: "NO_PRESERVED_SOURCE"
+});
+const STAGE6_DISPATCH_SOURCES = new Set(["recommendation_ledger", "stage6_20trade_loop", "order_ledger"]);
 const SOURCE_PRIORITY = [
   "broker_children",
   "position_lifecycle_revalidated_guard",
@@ -64,6 +78,126 @@ const SOURCE_PRIORITY = [
 const idempotencyReady = (status) => {
   const normalized = String(status || "").trim().toLowerCase();
   return normalized === "filled" || normalized === "reconciled_filled";
+};
+
+const addMinutes = (iso, minutes) => {
+  const timestamp = Date.parse(String(iso || ""));
+  return Number.isFinite(timestamp) && Number.isFinite(minutes)
+    ? new Date(timestamp + (minutes * 60_000)).toISOString()
+    : null;
+};
+
+const sourceLineageEvidence = ({ selected, refreshReceivedAt, ttlMin, protectionRow, lifecycleRow, preview, nowMs }) => {
+  const type = String(selected?.type || "");
+  const producedAt = selected?.generatedAt || null;
+  const receivedAt = refreshReceivedAt || null;
+  const expiresAt = addMinutes(producedAt, ttlMin);
+  const evaluatedAgeMin = round(ageMinutes(producedAt, nowMs));
+  const ageMin = evaluatedAgeMin ?? selected?.ageMin ?? null;
+  const freshAtReceiptAge = producedAt && receivedAt
+    ? (Date.parse(receivedAt) - Date.parse(producedAt)) / 60_000
+    : null;
+  const freshAtReceipt = freshAtReceiptAge != null && freshAtReceiptAge >= -1 && freshAtReceiptAge <= ttlMin;
+  const freshAtEvaluation = Boolean(selected && producedAt && evaluatedAgeMin != null && evaluatedAgeMin >= -1 && evaluatedAgeMin <= ttlMin);
+  const expectedHash = protectionRow?.plannedStage6Hash || null;
+  const expectedFile = protectionRow?.plannedStage6File || null;
+  const fallbackHash = preview?.stage6Hash || null;
+  const fallbackFile = preview?.stage6File || null;
+  const dispatchRequired = STAGE6_DISPATCH_SOURCES.has(type);
+  const dispatchBasis = expectedHash || expectedFile
+    ? "position_lineage"
+    : fallbackHash || fallbackFile
+      ? "latest_preview_fallback"
+      : "missing_expected_lineage";
+  const compareHash = expectedHash || fallbackHash;
+  const compareFile = expectedFile || fallbackFile;
+  const sourceHash = selected?.stage6Hash || null;
+  const sourceFile = selected?.stage6File || null;
+  const dispatchStatus = !selected
+    ? "NO_SOURCE"
+    : !dispatchRequired
+      ? "NOT_REQUIRED"
+      : !sourceHash && !sourceFile
+        ? "SOURCE_LINEAGE_MISSING"
+        : !compareHash && !compareFile
+          ? "EXPECTED_LINEAGE_MISSING"
+          : compareHash && sourceHash
+            ? (String(compareHash) === String(sourceHash) ? "MATCH" : "MISMATCH")
+            : (String(compareFile) === String(sourceFile) ? "MATCH" : "MISMATCH");
+  return {
+    sourceType: type || null,
+    producedAt,
+    receivedAt,
+    ttlMin,
+    expiresAt,
+    ageMin,
+    freshAtReceipt,
+    freshAtEvaluation,
+    producerFreshFlag: selected?.fresh === true,
+    freshnessStatus: !selected
+      ? "SOURCE_MISSING"
+      : !producedAt
+        ? "SOURCE_TIMESTAMP_MISSING"
+        : freshAtEvaluation
+          ? "SOURCE_WITHIN_TTL"
+          : "SOURCE_TTL_EXPIRED",
+    stage6Hash: sourceHash,
+    stage6File: sourceFile,
+    expectedStage6Hash: compareHash,
+    expectedStage6File: compareFile,
+    latestStage6Hash: fallbackHash,
+    latestStage6File: fallbackFile,
+    dispatchRequired,
+    dispatchBasis,
+    dispatchStatus,
+    dispatchValid: dispatchStatus === "NOT_REQUIRED" || dispatchStatus === "MATCH",
+    lifecycle: type === "position_lifecycle_revalidated_guard"
+      ? {
+          ready: lifecycleRow?.lifecycleReady === true,
+          decision: lifecycleRow?.lifecycleDecision || null,
+          generatedAt: lifecycleRow?.lifecycleSource?.generatedAt || null,
+          originalSourceType: lifecycleRow?.lifecycleSource?.originalSourceType || null,
+          originalGeneratedAt: lifecycleRow?.lifecycleSource?.originalGeneratedAt || null,
+          originalAgeMin: toNum(lifecycleRow?.lifecycleSource?.originalAgeMin),
+          stage6Hash: lifecycleRow?.lifecycleSource?.stage6Hash || null,
+          stage6File: lifecycleRow?.lifecycleSource?.stage6File || null
+        }
+      : null
+  };
+};
+
+const sourcePreservation = ({ selected, lineage, geometryValid, previousRow, positionLineageKey, nowMs }) => {
+  const current = selected && lineage.freshAtEvaluation && lineage.dispatchValid && geometryValid && selected.type !== "broker_children"
+    ? {
+        type: selected.type || null,
+        producedAt: lineage.producedAt,
+        receivedAt: lineage.receivedAt,
+        ttlMin: lineage.ttlMin,
+        expiresAt: lineage.expiresAt,
+        stopPrice: toNum(selected.stopPrice),
+        targetPrice: toNum(selected.targetPrice),
+        stage6Hash: selected.stage6Hash || null,
+        stage6File: selected.stage6File || null,
+        dispatchStatus: lineage.dispatchStatus,
+        positionLineageKey
+      }
+    : null;
+  const prior = previousRow?.sourcePreservation?.source || null;
+  const previous = positionLineageKey && prior?.positionLineageKey === positionLineageKey ? prior : null;
+  const source = current || previous;
+  const expiry = Date.parse(String(source?.expiresAt || ""));
+  const status = !source
+    ? PRESERVATION_STATUSES.NONE
+    : Number.isFinite(expiry) && nowMs <= expiry
+      ? PRESERVATION_STATUSES.ACTIVE
+      : PRESERVATION_STATUSES.EXPIRED;
+  return {
+    status,
+    source,
+    lineageKeyMatchesCurrentPosition: Boolean(source && source.positionLineageKey === positionLineageKey),
+    retainedForEvidenceOnly: Boolean(source),
+    usedForRepairEligibility: false
+  };
 };
 
 const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
@@ -86,30 +220,19 @@ const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
   };
 };
 
-const recoveryRootCause = ({ status, lineageRow, refreshRow, preview }) => {
+const recoveryRootCause = ({ status, sourceLineage }) => {
   if (status === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH || status === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY) {
     return null;
   }
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED) {
-    return "recovery_source_not_materialized";
+    return SOURCE_ROOT_CAUSES.STATE_MATERIALIZATION_MISSING;
   }
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY) {
-    return "source_geometry_unusable";
+    return SOURCE_ROOT_CAUSES.SOURCE_GEOMETRY_UNUSABLE;
   }
-  const lineageCause = String(lineageRow?.rootCause || "");
-  if (["SOURCE_TIMESTAMP_MISSING", "SOURCE_AGE_EXCEEDED"].includes(lineageCause)) {
-    return "source_timestamp_stale";
-  }
-  const candidates = Array.isArray(refreshRow?.sourceCandidates) ? refreshRow.sourceCandidates : [];
-  const latestHash = String(preview?.stage6Hash || "").trim();
-  const stage6Candidates = candidates.filter((candidate) => candidate?.stage6Hash || candidate?.stage6File);
-  if (latestHash && !stage6Candidates.some((candidate) => String(candidate?.stage6Hash || "").trim() === latestHash)) {
-    return "latest_stage6_symbol_or_hash_mismatch";
-  }
-  if (!candidates.some((candidate) => candidate?.type === "position_lifecycle_revalidated_guard")) {
-    return "lifecycle_source_missing";
-  }
-  return "recommendation_or_order_ledger_source_missing";
+  if (sourceLineage.dispatchStatus === "MISMATCH") return SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH;
+  if (sourceLineage.freshnessStatus === "SOURCE_TTL_EXPIRED") return SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED;
+  return SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING;
 };
 
 const nextActionForRecovery = (status, rootCause) => {
@@ -121,10 +244,10 @@ const nextActionForRecovery = (status, rootCause) => {
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY) {
     return "route_to_guard_geometry_root_cause_no_repair";
   }
-  if (rootCause === "source_timestamp_stale") return "wait_for_fresh_stage6_or_lifecycle_guard_source";
-  if (rootCause === "latest_stage6_symbol_or_hash_mismatch") return "trace_latest_stage6_symbol_hash_lineage";
-  if (rootCause === "lifecycle_source_missing") return "rebuild_position_lifecycle_guard_source_report_only";
-  return "trace_recommendation_order_ledger_guard_source";
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) return "wait_for_fresh_stage6_or_lifecycle_guard_source";
+  if (rootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) return "trace_expected_stage6_hash_dispatch_lineage_report_only";
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING) return "rebuild_missing_guard_source_producer_report_only";
+  return "inspect_guard_source_lineage_report_only";
 };
 
 const laneFromDecision = (decision) => {
@@ -252,7 +375,23 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reco
   };
 };
 
-const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow, preview, sourcePriority }) => {
+const buildRow = ({
+  refreshRow,
+  protectionRow,
+  lineageRow,
+  lifecycleRow,
+  fillStateRow,
+  reconciliationRow,
+  preview,
+  sourcePriority,
+  previousRow,
+  refreshReceivedAt,
+  ttlMin,
+  nowMs
+}) => {
+  const symbol = asSymbol(refreshRow?.symbol || protectionRow?.symbol || lineageRow?.symbol || reconciliationRow?.symbol);
+  const stage6Identity = protectionRow?.plannedStage6Hash || protectionRow?.plannedStage6File || null;
+  const positionLineageKey = symbol && stage6Identity ? `${symbol}:${stage6Identity}` : null;
   const decision = rowDecision({ refreshRow, protectionRow, lineageRow, fillStateRow, reconciliationRow });
   const protectionLane = protectionRow?.protectionLane || laneFromDecision(decision);
   const brokerChildrenComplete = (
@@ -260,9 +399,15 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
   ) && (
     refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true
   );
-  const currentSourceFresh = brokerChildrenComplete || protectionRow?.guardSourceFresh === true ||
-    protectionRow?.guardSourceFreshness === "fresh";
-  const selectedSourceFresh = refreshRow?.selectedSourceFresh === true || refreshRow?.selectedSource?.fresh === true;
+  const currentSourceGeneratedAt = protectionRow?.effectiveGuardGeneratedAt || protectionRow?.plannedLedgerUpdatedAt || null;
+  const currentSourceAgeMin = round(ageMinutes(currentSourceGeneratedAt, nowMs));
+  const currentMetadataFresh = (protectionRow?.guardSourceFresh === true || protectionRow?.guardSourceFreshness === "fresh") &&
+    currentSourceAgeMin != null && currentSourceAgeMin >= -1 && currentSourceAgeMin <= ttlMin;
+  const currentSourceFresh = brokerChildrenComplete || currentMetadataFresh;
+  const selected = refreshRow?.selectedSource || null;
+  const sourceLineage = sourceLineageEvidence({ selected, refreshReceivedAt, ttlMin, protectionRow, lifecycleRow, preview, nowMs });
+  const selectedSourceFresh = sourceLineage.freshAtEvaluation;
+  const selectedSourceDispatchValid = sourceLineage.dispatchValid;
   const selectedStop = toNum(refreshRow?.selectedSource?.stopPrice);
   const selectedTarget = toNum(refreshRow?.selectedSource?.targetPrice);
   const selectedCurrent = toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice);
@@ -271,13 +416,15 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     selectedStop != null && selectedCurrent != null && selectedTarget != null &&
     selectedStop < selectedCurrent && selectedCurrent < selectedTarget
   );
-  const recoverySourceReady = refreshRow?.refreshReady === true && selectedSourceFresh && selectedSourceGeometryValid;
+  const recoverySourceReady = refreshRow?.refreshReady === true && selectedSourceFresh &&
+    selectedSourceGeometryValid && selectedSourceDispatchValid;
   const recoveryStatus =
     protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE && currentSourceFresh && recoverySourceReady
       ? RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY
       : currentSourceFresh
         ? RECOVERY_STATUSES.CURRENT_SOURCE_FRESH
-        : selectedSourceFresh && (!selectedSourceGeometryValid || protectionLane === PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR)
+        : selectedSourceFresh && selectedSourceDispatchValid &&
+          (!selectedSourceGeometryValid || protectionLane === PROTECTION_LANES.INVALID_GUARD_GEOMETRY_NO_REPAIR)
           ? RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY
           : recoverySourceReady
             ? RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED
@@ -291,11 +438,18 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     protectionRow?.geometry?.valid !== false &&
     idempotencyPass &&
     decision.repairEligibleNow;
-  const selected = refreshRow?.selectedSource || null;
-  const sourceAgeMin = selected?.ageMin ?? round(ageMinutes(selected?.generatedAt));
+  const sourceAgeMin = sourceLineage.ageMin;
   const precedence = sourcePrecedenceEvidence(refreshRow, sourcePriority);
-  const normalizedRootCause = recoveryRootCause({ status: recoveryStatus, lineageRow, refreshRow, preview });
+  const normalizedRootCause = recoveryRootCause({ status: recoveryStatus, sourceLineage });
   const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause);
+  const preservation = sourcePreservation({
+    selected,
+    lineage: sourceLineage,
+    geometryValid: selectedSourceGeometryValid,
+    previousRow,
+    positionLineageKey,
+    nowMs
+  });
   const blockerSource =
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE" ||
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_NO_DYNAMIC_SOURCE_FOUND" ||
@@ -303,11 +457,17 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     decision.recoveryDecision === "BLOCKED_UNCLASSIFIED_GUARD_SOURCE_GAP"
       ? [...(refreshRow?.blockers || []), ...decision.blockers]
       : decision.blockers;
+  if (sourceLineage.dispatchStatus === "MISMATCH") blockerSource.push("stage6_dispatch_mismatch");
+  if (["NO_SOURCE", "SOURCE_LINEAGE_MISSING", "EXPECTED_LINEAGE_MISSING"].includes(sourceLineage.dispatchStatus) &&
+      recoveryStatus === RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE) {
+    blockerSource.push("source_producer_missing");
+  }
   const fillStateConfirmed =
     fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
     fillStateRow?.requiresLedgerTerminalizationReview !== true;
   return {
-    symbol: asSymbol(refreshRow?.symbol || protectionRow?.symbol || lineageRow?.symbol || reconciliationRow?.symbol),
+    symbol,
+    positionLineageKey,
     currentPrice: toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice),
     qty: toNum(refreshRow?.qty ?? protectionRow?.qty ?? reconciliationRow?.qty),
     ownershipClassification: refreshRow?.ownershipClassification || protectionRow?.ownershipClassification || null,
@@ -319,8 +479,11 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
       ? {
         type: selected.type || null,
         generatedAt: selected.generatedAt || null,
+        receivedAt: refreshReceivedAt,
+        ttlMin,
+        expiresAt: sourceLineage.expiresAt,
         ageMin: sourceAgeMin,
-        fresh: selected.fresh === true,
+        fresh: selectedSourceFresh,
         stopPrice: toNum(selected.stopPrice),
         targetPrice: toNum(selected.targetPrice),
         stage6Hash: selected.stage6Hash || null,
@@ -329,7 +492,10 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
       : null,
     currentSource: {
       type: protectionRow?.effectiveGuardSource || null,
-      generatedAt: protectionRow?.effectiveGuardGeneratedAt || protectionRow?.plannedLedgerUpdatedAt || null,
+      generatedAt: currentSourceGeneratedAt,
+      ageMin: currentSourceAgeMin,
+      ttlMin,
+      expiresAt: addMinutes(currentSourceGeneratedAt, ttlMin),
       fresh: currentSourceFresh,
       stopPrice: toNum(protectionRow?.plannedStopPrice),
       targetPrice: toNum(protectionRow?.plannedTargetPrice),
@@ -354,6 +520,8 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
       recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     currentSourceFresh,
     recoverySourceReady,
+    sourceLineage,
+    sourcePreservation: preservation,
     stateMaterializationRequired: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     protectionLane,
     blockerDomain: protectionRow?.blockerDomain || (
@@ -377,6 +545,15 @@ const buildRow = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reconci
     },
     idempotencyStatus,
     idempotencyPass,
+    repairEligibilityContract: {
+      currentSourceAppliedAndFresh: currentSourceFresh,
+      recoverySourceFresh: selectedSourceFresh,
+      recoverySourceDispatchValid: selectedSourceDispatchValid,
+      recoverySourceGeometryValid: selectedSourceGeometryValid,
+      idempotencyPass,
+      previousPreservedSourceUsed: false,
+      pass: repairEligibleNow
+    },
     recommendedSourceRecoveryMethods: decision.methods,
     blockers: [...new Set(blockerSource.filter((blocker) => !(fillStateConfirmed && blocker === "fill_state_reconciliation_required")))],
     brokerMutationAllowed: false,
@@ -401,14 +578,16 @@ const buildMarkdown = (report) => {
     `- summary: \`rows=${report.summary.rows} classified=${report.summary.classifiedRows} unclassified=${report.summary.unclassifiedRows} protection=${report.summary.protectionBlockerRows} ownership=${report.summary.ownershipBlockerRows} ledger=${report.summary.ledgerBlockerRows} materialization=${report.summary.sourceMaterializationRequired} noFresh=${report.summary.noFreshSourceAvailable} invalidRecovery=${report.summary.recoverySourceInvalidGeometry} repairEligible=${report.summary.repairEligibleNow}\``
   );
   lines.push(`- recovery_status_counts: \`${JSON.stringify(report.summary.recoveryStatusCounts)}\``);
+  lines.push(`- source_root_causes: \`${JSON.stringify(report.summary.sourceRootCauseCounts)}\``);
+  lines.push(`- source_preservation: \`${JSON.stringify(report.summary.sourcePreservationStatusCounts)}\``);
   lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Domain | Source | Current Fresh | Recovery Fresh | Materialize | Geometry | Idempotency | Repair Eligible | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Geometry | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -422,23 +601,37 @@ const laneCounts = (rows) => Object.fromEntries(
 const recoveryStatusCounts = (rows) => Object.fromEntries(
   Object.values(RECOVERY_STATUSES).map((status) => [status, count(rows, (row) => row.recoveryStatus === status)])
 );
+const valueCounts = (rows, selector) => rows.reduce((counts, row) => {
+  const value = selector(row);
+  if (value) counts[value] = (counts[value] || 0) + 1;
+  return counts;
+}, {});
 
 const main = () => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
+  const generatedAt = new Date().toISOString();
+  const nowMs = Date.parse(generatedAt);
+  const previousPlan = readJson(OUTPUT_JSON);
   const performance = readJson(FILES.performance);
   const protectionAudit = readJson(FILES.protectionAudit);
   const guardRefresh = readJson(FILES.guardRefresh);
   const guardLineage = readJson(FILES.guardLineage);
+  const lifecycleGuardSource = readJson(FILES.lifecycleGuardSource);
   const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const preview = readJson(FILES.preview);
   const sourcePriority = Array.isArray(guardRefresh?.config?.sourcePriority) && guardRefresh.config.sourcePriority.length
     ? guardRefresh.config.sourcePriority.map((value) => String(value || "").trim()).filter(Boolean)
     : SOURCE_PRIORITY;
+  const ttlMinRaw = toNum(guardRefresh?.config?.refreshSourceMaxAgeMin);
+  const ttlMin = ttlMinRaw != null && ttlMinRaw > 0 ? ttlMinRaw : 30;
+  const refreshReceivedAt = guardRefresh?.generatedAt || generatedAt;
 
   const refreshRows = Array.isArray(guardRefresh?.rows) ? guardRefresh.rows : [];
+  const previousBySymbol = indexRows(previousPlan?.rows);
   const protectionBySymbol = indexRows(protectionAudit?.rows);
   const lineageBySymbol = indexRows(guardLineage?.rows);
+  const lifecycleBySymbol = indexRows(lifecycleGuardSource?.rows);
   const fillStateBySymbol = indexRows(fillStateReconciliation?.rows);
   const reconciliationBySymbol = indexRows(brokerChildReconciliation?.rows);
   const rows = refreshRows.map((refreshRow) => {
@@ -447,10 +640,15 @@ const main = () => {
       refreshRow,
       protectionRow: protectionBySymbol.get(symbol) || null,
       lineageRow: lineageBySymbol.get(symbol) || null,
+      lifecycleRow: lifecycleBySymbol.get(symbol) || null,
       fillStateRow: fillStateBySymbol.get(symbol) || null,
       reconciliationRow: reconciliationBySymbol.get(symbol) || null,
       preview,
-      sourcePriority
+      sourcePriority,
+      previousRow: previousBySymbol.get(symbol) || null,
+      refreshReceivedAt,
+      ttlMin,
+      nowMs
     });
   });
   const freshSourceRows = rows.filter((row) => row.protectionLane === PROTECTION_LANES.FRESH_GUARD_SOURCE_REQUIRED);
@@ -466,7 +664,12 @@ const main = () => {
     repairEligibleNow: count(rows, (row) => row.repairEligibleNow),
     recoveryStatusCounts: recoveryStatusCounts(rows),
     freshSourceRecoveryStatusCounts: recoveryStatusCounts(freshSourceRows),
+    sourceRootCauseCounts: valueCounts(rows, (row) => row.recoveryRootCause),
+    sourcePreservationStatusCounts: valueCounts(rows, (row) => row.sourcePreservation?.status),
     recoveryStatusUnknown: count(rows, (row) => !Object.values(RECOVERY_STATUSES).includes(row.recoveryStatus)),
+    sourceRootCauseUnknown: count(rows, (row) => row.recoveryRootCause && !Object.values(SOURCE_ROOT_CAUSES).includes(row.recoveryRootCause)),
+    sourcePreservationUnknown: count(rows, (row) => !Object.values(PRESERVATION_STATUSES).includes(row.sourcePreservation?.status)),
+    repairEligibleWithoutAppliedFreshSource: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.currentSourceAppliedAndFresh !== true),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
     recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
     sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
@@ -494,9 +697,14 @@ const main = () => {
     blockerCountMatchesRootCause:
       rootProtectionBlockers == null || rootProtectionBlockers === summary.protectionBlockerRows,
     recoveryStatusCountMatchesRows: recoveryStatusTotal === summary.rows,
-    freshSourceStatusCountMatchesLane: freshSourceStatusTotal === summary.freshSourceRequired
+    freshSourceStatusCountMatchesLane: freshSourceStatusTotal === summary.freshSourceRequired,
+    sourceRootCausesClassified: summary.sourceRootCauseUnknown === 0,
+    sourcePreservationClassified: summary.sourcePreservationUnknown === 0,
+    repairEligibilityRequiresAppliedFreshSource: summary.repairEligibleWithoutAppliedFreshSource === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
+    summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 ||
+    summary.repairEligibleWithoutAppliedFreshSource > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"
@@ -510,13 +718,15 @@ const main = () => {
           ? "classified"
           : "no_positions";
   const report = {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     overall,
     scope: "portfolio_wide_dynamic_guard_source_recovery_plan_not_ticker_specific",
     files: Object.fromEntries(Object.entries(FILES).map(([key, filePath]) => [key, fs.existsSync(filePath)])),
     source: {
       latestStage6Hash: preview?.stage6Hash || null,
       latestStage6File: preview?.stage6File || null,
+      guardRefreshReceivedAt: refreshReceivedAt,
+      sourceTtlMin: ttlMin,
       guardRefreshOverall: guardRefresh?.overall || null,
       guardLineageOverall: guardLineage?.overall || null,
       protectionAuditOverall: protectionAudit?.overall || null

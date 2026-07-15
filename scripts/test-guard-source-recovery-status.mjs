@@ -14,7 +14,15 @@ const writeJson = (name, payload) => fs.writeFileSync(
   "utf8"
 );
 
-const source = ({ type = "position_lifecycle_revalidated_guard", generatedAt = now, fresh = true, stopPrice = 90, targetPrice = 120 } = {}) => ({
+const source = ({
+  type = "position_lifecycle_revalidated_guard",
+  generatedAt = now,
+  fresh = true,
+  stopPrice = 90,
+  targetPrice = 120,
+  stage6Hash = `hash-${type}`,
+  stage6File = `stage6-${type}.json`
+} = {}) => ({
   type,
   generatedAt,
   ageMin: fresh ? 1 : 999999,
@@ -22,8 +30,8 @@ const source = ({ type = "position_lifecycle_revalidated_guard", generatedAt = n
   hasBothPrices: true,
   stopPrice,
   targetPrice,
-  stage6Hash: `hash-${type}`,
-  stage6File: `stage6-${type}.json`
+  stage6Hash,
+  stage6File
 });
 
 const protectionRow = (symbol, overrides = {}) => ({
@@ -36,8 +44,12 @@ const protectionRow = (symbol, overrides = {}) => ({
   blockerDomain: "protection",
   guardSourceFresh: false,
   guardSourceFreshness: "stale",
+  effectiveGuardGeneratedAt: now,
+  plannedLedgerUpdatedAt: now,
   geometry: { valid: true },
   idempotencyStatus: "filled",
+  plannedStage6Hash: "latest-hash",
+  plannedStage6File: "latest-stage6.json",
   repairEligible: false,
   blockedReason: "guard_metadata_stale",
   nextAction: "obtain_fresh_guard_source_before_repair_review",
@@ -72,13 +84,30 @@ const refreshRow = (symbol, selectedSource, overrides = {}) => ({
 const current = source({ type: "recommendation_ledger" });
 const ready = source({ type: "position_lifecycle_revalidated_guard" });
 const materialization = source({ type: "position_lifecycle_revalidated_guard" });
-const unavailable = source({ type: "order_ledger", generatedAt: stale, fresh: false });
-const invalid = source({ type: "stage6_20trade_loop", stopPrice: 105, targetPrice: 130 });
+const unavailable = source({
+  type: "order_ledger",
+  generatedAt: stale,
+  fresh: false,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const dispatchMismatch = source({
+  type: "stage6_20trade_loop",
+  stage6Hash: "different-hash",
+  stage6File: "different-stage6.json"
+});
+const invalid = source({
+  type: "stage6_20trade_loop",
+  stopPrice: 105,
+  targetPrice: 130,
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
 
 writeJson("performance-dashboard.json", { generatedAt: now, live: { available: true } });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
 writeJson("position-protection-root-cause-audit.json", {
-  summary: { protectionBlockerRows: 4 },
+  summary: { protectionBlockerRows: 6 },
   rows: [
     protectionRow("CURR", { guardSourceFresh: true, guardSourceFreshness: "fresh" }),
     protectionRow("READY", {
@@ -90,17 +119,35 @@ writeJson("position-protection-root-cause-audit.json", {
       blockedReason: null,
       nextAction: "manual_approval_review_only"
     }),
-    protectionRow("MAT"),
+    protectionRow("MAT", {
+      guardSourceFresh: true,
+      guardSourceFreshness: "fresh",
+      effectiveGuardGeneratedAt: stale
+    }),
     protectionRow("NONE"),
+    protectionRow("DISP"),
+    protectionRow("MISS"),
     protectionRow("BAD")
   ]
 });
-writeJson("guard-metadata-refresh-plan.json", {
+const refreshPlan = {
+  generatedAt: now,
+  config: {
+    refreshSourceMaxAgeMin: 30,
+    sourcePriority: ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"]
+  },
   rows: [
     refreshRow("CURR", current),
     refreshRow("READY", ready),
     refreshRow("MAT", materialization),
     refreshRow("NONE", unavailable),
+    refreshRow("DISP", dispatchMismatch),
+    refreshRow("MISS", null, {
+      refreshReady: false,
+      refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["no_guard_refresh_source"]
+    }),
     refreshRow("BAD", invalid, {
       selectedSourceGeometryValid: false,
       refreshReady: false,
@@ -109,18 +156,37 @@ writeJson("guard-metadata-refresh-plan.json", {
       blockers: ["selected_source_invalid_geometry"]
     })
   ]
-});
+};
+writeJson("guard-metadata-refresh-plan.json", refreshPlan);
 writeJson("guard-metadata-lineage-audit.json", {
   rows: [
     { symbol: "CURR", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "READY", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "MAT", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "NONE", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
+    { symbol: "DISP", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
+    { symbol: "MISS", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" },
     { symbol: "BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" }
   ]
 });
+writeJson("position-lifecycle-guard-source-plan.json", {
+  rows: [{
+    symbol: "MAT",
+    lifecycleReady: true,
+    lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
+    lifecycleSource: {
+      type: "position_lifecycle_revalidated_guard",
+      generatedAt: now,
+      originalSourceType: "order_ledger",
+      originalGeneratedAt: stale,
+      originalAgeMin: 999999,
+      stage6Hash: materialization.stage6Hash,
+      stage6File: materialization.stage6File
+    }
+  }]
+});
 writeJson("fill-state-reconciliation-audit.json", {
-  rows: ["CURR", "READY", "MAT", "NONE", "BAD"].map((symbol) => ({
+  rows: ["CURR", "READY", "MAT", "NONE", "DISP", "MISS", "BAD"].map((symbol) => ({
     symbol,
     reconciliationDecision: "FILL_STATE_CONFIRMED",
     requiresLedgerTerminalizationReview: false
@@ -140,14 +206,33 @@ assert.equal(bySymbol.get("CURR")?.recoveryStatus, "CURRENT_SOURCE_FRESH");
 assert.equal(bySymbol.get("READY")?.recoveryStatus, "RECOVERY_SOURCE_READY_REPORT_ONLY");
 assert.equal(bySymbol.get("MAT")?.recoveryStatus, "RECOVERY_SOURCE_MATERIALIZATION_REQUIRED");
 assert.equal(bySymbol.get("NONE")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
+assert.equal(bySymbol.get("DISP")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
+assert.equal(bySymbol.get("MISS")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("BAD")?.recoveryStatus, "RECOVERY_SOURCE_INVALID_GEOMETRY");
 assert.equal(bySymbol.get("MAT")?.recoveryReady, true);
+assert.equal(bySymbol.get("MAT")?.currentSourceFresh, false);
 assert.equal(bySymbol.get("MAT")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MAT")?.stateMaterializationRequired, true);
-assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_timestamp_stale");
+assert.equal(bySymbol.get("MAT")?.recoveryRootCause, "state_materialization_missing");
+assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
+assert.equal(bySymbol.get("DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("DISP")?.sourceLineage?.dispatchStatus, "MISMATCH");
+assert.equal(bySymbol.get("MISS")?.recoveryRootCause, "source_producer_missing");
 assert.equal(bySymbol.get("BAD")?.recoveryRootCause, "source_geometry_unusable");
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.producedAt, now);
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.receivedAt, now);
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.ttlMin, 30);
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.expiresAt, new Date(Date.parse(now) + (30 * 60_000)).toISOString());
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.dispatchStatus, "NOT_REQUIRED");
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.lifecycle?.ready, true);
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.lifecycle?.originalSourceType, "order_ledger");
+assert.equal(bySymbol.get("MAT")?.sourcePreservation?.status, "PRESERVED_ACTIVE_REPORT_ONLY");
+assert.equal(bySymbol.get("MAT")?.sourcePreservation?.lineageKeyMatchesCurrentPosition, true);
+assert.equal(bySymbol.get("MAT")?.sourcePreservation?.usedForRepairEligibility, false);
 assert.equal(report.summary.recoveryStatusUnknown, 0);
+assert.equal(report.summary.sourceRootCauseUnknown, 0);
+assert.equal(report.summary.sourcePreservationUnknown, 0);
 assert.equal(report.summary.sourcePrecedenceViolations, 0);
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
@@ -155,5 +240,28 @@ assert.equal(report.summary.stateMutationAttempted, false);
 assert.equal(report.summary.stateMutationSubmitted, false);
 assert.equal(report.summary.brokerMutationAttempted, false);
 assert.equal(report.summary.brokerMutationSubmitted, false);
+
+refreshPlan.rows = refreshPlan.rows.map((row) => row.symbol === "MAT"
+  ? refreshRow("MAT", null, {
+      refreshReady: false,
+      refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["no_guard_refresh_source"]
+    })
+  : row);
+writeJson("guard-metadata-refresh-plan.json", refreshPlan);
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+
+const replay = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const replayMat = replay.rows.find((row) => row.symbol === "MAT");
+assert.equal(replayMat?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
+assert.equal(replayMat?.recoveryRootCause, "source_producer_missing");
+assert.equal(replayMat?.sourcePreservation?.source?.type, "position_lifecycle_revalidated_guard");
+assert.equal(replayMat?.sourcePreservation?.status, "PRESERVED_ACTIVE_REPORT_ONLY");
+assert.equal(replayMat?.sourcePreservation?.usedForRepairEligibility, false);
+assert.equal(replayMat?.repairEligibleNow, false);
 
 console.log("[GUARD_SOURCE_RECOVERY_STATUS_TEST] pass");
