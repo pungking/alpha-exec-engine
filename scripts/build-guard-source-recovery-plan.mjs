@@ -67,6 +67,16 @@ const PRESERVATION_STATUSES = Object.freeze({
   EXPIRED: "PRESERVED_EXPIRED_EVIDENCE_ONLY",
   NONE: "NO_PRESERVED_SOURCE"
 });
+const RECOVERY_DISPOSITIONS = Object.freeze({
+  EXPECTED_STALE_SOURCE_BLOCK: "EXPECTED_STALE_SOURCE_BLOCK",
+  LIFECYCLE_LINEAGE_PROPAGATION_DEFECT: "LIFECYCLE_LINEAGE_PROPAGATION_DEFECT",
+  CURRENT_POSITION_LINEAGE_MISSING: "CURRENT_POSITION_LINEAGE_MISSING",
+  DISPATCH_EVIDENCE_MISSING: "DISPATCH_EVIDENCE_MISSING",
+  REPORT_ONLY_LIFECYCLE_REVALIDATION_AVAILABLE: "REPORT_ONLY_LIFECYCLE_REVALIDATION_AVAILABLE",
+  FRESH_SOURCE_MATERIALIZATION_REQUIRED: "FRESH_SOURCE_MATERIALIZATION_REQUIRED",
+  NO_CURRENT_SOURCE_AVAILABLE: "NO_CURRENT_SOURCE_AVAILABLE",
+  SOURCE_GEOMETRY_UNUSABLE: "SOURCE_GEOMETRY_UNUSABLE"
+});
 const STAGE6_DISPATCH_SOURCES = new Set([
   "position_lifecycle_revalidated_guard",
   "recommendation_ledger",
@@ -256,7 +266,67 @@ const recoveryRootCause = ({ status, sourceLineage }) => {
   return SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING;
 };
 
-const nextActionForRecovery = (status, rootCause) => {
+const recoveryDisposition = ({ status, rootCause, selected, sourceLineage, lifecycleRow, geometryValid }) => {
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY || rootCause === SOURCE_ROOT_CAUSES.SOURCE_GEOMETRY_UNUSABLE) {
+    return RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE;
+  }
+  if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED) {
+    return RECOVERY_DISPOSITIONS.FRESH_SOURCE_MATERIALIZATION_REQUIRED;
+  }
+  if (sourceLineage.dispatchStatus === "EXPECTED_LINEAGE_MISSING") {
+    return RECOVERY_DISPOSITIONS.CURRENT_POSITION_LINEAGE_MISSING;
+  }
+  if (sourceLineage.dispatchStatus === "SOURCE_LINEAGE_MISSING") {
+    return RECOVERY_DISPOSITIONS.DISPATCH_EVIDENCE_MISSING;
+  }
+  if (rootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) {
+    return selected?.type === "position_lifecycle_revalidated_guard"
+      ? RECOVERY_DISPOSITIONS.LIFECYCLE_LINEAGE_PROPAGATION_DEFECT
+      : RECOVERY_DISPOSITIONS.EXPECTED_STALE_SOURCE_BLOCK;
+  }
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) {
+    if (!geometryValid) return RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE;
+    const lifecycleLineageMatches = lifecycleRow?.lifecycleReady === true && (
+      sourceLineage.expectedStage6Hash
+        ? lifecycleRow?.lifecycleSource?.stage6Hash === sourceLineage.expectedStage6Hash
+        : sourceLineage.expectedStage6File
+          ? lifecycleRow?.lifecycleSource?.stage6File === sourceLineage.expectedStage6File
+          : false
+    );
+    return lifecycleLineageMatches
+      ? RECOVERY_DISPOSITIONS.REPORT_ONLY_LIFECYCLE_REVALIDATION_AVAILABLE
+      : RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE;
+  }
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING) {
+    return RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE;
+  }
+  return null;
+};
+
+const recoveryOwner = ({ blockerDomain, rootCause, disposition }) => {
+  if (blockerDomain === "ownership") return "position_ownership_proof";
+  if (disposition === RECOVERY_DISPOSITIONS.LIFECYCLE_LINEAGE_PROPAGATION_DEFECT) return "position_lifecycle_guard_source_producer";
+  if (rootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) return "stage6_dispatch_lineage";
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) return "guard_source_freshness";
+  if (rootCause === SOURCE_ROOT_CAUSES.STATE_MATERIALIZATION_MISSING) return "guard_source_state_materialization";
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_GEOMETRY_UNUSABLE) return "guard_geometry_producer";
+  if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING) return "guard_source_producer";
+  return "monitoring";
+};
+
+const nextActionForRecovery = (status, rootCause, disposition) => {
+  if (disposition === RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE) {
+    return "route_to_guard_geometry_root_cause_no_repair";
+  }
+  if (disposition === RECOVERY_DISPOSITIONS.LIFECYCLE_LINEAGE_PROPAGATION_DEFECT) {
+    return "reject_report_only_lifecycle_chaining_and_rebuild_from_matching_position_lineage";
+  }
+  if (disposition === RECOVERY_DISPOSITIONS.EXPECTED_STALE_SOURCE_BLOCK) return "retain_safe_block_until_position_lineage_source_matches";
+  if (disposition === RECOVERY_DISPOSITIONS.CURRENT_POSITION_LINEAGE_MISSING) return "establish_current_position_stage6_lineage_report_only";
+  if (disposition === RECOVERY_DISPOSITIONS.DISPATCH_EVIDENCE_MISSING) return "restore_stage6_dispatch_evidence_report_only";
+  if (disposition === RECOVERY_DISPOSITIONS.REPORT_ONLY_LIFECYCLE_REVALIDATION_AVAILABLE) {
+    return "review_state_materialization_separately_no_mutation";
+  }
   if (status === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH) return "monitor_current_fresh_guard_source";
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY) return "manual_protective_repair_review_report_only";
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED) {
@@ -424,13 +494,13 @@ const buildRow = ({
   const sourceLineage = sourceLineageEvidence({ selected, refreshReceivedAt, ttlMin, protectionRow, lifecycleRow, preview, nowMs });
   const currentSourceGeneratedAt = protectionRow?.effectiveGuardGeneratedAt || protectionRow?.plannedLedgerUpdatedAt || null;
   const currentSourceAgeMin = round(ageMinutes(currentSourceGeneratedAt, nowMs));
+  const currentSourceType = protectionRow?.effectiveGuardSource || null;
+  const currentSourceApplied = brokerChildrenComplete || Boolean(
+    currentSourceType && currentSourceType !== "position_lifecycle_revalidated_guard"
+  );
   const currentMetadataFresh = (protectionRow?.guardSourceFresh === true || protectionRow?.guardSourceFreshness === "fresh") &&
     currentSourceAgeMin != null && currentSourceAgeMin >= -1 && currentSourceAgeMin <= ttlMin;
-  const lifecycleCurrentSource = protectionRow?.effectiveGuardSource === "position_lifecycle_revalidated_guard";
-  const currentSourceLineageValid = !lifecycleCurrentSource || (
-    selected?.type === "position_lifecycle_revalidated_guard" && sourceLineage.dispatchValid
-  );
-  const currentSourceFresh = brokerChildrenComplete || (currentMetadataFresh && currentSourceLineageValid);
+  const currentSourceFresh = brokerChildrenComplete || (currentSourceApplied && currentMetadataFresh);
   const selectedSourceFresh = sourceLineage.freshAtEvaluation;
   const selectedSourceDispatchValid = sourceLineage.dispatchValid;
   const selectedStop = toNum(refreshRow?.selectedSource?.stopPrice);
@@ -456,17 +526,35 @@ const buildRow = ({
             : RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE;
   const idempotencyStatus = protectionRow?.idempotencyStatus || refreshRow?.lineage?.idempotencyBrokerStatus || "not_recorded";
   const idempotencyPass = idempotencyReady(idempotencyStatus);
+  const ownershipClassification = refreshRow?.ownershipClassification || protectionRow?.ownershipClassification || null;
+  const ownershipPass = ownershipClassification === "SIDECAR_MANAGED_FILLED";
+  const fillStateConfirmed =
+    fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
+    fillStateRow?.requiresLedgerTerminalizationReview !== true;
   const repairEligibleNow =
     recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY &&
     protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE &&
     protectionRow?.repairEligible !== false &&
     protectionRow?.geometry?.valid !== false &&
+    currentSourceApplied &&
+    currentSourceFresh &&
+    selected?.type !== "position_lifecycle_revalidated_guard" &&
+    sourceLineage.positionLineageMatchesCurrentPosition &&
+    ownershipPass &&
+    fillStateConfirmed &&
     idempotencyPass &&
     decision.repairEligibleNow;
   const sourceAgeMin = sourceLineage.ageMin;
   const precedence = sourcePrecedenceEvidence(refreshRow, sourcePriority);
   const normalizedRootCause = recoveryRootCause({ status: recoveryStatus, sourceLineage });
-  const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause);
+  const disposition = recoveryDisposition({
+    status: recoveryStatus,
+    rootCause: normalizedRootCause,
+    selected,
+    sourceLineage,
+    lifecycleRow,
+    geometryValid: selectedSourceGeometryValid
+  });
   const preservation = sourcePreservation({
     selected,
     lineage: sourceLineage,
@@ -487,15 +575,23 @@ const buildRow = ({
       recoveryStatus === RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE) {
     blockerSource.push("source_producer_missing");
   }
-  const fillStateConfirmed =
-    fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
-    fillStateRow?.requiresLedgerTerminalizationReview !== true;
+  const blockerDomain = protectionRow?.blockerDomain || (
+    decision.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"
+      ? "ledger_fill_state"
+      : protectionLane === PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED
+        ? "ownership"
+        : protectionLane === PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED
+          ? "none"
+          : "protection"
+  );
+  const owner = recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
+  const nextAction = nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
   return {
     symbol,
     positionLineageKey,
     currentPrice: toNum(refreshRow?.currentPrice ?? protectionRow?.currentPrice),
     qty: toNum(refreshRow?.qty ?? protectionRow?.qty ?? reconciliationRow?.qty),
-    ownershipClassification: refreshRow?.ownershipClassification || protectionRow?.ownershipClassification || null,
+    ownershipClassification,
     fillStateStatus: fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || protectionRow?.fillStateStatus || null,
     refreshDecision: refreshRow?.refreshDecision || null,
     lineageFreshnessStatus: lineageRow?.freshnessStatus || lineageRow?.lineageStatus || null,
@@ -541,6 +637,8 @@ const buildRow = ({
     recoveryDecision: decision.recoveryDecision,
     recoveryStatus,
     recoveryRootCause: normalizedRootCause,
+    recoveryDisposition: disposition,
+    recoveryOwner: owner,
     recoveryReady: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY ||
       recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     currentSourceFresh,
@@ -549,15 +647,7 @@ const buildRow = ({
     sourcePreservation: preservation,
     stateMaterializationRequired: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     protectionLane,
-    blockerDomain: protectionRow?.blockerDomain || (
-      decision.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"
-        ? "ledger_fill_state"
-        : protectionLane === PROTECTION_LANES.OWNERSHIP_PROOF_REQUIRED
-          ? "ownership"
-          : protectionLane === PROTECTION_LANES.BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED
-            ? "none"
-            : "protection"
-    ),
+    blockerDomain,
     repairEligibleNow,
     blockedReason: protectionRow?.blockedReason || decision.blockers[0] || null,
     nextAction,
@@ -572,11 +662,14 @@ const buildRow = ({
     idempotencyPass,
     repairEligibilityContract: {
       currentSourceAppliedAndFresh: currentSourceFresh,
+      currentSourceApplied,
       recoverySourceFresh: selectedSourceFresh,
       recoverySourceDispatchValid: selectedSourceDispatchValid,
       sourceLineageMatchesCurrentPosition: sourceLineage.positionLineageMatchesCurrentPosition,
       recoverySourceGeometryValid: selectedSourceGeometryValid,
       idempotencyPass,
+      ownershipPass,
+      fillStatePass: fillStateConfirmed,
       previousPreservedSourceUsed: false,
       pass: repairEligibleNow
     },
@@ -605,15 +698,16 @@ const buildMarkdown = (report) => {
   );
   lines.push(`- recovery_status_counts: \`${JSON.stringify(report.summary.recoveryStatusCounts)}\``);
   lines.push(`- source_root_causes: \`${JSON.stringify(report.summary.sourceRootCauseCounts)}\``);
+  lines.push(`- recovery_dispositions: \`${JSON.stringify(report.summary.recoveryDispositionCounts)}\``);
   lines.push(`- source_preservation: \`${JSON.stringify(report.summary.sourcePreservationStatusCounts)}\``);
   lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Geometry | Idempotency | Repair Eligible | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Geometry | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -691,12 +785,23 @@ const main = () => {
     recoveryStatusCounts: recoveryStatusCounts(rows),
     freshSourceRecoveryStatusCounts: recoveryStatusCounts(freshSourceRows),
     sourceRootCauseCounts: valueCounts(rows, (row) => row.recoveryRootCause),
+    recoveryDispositionCounts: valueCounts(rows, (row) => row.recoveryDisposition),
     sourcePreservationStatusCounts: valueCounts(rows, (row) => row.sourcePreservation?.status),
     recoveryStatusUnknown: count(rows, (row) => !Object.values(RECOVERY_STATUSES).includes(row.recoveryStatus)),
     sourceRootCauseUnknown: count(rows, (row) => row.recoveryRootCause && !Object.values(SOURCE_ROOT_CAUSES).includes(row.recoveryRootCause)),
     sourcePreservationUnknown: count(rows, (row) => !Object.values(PRESERVATION_STATUSES).includes(row.sourcePreservation?.status)),
+    recoveryDispositionUnclassified: count(freshSourceRows, (row) => row.recoveryRootCause && !Object.values(RECOVERY_DISPOSITIONS).includes(row.recoveryDisposition)),
     repairEligibleWithoutAppliedFreshSource: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.currentSourceAppliedAndFresh !== true),
     repairEligibleWithLineageMismatch: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.sourceLineageMatchesCurrentPosition !== true),
+    repairEligibleWithoutOwnershipPass: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.ownershipPass !== true),
+    repairEligibleWithoutFillStatePass: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.fillStatePass !== true),
+    dispatchMismatchRepairEligible: count(rows, (row) => row.recoveryRootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH && row.repairEligibleNow),
+    ttlExpiredClassifiedCurrentSourceFresh: count(rows, (row) => row.recoveryRootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED && row.currentSourceFresh),
+    producerMissingOwnershipLaneLeaks: count(rows, (row) =>
+      row.recoveryRootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING &&
+      row.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION" &&
+      row.blockerDomain !== "ownership"
+    ),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
     recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
     sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
@@ -727,12 +832,21 @@ const main = () => {
     freshSourceStatusCountMatchesLane: freshSourceStatusTotal === summary.freshSourceRequired,
     sourceRootCausesClassified: summary.sourceRootCauseUnknown === 0,
     sourcePreservationClassified: summary.sourcePreservationUnknown === 0,
+    recoveryDispositionsClassified: summary.recoveryDispositionUnclassified === 0,
     repairEligibilityRequiresAppliedFreshSource: summary.repairEligibleWithoutAppliedFreshSource === 0
       && summary.repairEligibleWithLineageMismatch === 0
+      && summary.repairEligibleWithoutOwnershipPass === 0
+      && summary.repairEligibleWithoutFillStatePass === 0,
+    rootCauseSafetyCountersPass: summary.dispatchMismatchRepairEligible === 0
+      && summary.ttlExpiredClassifiedCurrentSourceFresh === 0
+      && summary.producerMissingOwnershipLaneLeaks === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
-    summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 ||
+    summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 || summary.recoveryDispositionUnclassified > 0 ||
     summary.repairEligibleWithoutAppliedFreshSource > 0 || summary.repairEligibleWithLineageMismatch > 0 ||
+    summary.repairEligibleWithoutOwnershipPass > 0 || summary.repairEligibleWithoutFillStatePass > 0 ||
+    summary.dispatchMismatchRepairEligible > 0 || summary.ttlExpiredClassifiedCurrentSourceFresh > 0 ||
+    summary.producerMissingOwnershipLaneLeaks > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"

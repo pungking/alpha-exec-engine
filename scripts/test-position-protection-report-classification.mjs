@@ -53,7 +53,7 @@ writeJson("position-lifecycle-guard-source-plan.json", {
       generatedAt: now,
       stopPrice: 89,
       targetPrice: 121,
-      stage6Hash: "different-position-hash"
+      stage6Hash: "hash-BBB"
     }
   }]
 });
