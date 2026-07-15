@@ -67,7 +67,12 @@ const PRESERVATION_STATUSES = Object.freeze({
   EXPIRED: "PRESERVED_EXPIRED_EVIDENCE_ONLY",
   NONE: "NO_PRESERVED_SOURCE"
 });
-const STAGE6_DISPATCH_SOURCES = new Set(["recommendation_ledger", "stage6_20trade_loop", "order_ledger"]);
+const STAGE6_DISPATCH_SOURCES = new Set([
+  "position_lifecycle_revalidated_guard",
+  "recommendation_ledger",
+  "stage6_20trade_loop",
+  "order_ledger"
+]);
 const SOURCE_PRIORITY = [
   "broker_children",
   "position_lifecycle_revalidated_guard",
@@ -151,6 +156,7 @@ const sourceLineageEvidence = ({ selected, refreshReceivedAt, ttlMin, protection
     dispatchBasis,
     dispatchStatus,
     dispatchValid: dispatchStatus === "NOT_REQUIRED" || dispatchStatus === "MATCH",
+    positionLineageMatchesCurrentPosition: dispatchStatus === "MATCH" || (!dispatchRequired && Boolean(selected)),
     lifecycle: type === "position_lifecycle_revalidated_guard"
       ? {
           ready: lifecycleRow?.lifecycleReady === true,
@@ -183,7 +189,14 @@ const sourcePreservation = ({ selected, lineage, geometryValid, previousRow, pos
       }
     : null;
   const prior = previousRow?.sourcePreservation?.source || null;
-  const previous = positionLineageKey && prior?.positionLineageKey === positionLineageKey ? prior : null;
+  const priorStage6Matches = lineage.expectedStage6Hash
+    ? prior?.stage6Hash === lineage.expectedStage6Hash
+    : lineage.expectedStage6File
+      ? prior?.stage6File === lineage.expectedStage6File
+      : false;
+  const previous = positionLineageKey && prior?.positionLineageKey === positionLineageKey && priorStage6Matches
+    ? prior
+    : null;
   const source = current || previous;
   const expiry = Date.parse(String(source?.expiresAt || ""));
   const status = !source
@@ -194,7 +207,15 @@ const sourcePreservation = ({ selected, lineage, geometryValid, previousRow, pos
   return {
     status,
     source,
-    lineageKeyMatchesCurrentPosition: Boolean(source && source.positionLineageKey === positionLineageKey),
+    lineageKeyMatchesCurrentPosition: Boolean(
+      source && source.positionLineageKey === positionLineageKey && (
+        lineage.expectedStage6Hash
+          ? source.stage6Hash === lineage.expectedStage6Hash
+          : lineage.expectedStage6File
+            ? source.stage6File === lineage.expectedStage6File
+            : false
+      )
+    ),
     retainedForEvidenceOnly: Boolean(source),
     usedForRepairEligibility: false
   };
@@ -399,13 +420,17 @@ const buildRow = ({
   ) && (
     refreshRow?.broker?.targetPresent === true || reconciliationRow?.brokerTargetPresent === true
   );
+  const selected = refreshRow?.selectedSource || null;
+  const sourceLineage = sourceLineageEvidence({ selected, refreshReceivedAt, ttlMin, protectionRow, lifecycleRow, preview, nowMs });
   const currentSourceGeneratedAt = protectionRow?.effectiveGuardGeneratedAt || protectionRow?.plannedLedgerUpdatedAt || null;
   const currentSourceAgeMin = round(ageMinutes(currentSourceGeneratedAt, nowMs));
   const currentMetadataFresh = (protectionRow?.guardSourceFresh === true || protectionRow?.guardSourceFreshness === "fresh") &&
     currentSourceAgeMin != null && currentSourceAgeMin >= -1 && currentSourceAgeMin <= ttlMin;
-  const currentSourceFresh = brokerChildrenComplete || currentMetadataFresh;
-  const selected = refreshRow?.selectedSource || null;
-  const sourceLineage = sourceLineageEvidence({ selected, refreshReceivedAt, ttlMin, protectionRow, lifecycleRow, preview, nowMs });
+  const lifecycleCurrentSource = protectionRow?.effectiveGuardSource === "position_lifecycle_revalidated_guard";
+  const currentSourceLineageValid = !lifecycleCurrentSource || (
+    selected?.type === "position_lifecycle_revalidated_guard" && sourceLineage.dispatchValid
+  );
+  const currentSourceFresh = brokerChildrenComplete || (currentMetadataFresh && currentSourceLineageValid);
   const selectedSourceFresh = sourceLineage.freshAtEvaluation;
   const selectedSourceDispatchValid = sourceLineage.dispatchValid;
   const selectedStop = toNum(refreshRow?.selectedSource?.stopPrice);
@@ -549,6 +574,7 @@ const buildRow = ({
       currentSourceAppliedAndFresh: currentSourceFresh,
       recoverySourceFresh: selectedSourceFresh,
       recoverySourceDispatchValid: selectedSourceDispatchValid,
+      sourceLineageMatchesCurrentPosition: sourceLineage.positionLineageMatchesCurrentPosition,
       recoverySourceGeometryValid: selectedSourceGeometryValid,
       idempotencyPass,
       previousPreservedSourceUsed: false,
@@ -670,6 +696,7 @@ const main = () => {
     sourceRootCauseUnknown: count(rows, (row) => row.recoveryRootCause && !Object.values(SOURCE_ROOT_CAUSES).includes(row.recoveryRootCause)),
     sourcePreservationUnknown: count(rows, (row) => !Object.values(PRESERVATION_STATUSES).includes(row.sourcePreservation?.status)),
     repairEligibleWithoutAppliedFreshSource: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.currentSourceAppliedAndFresh !== true),
+    repairEligibleWithLineageMismatch: count(rows, (row) => row.repairEligibleNow && row.repairEligibilityContract?.sourceLineageMatchesCurrentPosition !== true),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
     recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
     sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
@@ -701,10 +728,11 @@ const main = () => {
     sourceRootCausesClassified: summary.sourceRootCauseUnknown === 0,
     sourcePreservationClassified: summary.sourcePreservationUnknown === 0,
     repairEligibilityRequiresAppliedFreshSource: summary.repairEligibleWithoutAppliedFreshSource === 0
+      && summary.repairEligibleWithLineageMismatch === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
     summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 ||
-    summary.repairEligibleWithoutAppliedFreshSource > 0 ||
+    summary.repairEligibleWithoutAppliedFreshSource > 0 || summary.repairEligibleWithLineageMismatch > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"

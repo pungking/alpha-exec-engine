@@ -82,8 +82,21 @@ const refreshRow = (symbol, selectedSource, overrides = {}) => ({
 });
 
 const current = source({ type: "recommendation_ledger" });
-const ready = source({ type: "position_lifecycle_revalidated_guard" });
-const materialization = source({ type: "position_lifecycle_revalidated_guard" });
+const ready = source({
+  type: "position_lifecycle_revalidated_guard",
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const materialization = source({
+  type: "position_lifecycle_revalidated_guard",
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
+const lifecycleMismatch = source({
+  type: "position_lifecycle_revalidated_guard",
+  stage6Hash: "different-lifecycle-hash",
+  stage6File: "different-lifecycle-stage6.json"
+});
 const unavailable = source({
   type: "order_ledger",
   generatedAt: stale,
@@ -107,12 +120,13 @@ const invalid = source({
 writeJson("performance-dashboard.json", { generatedAt: now, live: { available: true } });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
 writeJson("position-protection-root-cause-audit.json", {
-  summary: { protectionBlockerRows: 6 },
+  summary: { protectionBlockerRows: 7 },
   rows: [
     protectionRow("CURR", { guardSourceFresh: true, guardSourceFreshness: "fresh" }),
     protectionRow("READY", {
       protectionLane: "MANUAL_APPROVAL_CANDIDATE",
       blockerDomain: "none",
+      effectiveGuardSource: "position_lifecycle_revalidated_guard",
       guardSourceFresh: true,
       guardSourceFreshness: "fresh",
       repairEligible: true,
@@ -120,9 +134,19 @@ writeJson("position-protection-root-cause-audit.json", {
       nextAction: "manual_approval_review_only"
     }),
     protectionRow("MAT", {
+      effectiveGuardSource: "position_lifecycle_revalidated_guard",
       guardSourceFresh: true,
       guardSourceFreshness: "fresh",
       effectiveGuardGeneratedAt: stale
+    }),
+    protectionRow("LIFE", {
+      protectionLane: "MANUAL_APPROVAL_CANDIDATE",
+      effectiveGuardSource: "position_lifecycle_revalidated_guard",
+      guardSourceFresh: true,
+      guardSourceFreshness: "fresh",
+      repairEligible: true,
+      blockedReason: null,
+      nextAction: "manual_approval_review_only"
     }),
     protectionRow("NONE"),
     protectionRow("DISP"),
@@ -140,6 +164,7 @@ const refreshPlan = {
     refreshRow("CURR", current),
     refreshRow("READY", ready),
     refreshRow("MAT", materialization),
+    refreshRow("LIFE", lifecycleMismatch),
     refreshRow("NONE", unavailable),
     refreshRow("DISP", dispatchMismatch),
     refreshRow("MISS", null, {
@@ -163,6 +188,7 @@ writeJson("guard-metadata-lineage-audit.json", {
     { symbol: "CURR", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "READY", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "MAT", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
+    { symbol: "LIFE", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "NONE", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
     { symbol: "DISP", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "MISS", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" },
@@ -170,23 +196,39 @@ writeJson("guard-metadata-lineage-audit.json", {
   ]
 });
 writeJson("position-lifecycle-guard-source-plan.json", {
-  rows: [{
-    symbol: "MAT",
-    lifecycleReady: true,
-    lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
-    lifecycleSource: {
-      type: "position_lifecycle_revalidated_guard",
-      generatedAt: now,
-      originalSourceType: "order_ledger",
-      originalGeneratedAt: stale,
-      originalAgeMin: 999999,
-      stage6Hash: materialization.stage6Hash,
-      stage6File: materialization.stage6File
+  rows: [
+    {
+      symbol: "MAT",
+      lifecycleReady: true,
+      lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
+      lifecycleSource: {
+        type: "position_lifecycle_revalidated_guard",
+        generatedAt: now,
+        originalSourceType: "order_ledger",
+        originalGeneratedAt: stale,
+        originalAgeMin: 999999,
+        stage6Hash: materialization.stage6Hash,
+        stage6File: materialization.stage6File
+      }
+    },
+    {
+      symbol: "LIFE",
+      lifecycleReady: true,
+      lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
+      lifecycleSource: {
+        type: "position_lifecycle_revalidated_guard",
+        generatedAt: now,
+        originalSourceType: "order_ledger",
+        originalGeneratedAt: stale,
+        originalAgeMin: 999999,
+        stage6Hash: lifecycleMismatch.stage6Hash,
+        stage6File: lifecycleMismatch.stage6File
+      }
     }
-  }]
+  ]
 });
 writeJson("fill-state-reconciliation-audit.json", {
-  rows: ["CURR", "READY", "MAT", "NONE", "DISP", "MISS", "BAD"].map((symbol) => ({
+  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD"].map((symbol) => ({
     symbol,
     reconciliationDecision: "FILL_STATE_CONFIRMED",
     requiresLedgerTerminalizationReview: false
@@ -205,6 +247,7 @@ const bySymbol = new Map(report.rows.map((row) => [row.symbol, row]));
 assert.equal(bySymbol.get("CURR")?.recoveryStatus, "CURRENT_SOURCE_FRESH");
 assert.equal(bySymbol.get("READY")?.recoveryStatus, "RECOVERY_SOURCE_READY_REPORT_ONLY");
 assert.equal(bySymbol.get("MAT")?.recoveryStatus, "RECOVERY_SOURCE_MATERIALIZATION_REQUIRED");
+assert.equal(bySymbol.get("LIFE")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("DISP")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("MISS")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
@@ -218,13 +261,18 @@ assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
 assert.equal(bySymbol.get("DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
 assert.equal(bySymbol.get("DISP")?.sourceLineage?.dispatchStatus, "MISMATCH");
+assert.equal(bySymbol.get("LIFE")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("LIFE")?.sourceLineage?.dispatchStatus, "MISMATCH");
+assert.equal(bySymbol.get("LIFE")?.sourcePreservation?.lineageKeyMatchesCurrentPosition, false);
+assert.equal(bySymbol.get("LIFE")?.repairEligibilityContract?.sourceLineageMatchesCurrentPosition, false);
+assert.equal(bySymbol.get("LIFE")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MISS")?.recoveryRootCause, "source_producer_missing");
 assert.equal(bySymbol.get("BAD")?.recoveryRootCause, "source_geometry_unusable");
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.producedAt, now);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.receivedAt, now);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.ttlMin, 30);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.expiresAt, new Date(Date.parse(now) + (30 * 60_000)).toISOString());
-assert.equal(bySymbol.get("MAT")?.sourceLineage?.dispatchStatus, "NOT_REQUIRED");
+assert.equal(bySymbol.get("MAT")?.sourceLineage?.dispatchStatus, "MATCH");
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.lifecycle?.ready, true);
 assert.equal(bySymbol.get("MAT")?.sourceLineage?.lifecycle?.originalSourceType, "order_ledger");
 assert.equal(bySymbol.get("MAT")?.sourcePreservation?.status, "PRESERVED_ACTIVE_REPORT_ONLY");
@@ -234,6 +282,7 @@ assert.equal(report.summary.recoveryStatusUnknown, 0);
 assert.equal(report.summary.sourceRootCauseUnknown, 0);
 assert.equal(report.summary.sourcePreservationUnknown, 0);
 assert.equal(report.summary.sourcePrecedenceViolations, 0);
+assert.equal(report.summary.repairEligibleWithLineageMismatch, 0);
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
 assert.equal(report.summary.stateMutationAttempted, false);
