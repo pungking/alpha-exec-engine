@@ -28,7 +28,17 @@ const bool = (value) => value === true || value === "true";
 const sym = (value) => String(value || "").trim().toUpperCase();
 const uniqueSymbols = (items) => [...new Set(items.map((item) => sym(item?.symbol || item)).filter(Boolean))].sort();
 const n = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+const optionalCount = (value) => value === null || value === undefined || value === ""
+  ? null
+  : Number.isFinite(Number(value)) ? Number(value) : null;
 const short = (value, max = 240) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+const RECOVERY_STATUSES = new Set([
+  "CURRENT_SOURCE_FRESH",
+  "RECOVERY_SOURCE_READY_REPORT_ONLY",
+  "RECOVERY_SOURCE_MATERIALIZATION_REQUIRED",
+  "NO_FRESH_SOURCE_AVAILABLE",
+  "RECOVERY_SOURCE_INVALID_GEOMETRY",
+]);
 
 function makeItem({
   id,
@@ -55,6 +65,7 @@ function makeItem({
 
 function buildReport() {
   const live = readJson("live-readiness-scorecard.json");
+  const protection = readJson("position-protection-root-cause-audit.json");
   const child = readJson("broker-child-order-reconciliation.json");
   const guarded = readJson("guarded-child-order-repair-plan.json");
   const persistent = readJson("persistent-oco-repair-plan.json");
@@ -64,6 +75,7 @@ function buildReport() {
   const terminal = readJson("ledger-terminalization-proposal.json");
   const ownershipDecision = readJson("position-ownership-recovery-decision.json");
   const ownership = readJson("position-ownership-state-migration-review-plan.json");
+  const opsHealth = readJson("ops-health-report.json");
 
   const brokerSignals = [
     live?.brokerMutationAttempted,
@@ -100,6 +112,9 @@ function buildReport() {
   ];
 
   const childRows = rows(child);
+  const protectionRows = rows(protection);
+  const recoveryRows = rows(recovery);
+  const persistentRows = rows(persistent);
   const lineageRows = rows(lineage);
   const fillRows = rows(fill);
   const terminalRows = rows(terminal);
@@ -107,10 +122,13 @@ function buildReport() {
   const ownershipRows = rows(ownership);
 
   const alreadyProtected = childRows.filter((row) => row.protectionStatus === "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED");
-  const childRepairCandidates = rows(guarded).filter((row) => row.readiness === "CANDIDATE_BLOCKED_REPORT_ONLY");
+  const guardedReportOnlyCandidates = rows(guarded).filter((row) => row.readiness === "CANDIDATE_BLOCKED_REPORT_ONLY");
+  const childRepairCandidates = persistentRows.filter((row) =>
+    row.protectionLane === "MANUAL_APPROVAL_CANDIDATE" && row.repairEligible === true
+  );
   const childForbiddenFill = childRows.filter((row) => row.fillStateReconciliation?.repairBlocked === true);
   const childForbiddenOwnership = childRows.filter((row) => row.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION");
-  const childFreshSourceWait = rows(recovery).filter((row) => String(row.recoveryDecision || "").startsWith("FRESH_SOURCE_REQUIRED"));
+  const childFreshSourceWait = recoveryRows.filter((row) => String(row.recoveryDecision || "").startsWith("FRESH_SOURCE_REQUIRED"));
   const childInvalidOrStale = childRows.filter((row) =>
     row.protectionStatus !== "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED" &&
     (row.guardGeometryInvalid || row.guardMetadataMissing || row.staleStateMetadataIgnored)
@@ -118,7 +136,94 @@ function buildReport() {
 
   const missingSource = lineageRows.filter((row) => row.rootCause === "NO_SOURCE_WITH_STOP_TARGET");
   const staleSource = lineageRows.filter((row) => row.rootCause === "SOURCE_AGE_EXCEEDED");
-  const freshReview = rows(recovery).filter((row) => row.repairEligibleNow || row.recoveryDecision === "STATE_ONLY_RECOVERY_REVIEW_READY");
+  const freshReview = recoveryRows.filter((row) => row.repairEligibleNow || row.recoveryDecision === "STATE_ONLY_RECOVERY_REVIEW_READY");
+
+  const recoveryBySymbol = new Map(recoveryRows.map((row) => [sym(row.symbol), row]));
+  const lifecycleBlockedSymbols = new Set(
+    rows(live?.entryOrderLifecycle).filter((row) => row.status === "block").map((row) => sym(row.symbol))
+  );
+  const ownershipBlockedSymbols = new Set(protectionRows.filter((row) => row.blockerDomain === "ownership").map((row) => sym(row.symbol)));
+  const ledgerBlockedSymbols = new Set(protectionRows.filter((row) => row.blockerDomain === "ledger").map((row) => sym(row.symbol)));
+  const canonicalProtectionRows = protectionRows
+    .filter((row) => row.blockerDomain === "protection")
+    .map((rootRow) => {
+      const symbol = sym(rootRow.symbol);
+      const recoveryRow = recoveryBySymbol.get(symbol);
+      const recoveryStatus = String(recoveryRow?.recoveryStatus || "");
+      const upstreamRepairEligibleNow = recoveryRow?.repairEligibleNow === true;
+      const repairEligibilityContract = recoveryRow?.repairEligibilityContract || null;
+      const repairEligibilityContractViolation = upstreamRepairEligibleNow && repairEligibilityContract?.pass !== true;
+      return {
+        symbol,
+        classification: RECOVERY_STATUSES.has(recoveryStatus) ? recoveryStatus : "UNCLASSIFIED",
+        recoveryRootCause: recoveryRow?.recoveryRootCause || null,
+        recoveryDisposition: recoveryRow?.recoveryDisposition || null,
+        protectionLane: rootRow.protectionLane || recoveryRow?.protectionLane || null,
+        blockerDomain: rootRow.blockerDomain,
+        brokerChildren: {
+          stopPresent: rootRow.brokerStopPresent === true,
+          targetPresent: rootRow.brokerTargetPresent === true,
+        },
+        ownershipClassification: rootRow.ownershipClassification || recoveryRow?.ownershipClassification || null,
+        normalizedFillState: rootRow.normalizedFillState || null,
+        selectedSource: recoveryRow?.selectedSource
+          ? { type: recoveryRow.selectedSource.type || null, fresh: recoveryRow.selectedSource.fresh === true }
+          : null,
+        sourcePrecedence: recoveryRow?.sourcePrecedence || rootRow.sourcePrecedence || null,
+        sourcePrecedenceClass: recoveryRow?.sourcePrecedenceClass || rootRow.sourcePrecedenceClass || null,
+        sourcePrecedenceRank: recoveryRow?.sourcePrecedenceRank ?? rootRow.sourcePrecedenceRank ?? null,
+        sourcePrecedenceEvidence: recoveryRow?.sourcePrecedenceEvidence || null,
+        sourcePrecedenceViolation: recoveryRow?.sourcePrecedenceEvidence?.violation === true,
+        sourceLineage: recoveryRow?.sourceLineage || null,
+        sourcePreservation: recoveryRow?.sourcePreservation || null,
+        currentSourceFresh: recoveryRow?.currentSourceFresh === true,
+        recoverySourceFreshness: recoveryRow?.recoverySourceFreshness || null,
+        stateMaterializationRequired: recoveryRow?.stateMaterializationRequired === true,
+        geometry: recoveryRow?.geometry || rootRow.geometry || null,
+        recoveryGeometry: recoveryRow?.recoveryGeometry || null,
+        idempotencyStatus: recoveryRow?.idempotencyStatus || rootRow.idempotencyStatus || null,
+        idempotencyPass: recoveryRow?.idempotencyPass === true,
+        upstreamRepairEligibleNow,
+        repairEligibleNow: upstreamRepairEligibleNow && repairEligibilityContract?.pass === true,
+        repairEligibilityContract,
+        repairEligibilityContractViolation,
+        blockedReason: recoveryRow?.blockedReason || rootRow.blockedReason || null,
+        nextAction: recoveryRow?.nextAction || rootRow.nextAction || null,
+        domainOverlap: ownershipBlockedSymbols.has(symbol) || ledgerBlockedSymbols.has(symbol) || lifecycleBlockedSymbols.has(symbol),
+      };
+    })
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  const statusCounts = Object.fromEntries(
+    [...new Set(canonicalProtectionRows.map((row) => row.classification))]
+      .sort()
+      .map((status) => [status, canonicalProtectionRows.filter((row) => row.classification === status).length])
+  );
+  const canonicalCount = canonicalProtectionRows.length;
+  const reportCounts = {
+    rootCause: optionalCount(protection.summary?.protectionBlockerRows),
+    guardSourceRecovery: optionalCount(recovery.summary?.protectionBlockerRows),
+    persistentOcoRepair: optionalCount(persistent.summary?.protectionBlockerRows),
+    liveReadiness: optionalCount(live.protectionClassification?.protectionBlockerRows),
+    opsHealth: optionalCount(opsHealth.metrics?.positionProtectionBlockerRows),
+  };
+  const missingReportCounts = Object.entries(reportCounts)
+    .filter(([, value]) => value === null)
+    .map(([report]) => report);
+  const canonicalProtectionClassification = {
+    sourceReport: "position-protection-root-cause-audit.json",
+    canonicalCount,
+    classifiedRows: canonicalProtectionRows.filter((row) => row.classification !== "UNCLASSIFIED").length,
+    unclassifiedRows: canonicalProtectionRows.filter((row) => row.classification === "UNCLASSIFIED").length,
+    sourcePrecedenceViolations: canonicalProtectionRows.filter((row) => row.sourcePrecedenceViolation).length,
+    domainOverlapRows: canonicalProtectionRows.filter((row) => row.domainOverlap).length,
+    repairEligibleNow: canonicalProtectionRows.filter((row) => row.repairEligibleNow).length,
+    repairEligibilityContractViolations: canonicalProtectionRows.filter((row) => row.repairEligibilityContractViolation).length,
+    statusCounts,
+    reportCounts,
+    missingReportCounts,
+    reportCountsMatch: missingReportCounts.length === 0 && Object.values(reportCounts).every((value) => value === canonicalCount),
+    rows: canonicalProtectionRows,
+  };
 
   const fillNeedsProposal = fillRows.filter((row) => row.requiresLedgerTerminalizationReview || row.reconciliationDecision !== "FILL_STATE_CONFIRMED");
   const proposalReady = terminalRows.filter((row) => row.proposalReady !== false);
@@ -150,7 +255,7 @@ function buildReport() {
     makeItem({
       id: "protective_child_missing",
       currentStatus: childRepairCandidates.length ? "manual_repair_approval_candidate" : childFreshSourceWait.length ? "fresh_source_wait" : childForbiddenFill.length || childForbiddenOwnership.length || childInvalidOrStale.length ? "repair_forbidden_until_prereq_clear" : "clear_or_already_protected",
-      rows: [...childRepairCandidates, ...childFreshSourceWait, ...childForbiddenFill, ...childForbiddenOwnership, ...childInvalidOrStale],
+      rows: [...guardedReportOnlyCandidates, ...childRepairCandidates, ...childFreshSourceWait, ...childForbiddenFill, ...childForbiddenOwnership, ...childInvalidOrStale],
       nextSafeAction: "Keep actual OCO repair blocked until fill-state, ownership, and fresh guard-source prerequisites are clear.",
       requiredApprovalPhrase: "CONFIRM LIVE EXECUTION",
       evidence: `child=${child.overall || "N/A"} missingStops=${child.summary?.missingStopChildren ?? "N/A"} alreadyProtected=${alreadyProtected.length} guarded=${guarded.overall || "N/A"} candidates=${guarded.summary?.candidates ?? "N/A"} persistent=${persistent.overall || "N/A"} eligible=${persistent.summary?.eligible ?? "N/A"}`,
@@ -168,7 +273,7 @@ function buildReport() {
   ];
 
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: "2.0.0",
     generatedAt: new Date().toISOString(),
     stateDir: STATE_DIR,
     reportOnly: true,
@@ -179,9 +284,11 @@ function buildReport() {
     stateMutationAttempted: stateSignals.some(bool),
     stateMutationSubmitted: [live?.stateMutationSubmitted, ownership?.summary?.stateMutationApplied].some(bool),
     blockerGroupSeparation: live.blockerGroupSeparation || {},
+    canonicalProtectionClassification,
     priority,
     childMissingClassification: {
       alreadyProtectedNoAction: uniqueSymbols(alreadyProtected),
+      reportOnlyCandidate: uniqueSymbols(guardedReportOnlyCandidates),
       manualRepairCandidate: uniqueSymbols(childRepairCandidates),
       repairForbiddenFillState: uniqueSymbols(childForbiddenFill),
       repairForbiddenOwnership: uniqueSymbols(childForbiddenOwnership),
@@ -230,6 +337,18 @@ function renderMarkdown(report) {
   lines.push("|---:|---|---|---:|---|---|---|");
   for (const item of report.priority) {
     lines.push(`| ${item.priority} | ${item.id} | \`${item.currentStatus}\` | ${item.count} | ${item.affectedSymbols.join(",") || "none"} | ${item.nextSafeAction} | \`${item.requiredApprovalPhrase}\` |`);
+  }
+  lines.push("");
+  lines.push("### Canonical Protection Classification");
+  lines.push(`- canonicalCount: \`${report.canonicalProtectionClassification.canonicalCount}\``);
+  lines.push(`- classified/unclassified: \`${report.canonicalProtectionClassification.classifiedRows}/${report.canonicalProtectionClassification.unclassifiedRows}\``);
+  lines.push(`- precedence/domain overlap: \`${report.canonicalProtectionClassification.sourcePrecedenceViolations}/${report.canonicalProtectionClassification.domainOverlapRows}\``);
+  lines.push(`- repairEligible/contract violations: \`${report.canonicalProtectionClassification.repairEligibleNow}/${report.canonicalProtectionClassification.repairEligibilityContractViolations}\``);
+  lines.push(`- reportCountsMatch: \`${report.canonicalProtectionClassification.reportCountsMatch}\``);
+  lines.push("| Symbol | Classification | Root Cause | Source | Fresh | Materialization | Geometry | Idempotency | Repair Eligible | Next Action |");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|");
+  for (const row of report.canonicalProtectionClassification.rows) {
+    lines.push(`| ${row.symbol} | \`${row.classification}\` | \`${row.recoveryRootCause || "none"}\` | ${row.selectedSource?.type || "none"} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.stateMaterializationRequired ? "required" : "no"} | ${row.geometry?.valid === true ? "valid" : "invalid"} | ${row.idempotencyStatus || "N/A"}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction || "N/A"} |`);
   }
   lines.push("");
   lines.push("### Child Missing Classification");

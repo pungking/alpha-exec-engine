@@ -231,7 +231,7 @@ const refreshPlan = {
   generatedAt: now,
   config: {
     refreshSourceMaxAgeMin: 30,
-    sourcePriority: ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"]
+    sourcePriority: ["broker_children", "position_lifecycle_revalidated_guard", "stage6_20trade_loop", "recommendation_ledger", "order_ledger"]
   },
   rows: [
     refreshRow("CURR", current),

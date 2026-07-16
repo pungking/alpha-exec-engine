@@ -69,6 +69,13 @@ const freshnessMaxAgeMin = positiveEnv(
   "GUARD_METADATA_REFRESH_SOURCE_MAX_AGE_MIN",
   positiveEnv("OCO_REPAIR_GUARD_METADATA_MAX_AGE_MIN", 30)
 );
+const SOURCE_PRIORITY = [
+  "broker_children",
+  "position_lifecycle_revalidated_guard",
+  "stage6_20trade_loop",
+  "recommendation_ledger",
+  "order_ledger"
+];
 
 const indexArrayBySymbol = (rows) => {
   const out = new Map();
@@ -174,9 +181,8 @@ const buildSources = ({ position, recommendation, loopRow, ledgerRow, lifecycleR
 };
 
 const chooseSource = (sources) => {
-  const priority = ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"];
   const ready = sources.filter((row) => row.hasBothPrices && row.fresh);
-  ready.sort((a, b) => priority.indexOf(a.type) - priority.indexOf(b.type));
+  ready.sort((a, b) => SOURCE_PRIORITY.indexOf(a.type) - SOURCE_PRIORITY.indexOf(b.type));
   if (ready.length) return ready[0];
   const withPrices = sources.filter((row) => row.hasBothPrices);
   withPrices.sort((a, b) => (a.ageMin ?? Number.POSITIVE_INFINITY) - (b.ageMin ?? Number.POSITIVE_INFINITY));
@@ -416,7 +422,7 @@ const main = () => {
     },
     config: {
       refreshSourceMaxAgeMin: freshnessMaxAgeMin,
-      sourcePriority: ["broker_children", "position_lifecycle_revalidated_guard", "recommendation_ledger", "stage6_20trade_loop", "order_ledger"]
+      sourcePriority: SOURCE_PRIORITY
     },
     executionPolicy: {
       mode: "report_only",

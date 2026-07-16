@@ -1339,3 +1339,27 @@ Done-When:
 - A consistent filled or terminal lifecycle passes without requiring an active open order.
 - Protection blocker counts are unchanged by lifecycle aggregation.
 - Safe replay keeps all broker/state mutation flags false.
+
+### 2026-07-17 - Canonical Protection Blocker Classification v2
+
+- Scope: `alpha-exec-engine` report-only blocker reduction evidence; no broker or state mutation.
+- `protection-blocker-reduction-plan.json` schema advances from `1.0.0` to `2.0.0`.
+- The existing `position-protection-root-cause-audit.json` protection-domain rows are the canonical row set; ownership, ledger/fill-state, and entry lifecycle rows are checked only for duplicate-domain overlap.
+- `canonicalProtectionClassification` joins existing `guard-source-recovery-plan.json` evidence without adding another repair planner:
+  - recovery status and root cause,
+  - source lineage/preservation and precedence,
+  - broker-child, ownership, fill-state, geometry, idempotency, and materialization evidence,
+  - report-count consistency and unknown/overlap counters.
+- The report-only guard refresh source precedence is fixed as broker children, current-position lifecycle, matching Stage6 loop evidence, recommendation ledger, then order ledger; stale sources remain evidence only.
+- Breaking semantic correction:
+  - `childMissingClassification.manualRepairCandidate` now contains only rows that the canonical persistent OCO report marks repair-eligible/manual-approval-ready.
+  - blocked `guarded-child-order-repair-plan` rows remain visible as `reportOnlyCandidate` and can no longer create a false manual approval candidate.
+- Upstream `repairEligibleNow=true` is accepted only when the existing `repairEligibilityContract.pass=true`; otherwise this report safely keeps eligibility false and records a contract violation.
+
+Done-When:
+
+- All canonical protection blockers have one existing recovery classification and root cause.
+- `unclassifiedRows=0`, `sourcePrecedenceViolations=0`, and `domainOverlapRows=0`.
+- Root-cause, guard-source, persistent OCO, live-readiness, and ops-health blocker counts all match.
+- Preserved or report-only recovery evidence does not become repair eligibility without the applied-fresh-source contract.
+- All broker/state mutation flags remain false.
