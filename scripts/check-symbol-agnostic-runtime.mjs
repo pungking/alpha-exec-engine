@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const ROOTS = ["src", "scripts", ".github/workflows"];
-const DEFAULT_PROOF_SYMBOLS = ["BZ", "QFIN", "ACAD", "TSLA", "JHG", "INVA"];
+const DEFAULT_PROOF_SYMBOLS = ["BZ", "QFIN", "ACAD", "TSLA", "JHG", "INVA", "MLI"];
 const forbiddenSymbols = String(process.env.SYMBOL_AGNOSTIC_FORBIDDEN_SYMBOLS || DEFAULT_PROOF_SYMBOLS.join(","))
   .split(",")
   .map((value) => value.trim().toUpperCase())
