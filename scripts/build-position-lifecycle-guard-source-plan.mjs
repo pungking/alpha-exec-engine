@@ -179,6 +179,41 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
   if (source?.generatedAt && ageMinutes(source.generatedAt) > config.maxPerformanceAgeMin) warnings.push("original_guard_source_was_stale_revalidated_by_lifecycle_only");
 
   const lifecycleReady = blockers.length === 0;
+  const lineageDecision = source
+    ? "CURRENT_POSITION_LINEAGE_MATCH"
+    : expectedStage6Hash || expectedStage6File
+      ? "SOURCE_LINEAGE_MISMATCH"
+      : "CURRENT_POSITION_LINEAGE_MISSING";
+  const guardValueChangeRequired = Boolean(source) && blockers.some((blocker) => [
+    "invalid_stop_current_target_geometry",
+    "stop_too_near_current_for_lifecycle_revalidation",
+    "target_too_near_current_for_lifecycle_revalidation",
+    "guard_metadata_breached",
+    "guard_metadata_near_breached"
+  ].includes(blocker));
+  const producerRefreshContract = {
+    status: lifecycleReady
+      ? "LIFECYCLE_SOURCE_READY_REPORT_ONLY"
+      : guardValueChangeRequired
+        ? "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY"
+        : "LIFECYCLE_SOURCE_REFRESH_BLOCKED",
+    sourceProducer: "position_lifecycle_guard_source",
+    owner: guardValueChangeRequired ? "guard_geometry_producer" : "position_lifecycle_guard_source_producer",
+    lineageDecision,
+    expectedStage6Hash,
+    expectedStage6File,
+    currentPositionLineageMatch: lineageDecision === "CURRENT_POSITION_LINEAGE_MATCH",
+    guardValueChangeRequired,
+    actualGuardValueDiffRequired: true,
+    timestampOnlyRefreshAllowed: false,
+    materializationCandidateAllowed: false,
+    blockers: [...new Set(blockers)],
+    nextAction: lifecycleReady
+      ? "preserve_report_only_source_no_materialization_without_guard_value_diff"
+      : guardValueChangeRequired
+        ? "request_current_position_guard_recalibration_report_only"
+        : "resolve_lifecycle_source_refresh_blockers_report_only"
+  };
   return {
     symbol,
     qty,
@@ -189,11 +224,7 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
     },
     ownershipClassification: ownership,
     fillStateStatus: fillConfirmed ? "FILL_STATE_CONFIRMED" : (fillStateRow?.reconciliationDecision || refreshRow?.fillStateReconciliation?.status || null),
-    lineageDecision: source
-      ? "CURRENT_POSITION_LINEAGE_MATCH"
-      : expectedStage6Hash || expectedStage6File
-        ? "SOURCE_LINEAGE_MISMATCH"
-        : "CURRENT_POSITION_LINEAGE_MISSING",
+    lineageDecision,
     lineageEvidence: {
       expectedStage6Hash,
       expectedStage6File,
@@ -220,6 +251,7 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
     lifecycleDecision: lifecycleReady
       ? "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY"
       : "POSITION_LIFECYCLE_GUARD_SOURCE_BLOCKED",
+    producerRefreshContract,
     geometry: {
       valid: stopBelowCurrent && targetAboveCurrent && targetAboveStop,
       stopBelowCurrent,
@@ -300,6 +332,12 @@ const main = () => {
     blocked: rows.filter((row) => !row.lifecycleReady).length,
     staleSourcesRevalidated: rows.filter((row) => row.lifecycleReady && row.warnings.includes("original_guard_source_was_stale_revalidated_by_lifecycle_only")).length,
     lineageMismatchSourcesRejected: rows.filter((row) => row.warnings.includes("report_only_lifecycle_source_rejected_as_revalidation_input")).length,
+    producerRefreshStatusCounts: rows.reduce((counts, row) => {
+      const status = row.producerRefreshContract?.status;
+      if (status) counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    }, {}),
+    producerRefreshUnclassified: rows.filter((row) => !row.producerRefreshContract?.status).length,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
     stateMutationAttempted: false,

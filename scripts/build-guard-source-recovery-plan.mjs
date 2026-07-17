@@ -60,6 +60,7 @@ const MATERIALIZATION_FIELDS = Object.freeze([
   "stage6File",
   "updatedAt"
 ]);
+const GUARD_VALUE_FIELDS = Object.freeze(["stopLossPrice", "takeProfitPrice"]);
 const MATERIALIZATION_PACKAGE_STATUSES = Object.freeze([
   "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY",
   "BLOCKED_CURRENT_STATE_RECORD_MISSING",
@@ -707,6 +708,34 @@ const geometryDriftAudit = ({
     classification = GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_GEOMETRY_EVIDENCE_MISSING;
     if (!missingCore.length) missingCore.push("attributable_geometry_transition");
   }
+  const currentPriceDriftResolution = classification === GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE
+    ? !evaluationGeometry.stopBelowCurrent
+      ? {
+          status: "NO_REPAIR_STOP_BREACHED_POSITION_RISK_REVIEW",
+          guardRecalibrationRequired: false,
+          noRepairUntilFreshGeometry: true,
+          reason: "stop_not_below_current",
+          owner: "position_risk_review",
+          nextAction: "keep_no_repair_route_to_position_risk_review"
+        }
+      : !evaluationGeometry.targetAboveCurrent
+        ? {
+            status: "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY",
+            guardRecalibrationRequired: true,
+            noRepairUntilFreshGeometry: true,
+            reason: "target_not_above_current",
+            owner: "guard_geometry_producer",
+            nextAction: "request_current_position_guard_recalibration_report_only"
+          }
+        : {
+            status: "NO_REPAIR_CURRENT_GEOMETRY_INVALID",
+            guardRecalibrationRequired: false,
+            noRepairUntilFreshGeometry: true,
+            reason: "current_geometry_invalid",
+            owner: "position_risk_review",
+            nextAction: "keep_no_repair_route_to_position_risk_review"
+          }
+    : null;
   const contract = {
     [GEOMETRY_DRIFT_CLASSIFICATIONS.STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE]: {
       owner: "us_alpha_seeker_stage6_producer",
@@ -719,9 +748,9 @@ const geometryDriftAudit = ({
       nextAction: "fix_lifecycle_transform_before_recovery_review"
     },
     [GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE]: {
-      owner: "position_risk_review",
-      blockedReason: "current_price_crossed_valid_source_guard",
-      nextAction: "keep_no_repair_route_to_position_risk_review"
+      owner: currentPriceDriftResolution?.owner || "position_risk_review",
+      blockedReason: currentPriceDriftResolution?.reason || "current_geometry_invalid",
+      nextAction: currentPriceDriftResolution?.nextAction || "keep_no_repair_route_to_position_risk_review"
     },
     [GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH]: {
       owner: "data_lineage_contract",
@@ -745,6 +774,7 @@ const geometryDriftAudit = ({
     lifecycleTransform,
     sourceGeometry,
     evaluationGeometry,
+    currentPriceDriftResolution,
     producerHandoff: classification === GEOMETRY_DRIFT_CLASSIFICATIONS.STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE
       ? {
           mode: "report_only",
@@ -862,7 +892,7 @@ const stateMaterializationPackage = ({
       .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
       .map((field) => ({ field, before: before[field], after: after[field] }))
     : [];
-  const guardValueDiff = proposedDiff.filter((change) => change.field !== "updatedAt");
+  const guardValueDiff = proposedDiff.filter((change) => GUARD_VALUE_FIELDS.includes(change.field));
   const ledgerIdentityMatches = Boolean(
     current &&
     current.record?.idempotencyKey === current.key &&
@@ -1334,8 +1364,32 @@ const buildRow = ({
     ttlMin,
     recoveryGeometry
   });
-  const owner = driftAudit?.geometryDriftOwner || recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
-  const nextAction = driftAudit?.nextAction || nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
+  const lifecycleRefreshApplies = disposition === RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE &&
+    normalizedRootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED &&
+    blockerDomain === "protection";
+  const lifecycleProducerRefreshContract = lifecycleRefreshApplies
+    ? lifecycleRow?.producerRefreshContract || {
+          status: "LIFECYCLE_PRODUCER_EVIDENCE_MISSING",
+          sourceProducer: "position_lifecycle_guard_source",
+          owner: "position_lifecycle_guard_source_producer",
+          lineageDecision: lifecycleRow?.lineageDecision || null,
+          expectedStage6Hash: sourceLineage.expectedStage6Hash,
+          expectedStage6File: sourceLineage.expectedStage6File,
+          currentPositionLineageMatch: sourceLineage.positionLineageMatchesCurrentPosition,
+          guardValueChangeRequired: false,
+          actualGuardValueDiffRequired: true,
+          timestampOnlyRefreshAllowed: false,
+          materializationCandidateAllowed: false,
+          blockers: ["lifecycle_producer_evidence_missing"],
+          nextAction: "restore_lifecycle_producer_refresh_evidence_report_only"
+        }
+    : null;
+  const owner = driftAudit?.geometryDriftOwner ||
+    (lifecycleRefreshApplies ? lifecycleProducerRefreshContract?.owner : null) ||
+    recoveryOwner({ blockerDomain, rootCause: normalizedRootCause, disposition });
+  const nextAction = driftAudit?.nextAction ||
+    (lifecycleRefreshApplies ? lifecycleProducerRefreshContract?.nextAction : null) ||
+    nextActionForRecovery(recoveryStatus, normalizedRootCause, disposition);
   const materializationPackage = stateMaterializationPackage({
     symbol,
     prerequisites: materializationPrerequisites,
@@ -1427,6 +1481,7 @@ const buildRow = ({
     geometry: protectionRow?.geometry || null,
     recoveryGeometry,
     geometryDriftAudit: driftAudit,
+    lifecycleProducerRefreshContract,
     idempotencyStatus,
     idempotencyPass,
     repairEligibilityContract: {
@@ -1568,6 +1623,10 @@ const main = () => {
   const materializationRows = rows.filter((row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED);
   const materializationPackages = rows.filter((row) => row.stateMaterializationPackage);
   const geometryRootCauseRows = rows.filter((row) => row.recoveryDisposition === RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE);
+  const lifecycleRefreshRows = freshSourceRows.filter((row) =>
+    row.recoveryDisposition === RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE &&
+    row.recoveryRootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED
+  );
 
   const summary = {
     rows: rows.length,
@@ -1604,6 +1663,10 @@ const main = () => {
     materializationPrerequisiteUnclassified: count(materializationRows, (row) => !row.stateMaterializationPrerequisites),
     materializationPackageRows: materializationPackages.length,
     materializationPackagesReady: count(materializationPackages, (row) => row.stateMaterializationPackage?.proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"),
+    materializationReadyWithoutGuardValueDiff: count(materializationPackages, (row) =>
+      row.stateMaterializationPackage?.proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY" &&
+      (row.stateMaterializationPackage?.guardValueDiff || []).length === 0
+    ),
     materializationPackagesBlocked: count(materializationPackages, (row) =>
       MATERIALIZATION_PACKAGE_STATUSES.includes(row.stateMaterializationPackage?.proposalStatus) &&
       row.stateMaterializationPackage?.proposalStatus !== "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"
@@ -1648,6 +1711,8 @@ const main = () => {
     geometryDriftEvidenceMissing: count(geometryRootCauseRows, (row) =>
       row.geometryDriftAudit?.evidenceCompleteness === "MISSING_CORE_EVIDENCE"
     ),
+    lifecycleProducerRefreshStatusCounts: valueCounts(lifecycleRefreshRows, (row) => row.lifecycleProducerRefreshContract?.status),
+    lifecycleProducerRefreshUnclassified: count(lifecycleRefreshRows, (row) => !row.lifecycleProducerRefreshContract?.status),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
     recoverySourceReadyReportOnly: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY),
     sourceMaterializationRequired: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED),
@@ -1692,8 +1757,10 @@ const main = () => {
       summary.materializationPackageExcludedLaneLeaks === 0 &&
       summary.materializationPackageDiffOutsideGuardFields === 0 &&
       summary.materializationPackageUnclassified === 0,
+    materializationRequiresGuardValueDiff: summary.materializationReadyWithoutGuardValueDiff === 0,
     geometryRootCausesClassified: summary.geometryRootCauseUnclassified === 0,
-    geometryDriftClassified: summary.geometryDriftUnclassified === 0
+    geometryDriftClassified: summary.geometryDriftUnclassified === 0,
+    lifecycleProducerRefreshClassified: summary.lifecycleProducerRefreshUnclassified === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
     summary.sourceRootCauseUnknown > 0 || summary.sourcePreservationUnknown > 0 || summary.recoveryDispositionUnclassified > 0 ||
@@ -1703,8 +1770,9 @@ const main = () => {
     summary.producerMissingOwnershipLaneLeaks > 0 || summary.materializationPrerequisiteUnclassified > 0 ||
     summary.materializationPackageMissing > 0 || summary.materializationReadyPackageEvidenceMissing > 0 ||
     summary.materializationPackageExcludedLaneLeaks > 0 || summary.materializationPackageDiffOutsideGuardFields > 0 ||
-    summary.materializationPackageUnclassified > 0 ||
+    summary.materializationPackageUnclassified > 0 || summary.materializationReadyWithoutGuardValueDiff > 0 ||
     summary.geometryRootCauseUnclassified > 0 || summary.geometryDriftUnclassified > 0 ||
+    summary.lifecycleProducerRefreshUnclassified > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
     ? "classification_inconsistent"

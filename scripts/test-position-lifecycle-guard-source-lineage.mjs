@@ -100,6 +100,21 @@ assert.equal(row.lifecycleSource.stage6Hash, "current-position-hash");
 assert.equal(row.lifecycleSource.stage6File, "current-position-stage6.json");
 assert.equal(row.lineageDecision, "CURRENT_POSITION_LINEAGE_MATCH");
 assert.equal(row.warnings.includes("report_only_lifecycle_source_rejected_as_revalidation_input"), true);
+assert.deepEqual(row.producerRefreshContract, {
+  status: "LIFECYCLE_SOURCE_READY_REPORT_ONLY",
+  sourceProducer: "position_lifecycle_guard_source",
+  owner: "position_lifecycle_guard_source_producer",
+  lineageDecision: "CURRENT_POSITION_LINEAGE_MATCH",
+  expectedStage6Hash: "current-position-hash",
+  expectedStage6File: "current-position-stage6.json",
+  currentPositionLineageMatch: true,
+  guardValueChangeRequired: false,
+  actualGuardValueDiffRequired: true,
+  timestampOnlyRefreshAllowed: false,
+  materializationCandidateAllowed: false,
+  blockers: [],
+  nextAction: "preserve_report_only_source_no_materialization_without_guard_value_diff"
+});
 assert.equal(report.summary.lineageMismatchSourcesRejected, 1);
 assert.equal(report.summary.brokerMutationAttempted, false);
 assert.equal(report.summary.stateMutationAttempted, false);
@@ -141,5 +156,43 @@ const fileMismatchReport = JSON.parse(fs.readFileSync(path.join(stateDir, "posit
 assert.equal(fileMismatchReport.rows[0]?.lifecycleReady, false);
 assert.equal(fileMismatchReport.rows[0]?.lineageDecision, "SOURCE_LINEAGE_MISMATCH");
 assert.equal(fileMismatchReport.rows[0]?.blockers?.includes("no_existing_guard_source_with_stop_target"), true);
+assert.equal(fileMismatchReport.rows[0]?.producerRefreshContract?.status, "LIFECYCLE_SOURCE_REFRESH_BLOCKED");
+assert.equal(fileMismatchReport.rows[0]?.producerRefreshContract?.guardValueChangeRequired, false);
+assert.equal(fileMismatchReport.rows[0]?.producerRefreshContract?.nextAction, "resolve_lifecycle_source_refresh_blockers_report_only");
+
+position.plannedStage6File = "current-position-stage6.json";
+position.currentPrice = 90.5;
+writeJson("performance-dashboard.json", {
+  generatedAt: now,
+  live: { available: true, positions: [position] }
+});
+writeJson("broker-child-order-reconciliation.json", {
+  rows: [{
+    symbol: "FIX",
+    qty: 1,
+    currentPrice: 90.5,
+    brokerStopPresent: false,
+    brokerTargetPresent: false,
+    plannedStopPrice: 90,
+    plannedTargetPrice: 120,
+    plannedLedgerUpdatedAt: stale,
+    plannedStage6Hash: "current-position-hash",
+    plannedStage6File: "current-position-stage6.json"
+  }]
+});
+execFileSync(process.execPath, ["scripts/build-position-lifecycle-guard-source-plan.mjs"], {
+  env: { ...process.env, POSITION_LIFECYCLE_GUARD_SOURCE_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const recalibrationReport = JSON.parse(fs.readFileSync(path.join(stateDir, "position-lifecycle-guard-source-plan.json"), "utf8"));
+const recalibrationContract = recalibrationReport.rows[0]?.producerRefreshContract;
+assert.equal(recalibrationReport.rows[0]?.lifecycleReady, false);
+assert.equal(recalibrationContract?.status, "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY");
+assert.equal(recalibrationContract?.owner, "guard_geometry_producer");
+assert.equal(recalibrationContract?.guardValueChangeRequired, true);
+assert.equal(recalibrationContract?.actualGuardValueDiffRequired, true);
+assert.equal(recalibrationContract?.timestampOnlyRefreshAllowed, false);
+assert.equal(recalibrationContract?.materializationCandidateAllowed, false);
+assert.equal(recalibrationContract?.nextAction, "request_current_position_guard_recalibration_report_only");
 
 console.log("[POSITION_LIFECYCLE_GUARD_SOURCE_LINEAGE_TEST] pass");
