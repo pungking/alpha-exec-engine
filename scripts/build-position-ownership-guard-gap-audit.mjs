@@ -92,8 +92,12 @@ const classify = ({ position, protectionRow, lineageRow, recoveryRow, persistent
     lineageRootCause === "NO_SOURCE_WITH_STOP_TARGET";
   const external = ownership === "EXTERNAL_OR_MANUAL_POSITION" || rootCauses.includes("position_not_sidecar_managed");
   const protectedNoAction = brokerChildrenPresent || persistentRow?.readiness === "NO_ACTION_BROKER_CHILDREN_PRESENT" || limitedRow?.blockerGroup === "already_protected_no_action";
-  const persistentEligible = persistentRow?.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL";
-  const limitedEligible = limitedRow?.eligibleForLimitedBatch === true || limitedRow?.selectedForApprovalBatch === true;
+  const persistentRepairReady = persistentRow?.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL";
+  const persistentPlanRepairEligible = persistentRow?.repairEligible === true && persistentRow?.protectionLane === "MANUAL_APPROVAL_CANDIDATE";
+  const limitedPlannerReady = limitedRow?.eligibleForLimitedBatch === true || limitedRow?.selectedForApprovalBatch === true;
+  const guardSourceRepairEligibleNow = recoveryRow?.repairEligibleNow === true;
+  const persistentEligible = persistentRepairReady && persistentPlanRepairEligible && guardSourceRepairEligibleNow;
+  const limitedEligible = limitedPlannerReady && persistentRepairReady && persistentPlanRepairEligible && guardSourceRepairEligibleNow;
 
   let classification = "monitor_only";
   const blockers = [];
@@ -118,6 +122,12 @@ const classify = ({ position, protectionRow, lineageRow, recoveryRow, persistent
     blockers.push("guard_metadata_missing");
     requiredEvidence.push("fresh_stage6_or_position_lifecycle_stop_target_source");
     nextActions.push("do_not_repair_until_fresh_valid_guard_source_exists");
+  } else if ((persistentRepairReady || limitedPlannerReady) && !guardSourceRepairEligibleNow) {
+    requiredEvidence.push("guard_source_recovery_repair_eligibility_contract");
+    nextActions.push("defer_to_guard_source_recovery_plan_until_repair_eligible_now");
+  } else if (persistentRepairReady && !persistentPlanRepairEligible) {
+    requiredEvidence.push("canonical_persistent_protection_lane_repair_eligibility");
+    nextActions.push("defer_to_persistent_protection_classification_until_repair_eligible");
   } else if (persistentEligible || limitedEligible) {
     classification = "manual_approval_candidate";
     nextActions.push("separate_scoped_approval_required_before_any_broker_mutation");
@@ -145,8 +155,14 @@ const classify = ({ position, protectionRow, lineageRow, recoveryRow, persistent
     lineageStatus: lineageStatus || null,
     lineageRootCause: lineageRootCause || null,
     recoveryDecision: recoveryRow?.recoveryDecision || null,
+    guardSourceRecoveryStatus: recoveryRow?.recoveryStatus || null,
+    guardSourceRecoveryRootCause: recoveryRow?.recoveryRootCause || null,
+    guardSourceRepairEligibleNow,
     persistentReadiness: persistentRow?.readiness || null,
+    persistentRepairReady,
+    persistentPlanRepairEligible,
     limitedMultiGroup: limitedRow?.blockerGroup || null,
+    limitedPlannerReady,
     classification,
     blockers: unique(blockers),
     rootCauses,
@@ -158,7 +174,7 @@ const classify = ({ position, protectionRow, lineageRow, recoveryRow, persistent
       ? "manual_approval_required_before_broker_mutation"
       : "repair_blocked_or_monitor_only",
     evidence: short(
-      `ownership=${ownership || "N/A"} lineage=${lineageStatus || "N/A"} lineageRoot=${lineageRootCause || "N/A"} brokerStop=${brokerStopPresent} brokerTarget=${brokerTargetPresent} persistent=${persistentRow?.readiness || "N/A"} limited=${limitedRow?.blockerGroup || "N/A"}`,
+      `ownership=${ownership || "N/A"} lineage=${lineageStatus || "N/A"} lineageRoot=${lineageRootCause || "N/A"} brokerStop=${brokerStopPresent} brokerTarget=${brokerTargetPresent} recoveryEligible=${guardSourceRepairEligibleNow} persistent=${persistentRow?.readiness || "N/A"} limited=${limitedRow?.blockerGroup || "N/A"}`,
       500
     )
   };
@@ -215,6 +231,7 @@ const report = {
     manualApprovalCandidates: count((row) => row.classification === "manual_approval_candidate"),
     repairEligible: count((row) => row.repairEligible),
     multiPlannerEligible: count((row) => row.multiPlannerEligible),
+    guardSourceRecoveryRequired: count((row) => (row.persistentRepairReady || row.limitedPlannerReady) && !row.guardSourceRepairEligibleNow),
     brokerMutationAttempted,
     brokerMutationSubmitted,
     classCounts

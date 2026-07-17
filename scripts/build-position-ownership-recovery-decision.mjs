@@ -8,7 +8,8 @@ const FILES = {
   orderIdempotency: `${STATE_DIR}/order-idempotency.json`,
   recommendationLedger: `${STATE_DIR}/recommendation-ledger.json`,
   persistentOcoRepairPlan: `${STATE_DIR}/persistent-oco-repair-plan.json`,
-  limitedMultiOcoRepairPlan: `${STATE_DIR}/limited-multi-oco-repair-plan.json`
+  limitedMultiOcoRepairPlan: `${STATE_DIR}/limited-multi-oco-repair-plan.json`,
+  guardSourceRecoveryPlan: `${STATE_DIR}/guard-source-recovery-plan.json`
 };
 const OUTPUT_JSON = `${STATE_DIR}/position-ownership-recovery-decision.json`;
 const OUTPUT_MD = `${STATE_DIR}/position-ownership-recovery-decision.md`;
@@ -78,11 +79,13 @@ const orderIdempotency = readJson(FILES.orderIdempotency);
 const recommendationLedger = readJson(FILES.recommendationLedger);
 const persistentOcoRepairPlan = readJson(FILES.persistentOcoRepairPlan);
 const limitedMultiOcoRepairPlan = readJson(FILES.limitedMultiOcoRepairPlan);
+const guardSourceRecoveryPlan = readJson(FILES.guardSourceRecoveryPlan);
 
 const gapRows = Array.isArray(ownershipGuardGap?.rows) ? ownershipGuardGap.rows : [];
 const lineageBySymbol = firstBySymbol(guardLineage?.rows);
 const persistentBySymbol = firstBySymbol(persistentOcoRepairPlan?.rows);
 const limitedBySymbol = firstBySymbol(limitedMultiOcoRepairPlan?.rows);
+const guardSourceRecoveryBySymbol = firstBySymbol(guardSourceRecoveryPlan?.rows);
 const ledgerBySymbol = valuesBySymbol(orderLedger?.orders);
 const idemBySymbol = valuesBySymbol(orderIdempotency?.orders);
 const recBySymbol = arrayBySymbol(recommendationLedger?.recommendations || recommendationLedger?.rows || []);
@@ -116,12 +119,13 @@ const proofForSymbol = (symbol) => {
   };
 };
 
-const classifyDecision = ({ gapRow, lineageRow, persistentRow, limitedRow, proof }) => {
+const classifyDecision = ({ gapRow, lineageRow, persistentRow, limitedRow, canonicalRecoveryRow, proof }) => {
   const protectedNoAction = gapRow?.classification === "already_protected_no_action" || gapRow?.brokerChildrenPresent === true;
   const external = gapRow?.classification === "external_position_and_guard_metadata_missing" || gapRow?.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION";
   const guardMissing = gapRow?.guardMetadataMissing === true;
   const freshGuardSource = gapRow?.hasFreshValidSource === true || Array.isArray(lineageRow?.freshValidSources) && lineageRow.freshValidSources.length > 0;
   const repairEligible = gapRow?.repairEligible === true || persistentRow?.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL" || limitedRow?.eligibleForLimitedBatch === true;
+  const canonicalRecoveryEligible = canonicalRecoveryRow?.repairEligibleNow === true;
   const blockers = [];
   const requiredEvidence = [];
   let decision = "MONITOR_ONLY_NO_RECOVERY_NEEDED";
@@ -144,6 +148,14 @@ const classifyDecision = ({ gapRow, lineageRow, persistentRow, limitedRow, proof
     decision = "DO_NOT_RECOVER_NO_FRESH_GUARD_SOURCE";
     blockers.push("guard_metadata_missing", "no_fresh_guard_source");
     requiredEvidence.push("fresh_stage6_or_lifecycle_stop_target_source");
+  } else if (!canonicalRecoveryRow) {
+    decision = "DO_NOT_RECOVER_CANONICAL_GUARD_SOURCE_RECOVERY_MISSING";
+    blockers.push("canonical_guard_source_recovery_missing");
+    requiredEvidence.push("canonical_guard_source_recovery_row_with_repair_eligible_now_true");
+  } else if (!canonicalRecoveryEligible) {
+    decision = "DO_NOT_RECOVER_CANONICAL_GUARD_SOURCE_RECOVERY_NOT_ELIGIBLE";
+    blockers.push("canonical_guard_source_recovery_not_eligible");
+    requiredEvidence.push("canonical_guard_source_recovery_repair_eligible_now_true");
   } else if (proof.sidecarOwnershipProof && freshGuardSource) {
     decision = "STATE_ONLY_RECOVERY_REVIEW_READY";
     stateRecoveryReviewReady = true;
@@ -162,7 +174,7 @@ const classifyDecision = ({ gapRow, lineageRow, persistentRow, limitedRow, proof
     requiredEvidence: unique(requiredEvidence),
     stateRecoveryReviewReady,
     manualExternalAdoptionReview,
-    repairEligibleAfterRecovery: stateRecoveryReviewReady && repairEligible,
+    repairEligibleAfterRecovery: stateRecoveryReviewReady && repairEligible && canonicalRecoveryEligible,
     nextAction: stateRecoveryReviewReady
       ? "prepare separate state-only ownership recovery migration review; do not mutate state in dry-run"
       : manualExternalAdoptionReview
@@ -178,8 +190,9 @@ const rows = gapRows.map((gapRow) => {
   const lineageRow = lineageBySymbol.get(symbol) || null;
   const persistentRow = persistentBySymbol.get(symbol) || null;
   const limitedRow = limitedBySymbol.get(symbol) || null;
+  const canonicalRecoveryRow = guardSourceRecoveryBySymbol.get(symbol) || null;
   const proof = proofForSymbol(symbol);
-  const decision = classifyDecision({ gapRow, lineageRow, persistentRow, limitedRow, proof });
+  const decision = classifyDecision({ gapRow, lineageRow, persistentRow, limitedRow, canonicalRecoveryRow, proof });
   return {
     symbol,
     qty: toNum(gapRow?.qty),
@@ -193,6 +206,9 @@ const rows = gapRows.map((gapRow) => {
     lineageRootCause: gapRow?.lineageRootCause || lineageRow?.rootCause || null,
     persistentReadiness: persistentRow?.readiness || gapRow?.persistentReadiness || null,
     limitedMultiGroup: limitedRow?.blockerGroup || gapRow?.limitedMultiGroup || null,
+    canonicalGuardSourceRecoveryPresent: Boolean(canonicalRecoveryRow),
+    canonicalGuardSourceRepairEligibleNow: canonicalRecoveryRow?.repairEligibleNow === true,
+    canonicalGuardSourceRecoveryStatus: canonicalRecoveryRow?.recoveryStatus || null,
     proof,
     ownershipRecoveryDecision: decision.decision,
     blockers: decision.blockers,
@@ -218,6 +234,12 @@ const decisionCounts = rows.reduce((acc, row) => {
   acc[row.ownershipRecoveryDecision] = (acc[row.ownershipRecoveryDecision] || 0) + 1;
   return acc;
 }, {});
+const canonicalGuardSourceRecoveryBlocked = count((row) =>
+  String(row.ownershipRecoveryDecision || "").startsWith("DO_NOT_RECOVER_CANONICAL_GUARD_SOURCE_RECOVERY_") ||
+  (row.ownershipRecoveryDecision === "DO_NOT_RECOVER_NO_FRESH_GUARD_SOURCE" &&
+    row.manualExternalAdoptionReview !== true &&
+    row.ownershipClassification !== "EXTERNAL_OR_MANUAL_POSITION")
+);
 const unsafeUpstream =
   ownershipGuardGap?.executionPolicy?.brokerMutationAllowed === true ||
   ownershipGuardGap?.summary?.brokerMutationAttempted === true ||
@@ -227,8 +249,10 @@ const unsafeUpstream =
   limitedMultiOcoRepairPlan?.summary?.brokerMutationSubmitted === true;
 const overall = unsafeUpstream
   ? "blocked_unsafe_upstream_mutation_signal"
-  : count((row) => row.stateRecoveryReviewReady) > 0
-    ? "state_recovery_review_ready"
+  : canonicalGuardSourceRecoveryBlocked > 0
+    ? "blocked_canonical_guard_source_recovery_required"
+    : count((row) => row.stateRecoveryReviewReady) > 0
+      ? "state_recovery_review_ready"
     : count((row) => row.manualExternalAdoptionReview) > 0
       ? "manual_external_adoption_review_required"
       : "monitoring";
@@ -257,6 +281,8 @@ const report = {
     alreadyProtectedNoRecovery: count((row) => row.ownershipRecoveryDecision === "NO_RECOVERY_ALREADY_PROTECTED"),
     doNotAutoRecover: count((row) => String(row.ownershipRecoveryDecision).startsWith("DO_NOT")),
     repairEligibleAfterRecovery: count((row) => row.repairEligibleAfterRecovery),
+    canonicalGuardSourceRecoveryMissing: count((row) => !row.canonicalGuardSourceRecoveryPresent),
+    canonicalGuardSourceRecoveryBlocked,
     decisionCounts,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
@@ -268,11 +294,14 @@ const report = {
     "external/manual rows without sidecar ownership proof are not auto-recovered",
     "guard-metadata-missing rows require fresh Stage6 or lifecycle stop/target source before recovery",
     "state recovery candidates require backup/diff/audit/post-verify and a separate state approval phrase",
+    "canonical guard-source recovery must report repairEligibleNow=true before a state recovery candidate is produced",
     "multi planner remains report-only and no multi submit lane is authorized",
     "brokerMutationAllowed=false and stateMutationAllowed=false"
   ],
-  nextAction: count((row) => row.stateRecoveryReviewReady) > 0
-    ? "review state-only recovery candidates and run a separate approved state migration task only if needed"
+  nextAction: canonicalGuardSourceRecoveryBlocked > 0
+    ? "rebuild canonical guard-source recovery evidence; do not route this block through external ownership adoption"
+    : count((row) => row.stateRecoveryReviewReady) > 0
+      ? "review state-only recovery candidates and run a separate approved state migration task only if needed"
     : count((row) => row.manualExternalAdoptionReview) > 0
       ? "do not recover automatically; require explicit external adoption evidence and fresh guard metadata first"
       : "monitor only"

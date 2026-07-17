@@ -86,20 +86,37 @@ const indexArrayBySymbol = (rows) => {
   return out;
 };
 
-const valuesBySymbol = (object, symbol) => {
-  const target = asSymbol(symbol);
-  if (!object || typeof object !== "object") return null;
-  for (const row of Object.values(object)) {
-    if (asSymbol(row?.symbol) === target) return row;
-  }
-  return null;
+const stage6IdentityMatches = (row, expectedHash, expectedFile) => {
+  if (!expectedHash && !expectedFile) return false;
+  return (!expectedHash || String(row?.stage6Hash || "") === String(expectedHash)) &&
+    (!expectedFile || String(row?.stage6File || row?.latestStage6File || "") === String(expectedFile));
 };
 
-const latestLoopRow = (loop, symbol) => {
+const latestRow = (rows, observedAt) => [...rows].sort((a, b) => {
+  const bAt = Date.parse(String(observedAt(b) || ""));
+  const aAt = Date.parse(String(observedAt(a) || ""));
+  return (Number.isFinite(bAt) ? bAt : 0) - (Number.isFinite(aAt) ? aAt : 0);
+})[0] || null;
+
+const valueForPosition = (object, position, observedAt) => {
+  const symbol = asSymbol(position?.symbol);
+  const target = asSymbol(symbol);
+  if (!object || typeof object !== "object") return null;
+  const exactKey = String(position?.plannedLedgerKey || "").trim();
+  if (!exactKey) return null;
+  return object[exactKey] && asSymbol(object[exactKey]?.symbol) === target ? object[exactKey] : null;
+};
+
+const latestLoopRow = (loop, position) => {
+  const symbol = asSymbol(position?.symbol);
   const target = asSymbol(symbol);
   const rows = Object.values(loop?.rows || {}).filter((row) => asSymbol(row?.symbol) === target);
-  rows.sort((a, b) => Date.parse(b?.runDate || "") - Date.parse(a?.runDate || ""));
-  return rows[0] || null;
+  const matching = rows.filter((row) => stage6IdentityMatches(
+    row,
+    position?.plannedStage6Hash || null,
+    position?.plannedStage6File || null
+  ));
+  return latestRow(matching, (row) => row?.runDate);
 };
 
 const sourceCandidate = ({ type, stop, target, generatedAt, stage6Hash, stage6File, detail }) => {
@@ -116,6 +133,7 @@ const sourceCandidate = ({ type, stop, target, generatedAt, stage6Hash, stage6Fi
     stage6File: stage6File || null,
     detail: short(detail, 300),
     hasBothPrices: stopPrice != null && targetPrice != null,
+    timestampMissing: ageMinRaw == null,
     fresh: ageMinRaw != null && ageMinRaw <= freshnessMaxAgeMin
   };
 };
@@ -180,13 +198,63 @@ const buildSources = ({ position, recommendation, loopRow, ledgerRow, lifecycleR
   return sources;
 };
 
-const chooseSource = (sources) => {
-  const ready = sources.filter((row) => row.hasBothPrices && row.fresh);
-  ready.sort((a, b) => SOURCE_PRIORITY.indexOf(a.type) - SOURCE_PRIORITY.indexOf(b.type));
-  if (ready.length) return ready[0];
+const matchesStage6Lineage = (source, expectedHash, expectedFile) => {
+  if (!expectedHash && !expectedFile) return false;
+  return (!expectedHash || String(source?.stage6Hash || "") === String(expectedHash)) &&
+    (!expectedFile || String(source?.stage6File || "") === String(expectedFile));
+};
+
+const sourcePriorityRank = (source) => {
+  const rank = SOURCE_PRIORITY.indexOf(String(source?.type || ""));
+  return rank >= 0 ? rank : SOURCE_PRIORITY.length;
+};
+
+const sortReady = (rows) => [...rows].sort((a, b) =>
+  sourcePriorityRank(a) - sourcePriorityRank(b) ||
+  (a.ageMin ?? Number.POSITIVE_INFINITY) - (b.ageMin ?? Number.POSITIVE_INFINITY)
+);
+
+const sortStale = (rows) => [...rows].sort((a, b) =>
+  (a.ageMin ?? Number.POSITIVE_INFINITY) - (b.ageMin ?? Number.POSITIVE_INFINITY) ||
+  sourcePriorityRank(a) - sourcePriorityRank(b)
+);
+
+const chooseSource = (sources, expectedHash, expectedFile) => {
   const withPrices = sources.filter((row) => row.hasBothPrices);
-  withPrices.sort((a, b) => (a.ageMin ?? Number.POSITIVE_INFINITY) - (b.ageMin ?? Number.POSITIVE_INFINITY));
-  return withPrices[0] || null;
+  const directBroker = withPrices.filter((row) => row.type === "broker_children" && row.fresh);
+  if (directBroker.length) {
+    return {
+      selected: sortReady(directBroker)[0],
+      lineageStatus: "BROKER_NESTED_EVIDENCE",
+      matchingCandidateCount: 0,
+      freshMatchingCandidateCount: 0
+    };
+  }
+
+  const expectedLineagePresent = Boolean(expectedHash || expectedFile);
+  const matching = expectedLineagePresent
+    ? withPrices.filter((row) => row.type !== "broker_children" && matchesStage6Lineage(row, expectedHash, expectedFile))
+    : [];
+  const freshMatching = matching.filter((row) => row.fresh);
+  if (matching.length) {
+    return {
+      selected: freshMatching.length ? sortReady(freshMatching)[0] : sortStale(matching)[0],
+      lineageStatus: "CURRENT_POSITION_LINEAGE_MATCH",
+      matchingCandidateCount: matching.length,
+      freshMatchingCandidateCount: freshMatching.length
+    };
+  }
+
+  const ready = withPrices.filter((row) => row.fresh);
+  const selected = ready.length ? sortReady(ready)[0] : sortStale(withPrices)[0] || null;
+  return {
+    selected,
+    lineageStatus: expectedLineagePresent
+      ? "NO_CURRENT_POSITION_LINEAGE_MATCH"
+      : "CURRENT_POSITION_LINEAGE_MISSING",
+    matchingCandidateCount: 0,
+    freshMatchingCandidateCount: 0
+  };
 };
 
 const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow, idempotencyRow, fillabilityRow, lifecycleRow, performanceGeneratedAt }) => {
@@ -194,7 +262,10 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
   const qty = toNum(position?.qty) ?? 0;
   const currentPrice = toNum(position?.currentPrice);
   const sources = buildSources({ position, recommendation, loopRow, ledgerRow, lifecycleRow, performanceGeneratedAt });
-  const selected = chooseSource(sources);
+  const expectedStage6Hash = protectionRow?.plannedStage6Hash || position?.plannedStage6Hash || null;
+  const expectedStage6File = protectionRow?.plannedStage6File || position?.plannedStage6File || null;
+  const sourceSelection = chooseSource(sources, expectedStage6Hash, expectedStage6File);
+  const selected = sourceSelection.selected;
   const selectedFresh = selected?.hasBothPrices === true && selected?.fresh === true;
   const geometryValid =
     selected?.stopPrice != null &&
@@ -225,7 +296,14 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
   if (!sources.length) blockers.push("no_guard_refresh_source");
   if (!selected) blockers.push("no_source_with_stop_target");
   if (selected && !selected.hasBothPrices) blockers.push("selected_source_missing_stop_or_target");
-  if (selected && selected.hasBothPrices && !selected.fresh) blockers.push("selected_source_stale");
+  if (selected && sourceSelection.lineageStatus === "CURRENT_POSITION_LINEAGE_MISSING" && selected.type !== "broker_children") {
+    blockers.push("current_position_stage6_lineage_missing");
+  }
+  if (selected && sourceSelection.lineageStatus === "NO_CURRENT_POSITION_LINEAGE_MATCH") {
+    blockers.push("stage6_dispatch_mismatch");
+  }
+  if (selected?.timestampMissing) blockers.push("selected_source_timestamp_missing");
+  else if (selected && selected.hasBothPrices && !selected.fresh) blockers.push("selected_source_stale");
   if (selectedFresh && !geometryValid) blockers.push("selected_source_invalid_geometry");
   if (protectionRow?.missingGuardMetadata === true) warnings.push("current_guard_metadata_missing");
   if (protectionRow?.guardMetadataStale === true) warnings.push("current_guard_metadata_stale");
@@ -240,12 +318,18 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
     refreshDecision = "BLOCKED_POSITION_OWNERSHIP_REVIEW";
   } else if (blockers.includes("fill_state_reconciliation_required")) {
     refreshDecision = "BLOCKED_FILL_STATE_RECONCILIATION";
+  } else if (blockers.includes("current_position_stage6_lineage_missing")) {
+    refreshDecision = "BLOCKED_CURRENT_POSITION_LINEAGE_MISSING";
+  } else if (blockers.includes("stage6_dispatch_mismatch")) {
+    refreshDecision = "BLOCKED_STAGE6_DISPATCH_MISMATCH";
   } else if (refreshReady && brokerChildMissingAfterRefresh) {
     refreshDecision = "REFRESH_READY_THEN_REEVALUATE_REPAIR";
   } else if (refreshReady) {
     refreshDecision = "REFRESH_READY_MONITOR_ONLY";
   } else if (blockers.includes("no_guard_refresh_source") || blockers.includes("no_source_with_stop_target")) {
     refreshDecision = "BLOCKED_NO_REFRESH_SOURCE";
+  } else if (blockers.includes("selected_source_timestamp_missing")) {
+    refreshDecision = "BLOCKED_REFRESH_SOURCE_TIMESTAMP_MISSING";
   } else if (blockers.includes("selected_source_stale")) {
     refreshDecision = "BLOCKED_REFRESH_SOURCE_STALE";
   } else if (blockers.includes("selected_source_invalid_geometry")) {
@@ -281,6 +365,13 @@ const buildRow = ({ position, protectionRow, recommendation, loopRow, ledgerRow,
     },
     selectedSource: selected,
     sourceCandidates: sources,
+    sourceSelection: {
+      expectedStage6Hash,
+      expectedStage6File,
+      lineageStatus: sourceSelection.lineageStatus,
+      matchingCandidateCount: sourceSelection.matchingCandidateCount,
+      freshMatchingCandidateCount: sourceSelection.freshMatchingCandidateCount
+    },
     selectedSourceFresh: selectedFresh,
     selectedSourceGeometryValid: geometryValid,
     ownershipClassification: ownership.ownershipClass,
@@ -360,13 +451,20 @@ const main = () => {
     .filter((position) => (toNum(position?.qty) ?? 0) > 0)
     .map((position) => {
       const symbol = asSymbol(position?.symbol);
+      const protectionRow = protectionBySymbol.get(symbol) || null;
+      const lineagePosition = {
+        ...position,
+        plannedLedgerKey: protectionRow?.plannedLedgerKey || position?.plannedLedgerKey || null,
+        plannedStage6Hash: protectionRow?.plannedStage6Hash || position?.plannedStage6Hash || null,
+        plannedStage6File: protectionRow?.plannedStage6File || position?.plannedStage6File || null
+      };
       return buildRow({
-        position,
-        protectionRow: protectionBySymbol.get(symbol) || null,
+        position: lineagePosition,
+        protectionRow,
         recommendation: recommendationLedger?.recommendations?.[symbol] || null,
-        loopRow: latestLoopRow(stage6Loop, symbol),
-        ledgerRow: valuesBySymbol(orderLedger?.orders, symbol),
-        idempotencyRow: valuesBySymbol(idempotency?.orders, symbol),
+        loopRow: latestLoopRow(stage6Loop, lineagePosition),
+        ledgerRow: valueForPosition(orderLedger?.orders, lineagePosition, (row) => row?.updatedAt || row?.createdAt),
+        idempotencyRow: valueForPosition(idempotency?.orders, lineagePosition, (row) => row?.brokerCheckedAt || row?.lastSeenAt || row?.firstSeenAt),
         fillabilityRow: (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === symbol) || null,
         lifecycleRow: lifecycleBySymbol.get(symbol) || null,
         performanceGeneratedAt: performance?.generatedAt || null

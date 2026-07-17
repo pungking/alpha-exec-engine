@@ -15,6 +15,63 @@ const writeJson = (name, payload) => fs.writeFileSync(
   "utf8"
 );
 
+const fillStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "fill-state-lineage-"));
+const writeFillStateJson = (name, payload) => fs.writeFileSync(
+  path.join(fillStateDir, name),
+  `${JSON.stringify(payload, null, 2)}\n`,
+  "utf8"
+);
+const exactFillKey = "hash:SYN_EXACT:buy";
+const newerFillKey = "hash:SYN_EXACT:replacement";
+const fillPosition = {
+  symbol: "SYN_EXACT",
+  qty: 1,
+  currentPrice: 100,
+  normalizedFillState: "FILLED",
+  positionStatus: "open",
+  plannedLedgerKey: exactFillKey,
+  plannedStage6Hash: "hash"
+};
+writeFillStateJson("performance-dashboard.json", { live: { available: true, positions: [fillPosition] } });
+writeFillStateJson("order-ledger.json", { orders: {
+  [exactFillKey]: { idempotencyKey: exactFillKey, symbol: "SYN_EXACT", status: "filled", updatedAt: stale },
+  [newerFillKey]: { idempotencyKey: newerFillKey, symbol: "SYN_EXACT", status: "filled", updatedAt: now }
+} });
+writeFillStateJson("order-idempotency.json", { orders: {
+  [exactFillKey]: { symbol: "SYN_EXACT", brokerStatus: "filled", brokerCheckedAt: stale },
+  [newerFillKey]: { symbol: "SYN_EXACT", brokerStatus: "filled", brokerCheckedAt: now }
+} });
+execFileSync(process.execPath, ["scripts/build-fill-state-reconciliation-audit.mjs"], {
+  env: { ...process.env, FILL_STATE_RECONCILIATION_STATE_DIR: fillStateDir },
+  stdio: "pipe"
+});
+let fillStateReport = JSON.parse(fs.readFileSync(path.join(fillStateDir, "fill-state-reconciliation-audit.json"), "utf8"));
+assert.equal(fillStateReport.rows[0]?.ledger?.key, exactFillKey);
+assert.equal(fillStateReport.rows[0]?.idempotency?.key, exactFillKey);
+assert.equal(fillStateReport.rows[0]?.reconciliationDecision, "FILL_STATE_CONFIRMED");
+
+writeFillStateJson("performance-dashboard.json", {
+  live: { available: true, positions: [{ ...fillPosition, plannedLedgerKey: "hash:SYN_EXACT:missing" }] }
+});
+execFileSync(process.execPath, ["scripts/build-fill-state-reconciliation-audit.mjs"], {
+  env: { ...process.env, FILL_STATE_RECONCILIATION_STATE_DIR: fillStateDir },
+  stdio: "pipe"
+});
+fillStateReport = JSON.parse(fs.readFileSync(path.join(fillStateDir, "fill-state-reconciliation-audit.json"), "utf8"));
+assert.equal(fillStateReport.rows[0]?.reconciliationDecision, "FILL_STATE_UNKNOWN_REVIEW");
+assert.equal(fillStateReport.rows[0]?.blockers?.includes("expected_position_ledger_key_missing"), true);
+
+writeFillStateJson("performance-dashboard.json", {
+  live: { available: true, positions: [{ ...fillPosition, plannedLedgerKey: null }] }
+});
+execFileSync(process.execPath, ["scripts/build-fill-state-reconciliation-audit.mjs"], {
+  env: { ...process.env, FILL_STATE_RECONCILIATION_STATE_DIR: fillStateDir },
+  stdio: "pipe"
+});
+fillStateReport = JSON.parse(fs.readFileSync(path.join(fillStateDir, "fill-state-reconciliation-audit.json"), "utf8"));
+assert.equal(fillStateReport.rows[0]?.reconciliationDecision, "FILL_STATE_UNKNOWN_REVIEW");
+assert.equal(fillStateReport.rows[0]?.blockers?.includes("expected_position_ledger_key_missing"), true);
+
 const source = ({
   type = "position_lifecycle_revalidated_guard",
   generatedAt = now,
@@ -51,6 +108,7 @@ const protectionRow = (symbol, overrides = {}) => ({
   idempotencyStatus: "filled",
   plannedStage6Hash: "latest-hash",
   plannedStage6File: "latest-stage6.json",
+  plannedLedgerKey: `latest-hash:${symbol}:buy`,
   repairEligible: false,
   blockedReason: "guard_metadata_stale",
   nextAction: "obtain_fresh_guard_source_before_repair_review",
@@ -98,6 +156,11 @@ const lifecycleMismatch = source({
   stage6Hash: "different-lifecycle-hash",
   stage6File: "different-lifecycle-stage6.json"
 });
+const previewFallback = source({
+  type: "position_lifecycle_revalidated_guard",
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json"
+});
 const unavailable = source({
   type: "order_ledger",
   generatedAt: stale,
@@ -107,7 +170,14 @@ const unavailable = source({
 });
 const dispatchMismatch = source({
   type: "stage6_20trade_loop",
-  stage6Hash: "different-hash",
+  stage6Hash: "latest-hash",
+  stage6File: "different-stage6.json"
+});
+const staleDispatchMismatch = source({
+  type: "stage6_20trade_loop",
+  generatedAt: stale,
+  fresh: false,
+  stage6Hash: "latest-hash",
   stage6File: "different-stage6.json"
 });
 const invalid = source({
@@ -159,6 +229,14 @@ const evidenceMissingInvalid = source({
   stage6Hash: "latest-hash",
   stage6File: "latest-stage6.json"
 });
+const fileMismatchEvidence = source({
+  type: "stage6_20trade_loop",
+  generatedAt: recent,
+  stopPrice: 90,
+  targetPrice: 95,
+  stage6Hash: "latest-hash",
+  stage6File: "selected-stage6.json"
+});
 
 const geometrySymbols = ["BAD", "TTL_BAD", "SRC_BAD", "LIFE_BAD", "BASIS_BAD", "EVIDENCE_BAD"];
 writeJson("performance-dashboard.json", {
@@ -177,7 +255,7 @@ writeJson("performance-dashboard.json", {
 });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
 writeJson("position-protection-root-cause-audit.json", {
-  summary: { protectionBlockerRows: 12 },
+  summary: { protectionBlockerRows: 16 },
   rows: [
     protectionRow("CURR", {
       effectiveGuardSource: "recommendation_ledger",
@@ -209,8 +287,18 @@ writeJson("position-protection-root-cause-audit.json", {
       blockedReason: null,
       nextAction: "manual_approval_review_only"
     }),
+    protectionRow("FALLBACK", {
+      effectiveGuardSource: "position_lifecycle_revalidated_guard",
+      guardSourceFresh: true,
+      guardSourceFreshness: "fresh",
+      effectiveGuardGeneratedAt: stale,
+      plannedStage6Hash: null,
+      plannedStage6File: null
+    }),
     protectionRow("NONE"),
     protectionRow("DISP"),
+    protectionRow("STALE_DISP"),
+    protectionRow("MIXED"),
     protectionRow("MISS", {
       ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION",
       protectionLane: "OWNERSHIP_PROOF_REQUIRED",
@@ -224,6 +312,7 @@ writeJson("position-protection-root-cause-audit.json", {
     protectionRow("LIFE_BAD"),
     protectionRow("BASIS_BAD"),
     protectionRow("EVIDENCE_BAD"),
+    protectionRow("FILE_MISMATCH", { plannedStage6File: "selected-stage6.json" }),
     protectionRow("PROD")
   ]
 });
@@ -238,8 +327,20 @@ const refreshPlan = {
     refreshRow("READY", ready),
     refreshRow("MAT", materialization),
     refreshRow("LIFE", lifecycleMismatch),
-    refreshRow("NONE", unavailable),
+    refreshRow("FALLBACK", previewFallback),
+    refreshRow("NONE", unavailable, {
+      sourceCandidates: [unavailable, { ...unavailable, generatedAt: null, fresh: false }]
+    }),
     refreshRow("DISP", dispatchMismatch),
+    refreshRow("STALE_DISP", staleDispatchMismatch, {
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_STALE",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_stale"]
+    }),
+    refreshRow("MIXED", dispatchMismatch, {
+      sourceCandidates: [dispatchMismatch, unavailable]
+    }),
     refreshRow("MISS", null, {
       ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION",
       refreshReady: false,
@@ -289,6 +390,13 @@ const refreshPlan = {
       afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
       blockers: ["selected_source_invalid_geometry"]
     }),
+    refreshRow("FILE_MISMATCH", fileMismatchEvidence, {
+      selectedSourceGeometryValid: false,
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_invalid_geometry"]
+    }),
     refreshRow("PROD", null, {
       refreshReady: false,
       refreshDecision: "BLOCKED_NO_REFRESH_SOURCE",
@@ -304,8 +412,11 @@ writeJson("guard-metadata-lineage-audit.json", {
     { symbol: "READY", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "MAT", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "LIFE", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
+    { symbol: "FALLBACK", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
     { symbol: "NONE", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
     { symbol: "DISP", lineageStatus: "LINEAGE_READY", rootCause: "FRESH_VALID_SOURCE_AVAILABLE" },
+    { symbol: "STALE_DISP", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
+    { symbol: "MIXED", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
     { symbol: "MISS", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" },
     { symbol: "BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "TTL_BAD", lineageStatus: "LINEAGE_STALE_SOURCE_ONLY", rootCause: "SOURCE_AGE_EXCEEDED" },
@@ -313,6 +424,7 @@ writeJson("guard-metadata-lineage-audit.json", {
     { symbol: "LIFE_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "BASIS_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "EVIDENCE_BAD", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
+    { symbol: "FILE_MISMATCH", lineageStatus: "LINEAGE_INVALID_GEOMETRY", rootCause: "FRESH_SOURCE_INVALID_GEOMETRY" },
     { symbol: "PROD", lineageStatus: "LINEAGE_MISSING_NO_SOURCE", rootCause: "NO_SOURCE_WITH_STOP_TARGET" }
   ]
 });
@@ -347,6 +459,20 @@ writeJson("position-lifecycle-guard-source-plan.json", {
       }
     },
     {
+      symbol: "FALLBACK",
+      lifecycleReady: true,
+      lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
+      lifecycleSource: {
+        type: "position_lifecycle_revalidated_guard",
+        generatedAt: now,
+        originalSourceType: "order_ledger",
+        originalGeneratedAt: stale,
+        originalAgeMin: 999999,
+        stage6Hash: previewFallback.stage6Hash,
+        stage6File: previewFallback.stage6File
+      }
+    },
+    {
       symbol: "LIFE_BAD",
       lifecycleReady: true,
       lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
@@ -372,7 +498,7 @@ writeJson("position-lifecycle-guard-source-plan.json", {
   ]
 });
 writeJson("fill-state-reconciliation-audit.json", {
-  rows: ["CURR", "READY", "MAT", "LIFE", "NONE", "DISP", "MISS", "BAD", "TTL_BAD", "SRC_BAD", "LIFE_BAD", "BASIS_BAD", "EVIDENCE_BAD", "PROD"].map((symbol) => ({
+  rows: ["CURR", "READY", "MAT", "LIFE", "FALLBACK", "NONE", "DISP", "STALE_DISP", "MIXED", "MISS", "BAD", "TTL_BAD", "SRC_BAD", "LIFE_BAD", "BASIS_BAD", "EVIDENCE_BAD", "FILE_MISMATCH", "PROD"].map((symbol) => ({
     symbol,
     reconciliationDecision: "FILL_STATE_CONFIRMED",
     requiresLedgerTerminalizationReview: false
@@ -387,9 +513,19 @@ writeJson("order-ledger.json", {
       status: "filled",
       stage6Hash: "latest-hash",
       stage6File: "latest-stage6.json",
-      stopLossPrice: 90,
+      stopLossPrice: 89,
       takeProfitPrice: 120,
       updatedAt: stale
+    },
+    "latest-hash:MAT:replacement": {
+      idempotencyKey: "latest-hash:MAT:replacement",
+      symbol: "MAT",
+      status: "filled",
+      stage6Hash: "latest-hash",
+      stage6File: "latest-stage6.json",
+      stopLossPrice: 88,
+      takeProfitPrice: 121,
+      updatedAt: now
     },
     "latest-hash:TTL_BAD:buy": {
       idempotencyKey: "latest-hash:TTL_BAD:buy",
@@ -407,6 +543,19 @@ writeJson("order-ledger.json", {
       adjustmentType: "split_adjusted"
     }
   }
+});
+const filledIdempotency = {
+  symbol: "MAT",
+  brokerStatus: "filled",
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json",
+  clientOrderId: "fixture_mat",
+  brokerOrderId: "fixture_broker_mat"
+};
+writeJson("order-idempotency.json", {
+  orders: { "latest-hash:MAT:buy": filledIdempotency },
+  releases: {},
+  updatedAt: now
 });
 writeJson("recommendation-ledger.json", { rows: [] });
 writeJson("stage6-20trade-loop.json", {
@@ -430,6 +579,11 @@ writeJson("stage6-20trade-loop.json", {
       symbol: "BASIS_BAD", stage6Hash: "latest-hash", stage6File: "latest-stage6.json", runDate: recent,
       entryPlanned: 92, stopPlanned: 90, targetPlanned: 95,
       priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
+    },
+    "latest-hash:FILE_MISMATCH:buy": {
+      symbol: "FILE_MISMATCH", stage6Hash: "latest-hash", stage6File: "wrong-stage6.json", runDate: recent,
+      entryPlanned: 100, stopPlanned: 90, targetPlanned: 120,
+      priceBasis: "stage6_entry_planned", marketTimezone: "America/New_York", adjustmentType: "split_adjusted"
     }
   }
 });
@@ -446,6 +600,7 @@ assert.equal(bySymbol.get("CURR")?.recoveryStatus, "CURRENT_SOURCE_FRESH");
 assert.equal(bySymbol.get("READY")?.recoveryStatus, "RECOVERY_SOURCE_READY_REPORT_ONLY");
 assert.equal(bySymbol.get("MAT")?.recoveryStatus, "RECOVERY_SOURCE_MATERIALIZATION_REQUIRED");
 assert.equal(bySymbol.get("LIFE")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
+assert.equal(bySymbol.get("FALLBACK")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("DISP")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("MISS")?.recoveryStatus, "NO_FRESH_SOURCE_AVAILABLE");
@@ -476,18 +631,23 @@ assert.deepEqual(bySymbol.get("MAT")?.stateMaterializationPrerequisites, {
 });
 const materializationPackage = bySymbol.get("MAT")?.stateMaterializationPackage;
 assert.equal(materializationPackage?.proposalStatus, "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY");
-assert.deepEqual(materializationPackage?.selectionContract, {
-  reviewReady: true,
-  recoveryDisposition: "FRESH_SOURCE_MATERIALIZATION_REQUIRED",
-  repairEligibleNow: false,
-  dynamicSelection: true
-});
+assert.equal(materializationPackage?.selectionContract?.symbol, "MAT");
+assert.equal(materializationPackage?.selectionContract?.recordKey, "latest-hash:MAT:buy");
+assert.equal(materializationPackage?.selectionContract?.expectedRecordKey, "latest-hash:MAT:buy");
+assert.equal(materializationPackage?.selectionContract?.expectedStage6Hash, "latest-hash");
+assert.equal(materializationPackage?.selectionContract?.selectedSourceType, "position_lifecycle_revalidated_guard");
+assert.equal(materializationPackage?.selectionContract?.reviewReady, true);
+assert.equal(materializationPackage?.selectionContract?.recoveryDisposition, "FRESH_SOURCE_MATERIALIZATION_REQUIRED");
+assert.equal(materializationPackage?.selectionContract?.repairEligibleNow, false);
+assert.equal(materializationPackage?.selectionContract?.dynamicSelection, true);
 assert.equal(materializationPackage?.currentStateSnapshot?.stateFile, "order-ledger.json");
 assert.equal(materializationPackage?.currentStateSnapshot?.recordKey, "latest-hash:MAT:buy");
 assert.match(materializationPackage?.currentStateSnapshot?.recordSha256 || "", /^[a-f0-9]{64}$/);
 assert.match(materializationPackage?.currentStateSnapshot?.fileSha256 || "", /^[a-f0-9]{64}$/);
 assert.equal(materializationPackage?.selectedFreshSourceLineage?.sourceType, "position_lifecycle_revalidated_guard");
 assert.equal(materializationPackage?.selectedFreshSourceLineage?.stage6Hash, "latest-hash");
+assert.equal(materializationPackage?.selectedFreshSourceLineage?.dispatchBasis, "position_lineage");
+assert.equal(materializationPackage?.selectedFreshSourceLineage?.positionLineageMatchesCurrentPosition, true);
 assert.deepEqual(materializationPackage?.materializationFields, [
   "stopLossPrice",
   "takeProfitPrice",
@@ -508,16 +668,44 @@ assert.equal(materializationPackage?.postVerifyChecks?.length > 0, true);
 assert.equal(materializationPackage?.rollbackPlan?.restoreAtomically, true);
 assert.equal(materializationPackage?.evidence?.idempotencyPass, true);
 assert.equal(materializationPackage?.evidence?.idempotencyStatus, "filled");
+assert.equal(materializationPackage?.evidence?.upstreamIdempotencyPass, true);
+assert.equal(materializationPackage?.evidence?.selectedLedgerRecord?.identityMatches, true);
+assert.equal(materializationPackage?.evidence?.selectedLedgerRecord?.filled, true);
+assert.equal(materializationPackage?.evidence?.selectedIdempotencyRecord?.recordFound, true);
+assert.equal(materializationPackage?.evidence?.selectedIdempotencyRecord?.identityMatches, true);
+assert.equal(materializationPackage?.evidence?.selectedIdempotencyRecord?.filled, true);
 assert.equal(materializationPackage?.evidence?.ownershipPass, true);
 assert.equal(materializationPackage?.evidence?.ownershipClassification, "SIDECAR_MANAGED_FILLED");
 assert.equal(materializationPackage?.evidence?.fillStatePass, true);
 assert.equal(materializationPackage?.evidence?.fillStateStatus, "FILL_STATE_CONFIRMED");
 assert.equal(materializationPackage?.requiredApprovalPhrase, "CONFIRM STATE GUARD MATERIALIZATION");
 assert.equal(materializationPackage?.stateMutationAllowed, false);
+assert.equal(materializationPackage?.stateMutationAttempted, false);
+assert.equal(materializationPackage?.stateMutationSubmitted, false);
+assert.equal(materializationPackage?.brokerMutationAttempted, false);
+assert.equal(materializationPackage?.brokerMutationSubmitted, false);
+assert.equal(materializationPackage?.packageBlocker, null);
+for (const requiredReport of [
+  "fill-state-reconciliation-audit",
+  "position-lifecycle-guard-source-plan",
+  "guard-metadata-refresh-plan",
+  "guard-metadata-lineage-audit",
+  "broker-child-order-reconciliation",
+  "position-protection-root-cause-audit",
+  "guard-source-recovery-plan"
+]) {
+  assert.equal(materializationPackage?.rollbackPlan?.rerunReports?.includes(requiredReport), true);
+}
 assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
+assert.equal(bySymbol.get("NONE")?.sourceCandidateLineage?.matchingTimestampMissingCount, 1);
 assert.equal(bySymbol.get("NONE")?.recoveryDisposition, "NO_CURRENT_SOURCE_AVAILABLE");
 assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
 assert.equal(bySymbol.get("DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("STALE_DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
+assert.equal(bySymbol.get("STALE_DISP")?.sourceLineage?.freshnessStatus, "SOURCE_TTL_EXPIRED");
+assert.equal(bySymbol.get("MIXED")?.recoveryRootCause, "source_ttl_expired");
+assert.equal(bySymbol.get("MIXED")?.sourceCandidateLineage?.matchingCandidateCount, 1);
+assert.equal(bySymbol.get("MIXED")?.sourceCandidateLineage?.freshMatchingCandidateCount, 0);
 assert.equal(bySymbol.get("DISP")?.recoveryDisposition, "EXPECTED_STALE_SOURCE_BLOCK");
 assert.equal(bySymbol.get("DISP")?.sourceLineage?.dispatchStatus, "MISMATCH");
 assert.equal(bySymbol.get("LIFE")?.recoveryRootCause, "stage6_dispatch_mismatch");
@@ -526,6 +714,13 @@ assert.equal(bySymbol.get("LIFE")?.sourceLineage?.dispatchStatus, "MISMATCH");
 assert.equal(bySymbol.get("LIFE")?.sourcePreservation?.lineageKeyMatchesCurrentPosition, false);
 assert.equal(bySymbol.get("LIFE")?.repairEligibilityContract?.sourceLineageMatchesCurrentPosition, false);
 assert.equal(bySymbol.get("LIFE")?.repairEligibleNow, false);
+assert.equal(bySymbol.get("FALLBACK")?.recoveryRootCause, "lifecycle_lineage_missing");
+assert.equal(bySymbol.get("FALLBACK")?.recoveryDisposition, "CURRENT_POSITION_LINEAGE_MISSING");
+assert.equal(bySymbol.get("FALLBACK")?.sourceLineage?.dispatchBasis, "latest_preview_fallback");
+assert.equal(bySymbol.get("FALLBACK")?.sourceLineage?.dispatchStatus, "EXPECTED_LINEAGE_MISSING");
+assert.equal(bySymbol.get("FALLBACK")?.sourceLineage?.positionLineageMatchesCurrentPosition, false);
+assert.equal(bySymbol.get("FALLBACK")?.stateMaterializationPackage, null);
+assert.equal(bySymbol.get("FALLBACK")?.repairEligibleNow, false);
 assert.equal(bySymbol.get("MISS")?.recoveryRootCause, "source_producer_missing");
 assert.equal(bySymbol.get("MISS")?.recoveryOwner, "position_ownership_proof");
 assert.equal(bySymbol.get("MISS")?.blockerDomain, "ownership");
@@ -568,11 +763,13 @@ assert.equal(bySymbol.get("BASIS_BAD")?.geometryDriftAudit?.evidenceCompleteness
 assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.evidenceCompleteness, "MISSING_CORE_EVIDENCE");
 assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.stopPrice, 90);
 assert.equal(bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.targetPrice, 95);
+assert.equal(bySymbol.get("FILE_MISMATCH")?.geometryDriftAudit?.sourceSnapshot?.evidenceRecordFound, false);
+assert.equal(bySymbol.get("FILE_MISMATCH")?.geometryDriftAudit?.sourceSnapshot?.stage6File, "selected-stage6.json");
 assert.equal(
   bySymbol.get("EVIDENCE_BAD")?.geometryDriftAudit?.sourceSnapshot?.expiresAt,
   new Date(Date.parse(recent) + (30 * 60_000)).toISOString()
 );
-for (const symbol of [...Object.keys(expectedGeometryClassifications), "DISP", "MISS"]) {
+for (const symbol of [...Object.keys(expectedGeometryClassifications), "DISP", "MIXED", "MISS"]) {
   assert.equal(bySymbol.get(symbol)?.stateMaterializationPackage, null);
 }
 assert.equal(bySymbol.get("PROD")?.recoveryRootCause, "source_producer_missing");
@@ -608,12 +805,12 @@ assert.equal(report.summary.materializationPackageRows, 1);
 assert.equal(report.summary.materializationPackagesReady, 1);
 assert.equal(report.summary.materializationPackageEvidenceMissing, 0);
 assert.equal(report.summary.materializationPackageExcludedLaneLeaks, 0);
-assert.equal(report.summary.geometryRootCauseRows, 6);
+assert.equal(report.summary.geometryRootCauseRows, 7);
 assert.equal(report.summary.geometryRootCauseUnclassified, 0);
 assert.deepEqual(report.summary.geometryInvalidComponentCounts, {
   stop: 3,
   current: 0,
-  target: 3,
+  target: 4,
   producer: 0
 });
 assert.deepEqual(report.summary.geometryDriftClassificationCounts, {
@@ -621,7 +818,7 @@ assert.deepEqual(report.summary.geometryDriftClassificationCounts, {
   STAGE6_PRODUCER_GEOMETRY_INVALID_AT_SOURCE: 1,
   POSITION_LIFECYCLE_TRANSFORM_DRIFT: 1,
   SOURCE_PRICE_BASIS_OR_TIMESTAMP_MISMATCH: 1,
-  SOURCE_GEOMETRY_EVIDENCE_MISSING: 1
+  SOURCE_GEOMETRY_EVIDENCE_MISSING: 2
 });
 assert.equal(report.summary.geometryDriftUnclassified, 0);
 assert.equal(report.classificationConsistency.geometryDriftClassified, true);
@@ -631,6 +828,81 @@ assert.equal(report.summary.stateMutationAttempted, false);
 assert.equal(report.summary.stateMutationSubmitted, false);
 assert.equal(report.summary.brokerMutationAttempted, false);
 assert.equal(report.summary.brokerMutationSubmitted, false);
+
+writeJson("order-idempotency.json", {
+  orders: {
+    "latest-hash:MAT:buy": { ...filledIdempotency, brokerStatus: "submitted" }
+  },
+  releases: {},
+  updatedAt: now
+});
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const idempotencyBlocked = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const idempotencyBlockedPackage = idempotencyBlocked.rows.find((row) => row.symbol === "MAT")?.stateMaterializationPackage;
+assert.equal(idempotencyBlockedPackage?.proposalStatus, "BLOCKED_EVIDENCE_INCOMPLETE");
+assert.equal(idempotencyBlockedPackage?.packageBlocker, "package_idempotency_blocked");
+assert.equal(idempotencyBlockedPackage?.evidence?.idempotencyPass, false);
+assert.equal(idempotencyBlockedPackage?.evidenceMissing?.includes("selected_idempotency_record_not_filled"), true);
+writeJson("order-idempotency.json", {
+  orders: { "latest-hash:MAT:buy": filledIdempotency },
+  releases: {},
+  updatedAt: now
+});
+const noValueDiffLedger = JSON.parse(fs.readFileSync(path.join(stateDir, "order-ledger.json"), "utf8"));
+noValueDiffLedger.orders["latest-hash:MAT:buy"].stopLossPrice = 90;
+writeJson("order-ledger.json", noValueDiffLedger);
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const noValueDiffReport = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const noValueDiffPackage = noValueDiffReport.rows.find((row) => row.symbol === "MAT")?.stateMaterializationPackage;
+assert.equal(noValueDiffPackage?.proposalStatus, "BLOCKED_NO_MATERIALIZATION_DIFF");
+assert.equal(noValueDiffPackage?.packageBlocker, "package_evidence_incomplete");
+assert.equal(noValueDiffPackage?.guardValueDiff?.length, 0);
+assert.equal(noValueDiffPackage?.evidenceMissing?.includes("no_guard_metadata_value_diff"), true);
+assert.equal(noValueDiffReport.summary.materializationPackagesBlocked, 1);
+assert.equal(noValueDiffReport.summary.materializationPackageEvidenceMissing, 1);
+assert.equal(noValueDiffReport.summary.materializationReadyPackageEvidenceMissing, 0);
+assert.equal(noValueDiffReport.classificationConsistency.materializationPackagesComplete, true);
+assert.notEqual(noValueDiffReport.overall, "classification_inconsistent");
+
+const missingRecordKeyProtection = JSON.parse(fs.readFileSync(path.join(stateDir, "position-protection-root-cause-audit.json"), "utf8"));
+missingRecordKeyProtection.rows = missingRecordKeyProtection.rows.map((row) => row.symbol === "MAT"
+  ? { ...row, plannedLedgerKey: null }
+  : row);
+writeJson("position-protection-root-cause-audit.json", missingRecordKeyProtection);
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const missingRecordKeyReport = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const missingRecordKeyPackage = missingRecordKeyReport.rows.find((row) => row.symbol === "MAT")?.stateMaterializationPackage;
+assert.equal(missingRecordKeyPackage?.proposalStatus, "BLOCKED_CURRENT_STATE_RECORD_MISSING");
+assert.equal(missingRecordKeyPackage?.currentStateSnapshot, null);
+
+refreshPlan.rows = refreshPlan.rows.map((row) => row.symbol === "NONE"
+  ? refreshRow("NONE", { ...unavailable, generatedAt: null }, {
+      refreshReady: false,
+      refreshDecision: "BLOCKED_REFRESH_SOURCE_TIMESTAMP_MISSING",
+      afterRefreshRepairDecision: "NOT_EVALUATED_REFRESH_BLOCKED",
+      blockers: ["selected_source_timestamp_missing"]
+    })
+  : row);
+writeJson("guard-metadata-refresh-plan.json", refreshPlan);
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const missingTimestampReport = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const missingTimestampRow = missingTimestampReport.rows.find((row) => row.symbol === "NONE");
+assert.equal(missingTimestampRow?.recoveryRootCause, "source_producer_missing");
+assert.equal(missingTimestampRow?.sourceCandidateLineage?.matchingTimestampMissingCount, 1);
+assert.equal(missingTimestampRow?.recoveryDecision, "FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE");
+assert.equal(missingTimestampRow?.nextAction, "rebuild_missing_guard_source_producer_report_only");
 
 refreshPlan.rows = refreshPlan.rows.map((row) => row.symbol === "MAT"
   ? refreshRow("MAT", null, {
@@ -654,5 +926,33 @@ assert.equal(replayMat?.sourcePreservation?.source?.type, "position_lifecycle_re
 assert.equal(replayMat?.sourcePreservation?.status, "PRESERVED_ACTIVE_REPORT_ONLY");
 assert.equal(replayMat?.sourcePreservation?.usedForRepairEligibility, false);
 assert.equal(replayMat?.repairEligibleNow, false);
+
+replayMat.sourcePreservation.source = {
+  ...replayMat.sourcePreservation.source,
+  positionLineageKey: replayMat.positionLineageKey,
+  stage6Hash: "latest-hash",
+  stage6File: "different-stage6.json"
+};
+writeJson("guard-source-recovery-plan.json", replay);
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const preservationMismatch = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+const preservationMismatchMat = preservationMismatch.rows.find((row) => row.symbol === "MAT");
+assert.equal(preservationMismatchMat?.recoveryRootCause, "preservation_contract_mismatch");
+assert.equal(preservationMismatchMat?.sourcePreservation?.priorEvidencePresent, true);
+assert.equal(preservationMismatchMat?.sourcePreservation?.priorRejectionReason, "prior_stage6_identity_mismatch");
+assert.equal(preservationMismatchMat?.repairEligibleNow, false);
+
+execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
+  env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const preservationMismatchReplay = JSON.parse(fs.readFileSync(path.join(stateDir, "guard-source-recovery-plan.json"), "utf8"));
+assert.equal(
+  preservationMismatchReplay.rows.find((row) => row.symbol === "MAT")?.recoveryRootCause,
+  "preservation_contract_mismatch"
+);
 
 console.log("[GUARD_SOURCE_RECOVERY_STATUS_TEST] pass");
