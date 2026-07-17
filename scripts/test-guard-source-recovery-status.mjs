@@ -473,6 +473,26 @@ writeJson("position-lifecycle-guard-source-plan.json", {
       }
     },
     {
+      symbol: "NONE",
+      lifecycleReady: false,
+      lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_BLOCKED",
+      producerRefreshContract: {
+        status: "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY",
+        sourceProducer: "position_lifecycle_guard_source",
+        owner: "guard_geometry_producer",
+        lineageDecision: "CURRENT_POSITION_LINEAGE_MATCH",
+        expectedStage6Hash: unavailable.stage6Hash,
+        expectedStage6File: unavailable.stage6File,
+        currentPositionLineageMatch: true,
+        guardValueChangeRequired: true,
+        actualGuardValueDiffRequired: true,
+        timestampOnlyRefreshAllowed: false,
+        materializationCandidateAllowed: false,
+        blockers: ["stop_too_near_current_for_lifecycle_revalidation"],
+        nextAction: "request_current_position_guard_recalibration_report_only"
+      }
+    },
+    {
       symbol: "LIFE_BAD",
       lifecycleReady: true,
       lifecycleDecision: "POSITION_LIFECYCLE_GUARD_SOURCE_READY_REPORT_ONLY",
@@ -656,6 +676,7 @@ assert.deepEqual(materializationPackage?.materializationFields, [
   "updatedAt"
 ]);
 assert.ok(materializationPackage?.proposedDiff?.length > 0);
+assert.deepEqual(materializationPackage?.guardValueDiff?.map((change) => change.field), ["stopLossPrice"]);
 assert.equal(
   materializationPackage?.proposedDiff?.every((change) => materializationPackage.materializationFields.includes(change.field)),
   true
@@ -699,7 +720,12 @@ for (const requiredReport of [
 assert.equal(bySymbol.get("NONE")?.recoveryRootCause, "source_ttl_expired");
 assert.equal(bySymbol.get("NONE")?.sourceCandidateLineage?.matchingTimestampMissingCount, 1);
 assert.equal(bySymbol.get("NONE")?.recoveryDisposition, "NO_CURRENT_SOURCE_AVAILABLE");
-assert.equal(bySymbol.get("NONE")?.nextAction, "wait_for_fresh_stage6_or_lifecycle_guard_source");
+assert.equal(bySymbol.get("NONE")?.nextAction, "request_current_position_guard_recalibration_report_only");
+assert.equal(bySymbol.get("NONE")?.recoveryOwner, "guard_geometry_producer");
+assert.equal(bySymbol.get("NONE")?.lifecycleProducerRefreshContract?.status, "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY");
+assert.equal(bySymbol.get("NONE")?.lifecycleProducerRefreshContract?.guardValueChangeRequired, true);
+assert.equal(bySymbol.get("NONE")?.lifecycleProducerRefreshContract?.timestampOnlyRefreshAllowed, false);
+assert.equal(bySymbol.get("NONE")?.lifecycleProducerRefreshContract?.materializationCandidateAllowed, false);
 assert.equal(bySymbol.get("DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
 assert.equal(bySymbol.get("STALE_DISP")?.recoveryRootCause, "stage6_dispatch_mismatch");
 assert.equal(bySymbol.get("STALE_DISP")?.sourceLineage?.freshnessStatus, "SOURCE_TTL_EXPIRED");
@@ -751,8 +777,26 @@ for (const [symbol, classification] of Object.entries(expectedGeometryClassifica
 }
 assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
 assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.evaluationGeometry?.targetAboveCurrent, false);
+assert.deepEqual(bySymbol.get("BAD")?.geometryDriftAudit?.currentPriceDriftResolution, {
+  status: "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY",
+  guardRecalibrationRequired: true,
+  noRepairUntilFreshGeometry: true,
+  reason: "target_not_above_current",
+  owner: "guard_geometry_producer",
+  nextAction: "request_current_position_guard_recalibration_report_only"
+});
+assert.equal(bySymbol.get("BAD")?.lifecycleProducerRefreshContract, null);
 assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
 assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.evaluationGeometry?.stopBelowCurrent, false);
+assert.deepEqual(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.currentPriceDriftResolution, {
+  status: "NO_REPAIR_STOP_BREACHED_POSITION_RISK_REVIEW",
+  guardRecalibrationRequired: false,
+  noRepairUntilFreshGeometry: true,
+  reason: "stop_not_below_current",
+  owner: "position_risk_review",
+  nextAction: "keep_no_repair_route_to_position_risk_review"
+});
+assert.equal(bySymbol.get("TTL_BAD")?.lifecycleProducerRefreshContract, null);
 assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, false);
 assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.producerHandoff?.targetRepository, "US_Alpha_Seeker");
 assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.producerHandoff?.mode, "report_only");
@@ -803,6 +847,10 @@ assert.equal(report.summary.materializationReviewReady, 1);
 assert.equal(report.summary.materializationPrerequisiteUnclassified, 0);
 assert.equal(report.summary.materializationPackageRows, 1);
 assert.equal(report.summary.materializationPackagesReady, 1);
+assert.equal(report.summary.materializationReadyWithoutGuardValueDiff, 0);
+assert.equal(report.summary.lifecycleProducerRefreshUnclassified, 0);
+assert.equal(report.classificationConsistency.materializationRequiresGuardValueDiff, true);
+assert.equal(report.classificationConsistency.lifecycleProducerRefreshClassified, true);
 assert.equal(report.summary.materializationPackageEvidenceMissing, 0);
 assert.equal(report.summary.materializationPackageExcludedLaneLeaks, 0);
 assert.equal(report.summary.geometryRootCauseRows, 7);
@@ -853,7 +901,13 @@ writeJson("order-idempotency.json", {
 });
 const noValueDiffLedger = JSON.parse(fs.readFileSync(path.join(stateDir, "order-ledger.json"), "utf8"));
 noValueDiffLedger.orders["latest-hash:MAT:buy"].stopLossPrice = 90;
+noValueDiffLedger.orders["latest-hash:MAT:buy"].stage6File = "historical-stage6-file.json";
 writeJson("order-ledger.json", noValueDiffLedger);
+const noValueDiffProtection = JSON.parse(fs.readFileSync(path.join(stateDir, "position-protection-root-cause-audit.json"), "utf8"));
+noValueDiffProtection.rows = noValueDiffProtection.rows.map((row) => row.symbol === "MAT"
+  ? { ...row, plannedStage6File: null }
+  : row);
+writeJson("position-protection-root-cause-audit.json", noValueDiffProtection);
 execFileSync(process.execPath, ["scripts/build-guard-source-recovery-plan.mjs"], {
   env: { ...process.env, GUARD_SOURCE_RECOVERY_STATE_DIR: stateDir },
   stdio: "pipe"
@@ -863,12 +917,18 @@ const noValueDiffPackage = noValueDiffReport.rows.find((row) => row.symbol === "
 assert.equal(noValueDiffPackage?.proposalStatus, "BLOCKED_NO_MATERIALIZATION_DIFF");
 assert.equal(noValueDiffPackage?.packageBlocker, "package_evidence_incomplete");
 assert.equal(noValueDiffPackage?.guardValueDiff?.length, 0);
+assert.equal(noValueDiffPackage?.proposedDiff?.some((change) => change.field === "stage6File"), true);
 assert.equal(noValueDiffPackage?.evidenceMissing?.includes("no_guard_metadata_value_diff"), true);
 assert.equal(noValueDiffReport.summary.materializationPackagesBlocked, 1);
 assert.equal(noValueDiffReport.summary.materializationPackageEvidenceMissing, 1);
 assert.equal(noValueDiffReport.summary.materializationReadyPackageEvidenceMissing, 0);
 assert.equal(noValueDiffReport.classificationConsistency.materializationPackagesComplete, true);
 assert.notEqual(noValueDiffReport.overall, "classification_inconsistent");
+
+noValueDiffProtection.rows = noValueDiffProtection.rows.map((row) => row.symbol === "MAT"
+  ? { ...row, plannedStage6File: "latest-stage6.json" }
+  : row);
+writeJson("position-protection-root-cause-audit.json", noValueDiffProtection);
 
 const missingRecordKeyProtection = JSON.parse(fs.readFileSync(path.join(stateDir, "position-protection-root-cause-audit.json"), "utf8"));
 missingRecordKeyProtection.rows = missingRecordKeyProtection.rows.map((row) => row.symbol === "MAT"
