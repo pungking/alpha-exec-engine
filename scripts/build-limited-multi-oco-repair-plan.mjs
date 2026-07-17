@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 const STATE_DIR = String(process.env.LIMITED_MULTI_OCO_REPAIR_STATE_DIR || "state").trim() || "state";
 const PERSISTENT_PLAN_PATH = `${STATE_DIR}/persistent-oco-repair-plan.json`;
+const GUARD_SOURCE_RECOVERY_PATH = `${STATE_DIR}/guard-source-recovery-plan.json`;
 const BROKER_RECON_PATH = `${STATE_DIR}/broker-child-order-reconciliation.json`;
 const MULTI_VERIFY_PATH = `${STATE_DIR}/persistent-oco-repair-open-verify-multi.json`;
 const OUTPUT_JSON = `${STATE_DIR}/limited-multi-oco-repair-plan.json`;
@@ -53,16 +54,20 @@ const blockerGroup = (row) => {
 };
 
 const persistentPlan = readJson(PERSISTENT_PLAN_PATH);
+const guardSourceRecovery = readJson(GUARD_SOURCE_RECOVERY_PATH);
 const brokerRecon = readJson(BROKER_RECON_PATH);
 const multiVerify = readJson(MULTI_VERIFY_PATH);
 const persistentRows = Array.isArray(persistentPlan?.rows) ? persistentPlan.rows : [];
 const brokerRows = Array.isArray(brokerRecon?.rows) ? brokerRecon.rows : [];
 const brokerBySymbol = new Map(brokerRows.map((row) => [asSymbol(row?.symbol), row]));
+const recoveryRows = Array.isArray(guardSourceRecovery?.rows) ? guardSourceRecovery.rows : [];
+const recoveryBySymbol = new Map(recoveryRows.map((row) => [asSymbol(row?.symbol), row]));
 
 const rows = persistentRows
   .map((row) => {
     const symbol = asSymbol(row?.symbol);
     const brokerRow = brokerBySymbol.get(symbol) || null;
+    const recoveryRow = recoveryBySymbol.get(symbol) || null;
     const repairQty = toNum(row?.repairQty);
     const payload = row?.payloadPreview && typeof row.payloadPreview === "object" ? row.payloadPreview : null;
     const payloadQty = toNum(payload?.qty);
@@ -70,17 +75,29 @@ const rows = persistentRows
     const orderClass = String(payload?.order_class || "").toLowerCase();
     const payloadGtcOco = Boolean(payload && timeInForce === "gtc" && orderClass === "oco");
     const qtySafe = repairQty != null && repairQty > 0 && repairQty <= MAX_QTY_PER_ROW && (payloadQty == null || payloadQty <= MAX_QTY_PER_ROW);
-    const persistentEligible = row?.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL";
+    const persistentReady = row?.readiness === "PERSISTENT_REPAIR_READY_FOR_APPROVAL";
+    const persistentProtectionEligible = row?.repairEligible === true && row?.protectionLane === "MANUAL_APPROVAL_CANDIDATE";
+    const guardSourceRepairEligibleNow = recoveryRow?.repairEligibleNow === true;
     const extraBlockers = [];
-    if (persistentEligible && !payloadGtcOco) extraBlockers.push("payload_not_gtc_oco");
-    if (persistentEligible && !qtySafe) extraBlockers.push("qty_exceeds_limited_multi_cap");
-    const eligibleForLimitedBatch = persistentEligible && payloadGtcOco && qtySafe && row?.executionAllowed !== true;
+    if (persistentReady && !persistentProtectionEligible) extraBlockers.push("persistent_protection_lane_not_eligible");
+    if (persistentReady && !guardSourceRepairEligibleNow) extraBlockers.push("guard_source_repair_eligibility_not_confirmed");
+    if (persistentReady && !payloadGtcOco) extraBlockers.push("payload_not_gtc_oco");
+    if (persistentReady && !qtySafe) extraBlockers.push("qty_exceeds_limited_multi_cap");
+    const eligibleForLimitedBatch = persistentReady && persistentProtectionEligible && guardSourceRepairEligibleNow && payloadGtcOco && qtySafe && row?.executionAllowed !== true;
     return {
       symbol,
       readiness: row?.readiness || null,
       safetyDecision: row?.safetyDecision || null,
-      blockerGroup: blockerGroup(row),
+      blockerGroup: persistentReady && !guardSourceRepairEligibleNow
+        ? "guard_source_recovery_required"
+        : persistentReady && !persistentProtectionEligible
+          ? "protection_classification_required"
+          : blockerGroup(row),
       blockers: [...(Array.isArray(row?.blockers) ? row.blockers : []), ...extraBlockers],
+      guardSourceRecoveryStatus: recoveryRow?.recoveryStatus || null,
+      guardSourceRecoveryRootCause: recoveryRow?.recoveryRootCause || null,
+      guardSourceRepairEligibleNow,
+      persistentProtectionEligible,
       brokerStopPresent: row?.brokerStopPresent === true || brokerRow?.brokerStopPresent === true,
       brokerTargetPresent: row?.brokerTargetPresent === true || brokerRow?.brokerTargetPresent === true,
       brokerChildrenPresent: (row?.brokerStopPresent === true || brokerRow?.brokerStopPresent === true) && (row?.brokerTargetPresent === true || brokerRow?.brokerTargetPresent === true),
@@ -98,6 +115,10 @@ const rows = persistentRows
       selectedForApprovalBatch: false,
       nextAction: eligibleForLimitedBatch
         ? "manual approval candidate only; actual broker mutation requires exact scoped approval and a submit lane"
+        : persistentReady && !guardSourceRepairEligibleNow
+          ? "blocked; canonical guard-source recovery must confirm repairEligibleNow before any approval batch selection"
+        : persistentReady && !persistentProtectionEligible
+          ? "blocked; canonical persistent protection lane must confirm repair eligibility before batch selection"
         : row?.readiness === "NO_ACTION_BROKER_CHILDREN_PRESENT"
           ? "monitor only; do not create duplicate protective children"
           : "blocked; resolve blocker group before repair approval"
@@ -167,6 +188,7 @@ const report = {
     guardMetadataMissing: rows.filter((row) => row.blockerGroup === "guard_metadata_missing").length,
     invalidGeometry: rows.filter((row) => row.blockerGroup === "invalid_geometry").length,
     fillStateReconciliationRequired: rows.filter((row) => row.blockerGroup === "fill_state_reconciliation_required").length,
+    guardSourceRecoveryRequired: rows.filter((row) => row.blockerGroup === "guard_source_recovery_required").length,
     blockerGroups: groupedCounts,
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false
@@ -175,6 +197,8 @@ const report = {
     persistentOcoRepairPlanOverall: persistentPlan?.overall || null,
     persistentOcoRepairSelectedSymbol: persistentPlan?.summary?.selectedSymbol || null,
     persistentOcoRepairEligible: toNum(persistentPlan?.summary?.eligible),
+    guardSourceRecoveryOverall: guardSourceRecovery?.overall || null,
+    guardSourceRepairEligibleNow: toNum(guardSourceRecovery?.summary?.repairEligibleNow),
     brokerChildReconciliationOverall: brokerRecon?.overall || null,
     persistentOcoOpenVerifyMultiOverall: multiVerify?.overall || null
   },
@@ -183,6 +207,7 @@ const report = {
     "protected rows remain NO_ACTION / broker children present",
     "position_not_sidecar_managed and guard_metadata_missing rows remain blocked",
     "eligible rows are capped by maxRows and maxQtyPerRow",
+    "eligible rows are confirmed by guard-source-recovery repairEligibleNow",
     "brokerMutationAllowed=false, brokerMutationAttempted=false, brokerMutationSubmitted=false",
     "actual submit remains outside this planner and requires exact scoped approval"
   ],

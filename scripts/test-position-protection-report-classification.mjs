@@ -31,7 +31,7 @@ writeJson("performance-dashboard.json", {
       managed("CCC", { plannedStopPrice: 105 }),
       { symbol: "DDD", qty: 1, currentPrice: 100 },
       managed("EEE", { normalizedFillState: "submitted", ledgerStatus: "submitted" }),
-      managed("FFF")
+      managed("FFF", { plannedStage6Hash: "position-wrong-hash", plannedLedgerKey: "wrong-key" })
     ]
   }
 });
@@ -40,8 +40,50 @@ writeJson("broker-child-order-reconciliation.json", {
   rows: [{ symbol: "AAA", brokerStopPresent: true, brokerTargetPresent: true, brokerStopPrice: 90, brokerTargetPrice: 120 }]
 });
 writeJson("order-state-consistency-report.json", { rows: [] });
-writeJson("order-ledger.json", { orders: {} });
-writeJson("order-idempotency.json", { orders: {} });
+writeJson("order-ledger.json", {
+  orders: {
+    "wrong-key": {
+      idempotencyKey: "wrong-key",
+      symbol: "FFF",
+      status: "submitted",
+      stage6Hash: "wrong-hash",
+      stage6File: "wrong-stage6.json",
+      stopLossPrice: 80,
+      takeProfitPrice: 130,
+      updatedAt: now
+    },
+    "hash-FFF:FFF:buy": {
+      idempotencyKey: "hash-FFF:FFF:buy",
+      symbol: "FFF",
+      status: "filled",
+      stage6Hash: "hash-FFF",
+      stage6File: "stage6-FFF.json",
+      stopLossPrice: 90,
+      takeProfitPrice: 120,
+      updatedAt: stale
+    }
+  }
+});
+writeJson("order-idempotency.json", {
+  orders: {
+    "hash-FFF:FFF:buy": {
+      symbol: "FFF",
+      brokerStatus: "filled",
+      stage6Hash: "hash-FFF",
+      stage6File: "stage6-FFF.json",
+      brokerCheckedAt: now
+    }
+  }
+});
+writeJson("fill-state-reconciliation-audit.json", {
+  rows: [{
+    symbol: "FFF",
+    ledger: { key: "hash-FFF:FFF:buy" },
+    idempotency: { key: "hash-FFF:FFF:buy" },
+    reconciliationDecision: "FILL_STATE_CONFIRMED",
+    requiresLedgerTerminalizationReview: false
+  }]
+});
 writeJson("fillability-report.json", { rows: [] });
 writeJson("last-dry-exec-preview.json", { stage6Hash: "fixture-hash", stage6File: "fixture.json" });
 writeJson("position-lifecycle-guard-source-plan.json", {
@@ -79,6 +121,8 @@ assert.equal(report.summary.ledgerBlockerRows, 1);
 assert.equal(report.summary.manualApprovalCandidates, 1);
 assert.equal(report.rows.find((row) => row.symbol === "BBB")?.protectionLane, "FRESH_GUARD_SOURCE_REQUIRED");
 assert.notEqual(report.rows.find((row) => row.symbol === "BBB")?.effectiveGuardSource, "position_lifecycle_revalidated_guard");
+assert.equal(report.rows.find((row) => row.symbol === "FFF")?.plannedLedgerKey, "hash-FFF:FFF:buy");
+assert.equal(report.rows.find((row) => row.symbol === "FFF")?.plannedStage6Hash, "hash-FFF");
 assert.equal(report.executionPolicy.brokerMutationAttempted, false);
 assert.equal(report.executionPolicy.brokerMutationSubmitted, false);
 assert.equal(report.executionPolicy.stateMutationAttempted, false);

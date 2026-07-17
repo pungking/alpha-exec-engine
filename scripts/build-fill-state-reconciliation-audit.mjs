@@ -55,10 +55,31 @@ const latestBySymbol = (rows, dateSelector = (row) => row?.updatedAt || row?.cre
   return out;
 };
 
-const objectRows = (object) => Object.entries(object?.orders || {}).map(([key, value]) => ({ key, ...value }));
+const objectRows = (object) => Object.entries(object?.orders || {}).map(([key, value]) => ({ ...value, key }));
 const arrayRowsBySymbol = (rows) => latestBySymbol(rows);
 
-const buildDecision = ({ position, ownership, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow }) => {
+const selectStateRow = (object, position, kind) => {
+  const symbol = asSymbol(position?.symbol);
+  const expectedKey = String(position?.plannedLedgerKey || "").trim();
+  const candidates = objectRows(object).filter((row) => asSymbol(row?.symbol) === symbol);
+  if (expectedKey) {
+    const row = candidates.find((candidate) => candidate.key === expectedKey) || null;
+    return {
+      row,
+      status: row ? "EXACT_POSITION_KEY" : "EXPECTED_POSITION_KEY_MISSING",
+      blocker: row ? null : `expected_position_${kind}_key_missing`,
+      candidateCount: candidates.length
+    };
+  }
+  return {
+    row: null,
+    status: "EXPECTED_POSITION_KEY_MISSING",
+    blocker: `expected_position_${kind}_key_missing`,
+    candidateCount: candidates.length
+  };
+};
+
+const buildDecision = ({ position, ownership, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow, stateSelection }) => {
   const qty = toNum(position?.qty) ?? 0;
   const ledgerStatus = String(ledgerRow?.status || "").toLowerCase();
   const idempotencyStatus = String(idempotencyRow?.brokerStatus || idempotencyRow?.status || "").toLowerCase();
@@ -89,6 +110,14 @@ const buildDecision = ({ position, ownership, ledgerRow, idempotencyRow, orderSt
       requiresLedgerTerminalizationReview: false,
       blockers: ["position_not_sidecar_managed"],
       nextAction: "classify_ownership_before_sidecar_guard_repair"
+    };
+  }
+  if (stateSelection.blockers.length > 0) {
+    return {
+      reconciliationDecision: "FILL_STATE_UNKNOWN_REVIEW",
+      requiresLedgerTerminalizationReview: true,
+      blockers: stateSelection.blockers,
+      nextAction: "resolve_exact_position_ledger_and_idempotency_lineage"
     };
   }
   if (ownership.ownershipClass === "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED") {
@@ -131,7 +160,7 @@ const buildDecision = ({ position, ownership, ledgerRow, idempotencyRow, orderSt
   };
 };
 
-const buildRow = ({ position, reconciliationRow, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow }) => {
+const buildRow = ({ position, reconciliationRow, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow, stateSelection }) => {
   const ownership = classifyProtectionOwnership({
     position,
     reconciliationRow,
@@ -140,7 +169,7 @@ const buildRow = ({ position, reconciliationRow, ledgerRow, idempotencyRow, orde
     orderStateRow,
     fillabilityRow
   });
-  const decision = buildDecision({ position, ownership, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow });
+  const decision = buildDecision({ position, ownership, ledgerRow, idempotencyRow, orderStateRow, fillabilityRow, stateSelection });
   return {
     symbol: asSymbol(position?.symbol),
     qty: toNum(position?.qty),
@@ -149,6 +178,7 @@ const buildRow = ({ position, reconciliationRow, ledgerRow, idempotencyRow, orde
     sidecarManaged: ownership.sidecarManaged,
     normalizedFillState: position?.normalizedFillState || null,
     positionStatus: position?.positionStatus || null,
+    stateSelection,
     ledger: ledgerRow
       ? {
         key: ledgerRow.key || null,
@@ -233,8 +263,6 @@ const main = () => {
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
 
   const positions = Array.isArray(performance?.live?.positions) ? performance.live.positions : [];
-  const ledgerBySymbol = latestBySymbol(objectRows(orderLedger));
-  const idempotencyBySymbol = latestBySymbol(objectRows(idempotency), (row) => row?.brokerCheckedAt || row?.lastSeenAt || row?.firstSeenAt);
   const orderStateBySymbol = arrayRowsBySymbol(orderState?.rows);
   const fillabilityBySymbol = arrayRowsBySymbol(fillability?.rows);
   const reconciliationBySymbol = arrayRowsBySymbol(brokerChildReconciliation?.rows);
@@ -243,13 +271,24 @@ const main = () => {
     .filter((position) => (toNum(position?.qty) ?? 0) > 0)
     .map((position) => {
       const symbol = asSymbol(position?.symbol);
+      const ledgerSelection = selectStateRow(orderLedger, position, "ledger");
+      const idempotencySelection = selectStateRow(idempotency, position, "idempotency");
+      const stateSelection = {
+        expectedKey: String(position?.plannedLedgerKey || "").trim() || null,
+        ledgerStatus: ledgerSelection.status,
+        ledgerCandidateCount: ledgerSelection.candidateCount,
+        idempotencyStatus: idempotencySelection.status,
+        idempotencyCandidateCount: idempotencySelection.candidateCount,
+        blockers: [ledgerSelection.blocker, idempotencySelection.blocker].filter(Boolean)
+      };
       return buildRow({
         position,
         reconciliationRow: reconciliationBySymbol.get(symbol) || null,
-        ledgerRow: ledgerBySymbol.get(symbol) || null,
-        idempotencyRow: idempotencyBySymbol.get(symbol) || null,
+        ledgerRow: ledgerSelection.row,
+        idempotencyRow: idempotencySelection.row,
         orderStateRow: orderStateBySymbol.get(symbol) || null,
-        fillabilityRow: fillabilityBySymbol.get(symbol) || null
+        fillabilityRow: fillabilityBySymbol.get(symbol) || null,
+        stateSelection
       });
     });
 

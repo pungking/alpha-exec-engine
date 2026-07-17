@@ -12,6 +12,7 @@ const FILES = {
   fillStateReconciliation: `${STATE_DIR}/fill-state-reconciliation-audit.json`,
   brokerChildReconciliation: `${STATE_DIR}/broker-child-order-reconciliation.json`,
   orderLedger: `${STATE_DIR}/order-ledger.json`,
+  orderIdempotency: `${STATE_DIR}/order-idempotency.json`,
   recommendationLedger: `${STATE_DIR}/recommendation-ledger.json`,
   stage6TradeLoop: `${STATE_DIR}/stage6-20trade-loop.json`,
   preview: `${STATE_DIR}/last-dry-exec-preview.json`
@@ -62,7 +63,8 @@ const MATERIALIZATION_FIELDS = Object.freeze([
 const MATERIALIZATION_PACKAGE_STATUSES = Object.freeze([
   "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY",
   "BLOCKED_CURRENT_STATE_RECORD_MISSING",
-  "BLOCKED_NO_MATERIALIZATION_DIFF"
+  "BLOCKED_NO_MATERIALIZATION_DIFF",
+  "BLOCKED_EVIDENCE_INCOMPLETE"
 ]);
 const REQUIRED_STATE_MATERIALIZATION_APPROVAL = "CONFIRM STATE GUARD MATERIALIZATION";
 
@@ -77,6 +79,8 @@ const SOURCE_ROOT_CAUSES = Object.freeze({
   STATE_MATERIALIZATION_MISSING: "state_materialization_missing",
   SOURCE_PRODUCER_MISSING: "source_producer_missing",
   STAGE6_DISPATCH_MISMATCH: "stage6_dispatch_mismatch",
+  LIFECYCLE_LINEAGE_MISSING: "lifecycle_lineage_missing",
+  PRESERVATION_CONTRACT_MISMATCH: "preservation_contract_mismatch",
   SOURCE_TTL_EXPIRED: "source_ttl_expired",
   SOURCE_GEOMETRY_UNUSABLE: "source_geometry_unusable"
 });
@@ -149,21 +153,24 @@ const sourceLineageEvidence = ({ selected, refreshReceivedAt, ttlMin, protection
     : fallbackHash || fallbackFile
       ? "latest_preview_fallback"
       : "missing_expected_lineage";
-  const compareHash = expectedHash || fallbackHash;
-  const compareFile = expectedFile || fallbackFile;
+  const compareHash = expectedHash;
+  const compareFile = expectedFile;
   const sourceHash = selected?.stage6Hash || null;
   const sourceFile = selected?.stage6File || null;
   const dispatchStatus = !selected
     ? "NO_SOURCE"
     : !dispatchRequired
       ? "NOT_REQUIRED"
-      : !sourceHash && !sourceFile
+      : dispatchBasis !== "position_lineage"
+        ? "EXPECTED_LINEAGE_MISSING"
+        : !sourceHash && !sourceFile
         ? "SOURCE_LINEAGE_MISSING"
         : !compareHash && !compareFile
           ? "EXPECTED_LINEAGE_MISSING"
-          : compareHash && sourceHash
-            ? (String(compareHash) === String(sourceHash) ? "MATCH" : "MISMATCH")
-            : (String(compareFile) === String(sourceFile) ? "MATCH" : "MISMATCH");
+          : (!compareHash || String(compareHash) === String(sourceHash || "")) &&
+              (!compareFile || String(compareFile) === String(sourceFile || ""))
+            ? "MATCH"
+            : "MISMATCH";
   return {
     sourceType: type || null,
     producedAt,
@@ -191,7 +198,9 @@ const sourceLineageEvidence = ({ selected, refreshReceivedAt, ttlMin, protection
     dispatchBasis,
     dispatchStatus,
     dispatchValid: dispatchStatus === "NOT_REQUIRED" || dispatchStatus === "MATCH",
-    positionLineageMatchesCurrentPosition: dispatchStatus === "MATCH" || (!dispatchRequired && Boolean(selected)),
+    positionLineageMatchesCurrentPosition: !dispatchRequired
+      ? Boolean(selected)
+      : dispatchBasis === "position_lineage" && dispatchStatus === "MATCH",
     lifecycle: type === "position_lifecycle_revalidated_guard"
       ? {
           ready: lifecycleRow?.lifecycleReady === true,
@@ -204,6 +213,42 @@ const sourceLineageEvidence = ({ selected, refreshReceivedAt, ttlMin, protection
           stage6File: lifecycleRow?.lifecycleSource?.stage6File || null
         }
       : null
+  };
+};
+
+const matchesExpectedStage6 = (candidate, expectedHash, expectedFile) => {
+  if (!expectedHash && !expectedFile) return false;
+  return (!expectedHash || String(candidate?.stage6Hash || "") === String(expectedHash)) &&
+    (!expectedFile || String(candidate?.stage6File || "") === String(expectedFile));
+};
+
+const sourceCandidateLineageEvidence = ({ refreshRow, protectionRow, ttlMin, nowMs }) => {
+  const expectedStage6Hash = protectionRow?.plannedStage6Hash || null;
+  const expectedStage6File = protectionRow?.plannedStage6File || null;
+  const expectedLineagePresent = Boolean(expectedStage6Hash || expectedStage6File);
+  const candidates = (Array.isArray(refreshRow?.sourceCandidates) ? refreshRow.sourceCandidates : [])
+    .filter((candidate) => candidate?.hasBothPrices === true && candidate?.type !== "broker_children");
+  const matching = expectedLineagePresent
+    ? candidates.filter((candidate) => matchesExpectedStage6(candidate, expectedStage6Hash, expectedStage6File))
+    : [];
+  const freshMatching = matching.filter((candidate) => {
+    const ageMin = ageMinutes(candidate?.generatedAt, nowMs);
+    return ageMin != null && ageMin >= -1 && ageMin <= ttlMin;
+  });
+  return {
+    expectedStage6Hash,
+    expectedStage6File,
+    expectedLineagePresent,
+    candidateCount: candidates.length,
+    matchingCandidateCount: matching.length,
+    freshMatchingCandidateCount: freshMatching.length,
+    matchingTimestampMissingCount: matching.filter((candidate) => !Number.isFinite(Date.parse(String(candidate?.generatedAt || "")))).length,
+    matchingTimestampedCount: matching.filter((candidate) => Number.isFinite(Date.parse(String(candidate?.generatedAt || "")))).length,
+    matchingCandidateTypes: [...new Set(matching.map((candidate) => candidate?.type).filter(Boolean))],
+    matchingCandidateNewestProducedAt: matching
+      .map((candidate) => candidate?.generatedAt || null)
+      .filter(Boolean)
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0] || null
   };
 };
 
@@ -223,13 +268,22 @@ const sourcePreservation = ({ selected, lineage, geometryValid, previousRow, pos
         positionLineageKey
       }
     : null;
-  const prior = previousRow?.sourcePreservation?.source || null;
-  const priorStage6Matches = lineage.expectedStage6Hash
-    ? prior?.stage6Hash === lineage.expectedStage6Hash
-    : lineage.expectedStage6File
-      ? prior?.stage6File === lineage.expectedStage6File
-      : false;
-  const previous = positionLineageKey && prior?.positionLineageKey === positionLineageKey && priorStage6Matches
+  const prior = previousRow?.sourcePreservation?.source || previousRow?.sourcePreservation?.rejectedSource || null;
+  const priorStage6Matches = Boolean(prior && matchesExpectedStage6(
+    prior,
+    lineage.expectedStage6Hash,
+    lineage.expectedStage6File
+  ));
+  const priorRejectionReason = !prior
+    ? null
+    : !positionLineageKey
+      ? "current_position_lineage_missing"
+      : prior?.positionLineageKey !== positionLineageKey
+        ? "prior_position_lineage_key_mismatch"
+        : !priorStage6Matches
+          ? "prior_stage6_identity_mismatch"
+          : null;
+  const previous = !priorRejectionReason
     ? prior
     : null;
   const source = current || previous;
@@ -242,21 +296,20 @@ const sourcePreservation = ({ selected, lineage, geometryValid, previousRow, pos
   return {
     status,
     source,
+    rejectedSource: priorRejectionReason ? prior : null,
+    priorEvidencePresent: Boolean(prior),
+    priorRejectionReason,
     lineageKeyMatchesCurrentPosition: Boolean(
-      source && source.positionLineageKey === positionLineageKey && (
-        lineage.expectedStage6Hash
-          ? source.stage6Hash === lineage.expectedStage6Hash
-          : lineage.expectedStage6File
-            ? source.stage6File === lineage.expectedStage6File
-            : false
-      )
+      source &&
+      source.positionLineageKey === positionLineageKey &&
+      matchesExpectedStage6(source, lineage.expectedStage6Hash, lineage.expectedStage6File)
     ),
     retainedForEvidenceOnly: Boolean(source),
     usedForRepairEligibility: false
   };
 };
 
-const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
+const sourcePrecedenceEvidence = (refreshRow, sourcePriority, candidateLineage) => {
   const rankOf = (type) => {
     const rank = sourcePriority.indexOf(String(type || ""));
     return rank >= 0 ? rank + 1 : sourcePriority.length + 1;
@@ -264,6 +317,8 @@ const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
   const selectedType = refreshRow?.selectedSource?.type || null;
   const ready = (Array.isArray(refreshRow?.sourceCandidates) ? refreshRow.sourceCandidates : [])
     .filter((candidate) => candidate?.fresh === true && candidate?.hasBothPrices === true)
+    .filter((candidate) => candidate?.type === "broker_children" || !candidateLineage?.expectedLineagePresent ||
+      matchesExpectedStage6(candidate, candidateLineage.expectedStage6Hash, candidateLineage.expectedStage6File))
     .sort((a, b) => rankOf(a?.type) - rankOf(b?.type));
   const expectedType = ready[0]?.type || selectedType;
   return {
@@ -272,11 +327,12 @@ const sourcePrecedenceEvidence = (refreshRow, sourcePriority) => {
     selectedRank: selectedType ? rankOf(selectedType) : null,
     expectedType: expectedType || null,
     expectedRank: expectedType ? rankOf(expectedType) : null,
+    currentPositionLineageFiltered: candidateLineage?.expectedLineagePresent === true,
     violation: Boolean(selectedType && expectedType && selectedType !== expectedType)
   };
 };
 
-const recoveryRootCause = ({ status, sourceLineage }) => {
+const recoveryRootCause = ({ status, sourceLineage, candidateLineage, preservation }) => {
   if (status === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH || status === RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY) {
     return null;
   }
@@ -286,8 +342,25 @@ const recoveryRootCause = ({ status, sourceLineage }) => {
   if (status === RECOVERY_STATUSES.RECOVERY_SOURCE_INVALID_GEOMETRY) {
     return SOURCE_ROOT_CAUSES.SOURCE_GEOMETRY_UNUSABLE;
   }
-  if (sourceLineage.dispatchStatus === "MISMATCH") return SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH;
+  if (!candidateLineage.expectedLineagePresent || sourceLineage.dispatchStatus === "EXPECTED_LINEAGE_MISSING") {
+    return SOURCE_ROOT_CAUSES.LIFECYCLE_LINEAGE_MISSING;
+  }
+  if (sourceLineage.dispatchStatus === "MISMATCH" &&
+    ["SOURCE_TIMESTAMP_MISSING", "SOURCE_TTL_EXPIRED"].includes(sourceLineage.freshnessStatus)) {
+    return SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH;
+  }
+  if (preservation?.priorEvidencePresent && preservation?.priorRejectionReason && candidateLineage.candidateCount === 0) {
+    return SOURCE_ROOT_CAUSES.PRESERVATION_CONTRACT_MISMATCH;
+  }
+  if (sourceLineage.freshnessStatus === "SOURCE_TIMESTAMP_MISSING") return SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING;
   if (sourceLineage.freshnessStatus === "SOURCE_TTL_EXPIRED") return SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED;
+  if (candidateLineage.matchingCandidateCount > 0 && candidateLineage.freshMatchingCandidateCount === 0) {
+    if (candidateLineage.matchingTimestampedCount === 0) return SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING;
+    return SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED;
+  }
+  if (candidateLineage.candidateCount > 0 && candidateLineage.matchingCandidateCount === 0) {
+    return SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH;
+  }
   return SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING;
 };
 
@@ -309,14 +382,18 @@ const recoveryDisposition = ({ status, rootCause, selected, sourceLineage, lifec
       ? RECOVERY_DISPOSITIONS.LIFECYCLE_LINEAGE_PROPAGATION_DEFECT
       : RECOVERY_DISPOSITIONS.EXPECTED_STALE_SOURCE_BLOCK;
   }
+  if (rootCause === SOURCE_ROOT_CAUSES.LIFECYCLE_LINEAGE_MISSING) {
+    return RECOVERY_DISPOSITIONS.CURRENT_POSITION_LINEAGE_MISSING;
+  }
+  if (rootCause === SOURCE_ROOT_CAUSES.PRESERVATION_CONTRACT_MISMATCH) {
+    return RECOVERY_DISPOSITIONS.EXPECTED_STALE_SOURCE_BLOCK;
+  }
   if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) {
     if (!geometryValid) return RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE;
-    const lifecycleLineageMatches = lifecycleRow?.lifecycleReady === true && (
-      sourceLineage.expectedStage6Hash
-        ? lifecycleRow?.lifecycleSource?.stage6Hash === sourceLineage.expectedStage6Hash
-        : sourceLineage.expectedStage6File
-          ? lifecycleRow?.lifecycleSource?.stage6File === sourceLineage.expectedStage6File
-          : false
+    const lifecycleLineageMatches = lifecycleRow?.lifecycleReady === true && matchesExpectedStage6(
+      lifecycleRow?.lifecycleSource,
+      sourceLineage.expectedStage6Hash,
+      sourceLineage.expectedStage6File
     );
     return lifecycleLineageMatches
       ? RECOVERY_DISPOSITIONS.REPORT_ONLY_LIFECYCLE_REVALIDATION_AVAILABLE
@@ -333,6 +410,8 @@ const recoveryOwner = ({ blockerDomain, rootCause, disposition }) => {
   if (disposition === RECOVERY_DISPOSITIONS.LIFECYCLE_LINEAGE_PROPAGATION_DEFECT) return "position_lifecycle_guard_source_producer";
   if (disposition === RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE) return "guard_geometry_producer";
   if (rootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) return "stage6_dispatch_lineage";
+  if (rootCause === SOURCE_ROOT_CAUSES.LIFECYCLE_LINEAGE_MISSING) return "position_lifecycle_lineage";
+  if (rootCause === SOURCE_ROOT_CAUSES.PRESERVATION_CONTRACT_MISMATCH) return "guard_source_preservation_contract";
   if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) return "guard_source_freshness";
   if (rootCause === SOURCE_ROOT_CAUSES.STATE_MATERIALIZATION_MISSING) return "guard_source_state_materialization";
   if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_GEOMETRY_UNUSABLE) return "guard_geometry_producer";
@@ -363,6 +442,8 @@ const nextActionForRecovery = (status, rootCause, disposition) => {
   }
   if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED) return "wait_for_fresh_stage6_or_lifecycle_guard_source";
   if (rootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) return "trace_expected_stage6_hash_dispatch_lineage_report_only";
+  if (rootCause === SOURCE_ROOT_CAUSES.LIFECYCLE_LINEAGE_MISSING) return "establish_current_position_stage6_lineage_report_only";
+  if (rootCause === SOURCE_ROOT_CAUSES.PRESERVATION_CONTRACT_MISMATCH) return "reject_mismatched_preserved_source_and_wait_for_current_lineage_source";
   if (rootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING) return "rebuild_missing_guard_source_producer_report_only";
   return "inspect_guard_source_lineage_report_only";
 };
@@ -410,9 +491,9 @@ const sameStage6Identity = (row, selected) => {
   const rowFile = row?.stage6File || row?.latestStage6File || null;
   const selectedHash = selected?.stage6Hash || null;
   const selectedFile = selected?.stage6File || null;
-  if (selectedHash && rowHash) return String(selectedHash) === String(rowHash);
-  if (selectedFile && rowFile) return String(selectedFile) === String(rowFile);
-  return !selectedHash && !selectedFile;
+  if (!selectedHash && !selectedFile) return false;
+  return (!selectedHash || (rowHash && String(selectedHash) === String(rowHash))) &&
+    (!selectedFile || (rowFile && String(selectedFile) === String(rowFile)));
 };
 
 const latestMatchingRow = (rows, symbol, selected, observedAt) => rows
@@ -722,20 +803,16 @@ const stateMaterializationPrerequisites = ({
   };
 };
 
-const ledgerRecordForMaterialization = ({ orderLedger, symbol, stage6Hash, stage6File }) => {
-  const candidates = Object.entries(orderLedger?.orders || {})
-    .filter(([, record]) => asSymbol(record?.symbol) === symbol)
-    .filter(([, record]) => stage6Hash
-      ? String(record?.stage6Hash || "") === String(stage6Hash)
-      : stage6File
-        ? String(record?.stage6File || "") === String(stage6File)
-        : false)
-    .sort((a, b) => {
-      const bAt = Date.parse(String(b[1]?.updatedAt || b[1]?.createdAt || ""));
-      const aAt = Date.parse(String(a[1]?.updatedAt || a[1]?.createdAt || ""));
-      return (Number.isFinite(bAt) ? bAt : 0) - (Number.isFinite(aAt) ? aAt : 0) || a[0].localeCompare(b[0]);
-    });
-  return candidates.length ? { key: candidates[0][0], record: candidates[0][1] } : null;
+const ledgerRecordForMaterialization = ({ orderLedger, symbol, expectedRecordKey, stage6Hash, stage6File }) => {
+  const orders = orderLedger?.orders || {};
+  if (!expectedRecordKey) return null;
+  const record = orders[expectedRecordKey];
+  const identityMatches = Boolean(
+    record &&
+    asSymbol(record?.symbol) === symbol &&
+    matchesExpectedStage6(record, stage6Hash, stage6File)
+  );
+  return identityMatches ? { key: expectedRecordKey, record } : null;
 };
 
 const stateMaterializationPackage = ({
@@ -745,8 +822,11 @@ const stateMaterializationPackage = ({
   repairEligibleNow,
   selected,
   sourceLineage,
+  expectedRecordKey,
   orderLedger,
   orderLedgerFileSha256,
+  orderIdempotency,
+  orderIdempotencyFileSha256,
   idempotencyStatus,
   idempotencyPass,
   ownershipClassification,
@@ -763,6 +843,7 @@ const stateMaterializationPackage = ({
   const current = ledgerRecordForMaterialization({
     orderLedger,
     symbol,
+    expectedRecordKey,
     stage6Hash: sourceLineage.expectedStage6Hash,
     stage6File: sourceLineage.expectedStage6File
   });
@@ -781,14 +862,45 @@ const stateMaterializationPackage = ({
       .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
       .map((field) => ({ field, before: before[field], after: after[field] }))
     : [];
+  const guardValueDiff = proposedDiff.filter((change) => change.field !== "updatedAt");
+  const ledgerIdentityMatches = Boolean(
+    current &&
+    current.record?.idempotencyKey === current.key &&
+    asSymbol(current.record?.symbol) === symbol &&
+    matchesExpectedStage6(current.record, sourceLineage.expectedStage6Hash, sourceLineage.expectedStage6File)
+  );
+  const ledgerFilled = Boolean(current && idempotencyReady(current.record?.brokerStatus || current.record?.status));
+  const selectedIdempotencyRecord = current ? orderIdempotency?.orders?.[current.key] || null : null;
+  const idempotencyIdentityMatches = Boolean(
+    selectedIdempotencyRecord &&
+    asSymbol(selectedIdempotencyRecord?.symbol) === symbol &&
+    matchesExpectedStage6(selectedIdempotencyRecord, sourceLineage.expectedStage6Hash, sourceLineage.expectedStage6File)
+  );
+  const idempotencyFilled = Boolean(
+    selectedIdempotencyRecord && idempotencyReady(selectedIdempotencyRecord?.brokerStatus || selectedIdempotencyRecord?.status)
+  );
+  const boundIdempotencyPass = idempotencyPass && ledgerIdentityMatches && ledgerFilled && idempotencyIdentityMatches && idempotencyFilled;
   const evidenceMissing = [];
   if (!current) evidenceMissing.push("current_order_ledger_record_missing");
-  if (current && proposedDiff.length === 0) evidenceMissing.push("no_guard_state_diff");
+  if (current && guardValueDiff.length === 0) evidenceMissing.push("no_guard_metadata_value_diff");
+  if (current && !ledgerIdentityMatches) evidenceMissing.push("selected_ledger_record_identity_mismatch");
+  if (current && !ledgerFilled) evidenceMissing.push("selected_ledger_record_not_filled");
+  if (current && !selectedIdempotencyRecord) evidenceMissing.push("selected_idempotency_record_missing");
+  if (selectedIdempotencyRecord && !idempotencyIdentityMatches) evidenceMissing.push("selected_idempotency_record_identity_mismatch");
+  if (selectedIdempotencyRecord && !idempotencyFilled) evidenceMissing.push("selected_idempotency_record_not_filled");
+  if (!idempotencyPass) evidenceMissing.push("upstream_idempotency_evidence_blocked");
   const proposalStatus = !current
     ? "BLOCKED_CURRENT_STATE_RECORD_MISSING"
-    : proposedDiff.length === 0
+    : guardValueDiff.length === 0
       ? "BLOCKED_NO_MATERIALIZATION_DIFF"
+      : evidenceMissing.length > 0
+        ? "BLOCKED_EVIDENCE_INCOMPLETE"
       : "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY";
+  const packageBlocker = proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"
+    ? null
+    : evidenceMissing.some((item) => item.includes("idempotency"))
+      ? "package_idempotency_blocked"
+      : "package_evidence_incomplete";
   const backupDir = `${STATE_DIR}/migration-backups/<timestamp>`;
   const currentRecordHash = current ? sha256(JSON.stringify({ key: current.key, record: current.record })) : null;
   const proposedRecordHash = current
@@ -799,6 +911,12 @@ const stateMaterializationPackage = ({
     proposalStatus,
     reportOnly: true,
     selectionContract: {
+      symbol,
+      expectedRecordKey: expectedRecordKey || null,
+      recordKey: current?.key || null,
+      expectedStage6Hash: sourceLineage.expectedStage6Hash,
+      expectedStage6File: sourceLineage.expectedStage6File,
+      selectedSourceType: sourceLineage.sourceType,
       reviewReady: true,
       recoveryDisposition: disposition,
       repairEligibleNow: false,
@@ -821,22 +939,41 @@ const stateMaterializationPackage = ({
       expiresAt: sourceLineage.expiresAt,
       stage6Hash: sourceLineage.stage6Hash,
       stage6File: sourceLineage.stage6File,
+      expectedStage6Hash: sourceLineage.expectedStage6Hash,
+      expectedStage6File: sourceLineage.expectedStage6File,
+      dispatchBasis: sourceLineage.dispatchBasis,
       dispatchStatus: sourceLineage.dispatchStatus,
       positionLineageMatchesCurrentPosition: sourceLineage.positionLineageMatchesCurrentPosition,
       lifecycle: sourceLineage.lifecycle
     },
     materializationFields: [...MATERIALIZATION_FIELDS],
     proposedDiff,
+    guardValueDiff,
     proposedRecordSha256: proposedRecordHash,
     evidence: {
-      idempotencyStatus,
-      idempotencyPass,
+      idempotencyStatus: selectedIdempotencyRecord?.brokerStatus || selectedIdempotencyRecord?.status || idempotencyStatus,
+      idempotencyPass: boundIdempotencyPass,
+      upstreamIdempotencyStatus: idempotencyStatus,
+      upstreamIdempotencyPass: idempotencyPass,
+      selectedLedgerRecord: {
+        recordFound: Boolean(current),
+        identityMatches: ledgerIdentityMatches,
+        filled: ledgerFilled
+      },
+      selectedIdempotencyRecord: {
+        recordFound: Boolean(selectedIdempotencyRecord),
+        recordSha256: selectedIdempotencyRecord ? sha256(JSON.stringify({ key: current?.key, record: selectedIdempotencyRecord })) : null,
+        fileSha256: orderIdempotencyFileSha256,
+        identityMatches: idempotencyIdentityMatches,
+        filled: idempotencyFilled
+      },
       ownershipClassification,
       ownershipPass,
       fillStateStatus,
       fillStatePass
     },
     evidenceMissing,
+    packageBlocker,
     backupPlan: {
       requiredBeforeApply: true,
       backupPathTemplate: `${backupDir}/order-ledger.json.before`,
@@ -868,7 +1005,16 @@ const stateMaterializationPackage = ({
       restoreAtomically: true,
       restoreFrom: `${backupDir}/order-ledger.json.before`,
       preserveFailedStateAt: `${backupDir}/order-ledger.json.failed`,
-      rerunReports: ["performance-dashboard", "position-protection-root-cause-audit", "guard-source-recovery-plan"]
+      rerunReports: [
+        "performance-dashboard",
+        "fill-state-reconciliation-audit",
+        "position-lifecycle-guard-source-plan",
+        "guard-metadata-refresh-plan",
+        "guard-metadata-lineage-audit",
+        "broker-child-order-reconciliation",
+        "position-protection-root-cause-audit",
+        "guard-source-recovery-plan"
+      ]
     },
     requiredApprovalPhrase: REQUIRED_STATE_MATERIALIZATION_APPROVAL,
     approvalScope: "alpha-exec-engine state-only selected dynamic guard-source row; no broker mutation",
@@ -923,6 +1069,8 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reco
     refreshDecision === "BLOCKED_NO_REFRESH_SOURCE" ||
     lineageFreshness === "MISSING_NO_SOURCE" ||
     lineageFreshness === "LINEAGE_MISSING_NO_SOURCE";
+  const timestampMissing = refreshDecision === "BLOCKED_REFRESH_SOURCE_TIMESTAMP_MISSING" ||
+    (refreshRow?.blockers || []).includes("selected_source_timestamp_missing");
   const invalidGeometry = refreshDecision === "BLOCKED_REFRESH_SOURCE_INVALID_GEOMETRY" || protectionRow?.invalidGeometry === true;
   const fillStateConfirmed =
     fillStateRow?.reconciliationDecision === "FILL_STATE_CONFIRMED" &&
@@ -964,6 +1112,19 @@ const rowDecision = ({ refreshRow, protectionRow, lineageRow, fillStateRow, reco
       repairEligibleNow: false,
       methods: ["trace_stage6_stop_target_geometry", "do_not_repair_until_stop_current_target_valid"],
       blockers: ["invalid_guard_geometry"]
+    };
+  }
+  if (timestampMissing) {
+    return {
+      recoveryDecision: "FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE",
+      recoveryReady: false,
+      repairEligibleNow: false,
+      methods: [
+        "fresh_stage6_same_symbol_if_candidate_present",
+        "position_lifecycle_guard_refresh_from_confirmed_fill",
+        "manual_guard_metadata_review_only"
+      ],
+      blockers: ["selected_source_timestamp_missing"]
     };
   }
   if (staleSource) {
@@ -1018,9 +1179,11 @@ const buildRow = ({
   preview,
   sourcePriority,
   orderLedger,
+  orderIdempotency,
   recommendationLedger,
   stage6TradeLoop,
   orderLedgerFileSha256,
+  orderIdempotencyFileSha256,
   generatedAt,
   previousRow,
   refreshReceivedAt,
@@ -1060,7 +1223,7 @@ const buildRow = ({
     selectedStop < selectedCurrent && selectedCurrent < selectedTarget
   );
   const recoverySourceReady = refreshRow?.refreshReady === true && selectedSourceFresh &&
-    selectedSourceGeometryValid && selectedSourceDispatchValid;
+    selectedSourceGeometryValid && selectedSourceDispatchValid && sourceLineage.positionLineageMatchesCurrentPosition;
   const recoveryStatus =
     protectionLane === PROTECTION_LANES.MANUAL_APPROVAL_CANDIDATE && currentSourceFresh && recoverySourceReady
       ? RECOVERY_STATUSES.RECOVERY_SOURCE_READY_REPORT_ONLY
@@ -1112,17 +1275,9 @@ const buildRow = ({
     fillStatePass: fillStateConfirmed,
     currentSourceFresh
   });
+  const candidateLineage = sourceCandidateLineageEvidence({ refreshRow, protectionRow, ttlMin, nowMs });
   const sourceAgeMin = sourceLineage.ageMin;
-  const precedence = sourcePrecedenceEvidence(refreshRow, sourcePriority);
-  const normalizedRootCause = recoveryRootCause({ status: recoveryStatus, sourceLineage });
-  const disposition = recoveryDisposition({
-    status: recoveryStatus,
-    rootCause: normalizedRootCause,
-    selected,
-    sourceLineage,
-    lifecycleRow,
-    geometryValid: selectedSourceGeometryValid
-  });
+  const precedence = sourcePrecedenceEvidence(refreshRow, sourcePriority, candidateLineage);
   const preservation = sourcePreservation({
     selected,
     lineage: sourceLineage,
@@ -1131,6 +1286,20 @@ const buildRow = ({
     positionLineageKey,
     nowMs
   });
+  const normalizedRootCause = recoveryRootCause({
+    status: recoveryStatus,
+    sourceLineage,
+    candidateLineage,
+    preservation
+  });
+  const disposition = recoveryDisposition({
+    status: recoveryStatus,
+    rootCause: normalizedRootCause,
+    selected,
+    sourceLineage,
+    lifecycleRow,
+    geometryValid: selectedSourceGeometryValid
+  });
   const blockerSource =
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_FROM_STAGE6_OR_LIFECYCLE" ||
     decision.recoveryDecision === "FRESH_SOURCE_REQUIRED_NO_DYNAMIC_SOURCE_FOUND" ||
@@ -1138,11 +1307,10 @@ const buildRow = ({
     decision.recoveryDecision === "BLOCKED_UNCLASSIFIED_GUARD_SOURCE_GAP"
       ? [...(refreshRow?.blockers || []), ...decision.blockers]
       : decision.blockers;
-  if (sourceLineage.dispatchStatus === "MISMATCH") blockerSource.push("stage6_dispatch_mismatch");
-  if (["NO_SOURCE", "SOURCE_LINEAGE_MISSING", "EXPECTED_LINEAGE_MISSING"].includes(sourceLineage.dispatchStatus) &&
-      recoveryStatus === RECOVERY_STATUSES.NO_FRESH_SOURCE_AVAILABLE) {
-    blockerSource.push("source_producer_missing");
-  }
+  if (normalizedRootCause === SOURCE_ROOT_CAUSES.STAGE6_DISPATCH_MISMATCH) blockerSource.push("stage6_dispatch_mismatch");
+  if (normalizedRootCause === SOURCE_ROOT_CAUSES.LIFECYCLE_LINEAGE_MISSING) blockerSource.push("lifecycle_lineage_missing");
+  if (normalizedRootCause === SOURCE_ROOT_CAUSES.PRESERVATION_CONTRACT_MISMATCH) blockerSource.push("preservation_contract_mismatch");
+  if (normalizedRootCause === SOURCE_ROOT_CAUSES.SOURCE_PRODUCER_MISSING) blockerSource.push("source_producer_missing");
   const blockerDomain = protectionRow?.blockerDomain || (
     decision.recoveryDecision === "BLOCK_FILL_STATE_RECONCILIATION_FIRST"
       ? "ledger_fill_state"
@@ -1175,8 +1343,11 @@ const buildRow = ({
     repairEligibleNow,
     selected,
     sourceLineage,
+    expectedRecordKey: protectionRow?.plannedLedgerKey || null,
     orderLedger,
     orderLedgerFileSha256,
+    orderIdempotency,
+    orderIdempotencyFileSha256,
     idempotencyStatus,
     idempotencyPass,
     ownershipClassification,
@@ -1243,6 +1414,7 @@ const buildRow = ({
     currentSourceFresh,
     recoverySourceReady,
     sourceLineage,
+    sourceCandidateLineage: candidateLineage,
     sourcePreservation: preservation,
     stateMaterializationRequired: recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED,
     stateMaterializationPrerequisites: materializationPrerequisites,
@@ -1297,7 +1469,7 @@ const buildMarkdown = (report) => {
   lines.push(`- source_root_causes: \`${JSON.stringify(report.summary.sourceRootCauseCounts)}\``);
   lines.push(`- recovery_dispositions: \`${JSON.stringify(report.summary.recoveryDispositionCounts)}\``);
   lines.push(`- materialization_prerequisites: \`rows=${report.summary.materializationPrerequisiteRows} reviewReady=${report.summary.materializationReviewReady} failures=${report.summary.materializationPrerequisiteFailures} unclassified=${report.summary.materializationPrerequisiteUnclassified}\``);
-  lines.push(`- materialization_packages: \`rows=${report.summary.materializationPackageRows} ready=${report.summary.materializationPackagesReady} missing=${report.summary.materializationPackageMissing} evidenceMissing=${report.summary.materializationPackageEvidenceMissing} excludedLeaks=${report.summary.materializationPackageExcludedLaneLeaks}\``);
+  lines.push(`- materialization_packages: \`rows=${report.summary.materializationPackageRows} ready=${report.summary.materializationPackagesReady} missing=${report.summary.materializationPackageMissing} evidenceMissing=${report.summary.materializationPackageEvidenceMissing} readyEvidenceMissing=${report.summary.materializationReadyPackageEvidenceMissing} excludedLeaks=${report.summary.materializationPackageExcludedLaneLeaks}\``);
   lines.push(`- geometry_root_causes: \`${JSON.stringify(report.summary.geometryRootCauseCounts)}\``);
   lines.push(`- geometry_components: \`${JSON.stringify(report.summary.geometryInvalidComponentCounts)}\``);
   lines.push(`- geometry_drift_classifications: \`${JSON.stringify(report.summary.geometryDriftClassificationCounts)}\``);
@@ -1343,10 +1515,13 @@ const main = () => {
   const fillStateReconciliation = readJson(FILES.fillStateReconciliation);
   const brokerChildReconciliation = readJson(FILES.brokerChildReconciliation);
   const orderLedger = readJson(FILES.orderLedger);
+  const orderIdempotency = readJson(FILES.orderIdempotency);
   const recommendationLedger = readJson(FILES.recommendationLedger);
   const stage6TradeLoop = readJson(FILES.stage6TradeLoop);
   const orderLedgerText = fs.existsSync(FILES.orderLedger) ? fs.readFileSync(FILES.orderLedger, "utf8") : null;
   const orderLedgerFileSha256 = orderLedgerText == null ? null : sha256(orderLedgerText);
+  const orderIdempotencyText = fs.existsSync(FILES.orderIdempotency) ? fs.readFileSync(FILES.orderIdempotency, "utf8") : null;
+  const orderIdempotencyFileSha256 = orderIdempotencyText == null ? null : sha256(orderIdempotencyText);
   const preview = readJson(FILES.preview);
   const sourcePriority = Array.isArray(guardRefresh?.config?.sourcePriority) && guardRefresh.config.sourcePriority.length
     ? guardRefresh.config.sourcePriority.map((value) => String(value || "").trim()).filter(Boolean)
@@ -1377,9 +1552,11 @@ const main = () => {
       preview,
       sourcePriority,
       orderLedger,
+      orderIdempotency,
       recommendationLedger,
       stage6TradeLoop,
       orderLedgerFileSha256,
+      orderIdempotencyFileSha256,
       generatedAt,
       previousRow: previousBySymbol.get(symbol) || null,
       refreshReceivedAt,
@@ -1427,8 +1604,19 @@ const main = () => {
     materializationPrerequisiteUnclassified: count(materializationRows, (row) => !row.stateMaterializationPrerequisites),
     materializationPackageRows: materializationPackages.length,
     materializationPackagesReady: count(materializationPackages, (row) => row.stateMaterializationPackage?.proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"),
+    materializationPackagesBlocked: count(materializationPackages, (row) =>
+      MATERIALIZATION_PACKAGE_STATUSES.includes(row.stateMaterializationPackage?.proposalStatus) &&
+      row.stateMaterializationPackage?.proposalStatus !== "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY"
+    ),
+    materializationPackageBlockerCounts: valueCounts(materializationPackages, (row) => row.stateMaterializationPackage?.packageBlocker),
     materializationPackageMissing: count(materializationRows, (row) => row.stateMaterializationPrerequisites?.reviewReady === true && !row.stateMaterializationPackage),
-    materializationPackageEvidenceMissing: count(materializationPackages, (row) => (row.stateMaterializationPackage?.evidenceMissing || []).length > 0),
+    materializationPackageEvidenceMissing: count(materializationPackages, (row) =>
+      (row.stateMaterializationPackage?.evidenceMissing || []).length > 0
+    ),
+    materializationReadyPackageEvidenceMissing: count(materializationPackages, (row) =>
+      row.stateMaterializationPackage?.proposalStatus === "REPORT_ONLY_STATE_MATERIALIZATION_PACKAGE_READY" &&
+      (row.stateMaterializationPackage?.evidenceMissing || []).length > 0
+    ),
     materializationPackageExcludedLaneLeaks: count(rows, (row) => row.stateMaterializationPackage && !(
       row.stateMaterializationPrerequisites?.reviewReady === true &&
       row.recoveryDisposition === RECOVERY_DISPOSITIONS.FRESH_SOURCE_MATERIALIZATION_REQUIRED &&
@@ -1500,7 +1688,7 @@ const main = () => {
       && summary.producerMissingOwnershipLaneLeaks === 0,
     materializationPrerequisitesClassified: summary.materializationPrerequisiteUnclassified === 0,
     materializationPackagesComplete: summary.materializationPackageMissing === 0 &&
-      summary.materializationPackageEvidenceMissing === 0 &&
+      summary.materializationReadyPackageEvidenceMissing === 0 &&
       summary.materializationPackageExcludedLaneLeaks === 0 &&
       summary.materializationPackageDiffOutsideGuardFields === 0 &&
       summary.materializationPackageUnclassified === 0,
@@ -1513,7 +1701,7 @@ const main = () => {
     summary.repairEligibleWithoutOwnershipPass > 0 || summary.repairEligibleWithoutFillStatePass > 0 ||
     summary.dispatchMismatchRepairEligible > 0 || summary.ttlExpiredClassifiedCurrentSourceFresh > 0 ||
     summary.producerMissingOwnershipLaneLeaks > 0 || summary.materializationPrerequisiteUnclassified > 0 ||
-    summary.materializationPackageMissing > 0 || summary.materializationPackageEvidenceMissing > 0 ||
+    summary.materializationPackageMissing > 0 || summary.materializationReadyPackageEvidenceMissing > 0 ||
     summary.materializationPackageExcludedLaneLeaks > 0 || summary.materializationPackageDiffOutsideGuardFields > 0 ||
     summary.materializationPackageUnclassified > 0 ||
     summary.geometryRootCauseUnclassified > 0 || summary.geometryDriftUnclassified > 0 ||

@@ -104,4 +104,42 @@ assert.equal(report.summary.lineageMismatchSourcesRejected, 1);
 assert.equal(report.summary.brokerMutationAttempted, false);
 assert.equal(report.summary.stateMutationAttempted, false);
 
+position.plannedStage6File = "position-source-file-mismatch.json";
+writeJson("performance-dashboard.json", {
+  generatedAt: now,
+  live: { available: true, positions: [position] }
+});
+writeJson("position-protection-root-cause-audit.json", {
+  rows: [{
+    symbol: "FIX",
+    ownershipClassification: "SIDECAR_MANAGED_FILLED",
+    guardMetadataStale: true,
+    plannedStage6Hash: "current-position-hash",
+    plannedStage6File: "current-position-stage6.json",
+    fillStateReconciliation: { status: "confirmed_filled" }
+  }]
+});
+writeJson("broker-child-order-reconciliation.json", {
+  rows: [{
+    symbol: "FIX",
+    qty: 1,
+    currentPrice: 100,
+    brokerStopPresent: false,
+    brokerTargetPresent: false,
+    plannedStopPrice: 90,
+    plannedTargetPrice: 120,
+    plannedLedgerUpdatedAt: stale,
+    plannedStage6Hash: "current-position-hash",
+    plannedStage6File: "broker-source-file-mismatch.json"
+  }]
+});
+execFileSync(process.execPath, ["scripts/build-position-lifecycle-guard-source-plan.mjs"], {
+  env: { ...process.env, POSITION_LIFECYCLE_GUARD_SOURCE_STATE_DIR: stateDir },
+  stdio: "pipe"
+});
+const fileMismatchReport = JSON.parse(fs.readFileSync(path.join(stateDir, "position-lifecycle-guard-source-plan.json"), "utf8"));
+assert.equal(fileMismatchReport.rows[0]?.lifecycleReady, false);
+assert.equal(fileMismatchReport.rows[0]?.lineageDecision, "SOURCE_LINEAGE_MISMATCH");
+assert.equal(fileMismatchReport.rows[0]?.blockers?.includes("no_existing_guard_source_with_stop_target"), true);
+
 console.log("[POSITION_LIFECYCLE_GUARD_SOURCE_LINEAGE_TEST] pass");

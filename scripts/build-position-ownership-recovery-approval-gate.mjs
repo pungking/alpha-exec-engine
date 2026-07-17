@@ -36,9 +36,22 @@ const approvalPhrase = String(process.env.POSITION_OWNERSHIP_RECOVERY_CONFIRMATI
 const approvalProvided = approvalPhrase === REQUIRED_STATE_APPROVAL_PHRASE;
 const decision = readJson(DECISION_PATH);
 const rows = Array.isArray(decision?.rows) ? decision.rows : [];
-const stateReadyRows = rows.filter((row) => row?.stateRecoveryReviewReady === true);
+const stateReadyRows = rows.filter((row) =>
+  row?.stateRecoveryReviewReady === true &&
+  row?.repairEligibleAfterRecovery === true &&
+  row?.canonicalGuardSourceRepairEligibleNow === true
+);
 const externalReviewRows = rows.filter((row) => row?.manualExternalAdoptionReview === true);
 const doNotAutoRecoverRows = rows.filter((row) => String(row?.ownershipRecoveryDecision || "").startsWith("DO_NOT"));
+const canonicalGuardSourceBlockRows = doNotAutoRecoverRows.filter((row) =>
+  String(row?.ownershipRecoveryDecision || "").startsWith("DO_NOT_RECOVER_CANONICAL_GUARD_SOURCE_RECOVERY_") ||
+  (row?.ownershipRecoveryDecision === "DO_NOT_RECOVER_NO_FRESH_GUARD_SOURCE" &&
+    row?.manualExternalAdoptionReview !== true &&
+    row?.ownershipClassification !== "EXTERNAL_OR_MANUAL_POSITION")
+);
+const externalDoNotAutoRecoverRows = doNotAutoRecoverRows.filter((row) =>
+  row?.manualExternalAdoptionReview === true || row?.ownershipClassification === "EXTERNAL_OR_MANUAL_POSITION"
+);
 const alreadyProtectedRows = rows.filter((row) => row?.ownershipRecoveryDecision === "NO_RECOVERY_ALREADY_PROTECTED");
 const unsafeDecision =
   decision?.executionPolicy?.brokerMutationAllowed === true ||
@@ -59,7 +72,8 @@ addGate(gates, "no_broker_mutation_in_gate", "PASS", "approval gate never calls 
 addGate(gates, "no_state_mutation_in_gate", "PASS", "approval gate never applies ledger/metadata changes");
 addGate(gates, "multi_submit_lane_forbidden", "PASS", "multi submit is not implemented or authorized by this gate");
 addGate(gates, "state_recovery_candidates_present", stateReadyRows.length > 0 ? "PASS" : "INFO", `stateReady=${stateReadyRows.length}`);
-addGate(gates, "external_positions_not_auto_adopted", externalReviewRows.length === 0 && doNotAutoRecoverRows.length === 0 ? "PASS" : "BLOCK", `externalAdoptionReview=${externalReviewRows.length} doNotAutoRecover=${doNotAutoRecoverRows.length}`);
+addGate(gates, "canonical_guard_source_recovery_eligible", canonicalGuardSourceBlockRows.length === 0 ? "PASS" : "BLOCK", `canonicalGuardSourceBlocked=${canonicalGuardSourceBlockRows.length}`);
+addGate(gates, "external_positions_not_auto_adopted", externalReviewRows.length === 0 && externalDoNotAutoRecoverRows.length === 0 ? "PASS" : "BLOCK", `externalAdoptionReview=${externalReviewRows.length} doNotAutoRecover=${externalDoNotAutoRecoverRows.length}`);
 addGate(gates, "state_approval_phrase", stateReadyRows.length > 0 && approvalProvided ? "PASS" : stateReadyRows.length > 0 ? "BLOCK" : "INFO", `approvalProvided=${approvalProvided}; required=${REQUIRED_STATE_APPROVAL_PHRASE}`);
 addGate(gates, "backup_diff_audit_post_verify_required", stateReadyRows.length > 0 ? "BLOCK" : "INFO", "separate state migration must provide backup, diff, audit record, and post-verify before applying any state change");
 
@@ -70,7 +84,11 @@ if (unsafeDecision) {
   overall = "blocked_unsafe_decision_artifact";
   reviewDecision = "BLOCK_UNSAFE_DECISION_ARTIFACT";
   recommendedAction = "STOP_AND_INSPECT_DECISION_ARTIFACT";
-} else if (externalReviewRows.length > 0 || doNotAutoRecoverRows.length > 0) {
+} else if (canonicalGuardSourceBlockRows.length > 0) {
+  overall = "blocked_canonical_guard_source_recovery_required";
+  reviewDecision = "CANONICAL_GUARD_SOURCE_RECOVERY_REQUIRED";
+  recommendedAction = "REBUILD_CANONICAL_GUARD_SOURCE_RECOVERY_EVIDENCE_REPORT_ONLY";
+} else if (externalReviewRows.length > 0 || externalDoNotAutoRecoverRows.length > 0) {
   overall = "blocked_external_adoption_evidence_required";
   reviewDecision = "DO_NOT_AUTO_RECOVER_EXTERNAL_OR_MANUAL_POSITION";
   recommendedAction = "REQUIRE_OWNERSHIP_PROOF_AND_FRESH_GUARD_SOURCE";

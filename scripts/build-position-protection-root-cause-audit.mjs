@@ -13,6 +13,7 @@ const ORDER_STATE_PATH = `${STATE_DIR}/order-state-consistency-report.json`;
 const ORDER_LEDGER_PATH = `${STATE_DIR}/order-ledger.json`;
 const IDEMPOTENCY_PATH = `${STATE_DIR}/order-idempotency.json`;
 const FILLABILITY_PATH = `${STATE_DIR}/fillability-report.json`;
+const FILL_STATE_RECONCILIATION_PATH = `${STATE_DIR}/fill-state-reconciliation-audit.json`;
 const PREVIEW_PATH = `${STATE_DIR}/last-dry-exec-preview.json`;
 const LIFECYCLE_GUARD_SOURCE_PATH = `${STATE_DIR}/position-lifecycle-guard-source-plan.json`;
 const OUTPUT_JSON = `${STATE_DIR}/position-protection-root-cause-audit.json`;
@@ -100,21 +101,18 @@ const indexBySymbol = (rows) => {
   return out;
 };
 
-const findLedgerRow = (ledger, symbol) => {
+const findStateRow = (state, symbol, preferredKey, observedAt) => {
   const target = asSymbol(symbol);
-  for (const row of Object.values(ledger?.orders || {})) {
-    if (asSymbol(row?.symbol) === target) return row;
-  }
-  return null;
+  const rows = state?.orders || {};
+  if (!preferredKey) return null;
+  return rows[preferredKey] && asSymbol(rows[preferredKey]?.symbol) === target ? rows[preferredKey] : null;
 };
 
-const findIdempotencyRow = (idempotency, symbol) => {
-  const target = asSymbol(symbol);
-  for (const row of Object.values(idempotency?.orders || {})) {
-    if (asSymbol(row?.symbol) === target) return row;
-  }
-  return null;
-};
+const findLedgerRow = (ledger, symbol, preferredKey) =>
+  findStateRow(ledger, symbol, preferredKey, (row) => row?.updatedAt || row?.createdAt);
+
+const findIdempotencyRow = (idempotency, symbol, preferredKey) =>
+  findStateRow(idempotency, symbol, preferredKey, (row) => row?.brokerCheckedAt || row?.lastSeenAt || row?.firstSeenAt);
 
 const findFillabilityRow = (fillability, symbol) =>
   (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === asSymbol(symbol)) || null;
@@ -303,8 +301,9 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     lifecycleOriginalGuardSource: effectiveGuard.originalSourceType || null,
     lifecycleOriginalGeneratedAt: effectiveGuard.originalGeneratedAt || null,
     staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
-    plannedStage6Hash: position?.plannedStage6Hash || reconciliationRow?.plannedStage6Hash || ledgerRow?.stage6Hash || null,
-    plannedStage6File: position?.plannedStage6File || reconciliationRow?.plannedStage6File || ledgerRow?.stage6File || null,
+    plannedStage6Hash: ledgerRow?.stage6Hash || reconciliationRow?.plannedStage6Hash || position?.plannedStage6Hash || null,
+    plannedStage6File: ledgerRow?.stage6File || reconciliationRow?.plannedStage6File || position?.plannedStage6File || null,
+    plannedLedgerKey: ledgerRow?.idempotencyKey || position?.plannedLedgerKey || reconciliationRow?.plannedLedgerKey || null,
     plannedLedgerUpdatedAt,
     metadataAgeMin,
     guardMetadataMaxAgeMin: config.guardMetadataMaxAgeMin,
@@ -402,6 +401,7 @@ const main = () => {
   const ledger = readJson(ORDER_LEDGER_PATH);
   const idempotency = readJson(IDEMPOTENCY_PATH);
   const fillability = readJson(FILLABILITY_PATH);
+  const fillStateReconciliation = readJson(FILL_STATE_RECONCILIATION_PATH);
   const preview = readJson(PREVIEW_PATH);
   const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
   const config = protectionConfig();
@@ -409,17 +409,21 @@ const main = () => {
   const reconciliationBySymbol = indexBySymbol(reconciliation?.rows);
   const orderStateBySymbol = indexBySymbol(orderState?.rows);
   const lifecycleBySymbol = indexBySymbol(lifecyclePlan?.rows);
+  const fillStateBySymbol = indexBySymbol(fillStateReconciliation?.rows);
   const positions = Array.isArray(performance?.live?.positions) ? performance.live.positions : [];
   const rows = positions
     .filter((row) => (toNum(row?.qty) ?? 0) > 0)
     .map((position) => {
       const symbol = asSymbol(position?.symbol);
+      const fillStateRow = fillStateBySymbol.get(symbol) || null;
+      const ledgerKey = fillStateRow?.ledger?.key || position?.plannedLedgerKey || null;
+      const idempotencyKey = fillStateRow?.idempotency?.key || ledgerKey;
       return classifyRow({
         position,
         reconciliationRow: reconciliationBySymbol.get(symbol) || null,
         orderStateRow: orderStateBySymbol.get(symbol) || null,
-        ledgerRow: findLedgerRow(ledger, symbol),
-        idempotencyRow: findIdempotencyRow(idempotency, symbol),
+        ledgerRow: findLedgerRow(ledger, symbol, ledgerKey),
+        idempotencyRow: findIdempotencyRow(idempotency, symbol, idempotencyKey),
         fillabilityRow: findFillabilityRow(fillability, symbol),
         lifecycleRow: lifecycleBySymbol.get(symbol) || null,
         performanceGeneratedAt: performance?.generatedAt || null,

@@ -96,9 +96,9 @@ const hasGuardPrices = (source) => source?.stopPrice != null && source?.targetPr
 
 const matchesPositionLineage = (source, expectedHash, expectedFile) => {
   if (!hasGuardPrices(source)) return false;
-  if (expectedHash) return Boolean(source?.stage6Hash) && String(source.stage6Hash) === String(expectedHash);
-  if (expectedFile) return Boolean(source?.stage6File) && String(source.stage6File) === String(expectedFile);
-  return false;
+  if (!expectedHash && !expectedFile) return false;
+  return (!expectedHash || (Boolean(source?.stage6Hash) && String(source.stage6Hash) === String(expectedHash))) &&
+    (!expectedFile || (Boolean(source?.stage6File) && String(source.stage6File) === String(expectedFile)));
 };
 
 const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow, generatedAt, performanceAgeMin }) => {
@@ -108,8 +108,8 @@ const buildRow = ({ position, brokerRow, protectionRow, refreshRow, fillStateRow
   const brokerStopPresent = position?.brokerStopPresent === true || refreshRow?.broker?.stopPresent === true || brokerRow?.brokerStopPresent === true;
   const brokerTargetPresent = position?.brokerTargetPresent === true || refreshRow?.broker?.targetPresent === true || brokerRow?.brokerTargetPresent === true;
   const selectedSource = sourceFromRefresh(refreshRow);
-  const expectedStage6Hash = position?.plannedStage6Hash || brokerRow?.plannedStage6Hash || null;
-  const expectedStage6File = position?.plannedStage6File || brokerRow?.plannedStage6File || null;
+  const expectedStage6Hash = protectionRow?.plannedStage6Hash || position?.plannedStage6Hash || brokerRow?.plannedStage6Hash || null;
+  const expectedStage6File = protectionRow?.plannedStage6File || position?.plannedStage6File || brokerRow?.plannedStage6File || null;
   const positionSource = {
     type: position?.plannedStopSource || position?.plannedTargetSource || "performance_dashboard_planned_guard",
     stopPrice: toNum(position?.plannedStopPrice ?? position?.stopPrice),
