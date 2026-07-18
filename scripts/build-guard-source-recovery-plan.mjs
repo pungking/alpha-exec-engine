@@ -52,6 +52,13 @@ const round = (value, digits = 2) => {
   const n = toNum(value);
   return n == null ? null : Number(n.toFixed(digits));
 };
+const roundUp = (value, digits = 4) => {
+  const n = toNum(value);
+  if (n == null) return null;
+  const factor = 10 ** digits;
+  const floatNoise = Number.EPSILON * Math.max(1, Math.abs(n)) * 4;
+  return Math.ceil((n - floatNoise) * factor) / factor;
+};
 const sha256 = (value) => crypto.createHash("sha256").update(String(value ?? ""), "utf8").digest("hex");
 const MATERIALIZATION_FIELDS = Object.freeze([
   "stopLossPrice",
@@ -553,6 +560,141 @@ const priceGeometry = ({ stopPrice, currentPrice, targetPrice }) => {
   };
 };
 
+const guardValueProposalEvidence = ({ sourceGeometry, evaluationGeometry, sourceLineage, preview }) => {
+  const currentPrice = toNum(evaluationGeometry?.currentPrice);
+  const retainedStopPrice = toNum(evaluationGeometry?.stopPrice);
+  const previousTargetPrice = toNum(evaluationGeometry?.targetPrice);
+  const minRiskReward = toNum(preview?.entryPricePolicy?.minRr);
+  const sourceRiskReward = toNum(sourceGeometry?.riskReward);
+  const requiredRiskRewardCandidates = [minRiskReward, sourceRiskReward]
+    .filter((value) => value != null && value > 0);
+  const requiredRiskReward = requiredRiskRewardCandidates.length
+    ? Math.max(...requiredRiskRewardCandidates)
+    : null;
+  const requiredTargetRaw = currentPrice != null && retainedStopPrice != null && requiredRiskReward != null && currentPrice > retainedStopPrice
+    ? currentPrice + (requiredRiskReward * (currentPrice - retainedStopPrice))
+    : null;
+  const requiredTargetPrice = roundUp(requiredTargetRaw, 4);
+  const resultingGeometry = requiredTargetPrice == null
+    ? null
+    : priceGeometry({ stopPrice: retainedStopPrice, currentPrice, targetPrice: requiredTargetPrice });
+  const evidenceMissing = [
+    ["current_price", currentPrice],
+    ["retained_stop_price", retainedStopPrice],
+    ["previous_target_price", previousTargetPrice],
+    ["required_risk_reward", requiredRiskReward],
+    ["required_target_price", requiredTargetPrice]
+  ].filter(([, value]) => value == null).map(([field]) => field);
+  const guardValueDiff = [];
+  if (retainedStopPrice != null && retainedStopPrice !== toNum(sourceGeometry?.stopPrice)) {
+    guardValueDiff.push({ field: "stopLossPrice", before: toNum(sourceGeometry?.stopPrice), after: retainedStopPrice });
+  }
+  if (requiredTargetPrice != null && requiredTargetPrice !== previousTargetPrice) {
+    guardValueDiff.push({ field: "takeProfitPrice", before: previousTargetPrice, after: requiredTargetPrice });
+  }
+  const evidenceComplete = evidenceMissing.length === 0 && resultingGeometry?.valid === true && guardValueDiff.length > 0;
+  return {
+    status: evidenceComplete
+      ? "REPORT_ONLY_GUARD_VALUE_PROPOSAL_READY_FOR_PRODUCER_REVIEW"
+      : "REPORT_ONLY_GUARD_VALUE_PROPOSAL_EVIDENCE_INCOMPLETE",
+    proposalKind: "minimum_risk_geometry_floor_not_alpha_target",
+    policy: {
+      minRiskReward,
+      minRiskRewardSource: minRiskReward == null ? null : "last_dry_exec_preview.entryPricePolicy.minRr",
+      sourceRiskReward,
+      requiredRiskReward
+    },
+    inputs: {
+      currentPrice,
+      retainedStopPrice,
+      previousTargetPrice,
+      sourceProducedAt: sourceLineage?.producedAt || null,
+      sourceExpiresAt: sourceLineage?.expiresAt || null,
+      sourceFreshAtEvaluation: sourceLineage?.freshAtEvaluation === true,
+      sourceLineageMatchesCurrentPosition: sourceLineage?.positionLineageMatchesCurrentPosition === true
+    },
+    computedGuardValues: requiredTargetPrice == null
+      ? null
+      : { stopLossPrice: retainedStopPrice, takeProfitPrice: requiredTargetPrice },
+    computation: {
+      formula: "requiredTarget=currentPrice+requiredRiskReward*(currentPrice-retainedStopPrice)",
+      rounding: "ceil_4_decimal_report_only",
+      requiredTargetRaw: round(requiredTargetRaw, 8)
+    },
+    guardValueDiff,
+    resultingGeometry,
+    evidenceComplete,
+    evidenceMissing,
+    requiresFreshProducerValidation: true,
+    eligibleForStateMaterialization: false,
+    eligibleForBrokerRepair: false,
+    brokerMutationAllowed: false,
+    stateMutationAllowed: false
+  };
+};
+
+const noRepairReleaseContract = ({
+  sourceLineage,
+  evaluationGeometry,
+  lifecycleTransform,
+  idempotencyPass,
+  ownershipPass,
+  fillStatePass,
+  preview
+}) => {
+  const minRiskReward = toNum(preview?.entryPricePolicy?.minRr);
+  const actualGuardValueDiffPresent = lifecycleTransform?.changed === true;
+  const releaseConditions = {
+    freshCurrentPositionCompatibleSource: sourceLineage?.freshAtEvaluation === true &&
+      sourceLineage?.positionLineageMatchesCurrentPosition === true,
+    sourceTtlValid: sourceLineage?.freshAtEvaluation === true,
+    sourceLineageMatchesCurrentPosition: sourceLineage?.positionLineageMatchesCurrentPosition === true,
+    stopBelowCurrent: evaluationGeometry?.stopBelowCurrent === true,
+    targetAboveCurrent: evaluationGeometry?.targetAboveCurrent === true,
+    targetAboveStop: evaluationGeometry?.targetAboveStop === true,
+    riskRewardMeetsFloor: minRiskReward != null && evaluationGeometry?.riskReward != null &&
+      evaluationGeometry.riskReward >= minRiskReward,
+    idempotencyPass: idempotencyPass === true,
+    ownershipPass: ownershipPass === true,
+    fillStatePass: fillStatePass === true,
+    actualGuardValueDiffPresent
+  };
+  const blockerByCondition = {
+    freshCurrentPositionCompatibleSource: "fresh_current_position_compatible_source_required",
+    sourceTtlValid: "source_ttl_valid_required",
+    sourceLineageMatchesCurrentPosition: "source_lineage_match_required",
+    stopBelowCurrent: "stop_not_below_current",
+    targetAboveCurrent: "target_not_above_current",
+    targetAboveStop: "target_not_above_stop",
+    riskRewardMeetsFloor: "risk_reward_floor_not_met_or_unverifiable",
+    idempotencyPass: "idempotency_pass_required",
+    ownershipPass: "ownership_proof_required",
+    fillStatePass: "fill_state_confirmation_required",
+    actualGuardValueDiffPresent: "actual_guard_value_diff_required"
+  };
+  const blockedBy = Object.entries(releaseConditions)
+    .filter(([, pass]) => pass !== true)
+    .map(([condition]) => blockerByCondition[condition]);
+  const releaseReadyForReportOnlyReevaluation = blockedBy.length === 0;
+  return {
+    status: releaseReadyForReportOnlyReevaluation
+      ? "NO_REPAIR_RELEASE_REEVALUATION_READY_REPORT_ONLY"
+      : "NO_REPAIR_RELEASE_BLOCKED",
+    releaseVerdict: releaseReadyForReportOnlyReevaluation
+      ? "REVIEW_FRESH_GEOMETRY_REPORT_ONLY"
+      : "REMAIN_NO_REPAIR",
+    minRiskReward,
+    releaseConditions,
+    blockedBy,
+    recheckTrigger: "fresh_current_position_guard_source_with_changed_guard_values",
+    releaseReadyForReportOnlyReevaluation,
+    eligibleForStateMaterialization: false,
+    eligibleForBrokerRepair: false,
+    brokerMutationAllowed: false,
+    stateMutationAllowed: false
+  };
+};
+
 const sourceSnapshot = ({ symbol, selected, sourceLineage, recommendationLedger, stage6TradeLoop, orderLedger, ttlMin }) => {
   const evidence = sourceEvidenceRecord({ symbol, selected, recommendationLedger, stage6TradeLoop, orderLedger });
   const row = evidence?.row || null;
@@ -648,7 +790,11 @@ const geometryDriftAudit = ({
   stage6TradeLoop,
   orderLedger,
   ttlMin,
-  recoveryGeometry
+  recoveryGeometry,
+  preview,
+  idempotencyPass,
+  ownershipPass,
+  fillStatePass
 }) => {
   if (disposition !== RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE) return null;
   const source = sourceSnapshot({ symbol, selected, sourceLineage, recommendationLedger, stage6TradeLoop, orderLedger, ttlMin });
@@ -708,6 +854,22 @@ const geometryDriftAudit = ({
     classification = GEOMETRY_DRIFT_CLASSIFICATIONS.SOURCE_GEOMETRY_EVIDENCE_MISSING;
     if (!missingCore.length) missingCore.push("attributable_geometry_transition");
   }
+  const recalibrationEvidence = classification === GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE &&
+    evaluationGeometry.stopBelowCurrent === true && evaluationGeometry.targetAboveCurrent === false
+    ? guardValueProposalEvidence({ sourceGeometry, evaluationGeometry, sourceLineage, preview })
+    : null;
+  const releaseContract = classification === GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE &&
+    evaluationGeometry.stopBelowCurrent === false
+    ? noRepairReleaseContract({
+        sourceLineage,
+        evaluationGeometry,
+        lifecycleTransform,
+        idempotencyPass,
+        ownershipPass,
+        fillStatePass,
+        preview
+      })
+    : null;
   const currentPriceDriftResolution = classification === GEOMETRY_DRIFT_CLASSIFICATIONS.CURRENT_PRICE_DRIFT_AFTER_VALID_SOURCE
     ? !evaluationGeometry.stopBelowCurrent
       ? {
@@ -716,7 +878,9 @@ const geometryDriftAudit = ({
           noRepairUntilFreshGeometry: true,
           reason: "stop_not_below_current",
           owner: "position_risk_review",
-          nextAction: "keep_no_repair_route_to_position_risk_review"
+          nextAction: "keep_no_repair_route_to_position_risk_review",
+          guardValueProposalEvidence: null,
+          noRepairReleaseContract: releaseContract
         }
       : !evaluationGeometry.targetAboveCurrent
         ? {
@@ -725,7 +889,9 @@ const geometryDriftAudit = ({
             noRepairUntilFreshGeometry: true,
             reason: "target_not_above_current",
             owner: "guard_geometry_producer",
-            nextAction: "request_current_position_guard_recalibration_report_only"
+            nextAction: "request_current_position_guard_recalibration_report_only",
+            guardValueProposalEvidence: recalibrationEvidence,
+            noRepairReleaseContract: null
           }
         : {
             status: "NO_REPAIR_CURRENT_GEOMETRY_INVALID",
@@ -733,7 +899,9 @@ const geometryDriftAudit = ({
             noRepairUntilFreshGeometry: true,
             reason: "current_geometry_invalid",
             owner: "position_risk_review",
-            nextAction: "keep_no_repair_route_to_position_risk_review"
+            nextAction: "keep_no_repair_route_to_position_risk_review",
+            guardValueProposalEvidence: null,
+            noRepairReleaseContract: null
           }
     : null;
   const contract = {
@@ -1362,7 +1530,11 @@ const buildRow = ({
     stage6TradeLoop,
     orderLedger,
     ttlMin,
-    recoveryGeometry
+    recoveryGeometry,
+    preview,
+    idempotencyPass,
+    ownershipPass,
+    fillStatePass: fillStateConfirmed
   });
   const lifecycleRefreshApplies = disposition === RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE &&
     normalizedRootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED &&
@@ -1529,15 +1701,18 @@ const buildMarkdown = (report) => {
   lines.push(`- geometry_components: \`${JSON.stringify(report.summary.geometryInvalidComponentCounts)}\``);
   lines.push(`- geometry_drift_classifications: \`${JSON.stringify(report.summary.geometryDriftClassificationCounts)}\``);
   lines.push(`- geometry_drift_owners: \`${JSON.stringify(report.summary.geometryDriftOwnerCounts)}\``);
+  lines.push(`- guard_recalibration_proposals: \`rows=${report.summary.guardRecalibrationProposalRows} ready=${report.summary.guardRecalibrationProposalReady} unsafe=${report.summary.guardRecalibrationProposalUnsafeEligibility}\``);
+  lines.push(`- no_repair_release_contracts: \`rows=${report.summary.noRepairReleaseContractRows} blocked=${report.summary.noRepairReleaseBlocked} missing=${report.summary.noRepairReleaseContractMissing} unsafe=${report.summary.noRepairReleaseUnsafeEligibility}\``);
   lines.push(`- source_preservation: \`${JSON.stringify(report.summary.sourcePreservationStatusCounts)}\``);
   lines.push(`- fresh_source_status_counts: \`${JSON.stringify(report.summary.freshSourceRecoveryStatusCounts)}\``);
   lines.push(`- blocker_count_consistency: \`${report.classificationConsistency.blockerCountMatchesRootCause ? "pass" : "fail"}\``);
   lines.push("- safety: `report-only; no broker mutation; no state mutation`");
-  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Geometry Drift | Evidence | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Package | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Symbol | Lane | Recovery Status | Root Cause | Disposition | Owner | Geometry Drift | Drift Resolution | Guard Proposal | No-Repair Release | Evidence | Domain | Source | Produced / Received | TTL / Dispatch | Preservation | Current Fresh | Recovery Fresh | Materialize | Materialization Evidence | Package | Geometry | Geometry Causes | Idempotency | Repair Eligible | Next Action |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const row of report.rows.slice(0, 50)) {
+    const driftResolution = row.geometryDriftAudit?.currentPriceDriftResolution;
     lines.push(
-      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.geometryDriftAudit?.geometryDriftClassification || "N/A"} | ${row.geometryDriftAudit?.evidenceCompleteness || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.stateMaterializationPackage?.proposalStatus || "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
+      `| ${row.symbol || "N/A"} | ${row.protectionLane || "N/A"} | ${row.recoveryStatus} | ${row.recoveryRootCause || "none"} | ${row.recoveryDisposition || "N/A"} | ${row.recoveryOwner || "N/A"} | ${row.geometryDriftAudit?.geometryDriftClassification || "N/A"} | ${driftResolution?.status || "N/A"} | ${driftResolution?.guardValueProposalEvidence?.status || "N/A"} | ${driftResolution?.noRepairReleaseContract?.status || "N/A"} | ${row.geometryDriftAudit?.evidenceCompleteness || "N/A"} | ${row.blockerDomain || "N/A"} | ${row.selectedSource?.type || "N/A"} | ${row.sourceLineage.producedAt || "N/A"} / ${row.sourceLineage.receivedAt || "N/A"} | ${row.sourceLineage.ttlMin}m / ${row.sourceLineage.dispatchStatus} | ${row.sourcePreservation.status} | ${row.currentSourceFresh ? "yes" : "no"} | ${row.recoverySourceFreshness} | ${row.stateMaterializationRequired ? "yes" : "no"} | ${row.stateMaterializationPrerequisites ? `${row.stateMaterializationPrerequisites.reviewReady ? "review_ready" : "blocked"}:${row.stateMaterializationPrerequisites.missingEvidence.join(",")}` : "N/A"} | ${row.stateMaterializationPackage?.proposalStatus || "N/A"} | ${row.recoveryGeometry.valid ? "valid" : "invalid"} | ${row.recoveryGeometry.rootCauses.join(",") || "none"} | ${row.idempotencyStatus}/${row.idempotencyPass ? "pass" : "block"} | ${row.repairEligibleNow ? "yes" : "no"} | ${row.nextAction} |`
     );
   }
   lines.push("");
@@ -1623,6 +1798,12 @@ const main = () => {
   const materializationRows = rows.filter((row) => row.recoveryStatus === RECOVERY_STATUSES.RECOVERY_SOURCE_MATERIALIZATION_REQUIRED);
   const materializationPackages = rows.filter((row) => row.stateMaterializationPackage);
   const geometryRootCauseRows = rows.filter((row) => row.recoveryDisposition === RECOVERY_DISPOSITIONS.SOURCE_GEOMETRY_UNUSABLE);
+  const guardRecalibrationRows = geometryRootCauseRows.filter((row) =>
+    row.geometryDriftAudit?.currentPriceDriftResolution?.status === "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY"
+  );
+  const noRepairStopBreachedRows = geometryRootCauseRows.filter((row) =>
+    row.geometryDriftAudit?.currentPriceDriftResolution?.status === "NO_REPAIR_STOP_BREACHED_POSITION_RISK_REVIEW"
+  );
   const lifecycleRefreshRows = freshSourceRows.filter((row) =>
     row.recoveryDisposition === RECOVERY_DISPOSITIONS.NO_CURRENT_SOURCE_AVAILABLE &&
     row.recoveryRootCause === SOURCE_ROOT_CAUSES.SOURCE_TTL_EXPIRED
@@ -1711,6 +1892,43 @@ const main = () => {
     geometryDriftEvidenceMissing: count(geometryRootCauseRows, (row) =>
       row.geometryDriftAudit?.evidenceCompleteness === "MISSING_CORE_EVIDENCE"
     ),
+    guardRecalibrationProposalRows: count(guardRecalibrationRows, (row) =>
+      Boolean(row.geometryDriftAudit?.currentPriceDriftResolution?.guardValueProposalEvidence)
+    ),
+    guardRecalibrationProposalReady: count(guardRecalibrationRows, (row) =>
+      row.geometryDriftAudit?.currentPriceDriftResolution?.guardValueProposalEvidence?.status ===
+        "REPORT_ONLY_GUARD_VALUE_PROPOSAL_READY_FOR_PRODUCER_REVIEW"
+    ),
+    guardRecalibrationProposalMissing: count(guardRecalibrationRows, (row) =>
+      !row.geometryDriftAudit?.currentPriceDriftResolution?.guardValueProposalEvidence
+    ),
+    guardRecalibrationProposalUnclassified: count(guardRecalibrationRows, (row) => ![
+      "REPORT_ONLY_GUARD_VALUE_PROPOSAL_READY_FOR_PRODUCER_REVIEW",
+      "REPORT_ONLY_GUARD_VALUE_PROPOSAL_EVIDENCE_INCOMPLETE"
+    ].includes(row.geometryDriftAudit?.currentPriceDriftResolution?.guardValueProposalEvidence?.status)),
+    guardRecalibrationProposalUnsafeEligibility: count(guardRecalibrationRows, (row) => {
+      const evidence = row.geometryDriftAudit?.currentPriceDriftResolution?.guardValueProposalEvidence;
+      return evidence?.eligibleForStateMaterialization === true || evidence?.eligibleForBrokerRepair === true ||
+        evidence?.brokerMutationAllowed === true || evidence?.stateMutationAllowed === true;
+    }),
+    noRepairReleaseContractRows: count(noRepairStopBreachedRows, (row) =>
+      Boolean(row.geometryDriftAudit?.currentPriceDriftResolution?.noRepairReleaseContract)
+    ),
+    noRepairReleaseBlocked: count(noRepairStopBreachedRows, (row) =>
+      row.geometryDriftAudit?.currentPriceDriftResolution?.noRepairReleaseContract?.status === "NO_REPAIR_RELEASE_BLOCKED"
+    ),
+    noRepairReleaseContractMissing: count(noRepairStopBreachedRows, (row) =>
+      !row.geometryDriftAudit?.currentPriceDriftResolution?.noRepairReleaseContract
+    ),
+    noRepairReleaseUnclassified: count(noRepairStopBreachedRows, (row) => ![
+      "NO_REPAIR_RELEASE_BLOCKED",
+      "NO_REPAIR_RELEASE_REEVALUATION_READY_REPORT_ONLY"
+    ].includes(row.geometryDriftAudit?.currentPriceDriftResolution?.noRepairReleaseContract?.status)),
+    noRepairReleaseUnsafeEligibility: count(noRepairStopBreachedRows, (row) => {
+      const contract = row.geometryDriftAudit?.currentPriceDriftResolution?.noRepairReleaseContract;
+      return contract?.eligibleForStateMaterialization === true || contract?.eligibleForBrokerRepair === true ||
+        contract?.brokerMutationAllowed === true || contract?.stateMutationAllowed === true;
+    }),
     lifecycleProducerRefreshStatusCounts: valueCounts(lifecycleRefreshRows, (row) => row.lifecycleProducerRefreshContract?.status),
     lifecycleProducerRefreshUnclassified: count(lifecycleRefreshRows, (row) => !row.lifecycleProducerRefreshContract?.status),
     currentSourceFresh: count(freshSourceRows, (row) => row.recoveryStatus === RECOVERY_STATUSES.CURRENT_SOURCE_FRESH),
@@ -1760,6 +1978,12 @@ const main = () => {
     materializationRequiresGuardValueDiff: summary.materializationReadyWithoutGuardValueDiff === 0,
     geometryRootCausesClassified: summary.geometryRootCauseUnclassified === 0,
     geometryDriftClassified: summary.geometryDriftUnclassified === 0,
+    guardRecalibrationProposalsSafe: summary.guardRecalibrationProposalMissing === 0 &&
+      summary.guardRecalibrationProposalUnclassified === 0 &&
+      summary.guardRecalibrationProposalUnsafeEligibility === 0,
+    noRepairReleaseContractsComplete: summary.noRepairReleaseContractMissing === 0 &&
+      summary.noRepairReleaseUnclassified === 0 &&
+      summary.noRepairReleaseUnsafeEligibility === 0,
     lifecycleProducerRefreshClassified: summary.lifecycleProducerRefreshUnclassified === 0
   };
   const overall = summary.unclassifiedRows > 0 || summary.recoveryStatusUnknown > 0 ||
@@ -1772,6 +1996,9 @@ const main = () => {
     summary.materializationPackageExcludedLaneLeaks > 0 || summary.materializationPackageDiffOutsideGuardFields > 0 ||
     summary.materializationPackageUnclassified > 0 || summary.materializationReadyWithoutGuardValueDiff > 0 ||
     summary.geometryRootCauseUnclassified > 0 || summary.geometryDriftUnclassified > 0 ||
+    summary.guardRecalibrationProposalMissing > 0 || summary.guardRecalibrationProposalUnclassified > 0 ||
+    summary.guardRecalibrationProposalUnsafeEligibility > 0 || summary.noRepairReleaseContractMissing > 0 ||
+    summary.noRepairReleaseUnclassified > 0 || summary.noRepairReleaseUnsafeEligibility > 0 ||
     summary.lifecycleProducerRefreshUnclassified > 0 ||
     summary.sourcePrecedenceViolations > 0 || !classificationConsistency.blockerCountMatchesRootCause ||
     !classificationConsistency.recoveryStatusCountMatchesRows || !classificationConsistency.freshSourceStatusCountMatchesLane
