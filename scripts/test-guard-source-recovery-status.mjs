@@ -253,7 +253,11 @@ writeJson("performance-dashboard.json", {
     }))
   }
 });
-writeJson("last-dry-exec-preview.json", { stage6Hash: "latest-hash", stage6File: "latest-stage6.json" });
+writeJson("last-dry-exec-preview.json", {
+  stage6Hash: "latest-hash",
+  stage6File: "latest-stage6.json",
+  entryPricePolicy: { minRr: 1.8 }
+});
 writeJson("position-protection-root-cause-audit.json", {
   summary: { protectionBlockerRows: 16 },
   rows: [
@@ -777,25 +781,66 @@ for (const [symbol, classification] of Object.entries(expectedGeometryClassifica
 }
 assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
 assert.equal(bySymbol.get("BAD")?.geometryDriftAudit?.evaluationGeometry?.targetAboveCurrent, false);
-assert.deepEqual(bySymbol.get("BAD")?.geometryDriftAudit?.currentPriceDriftResolution, {
-  status: "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY",
-  guardRecalibrationRequired: true,
-  noRepairUntilFreshGeometry: true,
-  reason: "target_not_above_current",
-  owner: "guard_geometry_producer",
-  nextAction: "request_current_position_guard_recalibration_report_only"
+const badDriftResolution = bySymbol.get("BAD")?.geometryDriftAudit?.currentPriceDriftResolution;
+assert.equal(badDriftResolution?.status, "GUARD_RECALIBRATION_REQUIRED_REPORT_ONLY");
+assert.equal(badDriftResolution?.guardRecalibrationRequired, true);
+assert.equal(badDriftResolution?.noRepairUntilFreshGeometry, true);
+assert.equal(badDriftResolution?.reason, "target_not_above_current");
+assert.equal(badDriftResolution?.owner, "guard_geometry_producer");
+assert.equal(badDriftResolution?.nextAction, "request_current_position_guard_recalibration_report_only");
+assert.equal(
+  badDriftResolution?.guardValueProposalEvidence?.status,
+  "REPORT_ONLY_GUARD_VALUE_PROPOSAL_READY_FOR_PRODUCER_REVIEW"
+);
+assert.equal(
+  badDriftResolution?.guardValueProposalEvidence?.proposalKind,
+  "minimum_risk_geometry_floor_not_alpha_target"
+);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.policy?.minRiskReward, 1.8);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.policy?.sourceRiskReward, 1.5);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.policy?.requiredRiskReward, 1.8);
+assert.deepEqual(badDriftResolution?.guardValueProposalEvidence?.computedGuardValues, {
+  stopLossPrice: 90,
+  takeProfitPrice: 118
 });
+assert.deepEqual(badDriftResolution?.guardValueProposalEvidence?.guardValueDiff, [
+  { field: "takeProfitPrice", before: 95, after: 118 }
+]);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.resultingGeometry?.valid, true);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.eligibleForStateMaterialization, false);
+assert.equal(badDriftResolution?.guardValueProposalEvidence?.eligibleForBrokerRepair, false);
+assert.equal(badDriftResolution?.noRepairReleaseContract, null);
 assert.equal(bySymbol.get("BAD")?.lifecycleProducerRefreshContract, null);
 assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, true);
 assert.equal(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.evaluationGeometry?.stopBelowCurrent, false);
-assert.deepEqual(bySymbol.get("TTL_BAD")?.geometryDriftAudit?.currentPriceDriftResolution, {
-  status: "NO_REPAIR_STOP_BREACHED_POSITION_RISK_REVIEW",
-  guardRecalibrationRequired: false,
-  noRepairUntilFreshGeometry: true,
-  reason: "stop_not_below_current",
-  owner: "position_risk_review",
-  nextAction: "keep_no_repair_route_to_position_risk_review"
-});
+const ttlBadDriftResolution = bySymbol.get("TTL_BAD")?.geometryDriftAudit?.currentPriceDriftResolution;
+assert.equal(ttlBadDriftResolution?.status, "NO_REPAIR_STOP_BREACHED_POSITION_RISK_REVIEW");
+assert.equal(ttlBadDriftResolution?.guardRecalibrationRequired, false);
+assert.equal(ttlBadDriftResolution?.noRepairUntilFreshGeometry, true);
+assert.equal(ttlBadDriftResolution?.reason, "stop_not_below_current");
+assert.equal(ttlBadDriftResolution?.owner, "position_risk_review");
+assert.equal(ttlBadDriftResolution?.nextAction, "keep_no_repair_route_to_position_risk_review");
+assert.equal(ttlBadDriftResolution?.guardValueProposalEvidence, null);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.status, "NO_REPAIR_RELEASE_BLOCKED");
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.releaseVerdict, "REMAIN_NO_REPAIR");
+assert.equal(
+  ttlBadDriftResolution?.noRepairReleaseContract?.releaseConditions?.freshCurrentPositionCompatibleSource,
+  false
+);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.releaseConditions?.sourceTtlValid, false);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.releaseConditions?.stopBelowCurrent, false);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.releaseConditions?.targetAboveCurrent, true);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.releaseConditions?.actualGuardValueDiffPresent, false);
+assert.equal(
+  ttlBadDriftResolution?.noRepairReleaseContract?.blockedBy?.includes("fresh_current_position_compatible_source_required"),
+  true
+);
+assert.equal(
+  ttlBadDriftResolution?.noRepairReleaseContract?.blockedBy?.includes("stop_not_below_current"),
+  true
+);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.eligibleForStateMaterialization, false);
+assert.equal(ttlBadDriftResolution?.noRepairReleaseContract?.eligibleForBrokerRepair, false);
 assert.equal(bySymbol.get("TTL_BAD")?.lifecycleProducerRefreshContract, null);
 assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.sourceGeometry?.valid, false);
 assert.equal(bySymbol.get("SRC_BAD")?.geometryDriftAudit?.producerHandoff?.targetRepository, "US_Alpha_Seeker");
@@ -870,6 +915,15 @@ assert.deepEqual(report.summary.geometryDriftClassificationCounts, {
 });
 assert.equal(report.summary.geometryDriftUnclassified, 0);
 assert.equal(report.classificationConsistency.geometryDriftClassified, true);
+assert.equal(report.summary.guardRecalibrationProposalRows, 1);
+assert.equal(report.summary.guardRecalibrationProposalReady, 1);
+assert.equal(report.summary.guardRecalibrationProposalUnsafeEligibility, 0);
+assert.equal(report.summary.noRepairReleaseContractRows, 1);
+assert.equal(report.summary.noRepairReleaseBlocked, 1);
+assert.equal(report.summary.noRepairReleaseContractMissing, 0);
+assert.equal(report.summary.noRepairReleaseUnsafeEligibility, 0);
+assert.equal(report.classificationConsistency.guardRecalibrationProposalsSafe, true);
+assert.equal(report.classificationConsistency.noRepairReleaseContractsComplete, true);
 assert.equal(report.classificationConsistency.recoveryStatusCountMatchesRows, true);
 assert.equal(report.classificationConsistency.freshSourceStatusCountMatchesLane, true);
 assert.equal(report.summary.stateMutationAttempted, false);
