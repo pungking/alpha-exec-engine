@@ -858,6 +858,9 @@ type OrderLedgerRecord = {
   idempotencyKey: string;
   symbol: string;
   side: "buy";
+  executionSide?: "buy" | "sell" | null;
+  actionType?: LifecycleActionType;
+  submittedQty?: number | null;
   stage6Hash: string;
   stage6File: string;
   mode: string;
@@ -896,6 +899,8 @@ type BrokerSubmitOrderResult = {
   symbol: string;
   clientOrderId: string | null;
   actionType: LifecycleActionType | "N/A";
+  side: "buy" | "sell" | null;
+  submittedQty: number | null;
   attempted: boolean;
   submitted: boolean;
   brokerOrderId: string | null;
@@ -1391,6 +1396,9 @@ type HfAnomalyAlert = {
 type OrderIdempotencyEntry = {
   symbol: string;
   side: "buy";
+  executionSide?: "buy" | "sell" | null;
+  actionType?: LifecycleActionType;
+  submittedQty?: number | null;
   stage6Hash: string;
   stage6File: string;
   firstSeenAt: string;
@@ -1405,6 +1413,9 @@ type OrderIdempotencyReleaseRecord = {
   key: string;
   symbol: string;
   side: "buy";
+  executionSide?: "buy" | "sell" | null;
+  actionType?: LifecycleActionType;
+  submittedQty?: number | null;
   stage6Hash: string;
   stage6File: string;
   clientOrderId: string | null;
@@ -8814,6 +8825,7 @@ async function submitLifecycleExitOrder(
 ): Promise<{
   brokerOrderId: string | null;
   brokerStatus: OrderLifecycleStatus;
+  side: "buy" | "sell";
   submittedQty: number;
 }> {
   const absQty = Math.abs(positionQty);
@@ -8841,7 +8853,7 @@ async function submitLifecycleExitOrder(
     typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
   const brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
   const submittedQty = clamp(Number(qty), 0, absQty);
-  return { brokerOrderId, brokerStatus, submittedQty };
+  return { brokerOrderId, brokerStatus, side, submittedQty };
 }
 
 function updateHeldPositionAfterExitSubmit(
@@ -9143,6 +9155,8 @@ async function submitOrdersToBroker(
       symbol: payload.symbol,
       clientOrderId: payload.client_order_id,
       actionType: payload.actionType ?? "N/A",
+      side: null,
+      submittedQty: null,
       attempted: false,
       submitted: false,
       brokerOrderId: null,
@@ -9388,6 +9402,8 @@ async function submitOrdersToBroker(
         );
         brokerOrderId = exitSubmit.brokerOrderId;
         brokerStatus = exitSubmit.brokerStatus;
+        row.side = exitSubmit.side;
+        row.submittedQty = exitSubmit.submittedQty;
         row.clientOrderId = makeActionClientOrderId(payload.client_order_id, effectiveActionType);
         updateHeldPositionAfterExitSubmit(
           heldQtyBySymbol,
@@ -9442,6 +9458,8 @@ async function submitOrdersToBroker(
         brokerOrderId =
           typeof brokerOrderIdRaw === "string" && brokerOrderIdRaw.trim() ? brokerOrderIdRaw : null;
         brokerStatus = mapAlpacaOrderStatusToLifecycleStatus(responseRecord.status);
+        row.side = payload.side;
+        row.submittedQty = parseFiniteNumber(entryQtyForSubmit);
       }
       row.submitted = true;
       row.brokerOrderId = brokerOrderId;
@@ -12346,6 +12364,9 @@ function recordOrderIdempotencyRelease(
     key,
     symbol: entry.symbol,
     side: entry.side,
+    executionSide: entry.executionSide ?? null,
+    actionType: entry.actionType,
+    submittedQty: entry.submittedQty ?? null,
     stage6Hash: entry.stage6Hash,
     stage6File: entry.stage6File,
     clientOrderId: entry.clientOrderId ?? null,
@@ -12640,6 +12661,9 @@ async function applyOrderIdempotency(
       state.orders[key] = {
         symbol: payload.symbol,
         side: payload.side,
+        executionSide: isLifecycleExitActionType(payload.actionType) ? null : payload.side,
+        actionType: payload.actionType ?? "ENTRY_NEW",
+        submittedQty: null,
         stage6Hash: stage6.sha256,
         stage6File: stage6.fileName,
         clientOrderId: payload.client_order_id,
@@ -12724,6 +12748,11 @@ async function updateOrderIdempotencyBrokerSubmission(
     entry.clientOrderId = brokerRow.clientOrderId || payload.client_order_id;
     entry.brokerOrderId = brokerRow.brokerOrderId;
     entry.brokerStatus = brokerRow.brokerStatus;
+    entry.executionSide = brokerRow.side;
+    entry.actionType = brokerRow.actionType === "N/A"
+      ? (payload.actionType ?? "ENTRY_NEW")
+      : brokerRow.actionType;
+    entry.submittedQty = brokerRow.submittedQty;
     entry.brokerCheckedAt = now;
     entry.lastSeenAt = now;
     changed = true;
@@ -12899,6 +12928,11 @@ async function updateOrderLedger(
         idempotencyKey: key,
         symbol: payload.symbol,
         side: payload.side,
+        executionSide: brokerRow?.side ?? (isLifecycleExitActionType(payload.actionType) ? null : payload.side),
+        actionType: brokerRow?.actionType && brokerRow.actionType !== "N/A"
+          ? brokerRow.actionType
+          : (payload.actionType ?? "ENTRY_NEW"),
+        submittedQty: brokerRow?.submittedQty ?? null,
         stage6Hash: stage6.sha256,
         stage6File: stage6.fileName,
         mode,
@@ -12955,6 +12989,11 @@ async function updateOrderLedger(
     existing.stage6File = stage6.fileName;
     existing.mode = mode;
     existing.clientOrderId = brokerRow?.clientOrderId || payload.client_order_id;
+    existing.executionSide = brokerRow?.side ?? existing.executionSide ?? (isLifecycleExitActionType(payload.actionType) ? null : payload.side);
+    existing.actionType = brokerRow?.actionType && brokerRow.actionType !== "N/A"
+      ? brokerRow.actionType
+      : (payload.actionType ?? existing.actionType ?? "ENTRY_NEW");
+    existing.submittedQty = brokerRow?.submittedQty ?? existing.submittedQty ?? null;
     existing.preflightCode = preflight.code;
     existing.regimeProfile = dryExec.regime.profile;
     existing.notional = payload.notional;

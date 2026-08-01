@@ -201,7 +201,7 @@ writeJson("high-price-min-one-share-canary-plan.json", {
 });
 
 const report = runScorecard(stateDir);
-assert.equal(report.schemaVersion, "2.0.0");
+assert.equal(report.schemaVersion, "3.0.0");
 assert.equal(Object.hasOwn(report, "mliLifecycle"), false);
 assert.ok(report.entryOrderLifecycle);
 assert.equal(report.entryOrderLifecycle.sourceReport, "order-state-consistency-report.json");
@@ -209,24 +209,24 @@ assert.deepEqual(
   report.entryOrderLifecycle.rows.map((row) => row.symbol),
   ["DUPL", "FILL", "OPEN", "SUBMIT", "TERM", "UNKNOWN", "UNREC"]
 );
-assert.deepEqual(report.entryOrderLifecycle.summary, {
-  totalLifecycleRows: 7,
-  submittedEvidenceRows: 6,
-  filledCompleteRows: 1,
-  openWaitingRows: 2,
-  consistentTerminalRows: 1,
-  terminalReconciliationRequiredRows: 1,
-  submittedEvidenceOnlyRows: 1,
-  duplicateOpenRows: 1,
-  lifecycleUnknownRows: 1,
-  lifecycleBlockerRows: 3,
-});
-assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "FILL").classification, "FILLED_COMPLETE");
+assert.equal(report.entryOrderLifecycle.contractVersion, "paper-entry-exit-lifecycle-v1");
+assert.equal(report.entryOrderLifecycle.summary.totalLifecycleRows, 7);
+assert.equal(report.entryOrderLifecycle.summary.entrySubmittedRows, 1);
+assert.equal(report.entryOrderLifecycle.summary.openWaitingRows, 1);
+assert.equal(report.entryOrderLifecycle.summary.filledUnprotectedRows, 1);
+assert.equal(report.entryOrderLifecycle.summary.expiredOrCanceledReconciledRows, 1);
+assert.equal(report.entryOrderLifecycle.summary.terminalReconciliationRequiredRows, 3);
+assert.equal(report.entryOrderLifecycle.summary.duplicateOpenRows, 1);
+assert.equal(report.entryOrderLifecycle.summary.lifecycleUnknownRows, 0);
+assert.equal(report.entryOrderLifecycle.summary.unclassifiedRows, 0);
+assert.equal(report.entryOrderLifecycle.summary.buyOnlyLifecycle, true);
+assert.equal(report.entryOrderLifecycle.summary.closedLoopEvidenceStatus, "ENTRY_ONLY_EVIDENCE");
+assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "FILL").classification, "FILLED_UNPROTECTED");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "OPEN").classification, "OPEN_WAITING");
-assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "TERM").classification, "CONSISTENT_TERMINAL");
+assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "TERM").classification, "EXPIRED_OR_CANCELED_RECONCILED");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "UNREC").classification, "TERMINAL_RECONCILIATION_REQUIRED");
-assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "SUBMIT").classification, "SUBMITTED_EVIDENCE_ONLY");
-assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "UNKNOWN").classification, "NO_LIFECYCLE_EVIDENCE");
+assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "SUBMIT").classification, "ENTRY_SUBMITTED");
+assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "UNKNOWN").classification, "TERMINAL_RECONCILIATION_REQUIRED");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "DUPL").duplicateOpenStatus, "DUPLICATE_OPEN_ORDER");
 assert.equal(report.finalVerdict, "BLOCKED");
 assert.equal(report.brokerMutationAttempted, false);
@@ -328,12 +328,108 @@ writeJsonAt(microLiveStateDir, "fillability-report.json", {
   summary: { candidateCount: 0, payloadCount: 0, brokerAttempted: false, brokerSubmitted: false },
   rows: [{ symbol: "MICROX", status: "FILLED", fillQty: 1, brokerClosedStatus: "filled" }],
 });
-writeJsonAt(microLiveStateDir, "order-ledger.json", { orders: { MICROX: { symbol: "MICROX", status: "filled", brokerOrderId: "microx-order" } } });
-writeJsonAt(microLiveStateDir, "order-idempotency.json", { orders: { MICROX: { symbol: "MICROX", brokerStatus: "filled", brokerOrderId: "microx-order" } } });
+writeJsonAt(microLiveStateDir, "order-ledger.json", { orders: {
+  "micro-entry": { symbol: "MICROX", actionType: "ENTRY_NEW", executionSide: "buy", status: "filled", brokerOrderId: "microx-entry", updatedAt: "2026-07-01T14:00:00Z" },
+  "micro-exit": { symbol: "MICROX", actionType: "EXIT_FULL", executionSide: "sell", status: "filled", brokerOrderId: "microx-exit", updatedAt: "2026-07-02T14:00:00Z" },
+} });
+writeJsonAt(microLiveStateDir, "order-idempotency.json", { orders: {
+  "micro-entry": { symbol: "MICROX", actionType: "ENTRY_NEW", executionSide: "buy", brokerStatus: "filled", brokerOrderId: "microx-entry", brokerCheckedAt: "2026-07-01T14:00:00Z" },
+  "micro-exit": { symbol: "MICROX", actionType: "EXIT_FULL", executionSide: "sell", brokerStatus: "filled", brokerOrderId: "microx-exit", brokerCheckedAt: "2026-07-02T14:00:00Z" },
+} });
+writeJsonAt(microLiveStateDir, "performance-dashboard.json", { simulation: { rows: [{
+  symbol: "MICROX",
+  status: "closed",
+  runDate: "2026-07-02T14:00:00Z",
+  entryFilled: 100,
+  exitPrice: 110,
+  qty: 2,
+  grossPnl: 20,
+  spreadCost: 1,
+  slippageCost: 0.5,
+  commission: 0.5,
+  realizedPnl: 18,
+}] } });
 const microLiveReport = runScorecard(microLiveStateDir);
 assert.equal(microLiveReport.entryOrderLifecycle.status, "pass");
-assert.equal(microLiveReport.entryOrderLifecycle.summary.filledCompleteRows, 1);
+assert.equal(microLiveReport.entryOrderLifecycle.summary.exitedTerminalReconciledRows, 1);
+assert.equal(microLiveReport.entryOrderLifecycle.summary.realizedPnlVerifiedRows, 1);
+assert.equal(microLiveReport.entryOrderLifecycle.summary.closedLoopEvidenceStatus, "VERIFIED_CLOSED_LOOP_EVIDENCE");
 assert.equal(microLiveReport.finalVerdict, "MICRO_LIVE_REVIEW_READY");
+
+const activeLifecycleStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-active-closed-loop-"));
+writeJsonAt(activeLifecycleStateDir, "last-dry-exec-preview.json", {
+  stage6Hash: "active123",
+  stage6File: "STAGE6_ALPHA_FINAL_ACTIVE.json",
+  payloadCount: 0,
+  mode: { readOnly: true, execEnabled: false },
+  brokerSubmission: { attempted: false, submitted: false },
+});
+writeJsonAt(activeLifecycleStateDir, "order-state-consistency-report.json", {
+  summary: { symbols: 2, failures: 0, terminalReconciliationRequired: 0, terminalConflicts: 0 },
+  rows: ["PROTECTED", "EXITING"].map((symbol) => ({
+    symbol,
+    status: "PASS",
+    category: "TERMINAL_CONSISTENT",
+    normalized: "filled",
+    terminalState: "filled",
+    terminalReconciliationRequired: false,
+    terminalConflicts: false,
+    ledger: "filled",
+    idempotency: "filled",
+    fillability: "FILLED",
+  })),
+});
+writeJsonAt(activeLifecycleStateDir, "fillability-report.json", {
+  summary: { candidateCount: 0, payloadCount: 0, brokerAttempted: false, brokerSubmitted: false },
+  rows: ["PROTECTED", "EXITING"].map((symbol) => ({ symbol, status: "FILLED", fillQty: 1, brokerClosedStatus: "filled" })),
+});
+writeJsonAt(activeLifecycleStateDir, "order-ledger.json", { orders: {
+  "protected-entry": { symbol: "PROTECTED", actionType: "ENTRY_NEW", executionSide: "buy", status: "filled", brokerOrderId: "protected-entry" },
+  "exiting-entry": { symbol: "EXITING", actionType: "ENTRY_NEW", executionSide: "buy", status: "filled", brokerOrderId: "exiting-entry" },
+  "exiting-exit": { symbol: "EXITING", actionType: "EXIT_FULL", executionSide: "sell", status: "submitted", brokerOrderId: "exiting-exit" },
+} });
+writeJsonAt(activeLifecycleStateDir, "order-idempotency.json", { orders: {
+  "protected-entry": { symbol: "PROTECTED", actionType: "ENTRY_NEW", executionSide: "buy", brokerStatus: "filled", brokerOrderId: "protected-entry" },
+  "exiting-entry": { symbol: "EXITING", actionType: "ENTRY_NEW", executionSide: "buy", brokerStatus: "filled", brokerOrderId: "exiting-entry" },
+  "exiting-exit": { symbol: "EXITING", actionType: "EXIT_FULL", executionSide: "sell", brokerStatus: "submitted", brokerOrderId: "exiting-exit" },
+} });
+writeJsonAt(activeLifecycleStateDir, "position-protection-root-cause-audit.json", {
+  summary: { protectionBlockerRows: 0, ownershipBlockerRows: 0, ledgerBlockerRows: 0, classifiedRows: 2, unclassifiedRows: 0 },
+  rows: ["PROTECTED", "EXITING"].map((symbol) => ({
+    symbol,
+    normalizedFillState: "filled",
+    brokerStopPresent: true,
+    brokerTargetPresent: true,
+    protectionLane: "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED",
+    blockerDomain: "none",
+  })),
+});
+writeJsonAt(activeLifecycleStateDir, "broker-child-order-reconciliation.json", {
+  summary: { missingStopChildren: 0, missingTargetChildren: 0 },
+  rows: ["PROTECTED", "EXITING"].map((symbol) => ({
+    symbol,
+    normalizedFillState: "filled",
+    brokerStopPresent: true,
+    brokerTargetPresent: true,
+  })),
+});
+const activeLifecycleReport = runScorecard(activeLifecycleStateDir);
+assert.equal(activeLifecycleReport.entryOrderLifecycle.rows.find((row) => row.symbol === "PROTECTED").classification, "FILLED_PROTECTED");
+assert.equal(activeLifecycleReport.entryOrderLifecycle.rows.find((row) => row.symbol === "EXITING").classification, "EXIT_PENDING");
+assert.equal(activeLifecycleReport.entryOrderLifecycle.summary.idempotencyConflictRows, 0);
+assert.equal(activeLifecycleReport.entryOrderLifecycle.summary.terminalLedgerMismatchRows, 0);
+
+const pnlMismatchStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-pnl-mismatch-"));
+for (const fileName of fs.readdirSync(microLiveStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(microLiveStateDir, fileName), path.join(pnlMismatchStateDir, fileName));
+}
+const mismatchedPerformance = JSON.parse(fs.readFileSync(path.join(pnlMismatchStateDir, "performance-dashboard.json"), "utf8"));
+mismatchedPerformance.simulation.rows[0].realizedPnl = 17;
+writeJsonAt(pnlMismatchStateDir, "performance-dashboard.json", mismatchedPerformance);
+const pnlMismatchReport = runScorecard(pnlMismatchStateDir);
+assert.equal(pnlMismatchReport.entryOrderLifecycle.rows[0].classification, "TERMINAL_RECONCILIATION_REQUIRED");
+assert.equal(pnlMismatchReport.entryOrderLifecycle.rows[0].realizedPnlEvidence.status, "REALIZED_PNL_COST_MISMATCH");
 
 const renamedStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-renamed-lifecycle-"));
 for (const fileName of fs.readdirSync(stateDir)) {

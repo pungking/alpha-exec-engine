@@ -156,6 +156,7 @@ function blockerGroup(name, reports, { status = "pass", count = 0, rows = [], ne
 
 const OPEN_STATES = new Set(["open", "submitted", "accepted", "new", "pending_new", "partially_filled", "held"]);
 const TERMINAL_STATES = new Set(["canceled", "cancelled", "expired", "rejected", "unfilled_terminal", "terminal_unfilled"]);
+const EXIT_ACTIONS = new Set(["SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"]);
 const RECONCILIATION_CATEGORIES = new Set([
   "TERMINAL_CONFLICT",
   "TERMINAL_RECONCILIATION_REQUIRED",
@@ -169,7 +170,7 @@ function normalizedStatus(value) {
 }
 
 function evidenceTimestamp(row) {
-  for (const value of [row?.updatedAt, row?.brokerCheckedAt, row?.lastSeenAt, row?.createdAt, row?.submittedAt, row?.generatedAt]) {
+  for (const value of [row?.updatedAt, row?.brokerCheckedAt, row?.lastSeenAt, row?.createdAt, row?.submittedAt, row?.generatedAt, row?.exitAt, row?.runDate]) {
     const parsed = Date.parse(value || "");
     if (Number.isFinite(parsed)) return parsed;
   }
@@ -187,7 +188,95 @@ function latestEvidenceBySymbol(rows) {
   return result;
 }
 
-function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, orderIdempotency, orderState }) {
+function finiteNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function isExitEvidence(row) {
+  return EXIT_ACTIONS.has(String(row?.actionType || "").trim().toUpperCase())
+    || normalizedStatus(row?.executionSide) === "sell";
+}
+
+function statusClass(value) {
+  const status = normalizedStatus(value);
+  if (status === "filled") return "filled";
+  if (OPEN_STATES.has(status)) return "open";
+  if (TERMINAL_STATES.has(status)) return "terminal_unfilled";
+  return status || null;
+}
+
+function hasIdempotencyConflict(ledgerRow, idempotencyRow) {
+  if (!ledgerRow || !idempotencyRow) return false;
+  const ledgerOrderId = String(ledgerRow?.brokerOrderId || "").trim();
+  const idempotencyOrderId = String(idempotencyRow?.brokerOrderId || "").trim();
+  if (ledgerOrderId && idempotencyOrderId && ledgerOrderId !== idempotencyOrderId) return true;
+  const ledgerClass = statusClass(ledgerRow?.status);
+  const idempotencyClass = statusClass(idempotencyRow?.brokerStatus || idempotencyRow?.status);
+  return Boolean(ledgerClass && idempotencyClass && ledgerClass !== idempotencyClass);
+}
+
+function buildRealizedPnlEvidence(row) {
+  if (!row || finiteNumber(row?.exitPrice) == null) {
+    return {
+      status: "NO_EXIT_PNL_EVIDENCE",
+      source: "performance-dashboard.json",
+      entryPricePresent: false,
+      exitPricePresent: false,
+      quantityPresent: false,
+      spreadCostPresent: false,
+      slippageCostPresent: false,
+      commissionPresent: false,
+      grossFormulaMatches: null,
+      netFormulaMatches: null,
+    };
+  }
+  const entryPrice = finiteNumber(row?.entryFilled ?? row?.entryPrice);
+  const exitPrice = finiteNumber(row?.exitPrice);
+  const quantity = finiteNumber(row?.qty ?? row?.quantity ?? row?.filledQty);
+  const spreadCost = finiteNumber(row?.spreadCost);
+  const slippageCost = finiteNumber(row?.slippageCost);
+  const commission = finiteNumber(row?.commission);
+  const reportedGross = finiteNumber(row?.grossPnl ?? row?.realizedGrossPnl);
+  const reportedNet = finiteNumber(row?.realizedPnl ?? row?.netRealizedPnl);
+  const complete = [entryPrice, exitPrice, quantity, spreadCost, slippageCost, commission, reportedGross, reportedNet]
+    .every((value) => value != null);
+  const calculatedGross = complete ? (exitPrice - entryPrice) * quantity : null;
+  const calculatedNet = complete ? calculatedGross - spreadCost - slippageCost - commission : null;
+  const grossFormulaMatches = complete ? Math.abs(calculatedGross - reportedGross) <= 0.01 : null;
+  const netFormulaMatches = complete ? Math.abs(calculatedNet - reportedNet) <= 0.01 : null;
+  return {
+    status: complete && grossFormulaMatches && netFormulaMatches
+      ? "VERIFIED_NET_REALIZED_PNL"
+      : complete
+        ? "REALIZED_PNL_COST_MISMATCH"
+        : "REALIZED_PNL_COST_EVIDENCE_INCOMPLETE",
+    source: "performance-dashboard.json",
+    entryPricePresent: entryPrice != null,
+    exitPricePresent: exitPrice != null,
+    quantityPresent: quantity != null,
+    spreadCostPresent: spreadCost != null,
+    slippageCostPresent: slippageCost != null,
+    commissionPresent: commission != null,
+    grossFormulaMatches,
+    netFormulaMatches,
+  };
+}
+
+function buildEntryOrderLifecycle({
+  fillability,
+  openOrderReprice,
+  orderLedger,
+  orderIdempotency,
+  orderState,
+  positionProtectionAudit,
+  brokerChildReconciliation,
+  performance,
+}) {
   const stateBySymbol = latestEvidenceBySymbol(rowsArray(orderState).filter((row) =>
     row?.normalized
     || row?.terminalState
@@ -203,14 +292,25 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
     rowsArray(fillability).filter((row) => LIFECYCLE_FILLABILITY_STATES.has(String(row?.status || "").toUpperCase()))
   );
   const repriceBySymbol = latestEvidenceBySymbol(rowsArray(openOrderReprice));
-  const ledgerBySymbol = latestEvidenceBySymbol(ordersArray(orderLedger));
-  const idempotencyBySymbol = latestEvidenceBySymbol(ordersArray(orderIdempotency));
+  const ledgerRows = ordersArray(orderLedger);
+  const idempotencyRows = ordersArray(orderIdempotency);
+  const ledgerBySymbol = latestEvidenceBySymbol(ledgerRows.filter((row) => !isExitEvidence(row)));
+  const exitLedgerBySymbol = latestEvidenceBySymbol(ledgerRows.filter(isExitEvidence));
+  const idempotencyBySymbol = latestEvidenceBySymbol(idempotencyRows.filter((row) => !isExitEvidence(row)));
+  const exitIdempotencyBySymbol = latestEvidenceBySymbol(idempotencyRows.filter(isExitEvidence));
+  const protectionBySymbol = latestEvidenceBySymbol(rowsArray(positionProtectionAudit));
+  const brokerChildrenBySymbol = latestEvidenceBySymbol(rowsArray(brokerChildReconciliation));
+  const performanceBySymbol = latestEvidenceBySymbol(
+    Array.isArray(performance?.simulation?.rows) ? performance.simulation.rows : []
+  );
   const symbols = [...new Set([
     ...stateBySymbol.keys(),
     ...fillBySymbol.keys(),
     ...repriceBySymbol.keys(),
     ...ledgerBySymbol.keys(),
+    ...exitLedgerBySymbol.keys(),
     ...idempotencyBySymbol.keys(),
+    ...exitIdempotencyBySymbol.keys(),
   ])].sort();
 
   const rows = symbols.map((symbol) => {
@@ -218,12 +318,19 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
     const fillRow = fillBySymbol.get(symbol) || null;
     const repriceRow = repriceBySymbol.get(symbol) || null;
     const ledgerRow = ledgerBySymbol.get(symbol) || null;
+    const exitLedgerRow = exitLedgerBySymbol.get(symbol) || null;
     const idempotencyRow = idempotencyBySymbol.get(symbol) || null;
+    const exitIdempotencyRow = exitIdempotencyBySymbol.get(symbol) || null;
+    const protectionRow = protectionBySymbol.get(symbol) || null;
+    const brokerChildrenRow = brokerChildrenBySymbol.get(symbol) || null;
+    const performanceRow = performanceBySymbol.get(symbol) || null;
     const orderStateStatus = String(stateRow?.status || "").toUpperCase() || null;
     const orderStateCategory = String(stateRow?.category || "").toUpperCase() || null;
     const normalizedState = normalizedStatus(stateRow?.normalized);
     const ledgerStatus = normalizedStatus(ledgerRow?.status || stateRow?.ledger);
     const idempotencyBrokerStatus = normalizedStatus(idempotencyRow?.brokerStatus || idempotencyRow?.status || stateRow?.idempotency);
+    const exitLedgerStatus = normalizedStatus(exitLedgerRow?.status);
+    const exitIdempotencyBrokerStatus = normalizedStatus(exitIdempotencyRow?.brokerStatus || exitIdempotencyRow?.status);
     const fillabilityStatus = String(fillRow?.status || stateRow?.fillability || "").toUpperCase() || null;
     const brokerOpenStatus = normalizedStatus(fillRow?.brokerOpenStatus || repriceRow?.brokerOpenStatus);
     const brokerClosedStatus = normalizedStatus(fillRow?.brokerClosedStatus);
@@ -240,20 +347,26 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
       asNumber(ledgerRow?.qty, 0),
       asNumber(idempotencyRow?.qty, 0)
     );
-    const submittedEvidence = Boolean(
+    const entrySubmittedEvidence = Boolean(
       ledgerRow?.brokerOrderId
       || idempotencyRow?.brokerOrderId
       || (fillRow?.brokerOpenClientOrderId && brokerOpenStatus)
       || repriceRow?.orderId
       || repriceRow?.clientOrderId
     );
+    const exitSubmittedEvidence = Boolean(exitLedgerRow?.brokerOrderId || exitIdempotencyRow?.brokerOrderId);
+    const submittedEvidence = entrySubmittedEvidence || exitSubmittedEvidence;
     const duplicateOpen = repriceRow?.checks?.duplicateOpenCountOk === false
       || asNumber(repriceRow?.duplicateOpenCount, 0) > 1;
     const orderStateConflict = orderStateStatus === "FAIL"
       || stateRow?.terminalConflicts === true
       || RECONCILIATION_CATEGORIES.has(orderStateCategory);
-    const terminalReconciliationRequired = stateRow?.terminalReconciliationRequired === true
-      || orderStateConflict;
+    const entryIdempotencyConflict = hasIdempotencyConflict(ledgerRow, idempotencyRow);
+    const exitIdempotencyConflict = hasIdempotencyConflict(exitLedgerRow, exitIdempotencyRow);
+    const idempotencyConflict = entryIdempotencyConflict || exitIdempotencyConflict;
+    const terminalLedgerMismatch = stateRow?.terminalReconciliationRequired === true || orderStateConflict;
+    let terminalReconciliationRequired = terminalLedgerMismatch
+      || idempotencyConflict;
     const terminalState = normalizedStatus(stateRow?.terminalState || brokerClosedStatus || (
       TERMINAL_STATES.has(normalizedState) ? normalizedState : ""
     ));
@@ -267,6 +380,21 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
     const filled = [normalizedState, ledgerStatus, idempotencyBrokerStatus].includes("filled")
       || fillabilityStatus === "FILLED"
       || (orderQuantityEvidence > 0 && filledQuantityEvidence >= orderQuantityEvidence && !openWaiting);
+    const exitOpen = OPEN_STATES.has(exitLedgerStatus) || OPEN_STATES.has(exitIdempotencyBrokerStatus);
+    const exitFilled = exitLedgerStatus === "filled" || exitIdempotencyBrokerStatus === "filled";
+    const exitTerminalUnfilled = TERMINAL_STATES.has(exitLedgerStatus) || TERMINAL_STATES.has(exitIdempotencyBrokerStatus);
+    const exitActionType = String(exitLedgerRow?.actionType || exitIdempotencyRow?.actionType || "").trim().toUpperCase() || null;
+    const partialExit = exitActionType === "SCALE_DOWN" || exitActionType === "EXIT_PARTIAL";
+    const positionFillState = normalizedStatus(protectionRow?.normalizedFillState || brokerChildrenRow?.normalizedFillState);
+    const positionObserved = Boolean(protectionRow || brokerChildrenRow)
+      && !["expired", "canceled", "cancelled", "rejected"].includes(positionFillState);
+    const brokerStopPresent = protectionRow?.brokerStopPresent === true || brokerChildrenRow?.brokerStopPresent === true;
+    const brokerTargetPresent = protectionRow?.brokerTargetPresent === true || brokerChildrenRow?.brokerTargetPresent === true;
+    const protectionConfirmed = positionObserved && brokerStopPresent && brokerTargetPresent;
+    const realizedPnlEvidence = buildRealizedPnlEvidence(performanceRow);
+    const realizedPnlVerified = realizedPnlEvidence.status === "VERIFIED_NET_REALIZED_PNL";
+    if (exitFilled && !partialExit && positionObserved) terminalReconciliationRequired = true;
+    if (exitFilled && !partialExit && !positionObserved && !realizedPnlVerified) terminalReconciliationRequired = true;
     const plannedOnly = normalizedState === "planned"
       && !submittedEvidence
       && !filled
@@ -275,39 +403,51 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
       && !terminalReconciliationRequired;
     if (plannedOnly) return null;
 
-    let classification = "NO_LIFECYCLE_EVIDENCE";
-    if (terminalReconciliationRequired) classification = "TERMINAL_RECONCILIATION_REQUIRED";
-    else if (filled) classification = "FILLED_COMPLETE";
-    else if (terminal) classification = "CONSISTENT_TERMINAL";
+    let classification = "TERMINAL_RECONCILIATION_REQUIRED";
+    if (terminalReconciliationRequired || duplicateOpen) classification = "TERMINAL_RECONCILIATION_REQUIRED";
+    else if (exitOpen) classification = "EXIT_PENDING";
+    else if (exitFilled && partialExit && positionObserved) {
+      classification = protectionConfirmed ? "FILLED_PROTECTED" : "FILLED_UNPROTECTED";
+    } else if (exitFilled && !positionObserved && realizedPnlVerified) {
+      classification = "EXITED_TERMINAL_RECONCILED";
+    } else if (filled) classification = protectionConfirmed ? "FILLED_PROTECTED" : "FILLED_UNPROTECTED";
+    else if (terminal || exitTerminalUnfilled) classification = "EXPIRED_OR_CANCELED_RECONCILED";
     else if (openWaiting) classification = "OPEN_WAITING";
-    else if (submittedEvidence) classification = "SUBMITTED_EVIDENCE_ONLY";
+    else if (entrySubmittedEvidence) classification = "ENTRY_SUBMITTED";
 
     const blockers = [];
     const warnings = [];
     if (terminalReconciliationRequired) blockers.push("terminal_reconciliation_required");
     if (orderStateConflict) blockers.push("order_state_failure_or_conflict");
     if (duplicateOpen) blockers.push("duplicate_open_order");
-    if (classification === "NO_LIFECYCLE_EVIDENCE") blockers.push("unknown_lifecycle_evidence");
+    if (idempotencyConflict) blockers.push("idempotency_conflict");
+    if (exitFilled && !partialExit && positionObserved) blockers.push("full_exit_filled_but_position_still_present");
+    if (exitFilled && !partialExit && !positionObserved && !realizedPnlVerified) blockers.push("realized_pnl_or_cost_evidence_incomplete");
+    if (classification === "TERMINAL_RECONCILIATION_REQUIRED" && blockers.length === 0) blockers.push("lifecycle_evidence_unclassifiable");
     if (classification === "OPEN_WAITING") warnings.push("valid_open_order_waiting_for_fill");
-    if (classification === "SUBMITTED_EVIDENCE_ONLY") warnings.push("submitted_evidence_without_canonical_order_state");
+    if (classification === "ENTRY_SUBMITTED") warnings.push("entry_submitted_without_canonical_open_or_fill_state");
+    if (classification === "EXIT_PENDING") warnings.push("exit_order_waiting_for_terminal_broker_event");
+    if (classification === "FILLED_UNPROTECTED") warnings.push("protection_gap_owned_by_protective_order_domain");
+    if (exitTerminalUnfilled && positionObserved) warnings.push("exit_terminal_unfilled_position_remains_open");
     if (Boolean(ledgerRow) !== Boolean(idempotencyRow)) warnings.push("ledger_idempotency_evidence_mismatch");
+    if (Boolean(exitLedgerRow) !== Boolean(exitIdempotencyRow)) warnings.push("exit_ledger_idempotency_evidence_mismatch");
     if (repriceRow?.decision && repriceRow.decision !== "READY_FOR_APPROVAL") warnings.push(`reprice_not_ready:${repriceRow.decision}`);
     const status = blockers.length > 0
       ? "block"
-      : ["OPEN_WAITING", "SUBMITTED_EVIDENCE_ONLY"].includes(classification)
+      : ["ENTRY_SUBMITTED", "OPEN_WAITING", "FILLED_UNPROTECTED", "EXIT_PENDING"].includes(classification)
         ? "waiting"
         : "pass";
     const nextLifecycleAction = classification === "TERMINAL_RECONCILIATION_REQUIRED"
       ? "reconcile_terminal_state_report_only_before_reentry"
-      : duplicateOpen
-        ? "resolve_duplicate_open_order_before_any_new_submission"
-        : classification === "OPEN_WAITING"
+      : classification === "OPEN_WAITING"
           ? "wait_for_fill_or_terminal_broker_event"
-          : classification === "SUBMITTED_EVIDENCE_ONLY"
+          : classification === "ENTRY_SUBMITTED"
             ? "refresh_canonical_order_state_evidence"
-            : classification === "NO_LIFECYCLE_EVIDENCE"
-              ? "restore_or_confirm_missing_lifecycle_evidence"
-              : "no_lifecycle_action_required";
+            : classification === "EXIT_PENDING"
+              ? "wait_for_exit_fill_or_terminal_broker_event"
+              : classification === "FILLED_UNPROTECTED"
+                ? "defer_to_protective_order_guard_metadata_domain"
+                : "no_lifecycle_action_required";
 
     return {
       symbol,
@@ -318,13 +458,26 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
       normalizedState: normalizedState || null,
       ledgerStatus: ledgerStatus || null,
       idempotencyBrokerStatus: idempotencyBrokerStatus || null,
+      exitLedgerStatus: exitLedgerStatus || null,
+      exitIdempotencyBrokerStatus: exitIdempotencyBrokerStatus || null,
+      exitActionType,
       fillabilityStatus,
       brokerOpenStatus: brokerOpenStatus || null,
       brokerClosedStatus: brokerClosedStatus || null,
       submittedEvidence,
+      entrySubmittedEvidence,
+      exitSubmittedEvidence,
       filledQuantityEvidence,
       orderQuantityEvidence,
       terminalReconciliationRequired,
+      terminalLedgerMismatch,
+      idempotencyConflict,
+      positionObserved,
+      brokerStopPresent,
+      brokerTargetPresent,
+      protectionConfirmed,
+      realizedPnlEvidence,
+      blockerDomain: blockers.length > 0 ? "lifecycle" : classification === "FILLED_UNPROTECTED" ? "protection" : "none",
       duplicateOpenStatus: duplicateOpen ? "DUPLICATE_OPEN_ORDER" : openWaiting ? "PASS" : "NOT_APPLICABLE",
       repriceDecision: repriceRow?.decision || null,
       blocker: blockers[0] || null,
@@ -339,28 +492,59 @@ function buildEntryOrderLifecycle({ fillability, openOrderReprice, orderLedger, 
   const summary = {
     totalLifecycleRows: rows.length,
     submittedEvidenceRows: rows.filter((row) => row.submittedEvidence).length,
-    filledCompleteRows: count("FILLED_COMPLETE"),
+    entryEvidenceRows: rows.filter((row) => row.entrySubmittedEvidence || row.filledQuantityEvidence > 0).length,
+    exitEvidenceRows: rows.filter((row) => row.exitSubmittedEvidence).length,
+    entrySubmittedRows: count("ENTRY_SUBMITTED"),
     openWaitingRows: count("OPEN_WAITING"),
-    consistentTerminalRows: count("CONSISTENT_TERMINAL"),
+    filledUnprotectedRows: count("FILLED_UNPROTECTED"),
+    filledProtectedRows: count("FILLED_PROTECTED"),
+    exitPendingRows: count("EXIT_PENDING"),
+    exitedTerminalReconciledRows: count("EXITED_TERMINAL_RECONCILED"),
+    expiredOrCanceledReconciledRows: count("EXPIRED_OR_CANCELED_RECONCILED"),
     terminalReconciliationRequiredRows: count("TERMINAL_RECONCILIATION_REQUIRED"),
-    submittedEvidenceOnlyRows: count("SUBMITTED_EVIDENCE_ONLY"),
     duplicateOpenRows: rows.filter((row) => row.duplicateOpenStatus === "DUPLICATE_OPEN_ORDER").length,
-    lifecycleUnknownRows: count("NO_LIFECYCLE_EVIDENCE"),
+    idempotencyConflictRows: rows.filter((row) => row.idempotencyConflict).length,
+    terminalLedgerMismatchRows: rows.filter((row) => row.terminalLedgerMismatch).length,
+    realizedPnlVerifiedRows: rows.filter((row) => row.realizedPnlEvidence.status === "VERIFIED_NET_REALIZED_PNL").length,
+    realizedPnlEvidenceGapRows: rows.filter((row) => row.exitSubmittedEvidence && row.realizedPnlEvidence.status !== "VERIFIED_NET_REALIZED_PNL").length,
+    lifecycleUnknownRows: 0,
+    unclassifiedRows: 0,
     lifecycleBlockerRows: rows.filter((row) => row.status === "block").length,
   };
+  summary.filledCompleteRows = summary.filledUnprotectedRows + summary.filledProtectedRows;
+  summary.consistentTerminalRows = summary.exitedTerminalReconciledRows + summary.expiredOrCanceledReconciledRows;
+  summary.submittedEvidenceOnlyRows = summary.entrySubmittedRows;
+  summary.closedLoopRows = summary.exitedTerminalReconciledRows;
+  summary.entryAndExitEvidencePresent = summary.entryEvidenceRows > 0 && summary.exitEvidenceRows > 0;
+  summary.buyOnlyLifecycle = summary.entryEvidenceRows > 0 && summary.exitEvidenceRows === 0;
+  summary.closedLoopEvidenceStatus = summary.closedLoopRows > 0 && summary.realizedPnlVerifiedRows > 0
+    ? "VERIFIED_CLOSED_LOOP_EVIDENCE"
+    : summary.exitEvidenceRows > 0
+      ? "EXIT_EVIDENCE_INCOMPLETE"
+      : summary.entryEvidenceRows > 0
+        ? "ENTRY_ONLY_EVIDENCE"
+        : "NO_PAPER_LIFECYCLE_EVIDENCE";
   const status = summary.lifecycleBlockerRows > 0
     ? "block"
-    : summary.openWaitingRows > 0 || summary.submittedEvidenceOnlyRows > 0
+    : summary.openWaitingRows > 0 || summary.entrySubmittedRows > 0 || summary.filledUnprotectedRows > 0 || summary.exitPendingRows > 0
       ? "waiting"
       : "pass";
+  const reportWarnings = rows.length === 0
+    ? ["no_lifecycle_evidence_observed"]
+    : summary.buyOnlyLifecycle
+      ? ["closed_loop_exit_evidence_not_observed"]
+      : [];
   return {
     sourceReport: "order-state-consistency-report.json",
+    contractVersion: "paper-entry-exit-lifecycle-v1",
+    contractScope: "entry_to_terminal_exit_with_realized_pnl",
     status,
     score: scoreFrom(status, status === "waiting" ? 60 : null),
     blockers: rows.flatMap((row) => row.blockers.map((blocker) => `${row.symbol}:${blocker}`)),
-    warnings: rows.length === 0
-      ? ["no_lifecycle_evidence_observed"]
-      : rows.flatMap((row) => row.warnings.map((warning) => `${row.symbol}:${warning}`)),
+    warnings: [
+      ...reportWarnings,
+      ...rows.flatMap((row) => row.warnings.map((warning) => `${row.symbol}:${warning}`)),
+    ],
     summary,
     rows,
   };
@@ -378,6 +562,7 @@ function buildReport() {
     orderLedger: readJson("order-ledger.json", {}),
     orderIdempotency: readJson("order-idempotency.json", {}),
     orderState: readJson("order-state-consistency-report.json", {}),
+    performance: readJson("performance-dashboard.json", {}),
     terminalizationProposal: readJson("ledger-terminalization-proposal.json", {}),
     opsHealth: readJson("ops-health-report.json", {}),
     opsLaneStatus: readJson("ops-lane-status-report.json", {}),
@@ -678,9 +863,12 @@ function buildReport() {
     && mutationStatus === "pass";
   const microLiveReady = hardBlockers.length === 0
     && domains.every((item) => item.status === "pass")
-    && entryOrderLifecycle.summary.filledCompleteRows > 0
+    && entryOrderLifecycle.summary.closedLoopRows > 0
+    && entryOrderLifecycle.summary.realizedPnlVerifiedRows > 0
     && entryOrderLifecycle.summary.terminalReconciliationRequiredRows === 0
     && entryOrderLifecycle.summary.duplicateOpenRows === 0
+    && entryOrderLifecycle.summary.idempotencyConflictRows === 0
+    && entryOrderLifecycle.summary.terminalLedgerMismatchRows === 0
     && entryOrderLifecycle.summary.lifecycleUnknownRows === 0;
   const finalVerdict = microLiveReady ? "MICRO_LIVE_REVIEW_READY" : paperPilotEligible ? "PAPER_PILOT" : "BLOCKED";
   if (!FINAL_VERDICTS.has(finalVerdict)) throw new Error(`Invalid final verdict ${finalVerdict}`);
@@ -844,7 +1032,7 @@ function buildReport() {
     }
   };
   return {
-    schemaVersion: "2.0.0",
+    schemaVersion: "3.0.0",
     generatedAt,
     stateDir: STATE_DIR,
     reportOnly: true,
@@ -875,6 +1063,9 @@ function buildReport() {
       hardBlockers: hardBlockers.length,
       warnings: domains.reduce((sum, item) => sum + item.warnings.length, 0),
       entryOrderLifecycleStatus: entryOrderLifecycle.status,
+      paperClosedLoopEvidenceStatus: entryOrderLifecycle.summary.closedLoopEvidenceStatus,
+      paperClosedLoopRows: entryOrderLifecycle.summary.closedLoopRows,
+      realizedPnlVerifiedRows: entryOrderLifecycle.summary.realizedPnlVerifiedRows,
       paperSubmittedEvidence: entryOrderLifecycle.summary.submittedEvidenceRows > 0,
       currentBrokerMutationAttempted,
       currentBrokerMutationSubmitted,
@@ -917,14 +1108,16 @@ function renderMarkdown(report) {
   lines.push(`- recoveryStatusCounts: \`${JSON.stringify(report.protectionClassification.recoveryStatusCounts)}\``);
   lines.push(`- reportCountConsistency: \`${report.protectionClassification.reportConsistency.allAvailableCountsMatch ? "pass" : "fail"}\``);
   lines.push("");
-  lines.push("### Entry Order Lifecycle");
+  lines.push("### PAPER Closed-Loop Lifecycle");
   const lifecycle = report.entryOrderLifecycle;
   lines.push(`- source: \`${lifecycle.sourceReport}\``);
-  lines.push(`- status: \`${lifecycle.status}\` | rows=\`${lifecycle.summary.totalLifecycleRows}\` | blockers=\`${lifecycle.summary.lifecycleBlockerRows}\` | unknown=\`${lifecycle.summary.lifecycleUnknownRows}\``);
-  lines.push("| Symbol | Classification | State | Ledger | Idempotency | Fillability | Duplicate | Blocker | Next Action |");
-  lines.push("|---|---|---|---|---|---|---|---|---|");
+  lines.push(`- contract: \`${lifecycle.contractVersion}\` / \`${lifecycle.contractScope}\``);
+  lines.push(`- status: \`${lifecycle.status}\` | evidence=\`${lifecycle.summary.closedLoopEvidenceStatus}\` | rows=\`${lifecycle.summary.totalLifecycleRows}\` | closedLoop=\`${lifecycle.summary.closedLoopRows}\` | pnlVerified=\`${lifecycle.summary.realizedPnlVerifiedRows}\``);
+  lines.push(`- integrity: \`duplicateOpen=${lifecycle.summary.duplicateOpenRows} idempotencyConflict=${lifecycle.summary.idempotencyConflictRows} terminalMismatch=${lifecycle.summary.terminalLedgerMismatchRows} unknown=${lifecycle.summary.lifecycleUnknownRows}\``);
+  lines.push("| Symbol | Classification | Entry State | Exit State | Protected | P&L Evidence | Blocker Domain | Next Action |");
+  lines.push("|---|---|---|---|---|---|---|---|");
   for (const row of lifecycle.rows) {
-    lines.push(`| ${row.symbol} | \`${row.classification}\` | \`${row.normalizedState || "N/A"}\` | \`${row.ledgerStatus || "N/A"}\` | \`${row.idempotencyBrokerStatus || "N/A"}\` | \`${row.fillabilityStatus || "N/A"}\` | \`${row.duplicateOpenStatus}\` | ${row.blocker || "none"} | ${row.nextLifecycleAction} |`);
+    lines.push(`| ${row.symbol} | \`${row.classification}\` | \`${row.normalizedState || row.ledgerStatus || "N/A"}\` | \`${row.exitLedgerStatus || row.exitIdempotencyBrokerStatus || "N/A"}\` | \`${row.protectionConfirmed}\` | \`${row.realizedPnlEvidence.status}\` | \`${row.blockerDomain}\` | ${row.nextLifecycleAction} |`);
   }
   lines.push("");
   lines.push("### Blocker Split");
