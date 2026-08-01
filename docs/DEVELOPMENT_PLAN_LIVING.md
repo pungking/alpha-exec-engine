@@ -1363,3 +1363,24 @@ Done-When:
 - Root-cause, guard-source, persistent OCO, live-readiness, and ops-health blocker counts all match.
 - Preserved or report-only recovery evidence does not become repair eligibility without the applied-fresh-source contract.
 - All broker/state mutation flags remain false.
+
+### 2026-08-01 - Symbol-Agnostic PAPER Closed-Loop Lifecycle Scorecard v3
+
+- Scope: report-only PAPER readiness audit; no broker or state mutation.
+- `live-readiness-scorecard.json` advances from schema `2.0.0` to `3.0.0` while retaining the canonical `entryOrderLifecycle` field.
+- Lifecycle rows now cover `ENTRY_SUBMITTED`, `OPEN_WAITING`, `FILLED_UNPROTECTED`, `FILLED_PROTECTED`, `EXIT_PENDING`, `EXITED_TERMINAL_RECONCILED`, `EXPIRED_OR_CANCELED_RECONCILED`, and `TERMINAL_RECONCILIATION_REQUIRED`.
+- Compatibility summary aliases remain available, but readiness verdicts use the closed-loop state counts.
+- Future ledger and idempotency rows add `actionType`, `executionSide`, and `submittedQty`; no existing state is migrated or rewritten.
+- Realized PAPER P&L is verified only when entry price, exit price, quantity, spread, slippage, commission, gross P&L, and net P&L are present and formula-consistent.
+- Filled-position protection gaps remain owned by `protective_order_guard_metadata` and are not duplicated as lifecycle blockers.
+- `MICRO_LIVE_REVIEW_READY` requires at least one reconciled entry-to-exit row with verified realized P&L; open/waiting evidence alone cannot satisfy it.
+- Natural RTH baseline run `30656429698` classified 22 dynamic rows: 10 open waiting, 3 filled protected, 5 filled unprotected, and 4 expired/canceled reconciled. Exit evidence and verified realized P&L were both zero, so the runtime remains `ENTRY_ONLY_EVIDENCE` and `BLOCKED`.
+- Baseline safety remained `READ_ONLY=true`, `EXEC_ENABLED=false`, with all broker/state mutation attempt and submission flags false.
+
+Done-When:
+
+- Every dynamic PAPER row has exactly one lifecycle classification and unknown/unclassified counts are zero.
+- Duplicate-open, idempotency-conflict, terminal-ledger-mismatch, and realized-P&L formula failures are reported separately.
+- Protection, ownership, ledger, and lifecycle blocker domains are not double-counted.
+- A future PAPER exit can be attributed to its actual broker side and lifecycle action without migrating historical ledgers.
+- Any actual PAPER mutation remains behind a separate exact `CONFIRM LIVE EXECUTION` approval.
