@@ -1371,7 +1371,7 @@ Done-When:
 - Lifecycle rows now cover `ENTRY_SUBMITTED`, `OPEN_WAITING`, `FILLED_UNPROTECTED`, `FILLED_PROTECTED`, `EXIT_PENDING`, `EXITED_TERMINAL_RECONCILED`, `EXPIRED_OR_CANCELED_RECONCILED`, and `TERMINAL_RECONCILIATION_REQUIRED`.
 - Compatibility summary aliases remain available, but readiness verdicts use the closed-loop state counts.
 - Future ledger and idempotency rows add `actionType`, `executionSide`, and `submittedQty`; no existing state is migrated or rewritten.
-- Realized PAPER P&L is verified only when entry price, exit price, quantity, spread, slippage, commission, gross P&L, and net P&L are present and formula-consistent.
+- Realized PAPER P&L is verified only from sidecar-owned broker entry/exit fills, matched quantity, direction, terminal evidence, idempotency, and the explicit-fee contract; simulation rows remain proxy evidence.
 - Filled-position protection gaps remain owned by `protective_order_guard_metadata` and are not duplicated as lifecycle blockers.
 - `MICRO_LIVE_REVIEW_READY` requires at least one reconciled entry-to-exit row with verified realized P&L; open/waiting evidence alone cannot satisfy it.
 - Natural RTH baseline run `30656429698` classified 22 dynamic rows: 10 open waiting, 3 filled protected, 5 filled unprotected, and 4 expired/canceled reconciled. Exit evidence and verified realized P&L were both zero, so the runtime remains `ENTRY_ONLY_EVIDENCE` and `BLOCKED`.
@@ -1400,3 +1400,19 @@ Done-When:
 - All dynamic filled positions receive exactly one exit-readiness state with unknown rows equal to zero.
 - No canary is selected while the exit producer is disabled or safety evidence is incomplete.
 - A canary package, if generated later, remains report-only and requires scoped `CONFIRM LIVE EXECUTION` before any PAPER cancel or submit.
+
+### 2026-08-01 - PAPER Fill-to-Fill Realized P&L Contract
+
+- Scope: report-only performance and readiness evidence; no exit-policy, repository-variable, broker, ledger, or state mutation.
+- `performance-dashboard.json.realizedPnl` matches sidecar-owned Alpaca closed orders through existing ledger/idempotency IDs, including nested bracket children, and uses FIFO quantity matching for long, short, partial, and repeated fills.
+- Actual gross P&L uses broker `filled_avg_price`; net realized P&L subtracts explicit broker fees only. Spread and slippage are separate reference-price attribution fields and are never deducted again from actual fill-to-fill P&L.
+- PAPER rows with no commission field are labeled `PAPER_PLATFORM_COSTS_NOT_MODELED`; non-PAPER rows without fee evidence remain blocked.
+- `live-readiness-scorecard.json` no longer promotes simulation/manual proxy rows to verified broker realized P&L.
+- Public Markdown and CI summaries contain lifecycle counts and verdicts only; position quantity, value, account equity, symbol-level live P&L, and account identifiers stay out of summaries.
+
+Done-When:
+
+- Long/short, full/partial, nested, multi-fill, fee-missing, quantity-mismatch, proxy-only, deterministic, and rename-invariance fixtures pass.
+- `costDoubleCountViolationRows=0` and every realized P&L row has one explicit status.
+- Exit producer configuration remains report-only and no broker/state mutation flag is set.
+- The first natural RTH artifact after merge is checked once; absence of that artifact is `pending_natural_runtime_proof`, not a code failure.

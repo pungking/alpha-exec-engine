@@ -270,7 +270,7 @@ jobs:
             state/persistent-oco-repair-submit-report.json
             state/persistent-oco-repair-submit-report.md
             state/persistent-oco-repair-submit-ledger.json
-            state/performance-dashboard.json
+            state/performance-dashboard-public.json
             state/performance-dashboard.md
             state/broker-child-order-reconciliation.json
             state/broker-child-order-reconciliation.md

@@ -109,6 +109,7 @@ function collectMutationSignals(reports) {
   add("guardSourceRecovery", reports.guardSourceRecovery?.summary?.brokerMutationAttempted, reports.guardSourceRecovery?.summary?.brokerMutationSubmitted);
   add("guardMetadataLineage", reports.guardMetadataLineage?.summary?.brokerMutationAttempted, reports.guardMetadataLineage?.summary?.brokerMutationSubmitted);
   add("persistentOcoRepair", reports.persistentOcoRepair?.summary?.brokerMutationAttempted, reports.persistentOcoRepair?.summary?.brokerMutationSubmitted);
+  add("performance.realizedPnl", reports.performance?.realizedPnl?.brokerMutationAttempted, reports.performance?.realizedPnl?.brokerMutationSubmitted);
   add("positionOwnershipStateMigrationReview", reports.positionOwnershipStateMigrationReview?.summary?.brokerMutationAttempted, reports.positionOwnershipStateMigrationReview?.summary?.brokerMutationSubmitted);
   add("multiOcoSubmitGate", reports.multiOcoSubmitGate?.summary?.brokerMutationAttempted, reports.multiOcoSubmitGate?.summary?.brokerMutationSubmitted);
   return signals;
@@ -123,6 +124,7 @@ function collectStateMutationSignals(reports) {
   add("guardSourceRecovery", reports.guardSourceRecovery?.summary?.stateMutationAttempted, reports.guardSourceRecovery?.summary?.stateMutationApplied);
   add("guardMetadataLineage", reports.guardMetadataLineage?.summary?.stateMutationAttempted, reports.guardMetadataLineage?.summary?.stateMutationApplied);
   add("persistentOcoRepair", reports.persistentOcoRepair?.summary?.stateMutationAttempted, reports.persistentOcoRepair?.summary?.stateMutationSubmitted);
+  add("performance.realizedPnl", reports.performance?.realizedPnl?.stateMutationAttempted, reports.performance?.realizedPnl?.stateMutationSubmitted);
   add("positionOwnershipRecoveryDecision", reports.positionOwnershipRecoveryDecision?.summary?.stateMutationAttempted, reports.positionOwnershipRecoveryDecision?.summary?.stateMutationApplied);
   add("positionOwnershipStateMigrationReview", reports.positionOwnershipStateMigrationReview?.summary?.stateMutationAttempted, reports.positionOwnershipStateMigrationReview?.summary?.stateMutationApplied);
   return signals;
@@ -198,8 +200,8 @@ function finiteNumber(value) {
 }
 
 function isExitEvidence(row) {
-  return EXIT_ACTIONS.has(String(row?.actionType || "").trim().toUpperCase())
-    || normalizedStatus(row?.executionSide) === "sell";
+  const actionType = String(row?.actionType || "").trim().toUpperCase();
+  return actionType ? EXIT_ACTIONS.has(actionType) : normalizedStatus(row?.executionSide) === "sell";
 }
 
 function statusClass(value) {
@@ -220,60 +222,75 @@ function hasIdempotencyConflict(ledgerRow, idempotencyRow) {
   return Boolean(ledgerClass && idempotencyClass && ledgerClass !== idempotencyClass);
 }
 
-function buildRealizedPnlEvidence(row) {
-  if (!row || finiteNumber(row?.exitPrice) == null) {
+function buildRealizedPnlEvidence(row, proxyRow = null) {
+  if (!row) {
     return {
-      status: "NO_EXIT_PNL_EVIDENCE",
+      status: proxyRow ? "SIMULATION_OR_PROXY_ONLY" : "NO_EXIT_PNL_EVIDENCE",
       source: "performance-dashboard.json",
+      sourceType: proxyRow ? "SIMULATION_OR_PROXY" : null,
       entryPricePresent: false,
       exitPricePresent: false,
       quantityPresent: false,
-      spreadCostPresent: false,
-      slippageCostPresent: false,
-      commissionPresent: false,
+      explicitFeePresent: false,
       grossFormulaMatches: null,
       netFormulaMatches: null,
+      costDoubleCountViolation: false,
     };
   }
-  const entryPrice = finiteNumber(row?.entryFilled ?? row?.entryPrice);
-  const exitPrice = finiteNumber(row?.exitPrice);
-  const signedQuantity = finiteNumber(row?.qty ?? row?.quantity ?? row?.filledQty);
-  const quantity = signedQuantity == null ? null : Math.abs(signedQuantity);
-  const sideToken = normalizedStatus(row?.positionSide ?? row?.entrySide ?? row?.entryExecutionSide ?? row?.side);
-  const direction = sideToken === "short" || sideToken === "sell" || (signedQuantity != null && signedQuantity < 0)
-    ? "short"
-    : sideToken === "long" || sideToken === "buy" || (signedQuantity != null && signedQuantity > 0)
-      ? "long"
-      : null;
-  const spreadCost = finiteNumber(row?.spreadCost);
-  const slippageCost = finiteNumber(row?.slippageCost);
-  const commission = finiteNumber(row?.commission);
-  const reportedGross = finiteNumber(row?.grossPnl ?? row?.realizedGrossPnl);
-  const reportedNet = finiteNumber(row?.realizedPnl ?? row?.netRealizedPnl);
-  const complete = [entryPrice, exitPrice, quantity, spreadCost, slippageCost, commission, reportedGross, reportedNet]
-    .every((value) => value != null);
+  const sourceType = String(row?.sourceType || "").trim().toUpperCase();
+  const brokerFillSource = ["ALPACA_PAPER_BROKER_FILLS", "ALPACA_BROKER_FILLS"].includes(sourceType);
+  if (!brokerFillSource) return buildRealizedPnlEvidence(null, row);
+  const entryPrice = finiteNumber(row?.weightedEntryFillPrice);
+  const exitPrice = finiteNumber(row?.weightedExitFillPrice);
+  const quantity = finiteNumber(row?.matchedQuantity);
+  const direction = ["long", "short"].includes(normalizedStatus(row?.direction)) ? normalizedStatus(row?.direction) : null;
+  const explicitFees = finiteNumber(row?.explicitBrokerFees);
+  const reportedGross = finiteNumber(row?.actualFillGrossPnl);
+  const reportedNet = finiteNumber(row?.brokerNetRealizedPnl);
+  const feeEvidenceStatus = String(row?.feeEvidenceStatus || "").trim().toUpperCase();
+  const feeEvidenceValid = feeEvidenceStatus === "EXPLICIT_BROKER_FEE"
+    || (sourceType === "ALPACA_PAPER_BROKER_FILLS" && feeEvidenceStatus === "PAPER_PLATFORM_COSTS_NOT_MODELED");
+  const complete = [entryPrice, exitPrice, quantity, explicitFees, reportedGross, reportedNet].every((value) => value != null)
+    && quantity > 0
+    && Boolean(direction)
+    && row?.entryOrderIdsPresent === true
+    && row?.exitOrderIdsPresent === true
+    && row?.terminalExit === true
+    && row?.idempotencyVerdict === "PASS"
+    && row?.actualPriceBasis === "BROKER_FILLED_AVG_PRICE"
+    && feeEvidenceValid
+    && row?.costDoubleCountViolation !== true;
   const calculatedGross = complete && direction
     ? (direction === "short" ? entryPrice - exitPrice : exitPrice - entryPrice) * quantity
     : null;
-  const calculatedNet = calculatedGross != null ? calculatedGross - spreadCost - slippageCost - commission : null;
+  const calculatedNet = calculatedGross != null ? calculatedGross - explicitFees : null;
   const grossFormulaMatches = calculatedGross != null ? Math.abs(calculatedGross - reportedGross) <= 0.01 : null;
   const netFormulaMatches = calculatedNet != null ? Math.abs(calculatedNet - reportedNet) <= 0.01 : null;
+  const producerStatus = String(row?.status || "").trim().toUpperCase();
+  const status = producerStatus === "PARTIAL_EXIT_PNL_ONLY"
+    ? "PARTIAL_EXIT_PNL_ONLY"
+    : producerStatus !== "VERIFIED_NET_REALIZED_PNL"
+      ? producerStatus || "EXIT_FILL_EVIDENCE_INCOMPLETE"
+      : complete && grossFormulaMatches && netFormulaMatches
+        ? "VERIFIED_NET_REALIZED_PNL"
+        : complete
+          ? "REALIZED_PNL_COST_MISMATCH"
+          : "EXIT_FILL_EVIDENCE_INCOMPLETE";
   return {
-    status: complete && grossFormulaMatches && netFormulaMatches
-      ? "VERIFIED_NET_REALIZED_PNL"
-      : complete
-        ? "REALIZED_PNL_COST_MISMATCH"
-        : "REALIZED_PNL_COST_EVIDENCE_INCOMPLETE",
+    status,
     source: "performance-dashboard.json",
+    sourceType,
     direction,
     entryPricePresent: entryPrice != null,
     exitPricePresent: exitPrice != null,
     quantityPresent: quantity != null,
-    spreadCostPresent: spreadCost != null,
-    slippageCostPresent: slippageCost != null,
-    commissionPresent: commission != null,
+    explicitFeePresent: explicitFees != null,
+    actualPriceBasis: row?.actualPriceBasis || null,
+    feeEvidenceStatus: row?.feeEvidenceStatus || null,
+    spreadAndSlippageAreAttributionOnly: true,
     grossFormulaMatches,
     netFormulaMatches,
+    costDoubleCountViolation: row?.costDoubleCountViolation === true,
   };
 }
 
@@ -311,6 +328,9 @@ function buildEntryOrderLifecycle({
   const protectionBySymbol = latestEvidenceBySymbol(rowsArray(positionProtectionAudit));
   const brokerChildrenBySymbol = latestEvidenceBySymbol(rowsArray(brokerChildReconciliation));
   const performanceBySymbol = latestEvidenceBySymbol(
+    Array.isArray(performance?.realizedPnl?.rows) ? performance.realizedPnl.rows : []
+  );
+  const proxyPerformanceBySymbol = latestEvidenceBySymbol(
     Array.isArray(performance?.simulation?.rows) ? performance.simulation.rows : []
   );
   const symbols = [...new Set([
@@ -334,6 +354,7 @@ function buildEntryOrderLifecycle({
     const protectionRow = protectionBySymbol.get(symbol) || null;
     const brokerChildrenRow = brokerChildrenBySymbol.get(symbol) || null;
     const performanceRow = performanceBySymbol.get(symbol) || null;
+    const proxyPerformanceRow = proxyPerformanceBySymbol.get(symbol) || null;
     const orderStateStatus = String(stateRow?.status || "").toUpperCase() || null;
     const orderStateCategory = String(stateRow?.category || "").toUpperCase() || null;
     const normalizedState = normalizedStatus(stateRow?.normalized);
@@ -401,7 +422,7 @@ function buildEntryOrderLifecycle({
     const brokerStopPresent = protectionRow?.brokerStopPresent === true || brokerChildrenRow?.brokerStopPresent === true;
     const brokerTargetPresent = protectionRow?.brokerTargetPresent === true || brokerChildrenRow?.brokerTargetPresent === true;
     const protectionConfirmed = positionObserved && brokerStopPresent && brokerTargetPresent;
-    const realizedPnlEvidence = buildRealizedPnlEvidence(performanceRow);
+    const realizedPnlEvidence = buildRealizedPnlEvidence(performanceRow, proxyPerformanceRow);
     const realizedPnlVerified = realizedPnlEvidence.status === "VERIFIED_NET_REALIZED_PNL";
     if (exitFilled && !partialExit && positionObserved) terminalReconciliationRequired = true;
     if (exitFilled && !partialExit && !positionObserved && !realizedPnlVerified) terminalReconciliationRequired = true;
@@ -716,12 +737,12 @@ function buildPaperExitReadiness({
   const count = (classification) => rows.filter((row) => row.classification === classification).length;
   const readyRows = rows.filter((row) => row.classification === "EXIT_READY_REPORT_ONLY");
   const selected = readyRows[0] || null;
-  const simulationRows = Array.isArray(performance?.simulation?.rows) ? performance.simulation.rows : [];
-  const closedPerformanceRows = simulationRows.filter((row) => finiteNumber(row?.exitPrice) != null);
-  const costAwarePerformanceRows = closedPerformanceRows.filter((row) =>
-    [row?.qty ?? row?.quantity ?? row?.filledQty, row?.spreadCost, row?.slippageCost, row?.commission, row?.grossPnl ?? row?.realizedGrossPnl, row?.realizedPnl ?? row?.netRealizedPnl]
-      .every((value) => finiteNumber(value) != null)
-  );
+  const realizedPnlRows = Array.isArray(performance?.realizedPnl?.rows) ? performance.realizedPnl.rows : [];
+  const verifiedPnlRows = realizedPnlRows.filter((row) => row?.status === "VERIFIED_NET_REALIZED_PNL");
+  const partialPnlRows = realizedPnlRows.filter((row) => row?.status === "PARTIAL_EXIT_PNL_ONLY");
+  const simulationProxyRows = Array.isArray(performance?.simulation?.rows)
+    ? performance.simulation.rows.filter((row) => finiteNumber(row?.exitPrice) != null)
+    : [];
   const primaryRootCause = rows.length === 0
     ? "HELD_POSITION_LINEAGE_MISSING"
     : !producerReady
@@ -747,10 +768,15 @@ function buildPaperExitReadiness({
       actionTypeConfigured: Object.fromEntries(requiredExitActions.map((action) => [action, producerReady && allowedActionTypes.includes(action)])),
     },
     realizedPnlProducer: {
-      status: costAwarePerformanceRows.length > 0 ? "REALIZED_PNL_PRODUCER_READY" : "REALIZED_PNL_PRODUCER_GAP",
-      closedPerformanceRows: closedPerformanceRows.length,
-      costAwarePerformanceRows: costAwarePerformanceRows.length,
-      requiredEvidence: ["entry_fill_price", "exit_fill_price", "signed_or_directional_quantity", "spread_cost", "slippage_cost", "commission", "gross_realized_pnl", "net_realized_pnl"],
+      status: performance?.realizedPnl?.status || "REALIZED_PNL_PRODUCER_GAP",
+      brokerFillRows: realizedPnlRows.length,
+      verifiedNetRows: verifiedPnlRows.length,
+      partialExitRows: partialPnlRows.length,
+      simulationProxyRowsIgnored: simulationProxyRows.length,
+      costDoubleCountViolationRows: asNumber(performance?.realizedPnl?.summary?.costDoubleCountViolationRows, 0),
+      requiredEvidence: ["verified_entry_fill", "verified_exit_fill", "matched_quantity", "direction", "explicit_broker_fee_contract", "terminal_exit", "idempotency_pass"],
+      netFormula: "actual_fill_gross_pnl_minus_explicit_broker_fees",
+      spreadAndSlippagePolicy: "reference_attribution_only_not_deducted_from_actual_fill_pnl",
     },
     summary: {
       filledPositionRows: rows.length,
