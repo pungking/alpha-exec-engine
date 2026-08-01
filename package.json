@@ -82,6 +82,7 @@
     "ops:protection-blocker-reduction": "node scripts/build-protection-blocker-reduction-plan.mjs",
     "ops:test:ownership-gates": "node scripts/test-ownership-recovery-safety-gates.mjs",
     "ops:test:live-readiness-blockers": "node scripts/test-live-readiness-blocker-separation.mjs",
+    "ops:test:paper-exit-liveness": "npm run build && LIFECYCLE_SELFTEST=true LIFECYCLE_SELFTEST_ONLY=true POSITION_LIFECYCLE_ENABLED=true POSITION_LIFECYCLE_PREVIEW_ONLY=false POSITION_LIFECYCLE_ACTION_TYPES=ENTRY_NEW,HOLD_WAIT,SCALE_UP,SCALE_DOWN,EXIT_PARTIAL,EXIT_FULL node dist/src/index.js",
     "ops:test:protection-lanes": "node scripts/test-position-protection-lane-classification.mjs",
     "ops:test:protection-report": "node scripts/test-position-protection-report-classification.mjs",
     "ops:test:guard-source-recovery-status": "node scripts/test-guard-source-recovery-status.mjs && node scripts/test-position-lifecycle-guard-source-lineage.mjs",

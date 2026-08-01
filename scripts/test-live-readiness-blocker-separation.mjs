@@ -81,6 +81,7 @@ writeJson("last-dry-exec-preview.json", {
   stage6Hash: "abc123",
   stage6File: "STAGE6_ALPHA_FINAL_TEST.json",
   payloadCount: 0,
+  actionIntent: { enabled: true, previewOnly: true, allowedActionTypes: ["ENTRY_NEW", "HOLD_WAIT"], counts: {} },
   mode: { readOnly: true, execEnabled: false },
   brokerSubmission: { attempted: false, submitted: false },
   orderDecisionAudit: {
@@ -88,6 +89,7 @@ writeJson("last-dry-exec-preview.json", {
   },
 });
 writeLifecycleFixtures(stateDir);
+writeJson("performance-dashboard.json", { live: { available: true, positions: [{ symbol: lifecycleSymbols.filled, qty: 1, side: "long" }] }, simulation: { rows: [] } });
 writeJson("last-order-decision-audit.json", { records: [{ symbol: "AAA", status: "skipped", reason: "quality_gate" }] });
 writeJson("ops-health-report.json", {
   overall: "fail",
@@ -221,6 +223,12 @@ assert.equal(report.entryOrderLifecycle.summary.lifecycleUnknownRows, 0);
 assert.equal(report.entryOrderLifecycle.summary.unclassifiedRows, 0);
 assert.equal(report.entryOrderLifecycle.summary.buyOnlyLifecycle, true);
 assert.equal(report.entryOrderLifecycle.summary.closedLoopEvidenceStatus, "ENTRY_ONLY_EVIDENCE");
+assert.equal(report.paperExitReadiness.primaryRootCause, "EXIT_ACTION_PRODUCER_DISABLED");
+assert.deepEqual(report.paperExitReadiness.producerLiveness.missingExitActions, ["SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"]);
+assert.equal(report.paperExitReadiness.summary.filledPositionRows, 1);
+assert.equal(report.paperExitReadiness.summary.exitEvidenceIncompleteRows, 1);
+assert.equal(report.paperExitReadiness.canaryApprovalPackage.status, "NO_SAFE_EXIT_CANARY_AVAILABLE");
+assert.equal(report.paperExitReadiness.realizedPnlProducer.status, "REALIZED_PNL_PRODUCER_GAP");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "FILL").classification, "FILLED_UNPROTECTED");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "OPEN").classification, "OPEN_WAITING");
 assert.equal(report.entryOrderLifecycle.rows.find((row) => row.symbol === "TERM").classification, "EXPIRED_OR_CANCELED_RECONCILED");
@@ -419,6 +427,93 @@ assert.equal(activeLifecycleReport.entryOrderLifecycle.rows.find((row) => row.sy
 assert.equal(activeLifecycleReport.entryOrderLifecycle.summary.idempotencyConflictRows, 0);
 assert.equal(activeLifecycleReport.entryOrderLifecycle.summary.terminalLedgerMismatchRows, 0);
 
+const exitReadinessStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-readiness-"));
+const exitSymbols = ["IDEMP", "LONG_FULL", "LONG_PART", "NO_DUE", "OWNER", "PROTECTED", "SCALE_SAFE", "SHORT_FULL"];
+writeJsonAt(exitReadinessStateDir, "last-dry-exec-preview.json", {
+  stage6Hash: "exit123",
+  stage6File: "STAGE6_ALPHA_FINAL_EXIT.json",
+  mode: { readOnly: true, execEnabled: false },
+  preflight: { code: "PREFLIGHT_PASS", blocking: false },
+  actionIntent: {
+    enabled: true,
+    previewOnly: false,
+    allowedActionTypes: ["ENTRY_NEW", "HOLD_WAIT", "SCALE_UP", "SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"],
+    counts: { SCALE_DOWN: 1, EXIT_PARTIAL: 1, EXIT_FULL: 5 },
+  },
+  brokerSubmission: { attempted: false, submitted: false },
+  payloads: [
+    { symbol: "IDEMP", actionType: "EXIT_FULL", actionReason: "blocked_risk" },
+    { symbol: "LONG_FULL", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+    { symbol: "LONG_PART", actionType: "EXIT_PARTIAL", actionReason: "stage6_partial_exit_verdict" },
+    { symbol: "OWNER", actionType: "EXIT_FULL", actionReason: "blocked_risk" },
+    { symbol: "PROTECTED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+    { symbol: "SCALE_SAFE", actionType: "SCALE_DOWN", actionReason: "stale_hold_scale_down" },
+    { symbol: "SHORT_FULL", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+  ],
+  skipped: [],
+});
+writeJsonAt(exitReadinessStateDir, "performance-dashboard.json", {
+  live: { available: true, positions: exitSymbols.map((symbol) => ({ symbol, qty: symbol === "SHORT_FULL" ? -2 : 2, side: symbol === "SHORT_FULL" ? "short" : "long" })) },
+  simulation: { rows: [] },
+});
+writeJsonAt(exitReadinessStateDir, "position-protection-root-cause-audit.json", {
+  summary: { protectionBlockerRows: 1, ownershipBlockerRows: 1, ledgerBlockerRows: 0, classifiedRows: exitSymbols.length, unclassifiedRows: 0 },
+  rows: exitSymbols.map((symbol) => ({
+    symbol,
+    normalizedFillState: "filled",
+    ownershipClassification: symbol === "OWNER" ? "EXTERNAL_OR_MANUAL_POSITION" : "SIDECAR_MANAGED_FILLED",
+    brokerStopPresent: symbol === "PROTECTED",
+    brokerTargetPresent: symbol === "PROTECTED",
+    protectionLane: symbol === "OWNER" ? "OWNERSHIP_PROOF_REQUIRED" : symbol === "PROTECTED" ? "BROKER_CHILDREN_PRESENT_OR_NOT_REQUIRED" : "FRESH_GUARD_SOURCE_REQUIRED",
+    blockerDomain: symbol === "OWNER" ? "ownership" : symbol === "PROTECTED" ? "none" : "protection",
+  })),
+});
+writeJsonAt(exitReadinessStateDir, "broker-child-order-reconciliation.json", {
+  summary: { missingStopChildren: 0, missingTargetChildren: 0 },
+  rows: exitSymbols.map((symbol) => ({
+    symbol,
+    normalizedFillState: "filled",
+    ownershipClassification: symbol === "OWNER" ? "EXTERNAL_OR_MANUAL_POSITION" : "SIDECAR_MANAGED_FILLED",
+    brokerStopPresent: symbol === "PROTECTED",
+    brokerTargetPresent: symbol === "PROTECTED",
+  })),
+});
+writeJsonAt(exitReadinessStateDir, "order-ledger.json", { orders: {
+  "idemp-exit": { symbol: "IDEMP", actionType: "EXIT_FULL", executionSide: "sell", status: "submitted", brokerOrderId: "ledger-exit" },
+} });
+writeJsonAt(exitReadinessStateDir, "order-idempotency.json", { orders: {
+  "idemp-exit": { symbol: "IDEMP", actionType: "EXIT_FULL", executionSide: "sell", brokerStatus: "submitted", brokerOrderId: "idempotency-exit" },
+} });
+const exitReadinessReport = runScorecard(exitReadinessStateDir);
+assert.equal(exitReadinessReport.paperExitReadiness.primaryRootCause, null);
+assert.equal(exitReadinessReport.paperExitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration, true);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.filledPositionRows, 8);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.exitReadyReportOnlyRows, 4);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.exitNotDueRows, 1);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.exitBlockedProtectionConflictRows, 1);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.exitBlockedOwnershipRows, 1);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.exitBlockedLedgerOrIdempotencyRows, 1);
+assert.equal(exitReadinessReport.paperExitReadiness.summary.unknownRows, 0);
+assert.equal(exitReadinessReport.paperExitReadiness.rows.find((row) => row.symbol === "SHORT_FULL").expectedExecutionSide, "buy");
+assert.equal(exitReadinessReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").expectedExecutionSide, "sell");
+assert.equal(exitReadinessReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_PART").expectedExitQuantityPolicy, "CONFIGURED_EXIT_PARTIAL_RATIO");
+assert.equal(exitReadinessReport.paperExitReadiness.rows.find((row) => row.symbol === "SCALE_SAFE").expectedExitQuantityPolicy, "CONFIGURED_SCALE_DOWN_RATIO");
+assert.equal(exitReadinessReport.paperExitReadiness.canaryApprovalPackage.status, "REPORT_ONLY_PAPER_EXIT_CANARY_APPROVAL_PACKAGE_READY");
+assert.equal(exitReadinessReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 1);
+assert.equal(exitReadinessReport.paperExitReadiness.canaryApprovalPackage.brokerMutationAllowed, false);
+
+const marketClosedStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-market-closed-"));
+for (const fileName of fs.readdirSync(exitReadinessStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(exitReadinessStateDir, fileName), path.join(marketClosedStateDir, fileName));
+}
+const marketClosedPreview = JSON.parse(fs.readFileSync(path.join(marketClosedStateDir, "last-dry-exec-preview.json"), "utf8"));
+marketClosedPreview.preflight = { code: "PREFLIGHT_MARKET_CLOSED", blocking: true };
+writeJsonAt(marketClosedStateDir, "last-dry-exec-preview.json", marketClosedPreview);
+const marketClosedReport = runScorecard(marketClosedStateDir);
+assert.ok(marketClosedReport.paperExitReadiness.summary.exitBlockedMarketSessionRows >= 4);
+assert.equal(marketClosedReport.paperExitReadiness.canaryApprovalPackage.status, "NO_SAFE_EXIT_CANARY_AVAILABLE");
+
 const pnlMismatchStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-pnl-mismatch-"));
 for (const fileName of fs.readdirSync(microLiveStateDir)) {
   if (fileName.startsWith("live-readiness-scorecard.")) continue;
@@ -430,6 +525,42 @@ writeJsonAt(pnlMismatchStateDir, "performance-dashboard.json", mismatchedPerform
 const pnlMismatchReport = runScorecard(pnlMismatchStateDir);
 assert.equal(pnlMismatchReport.entryOrderLifecycle.rows[0].classification, "TERMINAL_RECONCILIATION_REQUIRED");
 assert.equal(pnlMismatchReport.entryOrderLifecycle.rows[0].realizedPnlEvidence.status, "REALIZED_PNL_COST_MISMATCH");
+
+const shortPnlStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-short-pnl-"));
+for (const fileName of fs.readdirSync(microLiveStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(microLiveStateDir, fileName), path.join(shortPnlStateDir, fileName));
+}
+const shortPerformance = JSON.parse(fs.readFileSync(path.join(shortPnlStateDir, "performance-dashboard.json"), "utf8"));
+Object.assign(shortPerformance.simulation.rows[0], {
+  positionSide: "short",
+  entryFilled: 100,
+  exitPrice: 90,
+  qty: -2,
+  grossPnl: 20,
+  realizedPnl: 18,
+});
+writeJsonAt(shortPnlStateDir, "performance-dashboard.json", shortPerformance);
+const shortPnlReport = runScorecard(shortPnlStateDir);
+assert.equal(shortPnlReport.entryOrderLifecycle.rows[0].realizedPnlEvidence.direction, "short");
+assert.equal(shortPnlReport.entryOrderLifecycle.rows[0].realizedPnlEvidence.status, "VERIFIED_NET_REALIZED_PNL");
+
+const renamedExitStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-renamed-"));
+const renameSymbols = (value) => {
+  if (Array.isArray(value)) return value.map(renameSymbols);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameSymbols(item)]));
+  if (typeof value !== "string") return value;
+  const index = exitSymbols.indexOf(value);
+  return index >= 0 ? `RENAMED_${index}` : value;
+};
+for (const fileName of fs.readdirSync(exitReadinessStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  const payload = JSON.parse(fs.readFileSync(path.join(exitReadinessStateDir, fileName), "utf8"));
+  writeJsonAt(renamedExitStateDir, fileName, renameSymbols(payload));
+}
+const renamedExitReport = runScorecard(renamedExitStateDir);
+assert.deepEqual(renamedExitReport.paperExitReadiness.summary, exitReadinessReport.paperExitReadiness.summary);
+assert.equal(renamedExitReport.paperExitReadiness.primaryRootCause, exitReadinessReport.paperExitReadiness.primaryRootCause);
 
 const renamedStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-renamed-lifecycle-"));
 for (const fileName of fs.readdirSync(stateDir)) {

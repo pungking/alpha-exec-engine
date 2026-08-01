@@ -1384,3 +1384,19 @@ Done-When:
 - Protection, ownership, ledger, and lifecycle blocker domains are not double-counted.
 - A future PAPER exit can be attributed to its actual broker side and lifecycle action without migrating historical ledgers.
 - Any actual PAPER mutation remains behind a separate exact `CONFIRM LIVE EXECUTION` approval.
+
+### 2026-08-01 - PAPER Exit Producer Liveness Audit
+
+- Scope: report-only exit readiness; no broker, child-order, ledger, or state mutation.
+- The entry-only runtime root cause is configuration, not missing exit policy code: automatic runs currently use `POSITION_LIFECYCLE_PREVIEW_ONLY=true` and allow only `ENTRY_NEW,HOLD_WAIT`, so held-position exit evaluation cannot run.
+- `last-dry-exec-preview.json` now preserves `actionIntent`; `live-readiness-scorecard.json.paperExitReadiness` classifies dynamic filled positions as not due, report-only ready, protection-conflicted, ownership-blocked, ledger/idempotency-blocked, market-session-blocked, or evidence-incomplete.
+- Production self-test covers `SCALE_DOWN`, `EXIT_PARTIAL`, `EXIT_FULL`, long sell, short buy-to-cover, partial ratios, and the over-exit guard without contacting Drive or a broker.
+- Direct exits with broker protective children remain blocked pending a cancel-confirm-exit-residual-verify plan and exact PAPER execution approval.
+- The current performance producer lacks complete signed quantity and spread/slippage/commission realized-P&L evidence, so it is explicitly classified as `REALIZED_PNL_PRODUCER_GAP` rather than reporting proxy P&L as realized.
+
+Done-When:
+
+- Runtime preview exposes the effective lifecycle configuration and action counts.
+- All dynamic filled positions receive exactly one exit-readiness state with unknown rows equal to zero.
+- No canary is selected while the exit producer is disabled or safety evidence is incomplete.
+- A canary package, if generated later, remains report-only and requires scoped `CONFIRM LIVE EXECUTION` before any PAPER cancel or submit.
