@@ -237,7 +237,14 @@ function buildRealizedPnlEvidence(row) {
   }
   const entryPrice = finiteNumber(row?.entryFilled ?? row?.entryPrice);
   const exitPrice = finiteNumber(row?.exitPrice);
-  const quantity = finiteNumber(row?.qty ?? row?.quantity ?? row?.filledQty);
+  const signedQuantity = finiteNumber(row?.qty ?? row?.quantity ?? row?.filledQty);
+  const quantity = signedQuantity == null ? null : Math.abs(signedQuantity);
+  const sideToken = normalizedStatus(row?.positionSide ?? row?.entrySide ?? row?.entryExecutionSide ?? row?.side);
+  const direction = sideToken === "short" || sideToken === "sell" || (signedQuantity != null && signedQuantity < 0)
+    ? "short"
+    : sideToken === "long" || sideToken === "buy" || (signedQuantity != null && signedQuantity > 0)
+      ? "long"
+      : null;
   const spreadCost = finiteNumber(row?.spreadCost);
   const slippageCost = finiteNumber(row?.slippageCost);
   const commission = finiteNumber(row?.commission);
@@ -245,10 +252,12 @@ function buildRealizedPnlEvidence(row) {
   const reportedNet = finiteNumber(row?.realizedPnl ?? row?.netRealizedPnl);
   const complete = [entryPrice, exitPrice, quantity, spreadCost, slippageCost, commission, reportedGross, reportedNet]
     .every((value) => value != null);
-  const calculatedGross = complete ? (exitPrice - entryPrice) * quantity : null;
-  const calculatedNet = complete ? calculatedGross - spreadCost - slippageCost - commission : null;
-  const grossFormulaMatches = complete ? Math.abs(calculatedGross - reportedGross) <= 0.01 : null;
-  const netFormulaMatches = complete ? Math.abs(calculatedNet - reportedNet) <= 0.01 : null;
+  const calculatedGross = complete && direction
+    ? (direction === "short" ? entryPrice - exitPrice : exitPrice - entryPrice) * quantity
+    : null;
+  const calculatedNet = calculatedGross != null ? calculatedGross - spreadCost - slippageCost - commission : null;
+  const grossFormulaMatches = calculatedGross != null ? Math.abs(calculatedGross - reportedGross) <= 0.01 : null;
+  const netFormulaMatches = calculatedNet != null ? Math.abs(calculatedNet - reportedNet) <= 0.01 : null;
   return {
     status: complete && grossFormulaMatches && netFormulaMatches
       ? "VERIFIED_NET_REALIZED_PNL"
@@ -256,6 +265,7 @@ function buildRealizedPnlEvidence(row) {
         ? "REALIZED_PNL_COST_MISMATCH"
         : "REALIZED_PNL_COST_EVIDENCE_INCOMPLETE",
     source: "performance-dashboard.json",
+    direction,
     entryPricePresent: entryPrice != null,
     exitPricePresent: exitPrice != null,
     quantityPresent: quantity != null,
@@ -550,6 +560,230 @@ function buildEntryOrderLifecycle({
   };
 }
 
+function buildPaperExitReadiness({
+  preview,
+  performance,
+  positionProtectionAudit,
+  brokerChildReconciliation,
+  orderLedger,
+  orderIdempotency,
+}) {
+  const requiredExitActions = [...EXIT_ACTIONS];
+  const actionIntent = preview?.actionIntent && typeof preview.actionIntent === "object"
+    ? preview.actionIntent
+    : null;
+  const allowedActionTypes = Array.isArray(actionIntent?.allowedActionTypes)
+    ? [...new Set(actionIntent.allowedActionTypes.map((value) => String(value || "").trim().toUpperCase()).filter(Boolean))]
+    : [];
+  const missingExitActions = requiredExitActions.filter((action) => !allowedActionTypes.includes(action));
+  const producerEnabled = actionIntent?.enabled === true;
+  const producerPreviewOnly = actionIntent?.previewOnly !== false;
+  const producerReady = producerEnabled && !producerPreviewOnly && missingExitActions.length === 0;
+
+  const payloadRows = Array.isArray(preview?.payloads) ? preview.payloads : [];
+  const skippedRows = Array.isArray(preview?.skipped) ? preview.skipped : [];
+  const exitIntentBySymbol = new Map();
+  for (const [source, sourceRows] of [["skipped", skippedRows], ["payload", payloadRows]]) {
+    for (const row of sourceRows) {
+      const symbol = String(row?.symbol || "").trim().toUpperCase();
+      const actionType = String(row?.actionType || "").trim().toUpperCase();
+      if (symbol && EXIT_ACTIONS.has(actionType)) exitIntentBySymbol.set(symbol, { ...row, actionType, source });
+    }
+  }
+
+  const protectionBySymbol = latestEvidenceBySymbol(rowsArray(positionProtectionAudit));
+  const brokerChildrenBySymbol = latestEvidenceBySymbol(rowsArray(brokerChildReconciliation));
+  const ledgerExitRows = ordersArray(orderLedger).filter(isExitEvidence);
+  const idempotencyExitRows = ordersArray(orderIdempotency).filter(isExitEvidence);
+  const ledgerExitBySymbol = latestEvidenceBySymbol(ledgerExitRows);
+  const idempotencyExitBySymbol = latestEvidenceBySymbol(idempotencyExitRows);
+  const livePositions = Array.isArray(performance?.live?.positions)
+    ? performance.live.positions
+    : rowsArray(positionProtectionAudit).filter((row) => normalizedStatus(row?.normalizedFillState) === "filled");
+  const positions = uniqueRowsBySymbol(livePositions.filter((row) => {
+    const qty = finiteNumber(row?.qty ?? row?.quantity);
+    return qty == null ? normalizedStatus(row?.normalizedFillState) === "filled" : qty !== 0;
+  })).sort((a, b) => String(a?.symbol || "").localeCompare(String(b?.symbol || "")));
+
+  const preflightCode = String(preview?.preflight?.code || "").trim().toUpperCase() || null;
+  const marketSessionEligible = preflightCode === "PREFLIGHT_PASS"
+    ? true
+    : preflightCode === "PREFLIGHT_MARKET_CLOSED" || preview?.preflight?.blocking === true
+      ? false
+      : null;
+
+  const rows = positions.map((position) => {
+    const symbol = String(position?.symbol || "").trim().toUpperCase();
+    const protection = protectionBySymbol.get(symbol) || null;
+    const brokerChildren = brokerChildrenBySymbol.get(symbol) || null;
+    const action = exitIntentBySymbol.get(symbol) || null;
+    const ledgerExit = ledgerExitBySymbol.get(symbol) || null;
+    const idempotencyExit = idempotencyExitBySymbol.get(symbol) || null;
+    const signedQty = finiteNumber(position?.qty ?? position?.quantity ?? protection?.qty);
+    const sideToken = normalizedStatus(position?.side ?? position?.positionSide);
+    const positionSide = sideToken === "short" || (signedQty != null && signedQty < 0)
+      ? "short"
+      : sideToken === "long" || (signedQty != null && signedQty > 0)
+        ? "long"
+        : null;
+    const ownershipClassification = protection?.ownershipClassification
+      || brokerChildren?.ownershipClassification
+      || null;
+    const ownershipVerified = ownershipClassification === "SIDECAR_MANAGED_FILLED";
+    const brokerStopPresent = protection?.brokerStopPresent === true || brokerChildren?.brokerStopPresent === true;
+    const brokerTargetPresent = protection?.brokerTargetPresent === true || brokerChildren?.brokerTargetPresent === true;
+    const protectionEvidencePresent = Boolean(protection || brokerChildren);
+    const protectiveChildConflict = brokerStopPresent || brokerTargetPresent;
+    const openExitRows = ledgerExitRows.filter((row) => String(row?.symbol || "").trim().toUpperCase() === symbol && OPEN_STATES.has(normalizedStatus(row?.status)));
+    const duplicateOpenExit = openExitRows.length > 1;
+    const idempotencyConflict = hasIdempotencyConflict(ledgerExit, idempotencyExit);
+    const openExitOrderPresent = openExitRows.length > 0
+      || OPEN_STATES.has(normalizedStatus(idempotencyExit?.brokerStatus || idempotencyExit?.status));
+    const actionDue = Boolean(action);
+    const actionPropagated = action?.source === "payload";
+    const stage6LineagePresent = Boolean(preview?.stage6Hash && preview?.stage6File);
+
+    let classification = "EXIT_EVIDENCE_INCOMPLETE";
+    let blocker = "exit_action_producer_runtime_evidence_incomplete";
+    if (!actionDue && producerReady) {
+      classification = "EXIT_NOT_DUE";
+      blocker = null;
+    } else if (actionDue && !ownershipVerified) {
+      classification = "EXIT_BLOCKED_OWNERSHIP";
+      blocker = "ownership_proof_required";
+    } else if (actionDue && (duplicateOpenExit || idempotencyConflict || openExitOrderPresent)) {
+      classification = "EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY";
+      blocker = duplicateOpenExit ? "duplicate_open_exit_order" : idempotencyConflict ? "exit_idempotency_conflict" : "open_exit_order_already_present";
+    } else if (actionDue && marketSessionEligible === false) {
+      classification = "EXIT_BLOCKED_MARKET_SESSION";
+      blocker = "market_session_not_eligible";
+    } else if (actionDue && protectiveChildConflict) {
+      classification = "EXIT_BLOCKED_PROTECTION_CONFLICT";
+      blocker = "cancel_protective_children_before_direct_exit";
+    } else if (actionDue && actionPropagated && protectionEvidencePresent && positionSide && stage6LineagePresent && marketSessionEligible === true) {
+      classification = "EXIT_READY_REPORT_ONLY";
+      blocker = null;
+    } else if (actionDue) {
+      blocker = actionPropagated ? "exit_safety_evidence_incomplete" : "exit_action_not_propagated_to_payload";
+    }
+
+    const expectedExecutionSide = positionSide === "short" ? "buy" : positionSide === "long" ? "sell" : null;
+    return {
+      symbol,
+      classification,
+      ownershipClassification,
+      positionSide,
+      quantityEvidencePresent: signedQty != null && signedQty !== 0,
+      stage6File: preview?.stage6File || null,
+      stage6Hash: preview?.stage6Hash || null,
+      actionType: action?.actionType || null,
+      actionReason: action?.actionReason || action?.reason || null,
+      actionPropagatedAsPayload: actionPropagated,
+      brokerStopPresent,
+      brokerTargetPresent,
+      openExitOrderPresent,
+      duplicateOpenExit,
+      idempotencyConflict,
+      expectedExecutionSide,
+      expectedExitQuantityPolicy: action?.actionType === "EXIT_FULL"
+        ? "FULL_CURRENT_ABSOLUTE_POSITION"
+        : action?.actionType === "EXIT_PARTIAL"
+          ? "CONFIGURED_EXIT_PARTIAL_RATIO"
+          : action?.actionType === "SCALE_DOWN"
+            ? "CONFIGURED_SCALE_DOWN_RATIO"
+            : null,
+      marketSessionEligible,
+      blocker,
+      nextAction: classification === "EXIT_READY_REPORT_ONLY"
+        ? "prepare_scoped_paper_exit_approval_only"
+        : classification === "EXIT_NOT_DUE"
+          ? "wait_for_policy_exit_condition"
+          : classification === "EXIT_BLOCKED_PROTECTION_CONFLICT"
+            ? "report_only_cancel_confirm_exit_residual_verify_plan"
+            : "resolve_classified_blocker_before_exit_review",
+      protectionSafeExitPlan: {
+        childOrderIdsPresent: Boolean(protection?.brokerSellOrderCount || protection?.brokerNestedSellOrderCount || brokerStopPresent || brokerTargetPresent),
+        cancelBeforeExitRequired: protectiveChildConflict,
+        cancellationConfirmationGate: protectiveChildConflict ? "ALL_PROTECTIVE_CHILDREN_TERMINAL_BEFORE_EXIT_SUBMIT" : "NOT_REQUIRED",
+        exitSubmissionGate: "EXACT_CONFIRM_LIVE_EXECUTION_PAPER_SCOPE_REQUIRED",
+        residualQuantityVerification: "VERIFY_BROKER_POSITION_AFTER_TERMINAL_EXIT_EVENT",
+        rollbackPlan: "if_cancel_succeeds_but_exit_fails_restore_protection_under_separate_approval",
+        unprotectedRiskWindow: protectiveChildConflict ? "cancel_confirmation_to_exit_acceptance" : "none_created_by_cancel",
+      },
+    };
+  });
+
+  const count = (classification) => rows.filter((row) => row.classification === classification).length;
+  const readyRows = rows.filter((row) => row.classification === "EXIT_READY_REPORT_ONLY");
+  const selected = readyRows[0] || null;
+  const simulationRows = Array.isArray(performance?.simulation?.rows) ? performance.simulation.rows : [];
+  const closedPerformanceRows = simulationRows.filter((row) => finiteNumber(row?.exitPrice) != null);
+  const costAwarePerformanceRows = closedPerformanceRows.filter((row) =>
+    [row?.qty ?? row?.quantity ?? row?.filledQty, row?.spreadCost, row?.slippageCost, row?.commission, row?.grossPnl ?? row?.realizedGrossPnl, row?.realizedPnl ?? row?.netRealizedPnl]
+      .every((value) => finiteNumber(value) != null)
+  );
+  const primaryRootCause = rows.length === 0
+    ? "HELD_POSITION_LINEAGE_MISSING"
+    : !producerReady
+      ? "EXIT_ACTION_PRODUCER_DISABLED"
+      : rows.every((row) => row.classification === "EXIT_NOT_DUE")
+        ? "EXIT_CONDITION_NOT_REACHED"
+        : rows.some((row) => row.blocker === "exit_action_not_propagated_to_payload")
+          ? "EXIT_ACTION_NOT_PROPAGATED"
+          : null;
+
+  return {
+    contractVersion: "paper-exit-readiness-v1",
+    reportOnly: true,
+    primaryRootCause,
+    producerLiveness: {
+      actionIntentEvidencePresent: Boolean(actionIntent),
+      enabled: producerEnabled,
+      previewOnly: producerPreviewOnly,
+      allowedActionTypes,
+      requiredExitActions,
+      missingExitActions,
+      runtimeReadyForExitIntentGeneration: producerReady,
+      actionTypeConfigured: Object.fromEntries(requiredExitActions.map((action) => [action, producerReady && allowedActionTypes.includes(action)])),
+    },
+    realizedPnlProducer: {
+      status: costAwarePerformanceRows.length > 0 ? "REALIZED_PNL_PRODUCER_READY" : "REALIZED_PNL_PRODUCER_GAP",
+      closedPerformanceRows: closedPerformanceRows.length,
+      costAwarePerformanceRows: costAwarePerformanceRows.length,
+      requiredEvidence: ["entry_fill_price", "exit_fill_price", "signed_or_directional_quantity", "spread_cost", "slippage_cost", "commission", "gross_realized_pnl", "net_realized_pnl"],
+    },
+    summary: {
+      filledPositionRows: rows.length,
+      exitNotDueRows: count("EXIT_NOT_DUE"),
+      exitReadyReportOnlyRows: count("EXIT_READY_REPORT_ONLY"),
+      exitBlockedProtectionConflictRows: count("EXIT_BLOCKED_PROTECTION_CONFLICT"),
+      exitBlockedOwnershipRows: count("EXIT_BLOCKED_OWNERSHIP"),
+      exitBlockedLedgerOrIdempotencyRows: count("EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY"),
+      exitBlockedMarketSessionRows: count("EXIT_BLOCKED_MARKET_SESSION"),
+      exitEvidenceIncompleteRows: count("EXIT_EVIDENCE_INCOMPLETE"),
+      unknownRows: 0,
+      selectedCandidateCount: selected ? 1 : 0,
+    },
+    rows,
+    canaryApprovalPackage: selected ? {
+      status: "REPORT_ONLY_PAPER_EXIT_CANARY_APPROVAL_PACKAGE_READY",
+      selectedCandidateCount: 1,
+      selectedSymbol: selected.symbol,
+      selectedActionType: selected.actionType,
+      expectedExecutionSide: selected.expectedExecutionSide,
+      brokerMutationAllowed: false,
+      stateMutationAllowed: false,
+      approvalPhrase: `CONFIRM LIVE EXECUTION — PAPER only, selected dynamic exit row ${selected.symbol} 1개, ${selected.actionType}, max_orders=1, protection-child cancellation confirmation, idempotency/ledger verification, no auto-retry`,
+    } : {
+      status: "NO_SAFE_EXIT_CANARY_AVAILABLE",
+      selectedCandidateCount: 0,
+      brokerMutationAllowed: false,
+      stateMutationAllowed: false,
+      approvalPhrase: null,
+    },
+  };
+}
+
 function domain(name, status, score, blockers = [], warnings = [], evidence = {}) {
   return { name, status, score, blockers, warnings, evidence };
 }
@@ -595,6 +829,7 @@ function buildReport() {
   const submittedLedgerOrders = ledgerOrders.filter((order) => String(order?.status || "").toLowerCase() === "submitted" && order?.brokerOrderId);
   const submittedIdemOrders = idempotencyOrders.filter((order) => String(order?.brokerStatus || "").toLowerCase() === "submitted" && order?.brokerOrderId);
   const entryOrderLifecycle = buildEntryOrderLifecycle(reports);
+  const paperExitReadiness = buildPaperExitReadiness(reports);
 
   const schedulerBlockers = [];
   const schedulerWarnings = [];
@@ -1066,6 +1301,8 @@ function buildReport() {
       paperClosedLoopEvidenceStatus: entryOrderLifecycle.summary.closedLoopEvidenceStatus,
       paperClosedLoopRows: entryOrderLifecycle.summary.closedLoopRows,
       realizedPnlVerifiedRows: entryOrderLifecycle.summary.realizedPnlVerifiedRows,
+      paperExitPrimaryRootCause: paperExitReadiness.primaryRootCause,
+      paperExitCanaryStatus: paperExitReadiness.canaryApprovalPackage.status,
       paperSubmittedEvidence: entryOrderLifecycle.summary.submittedEvidenceRows > 0,
       currentBrokerMutationAttempted,
       currentBrokerMutationSubmitted,
@@ -1077,6 +1314,7 @@ function buildReport() {
     protectionClassification,
     domains,
     entryOrderLifecycle,
+    paperExitReadiness,
     observationStopRules,
     boundedVerification,
   };
@@ -1119,6 +1357,14 @@ function renderMarkdown(report) {
   for (const row of lifecycle.rows) {
     lines.push(`| ${row.symbol} | \`${row.classification}\` | \`${row.normalizedState || row.ledgerStatus || "N/A"}\` | \`${row.exitLedgerStatus || row.exitIdempotencyBrokerStatus || "N/A"}\` | \`${row.protectionConfirmed}\` | \`${row.realizedPnlEvidence.status}\` | \`${row.blockerDomain}\` | ${row.nextLifecycleAction} |`);
   }
+  lines.push("");
+  lines.push("### PAPER Exit Readiness");
+  const exitReadiness = report.paperExitReadiness;
+  lines.push(`- rootCause: \`${exitReadiness.primaryRootCause || "none"}\``);
+  lines.push(`- producer: \`enabled=${exitReadiness.producerLiveness.enabled} previewOnly=${exitReadiness.producerLiveness.previewOnly} runtimeReady=${exitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration} missing=${exitReadiness.producerLiveness.missingExitActions.join("/") || "none"}\``);
+  lines.push(`- rows: \`filled=${exitReadiness.summary.filledPositionRows} notDue=${exitReadiness.summary.exitNotDueRows} ready=${exitReadiness.summary.exitReadyReportOnlyRows} protection=${exitReadiness.summary.exitBlockedProtectionConflictRows} ownership=${exitReadiness.summary.exitBlockedOwnershipRows} ledger=${exitReadiness.summary.exitBlockedLedgerOrIdempotencyRows} market=${exitReadiness.summary.exitBlockedMarketSessionRows} incomplete=${exitReadiness.summary.exitEvidenceIncompleteRows} unknown=${exitReadiness.summary.unknownRows}\``);
+  lines.push(`- realizedPnlProducer: \`${exitReadiness.realizedPnlProducer.status}\``);
+  lines.push(`- canary: \`${exitReadiness.canaryApprovalPackage.status}\` | selected=\`${exitReadiness.canaryApprovalPackage.selectedCandidateCount}\``);
   lines.push("");
   lines.push("### Blocker Split");
   for (const [name, blockers] of Object.entries(report.categoryBlockers)) {

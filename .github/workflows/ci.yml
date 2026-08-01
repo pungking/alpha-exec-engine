@@ -30,6 +30,7 @@ jobs:
           npm run ops:test:guard-source-recovery-status
           npm run ops:test:guard-refresh-source-precedence
           npm run ops:test:live-readiness-blockers
+          npm run ops:test:paper-exit-liveness
           npm run ops:test:protection-blocker-reduction
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety

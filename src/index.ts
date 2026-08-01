@@ -8811,6 +8811,20 @@ function resolveLifecycleExitRatio(
   return 1;
 }
 
+function resolveLifecycleExitOrderIntent(
+  actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL",
+  positionQty: number,
+  lifecycleCfg: PositionLifecycleConfig
+): { side: "buy" | "sell"; rawQty: number; ratio: number } {
+  const absQty = Math.abs(positionQty);
+  const ratio = resolveLifecycleExitRatio(actionType, lifecycleCfg);
+  return {
+    side: positionQty > 0 ? "sell" : "buy",
+    rawQty: actionType === "EXIT_FULL" ? absQty : absQty * ratio,
+    ratio
+  };
+}
+
 function isLifecycleExitAction(
   actionType: LifecycleActionType | undefined
 ): actionType is "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" {
@@ -8829,11 +8843,11 @@ async function submitLifecycleExitOrder(
   submittedQty: number;
 }> {
   const absQty = Math.abs(positionQty);
-  const ratio = resolveLifecycleExitRatio(actionType, lifecycleCfg);
-  const rawQty = actionType === "EXIT_FULL" ? absQty : absQty * ratio;
+  const intent = resolveLifecycleExitOrderIntent(actionType, positionQty, lifecycleCfg);
+  const rawQty = intent.rawQty;
   const qty = toBrokerQtyString(rawQty);
   if (!qty) throw new Error(`invalid_exit_qty:${rawQty}`);
-  const side: "buy" | "sell" = positionQty > 0 ? "sell" : "buy";
+  const side = intent.side;
   const rawResponse = await fetchAlpacaJson("/v2/orders", {
     method: "POST",
     body: {
@@ -9020,11 +9034,11 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     symbol,
     qty: 10,
     side: "long",
-    marketValue: 920,
+    marketValue: 950,
     costBasis: 1000,
     avgEntryPrice: 100,
-    currentPrice: 92,
-    unrealizedPnlPct: -0.08,
+    currentPrice: 95,
+    unrealizedPnlPct: -0.05,
     intradayPnlPct: -0.03,
     ageDays: 5
   };
@@ -9075,8 +9089,25 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     heldForExitFull,
     regimeRiskOff
   );
+  const longFull = resolveLifecycleExitOrderIntent("EXIT_FULL", 10, cfg.positionLifecycle);
+  const longPartial = resolveLifecycleExitOrderIntent("EXIT_PARTIAL", 10, cfg.positionLifecycle);
+  const longScaleDown = resolveLifecycleExitOrderIntent("SCALE_DOWN", 10, cfg.positionLifecycle);
+  const shortFull = resolveLifecycleExitOrderIntent("EXIT_FULL", -10, cfg.positionLifecycle);
+  const selfTestPassed =
+    overExitBlocked &&
+    actionScaleDown.actionType === "SCALE_DOWN" &&
+    actionExitPartial.actionType === "EXIT_PARTIAL" &&
+    actionExitFull.actionType === "EXIT_FULL" &&
+    longFull.side === "sell" && longFull.rawQty === 10 &&
+    longPartial.side === "sell" && longPartial.rawQty === 10 * cfg.positionLifecycle.exitPartialPct &&
+    longScaleDown.side === "sell" && longScaleDown.rawQty === 10 * cfg.positionLifecycle.scaleDownPct &&
+    shortFull.side === "buy" && shortFull.rawQty === 10;
+  if (!selfTestPassed) throw new Error("lifecycle_exit_selftest_failed");
   console.log(
     `[LIFECYCLE_SELFTEST] held_rules scaleDown=${actionScaleDown.actionType ?? "HOLD_WAIT"} partial=${actionExitPartial.actionType ?? "HOLD_WAIT"} full=${actionExitFull.actionType ?? "HOLD_WAIT"}`
+  );
+  console.log(
+    `[LIFECYCLE_SELFTEST] order_intent longFull=${longFull.side}:${longFull.rawQty} longPartial=${longPartial.side}:${longPartial.rawQty} longScaleDown=${longScaleDown.side}:${longScaleDown.rawQty} shortFull=${shortFull.side}:${shortFull.rawQty}`
   );
 }
 
@@ -11515,6 +11546,7 @@ async function saveDryExecPreview(
     openOrderMonitorReprice: dryExec.openOrderMonitorReprice ?? createOpenOrderMonitorRepricePatch(false),
     portfolioAdmission: dryExec.portfolioAdmission,
     recommendationLedger,
+    actionIntent: dryExec.actionIntent,
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
@@ -13567,9 +13599,10 @@ function shouldSend(state: SidecarRunState | null, result: Stage6LoadResult, mod
 }
 
 async function main() {
-  printStartupSummary();
   const cfg = loadRuntimeConfig();
   runLifecycleSelfTestIfEnabled(cfg);
+  if (readBoolEnv("LIFECYCLE_SELFTEST_ONLY", false)) return;
+  printStartupSummary();
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
   printStage6Lock(stage6);
