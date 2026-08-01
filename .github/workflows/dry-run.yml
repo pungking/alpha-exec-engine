@@ -2296,7 +2296,7 @@ jobs:
             state/guard-action-ledger.json
             state/stage6-20trade-loop.json
             state/stage6-20trade-loop.csv
-            state/performance-dashboard.json
+            state/performance-dashboard-public.json
             state/performance-dashboard.md
             state/broker-child-order-reconciliation.json
             state/broker-child-order-reconciliation.md

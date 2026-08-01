@@ -249,7 +249,7 @@ jobs:
             state/order-idempotency.json
             state/order-ledger.json
             state/regime-guard-state.json
-            state/performance-dashboard.json
+            state/performance-dashboard-public.json
             state/performance-dashboard.md
             state/ops-health-report.json
             state/ops-health-report.md

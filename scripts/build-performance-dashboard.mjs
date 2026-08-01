@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const STATE_DIR = "state";
 const LOOP_PATH = `${STATE_DIR}/stage6-20trade-loop.json`;
@@ -6,6 +7,7 @@ const ORDER_LEDGER_PATH = `${STATE_DIR}/order-ledger.json`;
 const ORDER_IDEMPOTENCY_PATH = `${STATE_DIR}/order-idempotency.json`;
 const FILLABILITY_PATH = `${STATE_DIR}/fillability-report.json`;
 const OUTPUT_JSON = `${STATE_DIR}/performance-dashboard.json`;
+const OUTPUT_PUBLIC_JSON = `${STATE_DIR}/performance-dashboard-public.json`;
 const OUTPUT_MD = `${STATE_DIR}/performance-dashboard.md`;
 
 const readJson = (path) => {
@@ -15,6 +17,12 @@ const readJson = (path) => {
   } catch {
     return null;
   }
+};
+
+const writeTextAtomic = (path, text) => {
+  const tmpPath = `${path}.tmp`;
+  fs.writeFileSync(tmpPath, text, "utf8");
+  fs.renameSync(tmpPath, path);
 };
 
 const toNum = (value) => {
@@ -271,13 +279,20 @@ const normalizeFillabilityState = (value) => {
 
 const TERMINAL_ORDER_STATUSES = new Set(["filled", "canceled", "cancelled", "expired", "rejected"]);
 
-const flattenAlpacaOrders = (orders, depth = 0) => {
+const flattenAlpacaOrders = (orders, depth = 0, root = null, parent = null) => {
   const out = [];
   for (const order of Array.isArray(orders) ? orders : []) {
     if (!order || typeof order !== "object") continue;
-    out.push({ ...order, _nestedDepth: depth });
+    const rootOrder = root || order;
+    out.push({
+      ...order,
+      _nestedDepth: depth,
+      _rootOrderId: rootOrder?.id || null,
+      _rootClientOrderId: rootOrder?.client_order_id || null,
+      _parentOrderId: parent?.id || null
+    });
     if (Array.isArray(order.legs)) {
-      out.push(...flattenAlpacaOrders(order.legs, depth + 1));
+      out.push(...flattenAlpacaOrders(order.legs, depth + 1, rootOrder, order));
     }
   }
   return out;
@@ -401,6 +416,304 @@ const buildStatusBySymbol = () => {
   return bySymbol;
 };
 
+const stateOrderEntries = (state) => {
+  const orders = state?.orders;
+  if (Array.isArray(orders)) return orders.map((row, index) => [String(index), row]);
+  return orders && typeof orders === "object" ? Object.entries(orders) : [];
+};
+
+const orderStatusClass = (value) => {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "filled") return "filled";
+  if (["new", "accepted", "pending_new", "partially_filled", "submitted"].includes(status)) return "open";
+  if (["canceled", "cancelled", "expired", "rejected"].includes(status)) return "terminal_unfilled";
+  return status || null;
+};
+
+const buildOwnedOrderIndex = (orderLedger, orderIdempotency) => {
+  const groups = new Map();
+  const add = (source, key, row) => {
+    if (!row || typeof row !== "object") return;
+    const groupKey = String(row.idempotencyKey || key || "").trim();
+    if (!groupKey) return;
+    const group = groups.get(groupKey) || { key: groupKey, ledger: null, idempotency: null };
+    group[source] = row;
+    groups.set(groupKey, group);
+  };
+  for (const [key, row] of stateOrderEntries(orderLedger)) add("ledger", key, row);
+  for (const [key, row] of stateOrderEntries(orderIdempotency)) add("idempotency", key, row);
+  for (const row of Array.isArray(orderIdempotency?.releases) ? orderIdempotency.releases : []) {
+    const key = String(row?.key || row?.idempotencyKey || "").trim();
+    const existing = groups.get(key);
+    if (!existing?.idempotency) add("idempotency", key, row);
+  }
+
+  const byBrokerId = new Map();
+  const byClientId = new Map();
+  for (const group of groups.values()) {
+    const rows = [group.ledger, group.idempotency].filter(Boolean);
+    const brokerIds = [...new Set(rows.map((row) => String(row?.brokerOrderId || "").trim()).filter(Boolean))];
+    const clientIds = [...new Set(rows.map((row) => String(row?.clientOrderId || "").trim()).filter(Boolean))];
+    const statusClasses = [...new Set(rows.map((row) => orderStatusClass(row?.brokerStatus || row?.status)).filter(Boolean))];
+    const quantityRow = rows.find((row) => toNum(row?.submittedQty ?? row?.qty) != null);
+    const meta = {
+      key: group.key,
+      symbol: String(rows.find((row) => row?.symbol)?.symbol || "").trim().toUpperCase(),
+      actionType: String(rows.find((row) => row?.actionType)?.actionType || "").trim().toUpperCase() || null,
+      executionSide: String(rows.find((row) => row?.executionSide)?.executionSide || "").trim().toLowerCase() || null,
+      submittedQty: toNum(quantityRow?.submittedQty ?? quantityRow?.qty),
+      ledgerEvidencePresent: Boolean(group.ledger),
+      idempotencyEvidencePresent: Boolean(group.idempotency),
+      idempotencyConflict: brokerIds.length > 1 || statusClasses.length > 1
+    };
+    for (const id of brokerIds) byBrokerId.set(id, meta);
+    for (const id of clientIds) byClientId.set(id, meta);
+  }
+  return { byBrokerId, byClientId };
+};
+
+const roundMoney = (value) => value == null ? null : Number(value.toFixed(8));
+const QTY_TOLERANCE = 1e-8;
+
+const matchOwnedOrder = (order, owned) => {
+  const direct = owned.byBrokerId.get(String(order?.id || "").trim())
+    || owned.byClientId.get(String(order?.client_order_id || "").trim())
+    || null;
+  const root = owned.byBrokerId.get(String(order?._rootOrderId || "").trim())
+    || owned.byClientId.get(String(order?._rootClientOrderId || "").trim())
+    || null;
+  return { meta: direct || root, direct: Boolean(direct) };
+};
+
+const normalizeOwnedFills = ({ closedOrders, owned, paperMode }) => {
+  const deduped = new Map();
+  for (const order of flattenAlpacaOrders(closedOrders)) {
+    const key = String(order?.id || order?.client_order_id || [order?.symbol, order?.side, order?.filled_at].join(":"));
+    const prior = deduped.get(key);
+    if (!prior || (order?._nestedDepth || 0) > (prior?._nestedDepth || 0)) deduped.set(key, order);
+  }
+
+  return [...deduped.values()].flatMap((order) => {
+    const orderKey = String(order?.id || order?.client_order_id || [order?.symbol, order?.side, order?.filled_at].join(":"));
+    const ownership = matchOwnedOrder(order, owned);
+    if (!ownership.meta || String(order?.status || "").toLowerCase() !== "filled") return [];
+    const symbol = String(order?.symbol || ownership.meta.symbol || "").trim().toUpperCase();
+    const side = String(order?.side || "").trim().toLowerCase();
+    const quantity = toNum(order?.filled_qty);
+    const price = toNum(order?.filled_avg_price);
+    if (!symbol || !["buy", "sell"].includes(side) || quantity == null || quantity <= 0 || price == null || price <= 0) return [];
+    const commissionPresent = Object.prototype.hasOwnProperty.call(order, "commission") && toNum(order.commission) != null;
+    const explicitFee = commissionPresent ? Math.max(0, toNum(order.commission)) : paperMode ? 0 : null;
+    const submittedQty = ownership.direct ? ownership.meta.submittedQty : null;
+    const orderQty = toNum(order?.qty);
+    return [{
+      symbol,
+      side,
+      quantity,
+      price,
+      filledAt: order?.filled_at || order?.updated_at || order?.submitted_at || null,
+      orderKey,
+      feePerUnit: explicitFee == null ? null : explicitFee / quantity,
+      feeEvidenceComplete: commissionPresent || paperMode,
+      feeEvidenceStatus: commissionPresent ? "EXPLICIT_BROKER_FEE" : paperMode ? "PAPER_PLATFORM_COSTS_NOT_MODELED" : "FEE_EVIDENCE_INCOMPLETE",
+      ledgerEvidencePresent: ownership.meta.ledgerEvidencePresent,
+      idempotencyEvidencePresent: ownership.meta.idempotencyEvidencePresent,
+      idempotencyConflict: ownership.meta.idempotencyConflict,
+      submittedQuantityMismatch: submittedQty != null && Math.abs(Math.abs(submittedQty) - quantity) > QTY_TOLERANCE,
+      brokerOrderQuantityMismatch: orderQty != null && Math.abs(Math.abs(orderQty) - quantity) > QTY_TOLERANCE,
+      actionType: ownership.meta.actionType
+    }];
+  }).sort((a, b) => {
+    const timeGap = Date.parse(a.filledAt || "") - Date.parse(b.filledAt || "");
+    return Number.isFinite(timeGap) && timeGap !== 0 ? timeGap : a.orderKey.localeCompare(b.orderKey);
+  });
+};
+
+const matchFillsFifo = (fills) => {
+  const longLots = [];
+  const shortLots = [];
+  const matches = [];
+  const consume = (lots, fill, direction) => {
+    let remaining = fill.quantity;
+    while (remaining > QTY_TOLERANCE && lots.length > 0) {
+      const lot = lots[0];
+      const quantity = Math.min(remaining, lot.quantity);
+      matches.push({
+        direction,
+        quantity,
+        entryPrice: lot.price,
+        exitPrice: fill.price,
+        entryFeePerUnit: lot.feePerUnit,
+        exitFeePerUnit: fill.feePerUnit,
+        feeEvidenceComplete: lot.feeEvidenceComplete && fill.feeEvidenceComplete,
+        entryOrderKey: lot.orderKey,
+        exitOrderKey: fill.orderKey
+      });
+      lot.quantity -= quantity;
+      remaining -= quantity;
+      if (lot.quantity <= QTY_TOLERANCE) lots.shift();
+    }
+    return remaining;
+  };
+
+  for (const fill of fills) {
+    if (fill.side === "buy") {
+      const remaining = consume(shortLots, fill, "short");
+      if (remaining > QTY_TOLERANCE) longLots.push({ ...fill, quantity: remaining });
+    } else {
+      const remaining = consume(longLots, fill, "long");
+      if (remaining > QTY_TOLERANCE) shortLots.push({ ...fill, quantity: remaining });
+    }
+  }
+  return { longLots, shortLots, matches };
+};
+
+export const buildBrokerRealizedPnlSummary = ({
+  orderLedger,
+  orderIdempotency,
+  closedOrders,
+  currentPositions = [],
+  paperMode,
+  closedOrdersSourceComplete,
+  positionsSourceComplete
+}) => {
+  const owned = buildOwnedOrderIndex(orderLedger, orderIdempotency);
+  const fills = normalizeOwnedFills({ closedOrders, owned, paperMode });
+  const positionsBySymbol = new Map((Array.isArray(currentPositions) ? currentPositions : []).map((row) => [
+    String(row?.symbol || "").trim().toUpperCase(),
+    toNum(row?.qty ?? row?.quantity) ?? 0
+  ]));
+  const bySymbol = new Map();
+  for (const fill of fills) {
+    const rows = bySymbol.get(fill.symbol) || [];
+    rows.push(fill);
+    bySymbol.set(fill.symbol, rows);
+  }
+
+  const rows = [...bySymbol.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([symbol, symbolFills]) => {
+    const { longLots, shortLots, matches } = matchFillsFifo(symbolFills);
+    const matchedQuantity = matches.reduce((sum, match) => sum + match.quantity, 0);
+    const actualFillGrossPnl = matches.reduce((sum, match) => sum + (
+      match.direction === "short"
+        ? (match.entryPrice - match.exitPrice) * match.quantity
+        : (match.exitPrice - match.entryPrice) * match.quantity
+    ), 0);
+    const feeEvidenceComplete = matches.length > 0 && matches.every((match) => match.feeEvidenceComplete);
+    const explicitBrokerFees = feeEvidenceComplete
+      ? matches.reduce((sum, match) => sum + (match.entryFeePerUnit + match.exitFeePerUnit) * match.quantity, 0)
+      : null;
+    const weightedEntryFillPrice = matchedQuantity > 0
+      ? matches.reduce((sum, match) => sum + match.entryPrice * match.quantity, 0) / matchedQuantity
+      : null;
+    const weightedExitFillPrice = matchedQuantity > 0
+      ? matches.reduce((sum, match) => sum + match.exitPrice * match.quantity, 0) / matchedQuantity
+      : null;
+    const fillResidual = longLots.reduce((sum, lot) => sum + lot.quantity, 0)
+      - shortLots.reduce((sum, lot) => sum + lot.quantity, 0);
+    const brokerResidual = positionsSourceComplete ? positionsBySymbol.get(symbol) ?? 0 : null;
+    const quantityMismatch = symbolFills.some((fill) => fill.submittedQuantityMismatch || fill.brokerOrderQuantityMismatch)
+      || (brokerResidual != null && Math.abs(fillResidual - brokerResidual) > QTY_TOLERANCE);
+    const idempotencyConflict = symbolFills.some((fill) => fill.idempotencyConflict);
+    const idempotencyEvidenceComplete = symbolFills.every((fill) => fill.ledgerEvidencePresent && fill.idempotencyEvidencePresent);
+    const partialExit = Math.abs(fillResidual) > QTY_TOLERANCE || (brokerResidual != null && Math.abs(brokerResidual) > QTY_TOLERANCE);
+    const directions = [...new Set(matches.map((match) => match.direction))];
+    const hasExitAction = symbolFills.some((fill) => ["SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"].includes(fill.actionType));
+
+    let status = "VERIFIED_NET_REALIZED_PNL";
+    if (!closedOrdersSourceComplete || !positionsSourceComplete || idempotencyConflict || !idempotencyEvidenceComplete) status = "TERMINAL_RECONCILIATION_REQUIRED";
+    else if (matches.length === 0) status = hasExitAction ? "ENTRY_FILL_EVIDENCE_INCOMPLETE" : "EXIT_FILL_EVIDENCE_INCOMPLETE";
+    else if (quantityMismatch) status = "MATCHED_QUANTITY_MISMATCH";
+    else if (directions.length > 1) status = "TERMINAL_RECONCILIATION_REQUIRED";
+    else if (!feeEvidenceComplete) status = "FEE_EVIDENCE_INCOMPLETE";
+    else if (partialExit) status = "PARTIAL_EXIT_PNL_ONLY";
+
+    const brokerNetRealizedPnl = feeEvidenceComplete && matches.length > 0
+      ? actualFillGrossPnl - explicitBrokerFees
+      : null;
+    const blocker = status === "VERIFIED_NET_REALIZED_PNL" || status === "PARTIAL_EXIT_PNL_ONLY"
+      ? null
+      : status.toLowerCase();
+    return {
+      symbol,
+      status,
+      sourceType: paperMode ? "ALPACA_PAPER_BROKER_FILLS" : "ALPACA_BROKER_FILLS",
+      ownershipClassification: idempotencyEvidenceComplete ? "SIDECAR_LEDGER_AND_IDEMPOTENCY_MATCHED" : "SIDECAR_OWNERSHIP_EVIDENCE_INCOMPLETE",
+      idempotencyVerdict: idempotencyConflict ? "CONFLICT" : idempotencyEvidenceComplete ? "PASS" : "MISSING",
+      entryFillProvenance: matches.length > 0 ? "BROKER_FILLED_AVG_PRICE" : null,
+      exitFillProvenance: matches.length > 0 ? "BROKER_FILLED_AVG_PRICE" : null,
+      entryOrderIdsPresent: matches.length > 0,
+      exitOrderIdsPresent: matches.length > 0,
+      direction: directions.length === 1 ? directions[0] : directions.length > 1 ? "mixed" : null,
+      matchedQuantity: roundMoney(matchedQuantity),
+      weightedEntryFillPrice: roundMoney(weightedEntryFillPrice),
+      weightedExitFillPrice: roundMoney(weightedExitFillPrice),
+      residualSignedQuantity: roundMoney(brokerResidual ?? fillResidual),
+      partialExit,
+      terminalExit: matches.length > 0 && !partialExit && positionsSourceComplete && closedOrdersSourceComplete,
+      actualPriceBasis: "BROKER_FILLED_AVG_PRICE",
+      actualFillGrossPnl: matches.length > 0 ? roundMoney(actualFillGrossPnl) : null,
+      explicitBrokerFees: roundMoney(explicitBrokerFees),
+      brokerNetRealizedPnl: roundMoney(brokerNetRealizedPnl),
+      feeEvidenceStatus: feeEvidenceComplete
+        ? paperMode && symbolFills.some((fill) => fill.feeEvidenceStatus === "PAPER_PLATFORM_COSTS_NOT_MODELED")
+          ? "PAPER_PLATFORM_COSTS_NOT_MODELED"
+          : "EXPLICIT_BROKER_FEE"
+        : "FEE_EVIDENCE_INCOMPLETE",
+      referenceGrossPnl: null,
+      spreadAttribution: null,
+      slippageAttribution: null,
+      implementationShortfall: null,
+      reconciliationDifference: null,
+      currency: "USD",
+      roundingTolerance: 0.01,
+      costDoubleCountViolation: false,
+      grossFormulaVerdict: matches.length > 0 ? "PASS" : "NOT_APPLICABLE",
+      netFormulaVerdict: brokerNetRealizedPnl != null ? "PASS_ACTUAL_GROSS_MINUS_EXPLICIT_FEES_ONLY" : "EVIDENCE_INCOMPLETE",
+      blocker,
+      nextAction: blocker ? "resolve_realized_pnl_evidence_before_closed_loop_readiness" : partialExit ? "retain_open_residual_lifecycle" : "no_action_report_only"
+    };
+  });
+
+  const count = (status) => rows.filter((row) => row.status === status).length;
+  const summary = {
+    totalRows: rows.length,
+    verifiedRows: count("VERIFIED_NET_REALIZED_PNL"),
+    partialExitRows: count("PARTIAL_EXIT_PNL_ONLY"),
+    exitFillEvidenceIncompleteRows: count("EXIT_FILL_EVIDENCE_INCOMPLETE"),
+    entryFillEvidenceIncompleteRows: count("ENTRY_FILL_EVIDENCE_INCOMPLETE"),
+    matchedQuantityMismatchRows: count("MATCHED_QUANTITY_MISMATCH"),
+    feeEvidenceIncompleteRows: count("FEE_EVIDENCE_INCOMPLETE"),
+    costMismatchRows: count("REALIZED_PNL_COST_MISMATCH"),
+    terminalReconciliationRequiredRows: count("TERMINAL_RECONCILIATION_REQUIRED"),
+    simulationOrProxyRows: count("SIMULATION_OR_PROXY_ONLY"),
+    costDoubleCountViolationRows: rows.filter((row) => row.costDoubleCountViolation).length,
+    unknownRows: 0
+  };
+  const producerReadyRows = summary.verifiedRows + summary.partialExitRows;
+  return {
+    contractVersion: "paper-realized-pnl-v1",
+    reportOnly: true,
+    status: rows.length === 0
+      ? "REALIZED_PNL_PRODUCER_GAP"
+      : producerReadyRows === rows.length
+        ? "REALIZED_PNL_PRODUCER_READY"
+        : "REALIZED_PNL_REVIEW_REQUIRED",
+    paperMode,
+    sourceContract: {
+      closedOrdersSourceComplete: Boolean(closedOrdersSourceComplete),
+      positionsSourceComplete: Boolean(positionsSourceComplete),
+      actualPnlFormula: "fill_to_fill_gross_minus_explicit_broker_fees",
+      spreadAndSlippageTreatment: "attribution_only_when_reference_evidence_exists"
+    },
+    summary,
+    rows,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
+  };
+};
+
 const derivePositionStatus = ({
   qty,
   currentPrice,
@@ -421,15 +734,6 @@ const derivePositionStatus = ({
   if (unrealizedPlPct != null && unrealizedPlPct <= -3) return "HOLD_MONITOR_DRAWDOWN_WATCH";
   return "HOLD_MONITOR";
 };
-
-const formatPositionDetails = (positions, limit = 10) =>
-  (positions || [])
-    .slice(0, limit)
-    .map(
-      (row) =>
-        `${row.symbol}:qty=${fmt(row.qty, 3)} cur=${fmt(row.currentPrice)} tp=${fmt(row.targetPrice)} sl=${fmt(row.stopPrice)} uPnL=${fmt(row.unrealizedPl)}(${fmt(row.unrealizedPlPct)}%) status=${row.positionStatus} fill=${row.normalizedFillState || "N/A"}`
-    )
-    .join("; ");
 
 const buildLiveSummary = async () => {
   const accountRes = await fetchAlpaca("/v2/account");
@@ -558,12 +862,53 @@ const buildLiveSummary = async () => {
   };
 };
 
+const buildBrokerRealizedPnlRuntime = async (live) => {
+  const orderLedger = readJson(ORDER_LEDGER_PATH) || {};
+  const orderIdempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {};
+  const timestampRows = [
+    ...stateOrderEntries(orderLedger).map(([, row]) => row),
+    ...stateOrderEntries(orderIdempotency).map(([, row]) => row),
+    ...(Array.isArray(orderIdempotency?.releases) ? orderIdempotency.releases : [])
+  ];
+  const timestamps = timestampRows
+    .flatMap((row) => [row?.createdAt, row?.updatedAt, row?.firstSeenAt, row?.lastSeenAt, row?.releasedAt])
+    .map((value) => Date.parse(value || ""))
+    .filter(Number.isFinite);
+  const fallbackAfter = Date.now() - 365 * 24 * 60 * 60 * 1000;
+  const afterMs = timestamps.length > 0 ? Math.min(...timestamps) - 24 * 60 * 60 * 1000 : fallbackAfter;
+  const after = new Date(afterMs).toISOString();
+  const closedRes = await fetchAlpaca(
+    `/v2/orders?status=closed&nested=true&direction=asc&limit=500&after=${encodeURIComponent(after)}`
+  );
+  const closedOrders = closedRes.ok && Array.isArray(closedRes.data) ? closedRes.data : [];
+  const paperMode = String(process.env.ALPACA_BASE_URL || "").includes("paper-api.alpaca.markets");
+  const report = buildBrokerRealizedPnlSummary({
+    orderLedger,
+    orderIdempotency,
+    closedOrders,
+    currentPositions: live?.available ? live.positions : [],
+    paperMode,
+    closedOrdersSourceComplete: closedRes.ok && closedOrders.length < 500,
+    positionsSourceComplete: live?.available === true
+  });
+  return {
+    ...report,
+    runtimeSource: {
+      status: closedRes.ok ? "PASS" : "UNAVAILABLE",
+      reason: closedRes.reason,
+      queryAfter: after,
+      returnedOrderCount: closedOrders.length,
+      responseLimitReached: closedOrders.length >= 500
+    }
+  };
+};
+
 const fmt = (value, digits = 2) => {
   if (value == null || !Number.isFinite(value)) return "N/A";
   return Number(value).toFixed(digits);
 };
 
-const buildMarkdown = ({ generatedAt, simulation, live }) => {
+export const buildMarkdown = ({ generatedAt, simulation, live, realizedPnl }) => {
   const lines = [];
   lines.push("## Trading Performance Dashboard");
   lines.push(`- generatedAt: \`${generatedAt}\``);
@@ -592,30 +937,59 @@ const buildMarkdown = ({ generatedAt, simulation, live }) => {
 
   if (live?.available) {
     lines.push(
-      `- live_totals: \`positions=${live.totals.positionCount} unrealizedPl=${fmt(live.totals.totalUnrealizedPl)} returnPct=${fmt(live.totals.totalReturnPct)} equity=${fmt(live.account.equity)}\``
+      `- live_totals: \`positions=${live.totals.positionCount} openOrders=${live.totals.openOrderRawCount} guardMissing=${live.totals.guardMissingCount} fillStateMismatch=${live.totals.fillStateMismatchCount}\``
     );
-    const topLive = (live.positions || [])
-      .slice(0, 5)
-      .map((row) => `${row.symbol}(qty=${fmt(row.qty, 3)} uPnL=${fmt(row.unrealizedPl)} ${fmt(row.unrealizedPlPct)}% status=${row.positionStatus})`)
-      .join(", ");
-    lines.push(`- live_positions_top: \`${topLive || "N/A"}\``);
     lines.push(
-      `- live_position_monitor: \`nestedOrders=${live.totals.openOrderNested} rawOpen=${live.totals.openOrderRawCount} flattened=${live.totals.openOrderFlattenedCount} brokerStopMissing=${live.totals.brokerStopMissingCount} brokerTargetMissing=${live.totals.brokerTargetMissingCount} guardMissing=${live.totals.guardMissingCount} fillStateMismatch=${live.totals.fillStateMismatchCount} details=${formatPositionDetails(live.positions, 5) || "N/A"}\``
+      `- live_position_monitor: \`nestedOrders=${live.totals.openOrderNested} flattened=${live.totals.openOrderFlattenedCount} brokerStopMissing=${live.totals.brokerStopMissingCount} brokerTargetMissing=${live.totals.brokerTargetMissingCount}\``
     );
-    lines.push("");
-    lines.push("| Symbol | Qty | Current | Target | Stop | uPnL | uPnL% | Status | Fill State |");
-    lines.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |");
-    for (const row of (live.positions || []).slice(0, 10)) {
-      lines.push(
-        `| ${row.symbol} | ${fmt(row.qty, 3)} | ${fmt(row.currentPrice)} | ${fmt(row.targetPrice)} | ${fmt(row.stopPrice)} | ${fmt(row.unrealizedPl)} | ${fmt(row.unrealizedPlPct)}% | ${row.positionStatus} | ${row.normalizedFillState || "N/A"} |`
-      );
-    }
   } else {
     lines.push(`- live_totals: \`N/A (${live?.reason || "not_available"})\``);
   }
+  lines.push(
+    `- realized_pnl: \`status=${realizedPnl?.status || "REALIZED_PNL_PRODUCER_GAP"} rows=${realizedPnl?.summary?.totalRows || 0} verified=${realizedPnl?.summary?.verifiedRows || 0} partial=${realizedPnl?.summary?.partialExitRows || 0} doubleCountViolations=${realizedPnl?.summary?.costDoubleCountViolationRows || 0}\``
+  );
   lines.push("");
   return `${lines.join("\n")}\n`;
 };
+
+export const buildPublicDashboard = ({ generatedAt, simulation, live, realizedPnl }) => ({
+  generatedAt,
+  simulation: {
+    totalRows: simulation?.totalRows || 0,
+    filledRows: simulation?.filledRows || 0,
+    openRows: simulation?.openRows || 0,
+    closedRows: simulation?.closedRows || 0
+  },
+  live: {
+    available: live?.available === true,
+    reason: live?.available === true ? "details_redacted" : live?.reason || "not_available",
+    totals: live?.available === true ? {
+      positionCount: live?.totals?.positionCount || 0,
+      openOrderRawCount: live?.totals?.openOrderRawCount || 0,
+      brokerStopMissingCount: live?.totals?.brokerStopMissingCount || 0,
+      brokerTargetMissingCount: live?.totals?.brokerTargetMissingCount || 0,
+      guardMissingCount: live?.totals?.guardMissingCount || 0,
+      fillStateMismatchCount: live?.totals?.fillStateMismatchCount || 0
+    } : null
+  },
+  realizedPnl: {
+    contractVersion: realizedPnl?.contractVersion || "paper-realized-pnl-v1",
+    status: realizedPnl?.status || "REALIZED_PNL_PRODUCER_GAP",
+    reportOnly: true,
+    sourceContract: realizedPnl?.sourceContract || null,
+    summary: realizedPnl?.summary || {
+      totalRows: 0,
+      verifiedRows: 0,
+      partialExitRows: 0,
+      costDoubleCountViolationRows: 0,
+      unknownRows: 0
+    },
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false
+  }
+});
 
 const main = async () => {
   fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -623,22 +997,27 @@ const main = async () => {
   const loop = readJson(LOOP_PATH) || {};
   const simulation = buildSimulationSummary(loop);
   const live = await buildLiveSummary();
+  const realizedPnl = await buildBrokerRealizedPnlRuntime(live);
   const generatedAt = new Date().toISOString();
 
   const output = {
     generatedAt,
     simulation,
-    live
+    live,
+    realizedPnl
   };
 
-  fs.writeFileSync(OUTPUT_JSON, `${JSON.stringify(output, null, 2)}\n`, "utf8");
-  fs.writeFileSync(OUTPUT_MD, buildMarkdown(output), "utf8");
+  writeTextAtomic(OUTPUT_JSON, `${JSON.stringify(output, null, 2)}\n`);
+  writeTextAtomic(OUTPUT_PUBLIC_JSON, `${JSON.stringify(buildPublicDashboard(output), null, 2)}\n`);
+  writeTextAtomic(OUTPUT_MD, buildMarkdown(output));
   console.log(
-    `[PERF_DASHBOARD] saved json=${OUTPUT_JSON} md=${OUTPUT_MD} simRows=${simulation.totalRows} liveAvailable=${live.available}`
+    `[PERF_DASHBOARD] saved privateJson=${OUTPUT_JSON} publicJson=${OUTPUT_PUBLIC_JSON} md=${OUTPUT_MD} simRows=${simulation.totalRows} liveAvailable=${live.available} realizedStatus=${realizedPnl.status} realizedRows=${realizedPnl.summary.totalRows}`
   );
 };
 
-main().catch((error) => {
-  console.error(`[PERF_DASHBOARD] failed: ${error?.message || error}`);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`[PERF_DASHBOARD] failed: ${error?.message || error}`);
+    process.exit(1);
+  });
+}

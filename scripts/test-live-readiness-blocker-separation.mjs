@@ -344,25 +344,56 @@ writeJsonAt(microLiveStateDir, "order-idempotency.json", { orders: {
   "micro-entry": { symbol: "MICROX", actionType: "ENTRY_NEW", executionSide: "buy", brokerStatus: "filled", brokerOrderId: "microx-entry", brokerCheckedAt: "2026-07-01T14:00:00Z" },
   "micro-exit": { symbol: "MICROX", actionType: "EXIT_FULL", executionSide: "sell", brokerStatus: "filled", brokerOrderId: "microx-exit", brokerCheckedAt: "2026-07-02T14:00:00Z" },
 } });
-writeJsonAt(microLiveStateDir, "performance-dashboard.json", { simulation: { rows: [{
-  symbol: "MICROX",
-  status: "closed",
-  runDate: "2026-07-02T14:00:00Z",
-  entryFilled: 100,
-  exitPrice: 110,
-  qty: 2,
-  grossPnl: 20,
-  spreadCost: 1,
-  slippageCost: 0.5,
-  commission: 0.5,
-  realizedPnl: 18,
-}] } });
+writeJsonAt(microLiveStateDir, "performance-dashboard.json", {
+  simulation: { rows: [] },
+  realizedPnl: {
+    status: "REALIZED_PNL_PRODUCER_READY",
+    summary: { totalRows: 1, verifiedRows: 1, partialExitRows: 0, costDoubleCountViolationRows: 0, unknownRows: 0 },
+    rows: [{
+      symbol: "MICROX",
+      status: "VERIFIED_NET_REALIZED_PNL",
+      sourceType: "ALPACA_PAPER_BROKER_FILLS",
+      direction: "long",
+      matchedQuantity: 2,
+      weightedEntryFillPrice: 100,
+      weightedExitFillPrice: 110,
+      actualPriceBasis: "BROKER_FILLED_AVG_PRICE",
+      actualFillGrossPnl: 20,
+      explicitBrokerFees: 0.5,
+      brokerNetRealizedPnl: 19.5,
+      entryOrderIdsPresent: true,
+      exitOrderIdsPresent: true,
+      terminalExit: true,
+      idempotencyVerdict: "PASS",
+      feeEvidenceStatus: "EXPLICIT_BROKER_FEE",
+      costDoubleCountViolation: false,
+    }],
+  },
+});
 const microLiveReport = runScorecard(microLiveStateDir);
 assert.equal(microLiveReport.entryOrderLifecycle.status, "pass");
 assert.equal(microLiveReport.entryOrderLifecycle.summary.exitedTerminalReconciledRows, 1);
 assert.equal(microLiveReport.entryOrderLifecycle.summary.realizedPnlVerifiedRows, 1);
 assert.equal(microLiveReport.entryOrderLifecycle.summary.closedLoopEvidenceStatus, "VERIFIED_CLOSED_LOOP_EVIDENCE");
 assert.equal(microLiveReport.finalVerdict, "MICRO_LIVE_REVIEW_READY");
+
+const proxyOnlyStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-proxy-only-pnl-"));
+for (const fileName of fs.readdirSync(microLiveStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(microLiveStateDir, fileName), path.join(proxyOnlyStateDir, fileName));
+}
+writeJsonAt(proxyOnlyStateDir, "performance-dashboard.json", { simulation: { rows: [{
+  symbol: "MICROX",
+  status: "closed",
+  entryFilled: 100,
+  exitPrice: 110,
+  qty: 2,
+  realizedPnl: 20,
+}] } });
+const proxyOnlyReport = runScorecard(proxyOnlyStateDir);
+assert.equal(proxyOnlyReport.entryOrderLifecycle.rows[0].realizedPnlEvidence.status, "SIMULATION_OR_PROXY_ONLY");
+assert.equal(proxyOnlyReport.entryOrderLifecycle.summary.realizedPnlVerifiedRows, 0);
+assert.equal(proxyOnlyReport.finalVerdict, "BLOCKED");
 
 const activeLifecycleStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-active-closed-loop-"));
 writeJsonAt(activeLifecycleStateDir, "last-dry-exec-preview.json", {
@@ -520,7 +551,7 @@ for (const fileName of fs.readdirSync(microLiveStateDir)) {
   fs.copyFileSync(path.join(microLiveStateDir, fileName), path.join(pnlMismatchStateDir, fileName));
 }
 const mismatchedPerformance = JSON.parse(fs.readFileSync(path.join(pnlMismatchStateDir, "performance-dashboard.json"), "utf8"));
-mismatchedPerformance.simulation.rows[0].realizedPnl = 17;
+mismatchedPerformance.realizedPnl.rows[0].brokerNetRealizedPnl = 18.5;
 writeJsonAt(pnlMismatchStateDir, "performance-dashboard.json", mismatchedPerformance);
 const pnlMismatchReport = runScorecard(pnlMismatchStateDir);
 assert.equal(pnlMismatchReport.entryOrderLifecycle.rows[0].classification, "TERMINAL_RECONCILIATION_REQUIRED");
@@ -532,13 +563,13 @@ for (const fileName of fs.readdirSync(microLiveStateDir)) {
   fs.copyFileSync(path.join(microLiveStateDir, fileName), path.join(shortPnlStateDir, fileName));
 }
 const shortPerformance = JSON.parse(fs.readFileSync(path.join(shortPnlStateDir, "performance-dashboard.json"), "utf8"));
-Object.assign(shortPerformance.simulation.rows[0], {
-  positionSide: "short",
-  entryFilled: 100,
-  exitPrice: 90,
-  qty: -2,
-  grossPnl: 20,
-  realizedPnl: 18,
+Object.assign(shortPerformance.realizedPnl.rows[0], {
+  direction: "short",
+  weightedEntryFillPrice: 100,
+  weightedExitFillPrice: 90,
+  matchedQuantity: 2,
+  actualFillGrossPnl: 20,
+  brokerNetRealizedPnl: 19.5,
 });
 writeJsonAt(shortPnlStateDir, "performance-dashboard.json", shortPerformance);
 const shortPnlReport = runScorecard(shortPnlStateDir);
