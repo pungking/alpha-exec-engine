@@ -1035,6 +1035,11 @@ jobs:
           const compactMode = compactPreview?.mode || {};
           const compactBroker = compactPreview?.brokerSubmission || {};
           const compactPreflight = compactPreview?.preflight || {};
+          const compactRuntimeEvidence = compactPreview?.orderDecisionAudit?.summary?.runtimeEvidence || {};
+          const compactRuntimeDecision = compactRuntimeEvidence?.decisionAudit || {};
+          const compactRuntimeOutcome = compactRuntimeEvidence?.orderOutcome || {};
+          const compactRuntimeSource = compactRuntimeEvidence?.sourceIntegrity || {};
+          const compactRuntimeSafety = compactRuntimeEvidence?.safety || {};
           const compactReadiness = String(compactPreview?.orderReadiness || "N/A").replace(/\|/g, "/");
           lines.push("| Area | Status | Evidence |");
           lines.push("| --- | --- | --- |");
@@ -1045,7 +1050,13 @@ jobs:
             `| Payload | ${compactPreview.payloadCount ?? "N/A"}/${compactPreview.skippedCount ?? "N/A"} | readiness=${compactReadiness.slice(0, 220)} |`
           );
           lines.push(
-            `| Safety | attempted=${compactBroker.attempted ?? "N/A"} submitted=${compactBroker.submitted ?? "N/A"} | readOnly=${compactMode.readOnly ?? "N/A"} exec=${compactMode.execEnabled ?? "N/A"} liveSubmit=${compactBroker.enabled ?? "N/A"} reason=${compactBroker.reason ?? "N/A"} |`
+            `| No-order | ${compactRuntimeEvidence.semanticIntegrityStatus ?? "N/A"} | primary=${compactRuntimeOutcome.primaryNoOrderCause ?? "N/A"} expectation=${compactRuntimeOutcome.payloadExpectationStatus ?? "N/A"} decisionRows=${compactRuntimeDecision.rows ?? "N/A"} blockerRows=${compactRuntimeDecision.blockerSummaryRows ?? "N/A"} blockerCountMatches=${compactRuntimeDecision.blockerSummaryCountMatches ?? "N/A"} |`
+          );
+          lines.push(
+            `| Source | ${compactRuntimeSource.status ?? "N/A"} | previewStale=${compactRuntimeSource.previewStale ?? "N/A"} modelTop6=${compactRuntimeEvidence?.stage6?.modelTop6Rows ?? "N/A"} executable=${compactRuntimeEvidence?.stage6?.executablePickRows ?? "N/A"} watchlist=${compactRuntimeEvidence?.stage6?.watchlistRows ?? "N/A"} |`
+          );
+          lines.push(
+            `| Safety | attempted=${compactBroker.attempted ?? "N/A"} submitted=${compactBroker.submitted ?? "N/A"} | readOnly=${compactMode.readOnly ?? "N/A"} exec=${compactMode.execEnabled ?? "N/A"} brokerMutationAttempted=${compactRuntimeSafety.brokerMutationAttempted ?? "N/A"} brokerMutationSubmitted=${compactRuntimeSafety.brokerMutationSubmitted ?? "N/A"} stateMutationAttempted=${compactRuntimeSafety.stateMutationAttempted ?? "N/A"} stateMutationSubmitted=${compactRuntimeSafety.stateMutationSubmitted ?? "N/A"} |`
           );
           lines.push(
             `| Preflight | ${compactPreflight.status ?? "N/A"}:${compactPreflight.code ?? "N/A"} | marketOpen=${compactPreflight.marketOpen ?? "N/A"} wouldBlockLive=${compactPreflight.wouldBlockLive ?? "N/A"} required=${compactPreflight.requiredNotional ?? "N/A"} |`
@@ -1110,6 +1121,10 @@ jobs:
               lines.push(
                 `- order_decision_routes: \`topSkipCategory=${JSON.stringify(orderDecisionAudit.topSkipReasonCategories || {})} payloadExpectation=${orderDecisionAudit.payloadExpectation?.status || "N/A"} unheldExecutable=${orderDecisionAudit.payloadExpectation?.unheldExecutableCandidates ?? "N/A"} ready=${orderDecisionAudit.payloadExpectation?.unheldExecutablePayloadReady ?? "N/A"}\``
               );
+              const runtimeEvidence = orderDecisionAudit.runtimeEvidence || {};
+              lines.push(
+                `- runtime_evidence: \`semantic=${runtimeEvidence.semanticIntegrityStatus ?? "N/A"} primary=${runtimeEvidence.orderOutcome?.primaryNoOrderCause ?? "N/A"} source=${runtimeEvidence.sourceIntegrity?.status ?? "N/A"} previewStale=${runtimeEvidence.sourceIntegrity?.previewStale ?? "N/A"} decisionRows=${runtimeEvidence.decisionAudit?.rows ?? "N/A"} blockerRows=${runtimeEvidence.decisionAudit?.blockerSummaryRows ?? "N/A"} blockerCountMatches=${runtimeEvidence.decisionAudit?.blockerSummaryCountMatches ?? "N/A"} unknown=${runtimeEvidence.decisionAudit?.unknownOrUnclassifiedRows ?? "N/A"}\``
+              );
             } else if (fs.existsSync(orderDecisionAuditPath)) {
               const audit = JSON.parse(fs.readFileSync(orderDecisionAuditPath, "utf8"));
               const s = audit?.summary || {};
@@ -1118,6 +1133,10 @@ jobs:
               );
               lines.push(
                 `- order_decision_routes: \`topSkipCategory=${JSON.stringify(s.topSkipReasonCategories || {})} payloadExpectation=${s.payloadExpectation?.status || "N/A"} unheldExecutable=${s.payloadExpectation?.unheldExecutableCandidates ?? "N/A"} ready=${s.payloadExpectation?.unheldExecutablePayloadReady ?? "N/A"}\``
+              );
+              const runtimeEvidence = s.runtimeEvidence || {};
+              lines.push(
+                `- runtime_evidence: \`semantic=${runtimeEvidence.semanticIntegrityStatus ?? "N/A"} primary=${runtimeEvidence.orderOutcome?.primaryNoOrderCause ?? "N/A"} source=${runtimeEvidence.sourceIntegrity?.status ?? "N/A"} previewStale=${runtimeEvidence.sourceIntegrity?.previewStale ?? "N/A"} decisionRows=${runtimeEvidence.decisionAudit?.rows ?? "N/A"} blockerRows=${runtimeEvidence.decisionAudit?.blockerSummaryRows ?? "N/A"} blockerCountMatches=${runtimeEvidence.decisionAudit?.blockerSummaryCountMatches ?? "N/A"} unknown=${runtimeEvidence.decisionAudit?.unknownOrUnclassifiedRows ?? "N/A"}\``
               );
             }
             const entryFeasibility = preview?.entryFeasibility || {};

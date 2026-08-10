@@ -1,0 +1,90 @@
+{
+  "stage6": {
+    "file": "STAGE6_ALPHA_FINAL_2026-08-10_20-20-51.json",
+    "hash": "0bc737ad6cbb1e3f0d3331989ccf33f097e7e1c7e36a24d267ffaafd0f556526",
+    "modelTop6Rows": 6,
+    "executablePickRows": 0,
+    "watchlistRows": 6
+  },
+  "decisionRows": [
+    {
+      "symbol": "FIXTURE_A",
+      "status": "skipped",
+      "skipCategory": "quality_gate",
+      "stage6DecisionCategory": "quality_gate"
+    },
+    {
+      "symbol": "FIXTURE_B",
+      "status": "skipped",
+      "skipCategory": "structure",
+      "stage6DecisionCategory": "structure"
+    },
+    {
+      "symbol": "FIXTURE_C",
+      "status": "skipped",
+      "skipCategory": "quality_gate",
+      "stage6DecisionCategory": "quality_gate"
+    },
+    {
+      "symbol": "FIXTURE_D",
+      "status": "skipped",
+      "skipCategory": "quality_gate",
+      "stage6DecisionCategory": "quality_gate"
+    },
+    {
+      "symbol": "FIXTURE_E",
+      "status": "skipped",
+      "skipCategory": "structure",
+      "stage6DecisionCategory": "structure"
+    },
+    {
+      "symbol": "FIXTURE_F",
+      "status": "skipped",
+      "skipCategory": "quality_gate",
+      "stage6DecisionCategory": "quality_gate"
+    }
+  ],
+  "reportedTopSkipReasonCategories": {
+    "quality_gate": 4,
+    "structure": 2
+  },
+  "payload": {
+    "count": 0,
+    "expectationStatus": "no_unheld_executable"
+  },
+  "source": {
+    "eventName": "repository_dispatch",
+    "expectedStage6Hash": "0bc737ad6cbb1e3f0d3331989ccf33f097e7e1c7e36a24d267ffaafd0f556526",
+    "expectedStage6File": "STAGE6_ALPHA_FINAL_2026-08-10_20-20-51.json",
+    "previewStale": false
+  },
+  "preflight": {
+    "status": "skip",
+    "code": "PREFLIGHT_NO_PAYLOAD",
+    "blocking": false,
+    "wouldBlockLive": false,
+    "marketOpen": null,
+    "allowEntryOutsideRth": false
+  },
+  "marketGuard": {
+    "blocked": false,
+    "wouldBlockLive": false,
+    "stale": false,
+    "reason": "halt_new_entries_false"
+  },
+  "mode": {
+    "readOnly": true,
+    "execEnabled": false,
+    "liveMode": false
+  },
+  "broker": {
+    "attempted": 0,
+    "submitted": 0
+  },
+  "stateLedger": {
+    "upserted": 0,
+    "transitioned": 0,
+    "reconciled": 0,
+    "pruned": 0
+  }
+}
