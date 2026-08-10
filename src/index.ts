@@ -9,6 +9,7 @@ import {
   deriveHfTuningPhaseCore
 } from "./hf-judgement-core.js";
 import { parseJsonText } from "./json-utils.js";
+import { buildSidecarRuntimeEvidenceSummary } from "./sidecar-runtime-evidence-core.js";
 
 function mask(value: string): string {
   if (!value) return "";
@@ -3596,6 +3597,86 @@ function buildSkipReasonCategoryCounts(counts: Record<string, number>): Record<s
     acc[category] = (acc[category] || 0) + count;
     return acc;
   }, {});
+}
+
+function buildCurrentSidecarRuntimeEvidence(
+  stage6: Stage6LoadResult,
+  dryExec: DryExecBuildResult,
+  preflight: PreflightResult,
+  ledger: OrderLedgerUpdateResult,
+  brokerSubmit: BrokerSubmitSummary,
+  guardControl: GuardControlGate,
+  topSkipReasonCategories: Record<string, number>
+) {
+  const cfg = loadRuntimeConfig();
+  const payloadExpectation = buildPayloadExpectationSummary(dryExec.decisionAudit);
+  const payloadExpectationStatus =
+    typeof payloadExpectation.status === "string" ? payloadExpectation.status : "unknown";
+  const eventName = (process.env.WORKFLOW_EVENT_NAME || process.env.GITHUB_EVENT_NAME || "")
+    .trim()
+    .toLowerCase();
+
+  return buildSidecarRuntimeEvidenceSummary({
+    stage6: {
+      file: stage6.fileName,
+      hash: stage6.sha256,
+      modelTop6Rows: stage6.contractContext?.modelTop6.length ?? stage6.modelTopCandidates.length,
+      executablePickRows: stage6.contractContext?.executablePicks.length ?? stage6.candidates.length,
+      watchlistRows: stage6.contractContext?.watchlistTop.length ?? 0
+    },
+    decisionRows: dryExec.decisionAudit.map((row) => ({
+      symbol: row.symbol,
+      status: row.status,
+      skipCategory:
+        row.status === "payload"
+          ? "payload_ready"
+          : classifySkipReason(stripSkipReasonDetail(row.reason)),
+      stage6DecisionCategory:
+        row.status === "payload"
+          ? "payload_ready"
+          : classifySkipReason(mapStage6DecisionReasonToSkip(row.decisionReason))
+    })),
+    reportedTopSkipReasonCategories: topSkipReasonCategories,
+    payload: {
+      count: dryExec.payloads.length,
+      expectationStatus: payloadExpectationStatus
+    },
+    source: {
+      eventName,
+      expectedStage6Hash: (process.env.TRIGGER_STAGE6_HASH || "").trim(),
+      expectedStage6File: (process.env.TRIGGER_STAGE6_FILE || "").trim(),
+      previewStale: false
+    },
+    preflight: {
+      status: preflight.status,
+      code: preflight.code,
+      blocking: preflight.blocking,
+      wouldBlockLive: preflight.wouldBlockLive,
+      marketOpen: preflight.marketOpen,
+      allowEntryOutsideRth: preflight.allowEntryOutsideRth
+    },
+    marketGuard: {
+      blocked: guardControl.blocked,
+      wouldBlockLive: guardControl.wouldBlockLive,
+      stale: guardControl.stale,
+      reason: guardControl.reason
+    },
+    mode: {
+      readOnly: cfg.readOnly,
+      execEnabled: cfg.execEnabled,
+      liveMode: !cfg.readOnly && cfg.execEnabled
+    },
+    broker: {
+      attempted: brokerSubmit.attempted,
+      submitted: brokerSubmit.submitted
+    },
+    stateLedger: {
+      upserted: ledger.upserted,
+      transitioned: ledger.transitioned,
+      reconciled: ledger.reconciled,
+      pruned: ledger.pruned
+    }
+  });
 }
 
 function formatSkipReasonCounts(counts: Record<string, number>): string {
@@ -11385,7 +11466,8 @@ async function saveOrderDecisionAudit(
   result: Stage6LoadResult,
   dryExec: DryExecBuildResult,
   preflight: PreflightResult,
-  brokerSubmit: BrokerSubmitSummary
+  brokerSubmit: BrokerSubmitSummary,
+  runtimeEvidence: ReturnType<typeof buildSidecarRuntimeEvidenceSummary>
 ): Promise<void> {
   const generatedAt = new Date().toISOString();
   const payloadReady = dryExec.decisionAudit.filter((row) => row.status === "payload").length;
@@ -11416,7 +11498,8 @@ async function saveOrderDecisionAudit(
       topSkipReasons,
       topSkipReasonCategories,
       payloadExpectation,
-      stage6PolicyAudit
+      stage6PolicyAudit,
+      runtimeEvidence: runtimeEvidence
     },
     records: dryExec.decisionAudit
   };
@@ -11506,6 +11589,15 @@ async function saveDryExecPreview(
   const stage6PolicyAudit = buildStage6PolicyAuditSummary(result);
   const topSkipReasons = buildEffectiveSkipReasonCounts(dryExec);
   const topSkipReasonCategories = buildSkipReasonCategoryCounts(topSkipReasons);
+  const runtimeEvidence = buildCurrentSidecarRuntimeEvidence(
+    result,
+    dryExec,
+    preflight,
+    ledger,
+    brokerSubmit,
+    guardControl,
+    topSkipReasonCategories
+  );
   const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
   await mkdir("state", { recursive: true });
   const preview = {
@@ -11569,7 +11661,8 @@ async function saveDryExecPreview(
         topSkipReasons,
         topSkipReasonCategories,
         payloadExpectation: buildPayloadExpectationSummary(dryExec.decisionAudit),
-        stage6PolicyAudit
+        stage6PolicyAudit,
+        runtimeEvidence: runtimeEvidence
       },
       records: dryExec.decisionAudit
     },
@@ -11591,12 +11684,15 @@ async function saveDryExecPreview(
     skipped: dryExec.skipped
   };
   await writeFile(DRY_EXEC_PREVIEW_PATH, JSON.stringify(preview, null, 2), "utf8");
-  await saveOrderDecisionAudit(result, dryExec, preflight, brokerSubmit);
+  await saveOrderDecisionAudit(result, dryExec, preflight, brokerSubmit, runtimeEvidence);
   console.log(`[DRY_EXEC] payloads=${dryExec.payloads.length} skipped=${dryExec.skipped.length}`);
   console.log(
     `[SHADOW_PARSE] total=${shadowDataParsing.totalCandidates} av=${shadowDataParsing.alphaVantageParsed} (${shadowDataParsing.alphaVantageCoveragePct.toFixed(1)}%) sec=${shadowDataParsing.secEdgarParsed} (${shadowDataParsing.secEdgarCoveragePct.toFixed(1)}%) avSymbols=${shadowDataParsing.alphaVantageSymbols.slice(0, 3).join(",") || "none"} secSymbols=${shadowDataParsing.secEdgarSymbols.slice(0, 3).join(",") || "none"}`
   );
   console.log(`[SKIP_REASONS] ${formatSkipReasonCounts(topSkipReasons)}`);
+  console.log(
+    `[RUNTIME_EVIDENCE] semantic=${runtimeEvidence.semanticIntegrityStatus} primary=${runtimeEvidence.orderOutcome.primaryNoOrderCause} payloads=${runtimeEvidence.orderOutcome.payloadCount} decisionRows=${runtimeEvidence.decisionAudit.rows} blockerRows=${runtimeEvidence.decisionAudit.blockerSummaryRows} blockerCountMatches=${runtimeEvidence.decisionAudit.blockerSummaryCountMatches} source=${runtimeEvidence.sourceIntegrity.status} previewStale=${runtimeEvidence.sourceIntegrity.previewStale} readOnly=${runtimeEvidence.safety.readOnly} execEnabled=${runtimeEvidence.safety.execEnabled} brokerAttempted=${runtimeEvidence.safety.brokerMutationAttempted} brokerSubmitted=${runtimeEvidence.safety.brokerMutationSubmitted} stateAttempted=${runtimeEvidence.safety.stateMutationAttempted} stateSubmitted=${runtimeEvidence.safety.stateMutationSubmitted}`
+  );
   console.log(
     `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
   );

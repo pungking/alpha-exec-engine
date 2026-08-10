@@ -35,6 +35,8 @@ jobs:
           npm run ops:test:protection-blocker-reduction
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
+      - name: Sidecar runtime evidence semantic contract
+        run: npm run ops:test:sidecar-runtime-evidence
       - name: Telegram routing policy audit
         run: npm run ops:safety:telegram-routing
       - name: High-price min-one-share report-only self-test
