@@ -955,6 +955,29 @@ type OpenEntryOrderIndex = {
   bySymbol: Map<string, OpenEntryOrderSnapshot>;
 };
 
+type LifecycleExitOpenOrderEvidence = {
+  known: boolean;
+  protectiveChildCount: number;
+  openExitOrderCount: number;
+};
+
+type LifecycleExitPreSubmitSafetyInput = {
+  alphaEnvironment: string;
+  approvalScopePassed: boolean;
+  ownershipVerified: boolean;
+  positionQty: number | null;
+  executionSide: "buy" | "sell" | null;
+  submittedQty: number | null;
+  openOrderEvidenceKnown: boolean;
+  protectiveChildCount: number;
+  openExitOrderCount: number;
+  idempotencyConflict: boolean;
+  terminalReconciliationRequired: boolean;
+  marketSessionEligible: boolean;
+};
+
+class LifecycleExitPreSubmitBlockedError extends Error {}
+
 type OpenEntryReplaceGuardSymbolState = {
   lastReplaceAt: string | null;
   replaceCountByDay: Record<string, number>;
@@ -8912,6 +8935,247 @@ function isLifecycleExitAction(
   return isLifecycleExitActionType(actionType);
 }
 
+function evaluateLifecycleExitPreSubmitSafety(
+  input: LifecycleExitPreSubmitSafetyInput
+): { allowed: boolean; reason: string } {
+  if (input.alphaEnvironment !== "PAPER") {
+    return { allowed: false, reason: "paper_environment_required" };
+  }
+  if (!input.approvalScopePassed) {
+    return { allowed: false, reason: "explicit_execution_approval_required" };
+  }
+  if (!input.ownershipVerified) {
+    return { allowed: false, reason: "ownership_proof_required" };
+  }
+  if (!Number.isFinite(input.positionQty) || input.positionQty === 0) {
+    return { allowed: false, reason: "current_position_not_verified" };
+  }
+  const expectedSide = (input.positionQty ?? 0) > 0 ? "sell" : "buy";
+  if (input.executionSide !== expectedSide) {
+    return { allowed: false, reason: "exit_execution_side_mismatch" };
+  }
+  if (!Number.isFinite(input.submittedQty) || (input.submittedQty ?? 0) <= 0) {
+    return { allowed: false, reason: "invalid_exit_quantity" };
+  }
+  if ((input.submittedQty ?? 0) > Math.abs(input.positionQty ?? 0)) {
+    return { allowed: false, reason: "exit_quantity_exceeds_current_position" };
+  }
+  if (!input.openOrderEvidenceKnown) {
+    return { allowed: false, reason: "protective_child_state_unknown" };
+  }
+  if (input.protectiveChildCount > 0) {
+    return { allowed: false, reason: "protective_child_cancel_confirmation_required" };
+  }
+  if (input.openExitOrderCount > 0) {
+    return {
+      allowed: false,
+      reason: input.openExitOrderCount > 1 ? "duplicate_open_exit_order" : "open_exit_order_already_present"
+    };
+  }
+  if (input.idempotencyConflict) {
+    return { allowed: false, reason: "exit_idempotency_conflict" };
+  }
+  if (input.terminalReconciliationRequired) {
+    return { allowed: false, reason: "terminal_reconciliation_required" };
+  }
+  if (!input.marketSessionEligible) {
+    return { allowed: false, reason: "market_session_not_eligible" };
+  }
+  return { allowed: true, reason: "exit_pre_submit_safety_pass" };
+}
+
+function classifyLifecycleExitOpenOrders(
+  raw: unknown,
+  symbol: string,
+  executionSide: "buy" | "sell"
+): LifecycleExitOpenOrderEvidence {
+  if (!Array.isArray(raw)) {
+    return { known: false, protectiveChildCount: 0, openExitOrderCount: 0 };
+  }
+  const flattened: Array<{ node: Record<string, unknown>; depth: number }> = [];
+  const visit = (rows: unknown[], depth: number): boolean => {
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+      const node = row as Record<string, unknown>;
+      flattened.push({ node, depth });
+      if (node.legs !== undefined) {
+        if (!Array.isArray(node.legs) || !visit(node.legs, depth + 1)) return false;
+      }
+    }
+    return true;
+  };
+  if (!visit(raw, 0)) {
+    return { known: false, protectiveChildCount: 0, openExitOrderCount: 0 };
+  }
+
+  let protectiveChildCount = 0;
+  let openExitOrderCount = 0;
+  for (const { node, depth } of flattened) {
+    const rowSymbol = String(node.symbol ?? "").trim().toUpperCase();
+    const side = String(node.side ?? "").trim().toLowerCase();
+    const status = String(node.status ?? "").trim().toLowerCase();
+    if (!rowSymbol || !["buy", "sell"].includes(side) || !status) {
+      return { known: false, protectiveChildCount: 0, openExitOrderCount: 0 };
+    }
+    if (["filled", "canceled", "cancelled", "expired", "rejected", "failed"].includes(status)) {
+      continue;
+    }
+    if (rowSymbol !== symbol || side !== executionSide) continue;
+    const orderClass = String(node.order_class ?? "").trim().toLowerCase();
+    const orderType = String(node.type ?? "").trim().toLowerCase();
+    const protective =
+      depth > 0 ||
+      ["bracket", "oco", "oto"].includes(orderClass) ||
+      ["stop", "stop_limit", "trailing_stop"].includes(orderType) ||
+      node.stop_price !== undefined;
+    if (protective) protectiveChildCount += 1;
+    else openExitOrderCount += 1;
+  }
+  return { known: true, protectiveChildCount, openExitOrderCount };
+}
+
+function lifecycleEvidenceIdsConflict(
+  ledger: OrderLedgerRecord,
+  evidence: OrderIdempotencyEntry | OrderIdempotencyReleaseRecord
+): boolean {
+  const ledgerClientId = ledger.clientOrderId.trim();
+  const evidenceClientId = String(evidence.clientOrderId ?? "").trim();
+  const ledgerBrokerId = String(ledger.brokerOrderId ?? "").trim();
+  const evidenceBrokerId = String(evidence.brokerOrderId ?? "").trim();
+  return Boolean(
+    (ledgerClientId && evidenceClientId && ledgerClientId !== evidenceClientId) ||
+    (ledgerBrokerId && evidenceBrokerId && ledgerBrokerId !== evidenceBrokerId)
+  );
+}
+
+function isExitTerminalEvidenceStatus(status: OrderLifecycleStatus | null | undefined): boolean {
+  return status === "filled" || status === "canceled" || status === "rejected" || status === "expired";
+}
+
+function classifyLifecycleExitStateEvidence(
+  symbol: string,
+  currentIdempotencyKey: string,
+  ledgerState: OrderLedgerState,
+  idempotencyState: OrderIdempotencyState
+): {
+  ownershipVerified: boolean;
+  openExitOrderCount: number;
+  idempotencyConflict: boolean;
+  terminalReconciliationRequired: boolean;
+} {
+  const ledgerRows = Object.values(ledgerState.orders).filter((row) => row?.symbol === symbol);
+  let ownershipVerified = false;
+  let idempotencyConflict = false;
+  let terminalReconciliationRequired = false;
+  const openExitKeys = new Set<string>();
+
+  for (const ledger of ledgerRows) {
+    const entry = findOrderIdempotencyEntryForLedgerRecord(ledger, idempotencyState);
+    const release = entry ? null : findOrderIdempotencyReleaseForLedgerRecord(ledger, idempotencyState);
+    const evidence = entry ?? release;
+    const evidenceStatus = evidence?.brokerStatus ?? null;
+    const idsConflict = evidence ? lifecycleEvidenceIdsConflict(ledger, evidence) : false;
+    if (idsConflict) idempotencyConflict = true;
+    if (
+      (ledger.status === "filled" || ledger.status === "partially_filled") &&
+      (evidenceStatus === "filled" || evidenceStatus === "partially_filled") &&
+      !idsConflict
+    ) {
+      ownershipVerified = true;
+    }
+    if (isExitTerminalEvidenceStatus(ledger.status)) {
+      if (!evidenceStatus || evidenceStatus !== ledger.status || idsConflict) {
+        terminalReconciliationRequired = true;
+      }
+    }
+    if (
+      ledger.idempotencyKey !== currentIdempotencyKey &&
+      isLifecycleExitAction(ledger.actionType) &&
+      !isExitTerminalEvidenceStatus(ledger.status)
+    ) {
+      openExitKeys.add(ledger.idempotencyKey);
+    }
+  }
+
+  for (const [key, entry] of Object.entries(idempotencyState.orders)) {
+    if (
+      key !== currentIdempotencyKey &&
+      entry?.symbol === symbol &&
+      isLifecycleExitAction(entry.actionType) &&
+      !isExitTerminalEvidenceStatus(entry.brokerStatus)
+    ) {
+      openExitKeys.add(key);
+    }
+  }
+
+  return {
+    ownershipVerified,
+    openExitOrderCount: openExitKeys.size,
+    idempotencyConflict,
+    terminalReconciliationRequired
+  };
+}
+
+async function buildLifecycleExitPreSubmitSafetyInput(
+  payload: DryExecOrderPayload,
+  positionQty: number,
+  executionSide: "buy" | "sell",
+  submittedQty: number
+): Promise<LifecycleExitPreSubmitSafetyInput> {
+  let openOrderEvidence: LifecycleExitOpenOrderEvidence = {
+    known: false,
+    protectiveChildCount: 0,
+    openExitOrderCount: 0
+  };
+  try {
+    const raw = await fetchAlpacaJson("/v2/orders?status=open&nested=true&direction=desc&limit=500");
+    openOrderEvidence = classifyLifecycleExitOpenOrders(raw, payload.symbol, executionSide);
+  } catch {
+    console.warn("[LIFECYCLE_EXIT_INTERLOCK] open_order_evidence_unavailable");
+  }
+
+  let marketSessionEligible = false;
+  try {
+    const rawClock = await fetchAlpacaJson("/v2/clock");
+    marketSessionEligible = Boolean(
+      rawClock && typeof rawClock === "object" && (rawClock as Record<string, unknown>).is_open === true
+    );
+  } catch {
+    console.warn("[LIFECYCLE_EXIT_INTERLOCK] market_clock_evidence_unavailable");
+  }
+
+  const [ledgerState, idempotencyState] = await Promise.all([
+    loadOrderLedgerState(),
+    loadOrderIdempotencyState()
+  ]);
+  const stateEvidence = classifyLifecycleExitStateEvidence(
+    payload.symbol,
+    payload.idempotencyKey,
+    ledgerState,
+    idempotencyState
+  );
+  const expectedSymbol = String(process.env.BROKER_MUTATION_EXPECTED_SYMBOL || "").trim().toUpperCase();
+  const approvalScopePassed =
+    isWorkflowDispatchEvent() &&
+    String(process.env.BROKER_MUTATION_APPROVAL || "").trim() === REQUIRED_BROKER_MUTATION_APPROVAL &&
+    expectedSymbol === payload.symbol;
+
+  return {
+    alphaEnvironment: String(process.env.ALPHA_ENV || "").trim().toUpperCase(),
+    approvalScopePassed,
+    ownershipVerified: stateEvidence.ownershipVerified,
+    positionQty,
+    executionSide,
+    submittedQty,
+    openOrderEvidenceKnown: openOrderEvidence.known,
+    protectiveChildCount: openOrderEvidence.protectiveChildCount,
+    openExitOrderCount: openOrderEvidence.openExitOrderCount + stateEvidence.openExitOrderCount,
+    idempotencyConflict: stateEvidence.idempotencyConflict,
+    terminalReconciliationRequired: stateEvidence.terminalReconciliationRequired,
+    marketSessionEligible
+  };
+}
+
 async function submitLifecycleExitOrder(
   payload: DryExecOrderPayload,
   actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL",
@@ -8929,6 +9193,16 @@ async function submitLifecycleExitOrder(
   const qty = toBrokerQtyString(rawQty);
   if (!qty) throw new Error(`invalid_exit_qty:${rawQty}`);
   const side = intent.side;
+  const safetyInput = await buildLifecycleExitPreSubmitSafetyInput(
+    payload,
+    positionQty,
+    side,
+    Number(qty)
+  );
+  const safetyVerdict = evaluateLifecycleExitPreSubmitSafety(safetyInput);
+  if (!safetyVerdict.allowed) {
+    throw new LifecycleExitPreSubmitBlockedError(safetyVerdict.reason);
+  }
   const rawResponse = await fetchAlpacaJson("/v2/orders", {
     method: "POST",
     body: {
@@ -9174,6 +9448,84 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   const longPartial = resolveLifecycleExitOrderIntent("EXIT_PARTIAL", 10, cfg.positionLifecycle);
   const longScaleDown = resolveLifecycleExitOrderIntent("SCALE_DOWN", 10, cfg.positionLifecycle);
   const shortFull = resolveLifecycleExitOrderIntent("EXIT_FULL", -10, cfg.positionLifecycle);
+  const exitSafetyBase = {
+    alphaEnvironment: "PAPER",
+    approvalScopePassed: true,
+    ownershipVerified: true,
+    positionQty: 10,
+    executionSide: "sell" as const,
+    submittedQty: 10,
+    openOrderEvidenceKnown: true,
+    protectiveChildCount: 0,
+    openExitOrderCount: 0,
+    idempotencyConflict: false,
+    terminalReconciliationRequired: false,
+    marketSessionEligible: true
+  };
+  const exitSafetyFixtures = [
+    [exitSafetyBase, true, "exit_pre_submit_safety_pass"],
+    [{ ...exitSafetyBase, protectiveChildCount: 1 }, false, "protective_child_cancel_confirmation_required"],
+    [{ ...exitSafetyBase, openOrderEvidenceKnown: false }, false, "protective_child_state_unknown"],
+    [{ ...exitSafetyBase, openExitOrderCount: 1 }, false, "open_exit_order_already_present"],
+    [{ ...exitSafetyBase, ownershipVerified: false }, false, "ownership_proof_required"],
+    [{ ...exitSafetyBase, submittedQty: 11 }, false, "exit_quantity_exceeds_current_position"],
+    [{ ...exitSafetyBase, idempotencyConflict: true }, false, "exit_idempotency_conflict"],
+    [{ ...exitSafetyBase, terminalReconciliationRequired: true }, false, "terminal_reconciliation_required"],
+    [{ ...exitSafetyBase, marketSessionEligible: false }, false, "market_session_not_eligible"],
+    [{ ...exitSafetyBase, positionQty: -10, executionSide: "sell" as const }, false, "exit_execution_side_mismatch"]
+  ] as const;
+  const exitSafetyPassed = exitSafetyFixtures.every(([input, allowed, reason]) => {
+    const verdict = evaluateLifecycleExitPreSubmitSafety(input);
+    return verdict.allowed === allowed && verdict.reason === reason;
+  });
+  const protectiveOrderEvidence = classifyLifecycleExitOpenOrders(
+    [{
+      symbol,
+      side: "buy",
+      status: "filled",
+      legs: [{ symbol, side: "sell", status: "new", type: "stop", stop_price: "90" }]
+    }],
+    symbol,
+    "sell"
+  );
+  const directExitOrderEvidence = classifyLifecycleExitOpenOrders(
+    [{ symbol, side: "sell", status: "accepted", type: "market" }],
+    symbol,
+    "sell"
+  );
+  const filledLedger = {
+    orders: {
+      "filled-entry": {
+        idempotencyKey: "filled-entry",
+        symbol,
+        status: "filled",
+        clientOrderId: "filled-entry-client",
+        brokerOrderId: "filled-entry-broker"
+      }
+    }
+  } as unknown as OrderLedgerState;
+  const matchedRelease = {
+    orders: {},
+    releases: [{
+      key: "filled-entry",
+      symbol,
+      brokerStatus: "filled",
+      clientOrderId: "filled-entry-client",
+      brokerOrderId: "filled-entry-broker"
+    }]
+  } as unknown as OrderIdempotencyState;
+  const matchedStateEvidence = classifyLifecycleExitStateEvidence(
+    symbol,
+    "new-exit",
+    filledLedger,
+    matchedRelease
+  );
+  const missingTerminalEvidence = classifyLifecycleExitStateEvidence(
+    symbol,
+    "new-exit",
+    filledLedger,
+    { orders: {}, releases: [], updatedAt: "" }
+  );
   const selfTestPassed =
     overExitBlocked &&
     actionScaleDown.actionType === "SCALE_DOWN" &&
@@ -9182,7 +9534,12 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     longFull.side === "sell" && longFull.rawQty === 10 &&
     longPartial.side === "sell" && longPartial.rawQty === 10 * cfg.positionLifecycle.exitPartialPct &&
     longScaleDown.side === "sell" && longScaleDown.rawQty === 10 * cfg.positionLifecycle.scaleDownPct &&
-    shortFull.side === "buy" && shortFull.rawQty === 10;
+    shortFull.side === "buy" && shortFull.rawQty === 10 &&
+    protectiveOrderEvidence.known && protectiveOrderEvidence.protectiveChildCount === 1 &&
+    directExitOrderEvidence.known && directExitOrderEvidence.openExitOrderCount === 1 &&
+    matchedStateEvidence.ownershipVerified && !matchedStateEvidence.terminalReconciliationRequired &&
+    !missingTerminalEvidence.ownershipVerified && missingTerminalEvidence.terminalReconciliationRequired &&
+    exitSafetyPassed;
   if (!selfTestPassed) throw new Error("lifecycle_exit_selftest_failed");
   console.log(
     `[LIFECYCLE_SELFTEST] held_rules scaleDown=${actionScaleDown.actionType ?? "HOLD_WAIT"} partial=${actionExitPartial.actionType ?? "HOLD_WAIT"} full=${actionExitFull.actionType ?? "HOLD_WAIT"}`
@@ -9190,6 +9547,7 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   console.log(
     `[LIFECYCLE_SELFTEST] order_intent longFull=${longFull.side}:${longFull.rawQty} longPartial=${longPartial.side}:${longPartial.rawQty} longScaleDown=${longScaleDown.side}:${longScaleDown.rawQty} shortFull=${shortFull.side}:${shortFull.rawQty}`
   );
+  console.log(`[LIFECYCLE_SELFTEST] exit_pre_submit_safety fixtures=${exitSafetyFixtures.length} passed=${exitSafetyPassed}`);
 }
 
 const REQUIRED_BROKER_MUTATION_APPROVAL = "CONFIRM LIVE EXECUTION";
@@ -9592,16 +9950,26 @@ async function submitOrdersToBroker(
           symbolOpenCount: 1
         });
       }
-      console.log(
-        `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
+      console.log(isLifecycleExitAction(effectiveActionType)
+        ? `[BROKER_SUBMIT] action=${row.actionType} status=${brokerStatus}`
+        : `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
       );
     } catch (error) {
       row.submitted = false;
       row.brokerOrderId = null;
       row.brokerStatus = null;
       row.reason = error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160);
-      summary.failed += 1;
-      console.warn(`[BROKER_SUBMIT] symbol=${payload.symbol} failed reason=${row.reason}`);
+      if (error instanceof LifecycleExitPreSubmitBlockedError) {
+        row.attempted = false;
+        summary.attempted = Math.max(0, summary.attempted - 1);
+        summary.skipped += 1;
+      } else {
+        summary.failed += 1;
+      }
+      console.warn(isLifecycleExitAction(effectiveActionType)
+        ? `[BROKER_SUBMIT] action=${row.actionType} blocked_or_failed reason=${row.reason}`
+        : `[BROKER_SUBMIT] symbol=${payload.symbol} failed reason=${row.reason}`
+      );
     }
   }
 
