@@ -80,12 +80,20 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
     at: row?.updatedAt || row?.createdAt || null,
     reason: row?.statusReason || null
   }));
-  const idempotencyBySymbol = latestBySymbol(Object.values(idempotency?.orders || {}), (row) => ({
+  const idempotencyRows = [
+    ...Object.values(idempotency?.orders || {}),
+    ...(Array.isArray(idempotency?.releases) ? idempotency.releases : [])
+  ];
+  const idempotencyBySymbol = latestBySymbol(idempotencyRows, (row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
     status: row?.brokerStatus || null,
     normalized: normalizeFillState(row?.brokerStatus),
-    at: row?.brokerCheckedAt || row?.lastSeenAt || row?.firstSeenAt || null,
-    reason: row?.brokerCheckedAt ? "broker_checked" : "idempotency_state"
+    at: row?.brokerCheckedAt || row?.releasedAt || row?.lastSeenAt || row?.firstSeenAt || null,
+    reason: row?.releasedAt
+      ? `idempotency_release:${row?.reason || "unknown"}`
+      : row?.brokerCheckedAt
+        ? "broker_checked"
+        : "idempotency_state"
   }));
   const fillabilityBySymbol = latestBySymbol(Array.isArray(fillability?.rows) ? fillability.rows : [], (row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
@@ -129,7 +137,11 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
       : [];
     const missingStatusSources = hasTerminalEvidence
       ? Object.entries(states)
-        .filter(([, row]) => row && !row.normalized)
+        .filter(([source, row]) =>
+          row &&
+          !row.normalized &&
+          !(source === "fillability" && String(row.status || "").trim().toLowerCase() === "no_active_order")
+        )
         .map(([source]) => source)
       : [];
     let status = "WARN";
