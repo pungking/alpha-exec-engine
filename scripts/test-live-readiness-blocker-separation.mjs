@@ -545,6 +545,93 @@ const marketClosedReport = runScorecard(marketClosedStateDir);
 assert.ok(marketClosedReport.paperExitReadiness.summary.exitBlockedMarketSessionRows >= 4);
 assert.equal(marketClosedReport.paperExitReadiness.canaryApprovalPackage.status, "NO_SAFE_EXIT_CANARY_AVAILABLE");
 
+const shadowExitStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-"));
+const shadowExitSymbols = [...exitSymbols, "LINEAGE_MISSING"];
+for (const fileName of fs.readdirSync(exitReadinessStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(exitReadinessStateDir, fileName), path.join(shadowExitStateDir, fileName));
+}
+const shadowPreview = JSON.parse(fs.readFileSync(path.join(shadowExitStateDir, "last-dry-exec-preview.json"), "utf8"));
+Object.assign(shadowPreview, {
+  payloadCount: 1,
+  actionIntent: {
+    enabled: true,
+    previewOnly: true,
+    allowedActionTypes: ["ENTRY_NEW", "HOLD_WAIT"],
+    counts: { ENTRY_NEW: 1, HOLD_WAIT: 0, SCALE_UP: 0, SCALE_DOWN: 0, EXIT_PARTIAL: 0, EXIT_FULL: 0 },
+  },
+  payloads: [{ symbol: "ENTRY_ONLY", actionType: "ENTRY_NEW", actionReason: "stage6_executable_now" }],
+  paperExitShadowIntent: {
+    contractVersion: "paper-exit-shadow-intent-v1",
+    mode: "REPORT_ONLY_SHADOW",
+    status: "STAGE6_LINEAGE_INCOMPLETE",
+    primaryLivenessGap: "HELD_POSITION_LINEAGE_MISSING",
+    evaluatedPositionRows: 9,
+    exitNotDueRows: 1,
+    scaleDownDueRows: 1,
+    exitPartialDueRows: 1,
+    exitFullDueRows: 5,
+    evidenceIncompleteRows: 1,
+    unknownOrUnclassifiedRows: 0,
+    wouldCreateBrokerPayload: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
+    rows: [
+      { symbol: "IDEMP", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
+      { symbol: "LONG_FULL", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { symbol: "LONG_PART", evaluationStatus: "EVALUATED", actionType: "EXIT_PARTIAL", actionReason: "stage6_partial_exit_verdict" },
+      { symbol: "NO_DUE", evaluationStatus: "EVALUATED", actionType: null, actionReason: "held_position_hold_wait" },
+      { symbol: "OWNER", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
+      { symbol: "PROTECTED", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { symbol: "SCALE_SAFE", evaluationStatus: "EVALUATED", actionType: "SCALE_DOWN", actionReason: "stale_hold_scale_down" },
+      { symbol: "SHORT_FULL", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { symbol: "LINEAGE_MISSING", evaluationStatus: "STAGE6_LINEAGE_MISSING", actionType: null, actionReason: "held_position_stage6_lineage_missing" },
+    ],
+  },
+});
+writeJsonAt(shadowExitStateDir, "last-dry-exec-preview.json", shadowPreview);
+writeJsonAt(shadowExitStateDir, "order-state-consistency-report.json", {
+  summary: { symbols: 8, failures: 1, terminalReconciliationRequired: 1, terminalConflicts: 0 },
+  rows: exitSymbols.map((symbol) => ({
+    symbol,
+    category: symbol === "SHORT_FULL" ? "TERMINAL_RECONCILIATION_REQUIRED" : "ACTIVE_CONSISTENT",
+    terminalReconciliationRequired: symbol === "SHORT_FULL",
+  })),
+});
+const shadowExitReport = runScorecard(shadowExitStateDir);
+assert.equal(shadowExitReport.paperExitReadiness.primaryRootCause, null);
+assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.previewOnly, true);
+assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.productionRuntimeReadyForExitIntentGeneration, false);
+assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.shadowRuntimeReadyForExitIntentGeneration, true);
+assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration, true);
+assert.equal(shadowExitReport.paperExitReadiness.summary.evaluatedPositionRows, 9);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowNotDueRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowReadyReportOnlyRows, 3);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedProtectionRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedOwnershipRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedLedgerOrIdempotencyRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedTerminalReconciliationRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowEvidenceIncompleteRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.unknownRows, 0);
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "SHORT_FULL").classification, "EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION");
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "NO_DUE").classification, "EXIT_SHADOW_NOT_DUE");
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").actionPropagatedAsPayload, false);
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").shadowEvaluated, true);
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.wouldCreateBrokerPayload, false);
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.countMatches, true);
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.brokerMutationAttempted, false);
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.stateMutationAttempted, false);
+assert.equal(shadowExitReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 1);
+assert.equal(shadowPreview.payloadCount, 1);
+assert.equal(shadowPreview.actionIntent.counts.EXIT_FULL, 0);
+const shadowMarkdown = fs.readFileSync(path.join(shadowExitStateDir, "live-readiness-scorecard.md"), "utf8");
+for (const symbol of shadowExitSymbols) {
+  const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.equal(new RegExp(`(^|[^A-Z0-9_.-])${escaped}([^A-Z0-9_.-]|$)`).test(shadowMarkdown), false);
+}
+
 const pnlMismatchStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-pnl-mismatch-"));
 for (const fileName of fs.readdirSync(microLiveStateDir)) {
   if (fileName.startsWith("live-readiness-scorecard.")) continue;
@@ -592,6 +679,25 @@ for (const fileName of fs.readdirSync(exitReadinessStateDir)) {
 const renamedExitReport = runScorecard(renamedExitStateDir);
 assert.deepEqual(renamedExitReport.paperExitReadiness.summary, exitReadinessReport.paperExitReadiness.summary);
 assert.equal(renamedExitReport.paperExitReadiness.primaryRootCause, exitReadinessReport.paperExitReadiness.primaryRootCause);
+
+const renamedShadowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-renamed-"));
+const renamedShadowSymbols = new Map(shadowExitSymbols.map((symbol, index) => [symbol, `SHADOW_RENAMED_${index}`]));
+const renameShadowEvidence = (value) => {
+  if (Array.isArray(value)) return value.map(renameShadowEvidence);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameShadowEvidence(item)]));
+  }
+  return typeof value === "string" ? renamedShadowSymbols.get(value) || value : value;
+};
+for (const fileName of fs.readdirSync(shadowExitStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  const payload = JSON.parse(fs.readFileSync(path.join(shadowExitStateDir, fileName), "utf8"));
+  writeJsonAt(renamedShadowStateDir, fileName, renameShadowEvidence(payload));
+}
+const renamedShadowReport = runScorecard(renamedShadowStateDir);
+assert.deepEqual(renamedShadowReport.paperExitReadiness.summary, shadowExitReport.paperExitReadiness.summary);
+assert.equal(renamedShadowReport.paperExitReadiness.primaryRootCause, shadowExitReport.paperExitReadiness.primaryRootCause);
+assert.deepEqual(renamedShadowReport.paperExitReadiness.producerLiveness, shadowExitReport.paperExitReadiness.producerLiveness);
 
 const renamedStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-renamed-lifecycle-"));
 for (const fileName of fs.readdirSync(stateDir)) {
