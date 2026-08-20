@@ -196,6 +196,11 @@ type Stage6CandidateSummary = {
   shadowIntel: Stage6ShadowIntelSummary | null;
 };
 
+type HeldLifecycleSignal = Pick<
+  Stage6CandidateSummary,
+  "decisionReason" | "finalDecision" | "symbolLifecycleState" | "verdict"
+>;
+
 type Stage6BlockerSample = {
   symbol: string;
   verdict: string;
@@ -839,15 +844,29 @@ type PaperExitShadowIntent = {
   stateMutationSubmitted: false;
   rows: Array<{
     symbol: string;
-    evaluationStatus: "EVALUATED" | "STAGE6_LINEAGE_MISSING";
-    positionLineageStatus: "MATCHED_STAGE6_ROW" | "STAGE6_ROW_MISSING";
-    stage6File: string;
-    stage6Hash: string;
+    evaluationStatus: "EVALUATED" | "STAGE6_LINEAGE_MISSING" | "STAGE6_LINEAGE_AMBIGUOUS";
+    positionLineageStatus:
+      | "MATCHED_STAGE6_ROW"
+      | "MATCHED_HISTORICAL_STAGE6_ROW"
+      | "STAGE6_ROW_MISSING"
+      | "MULTIPLE_HISTORICAL_STAGE6_ROWS";
+    lineageSource: "CURRENT_STAGE6" | "FILLED_ORDER_LEDGER" | null;
+    signalEvaluationBasis: "CURRENT_STAGE6_SIGNAL" | "DYNAMIC_BROKER_RISK_WITH_HISTORICAL_ENTRY_LINEAGE" | null;
+    lineageCandidateCount: number;
+    stage6File: string | null;
+    stage6Hash: string | null;
     actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" | null;
     actionReason: string;
     expectedExecutionSide: "buy" | "sell";
     exitQuantityPolicy: "CONFIGURED_SCALE_DOWN_RATIO" | "CONFIGURED_EXIT_PARTIAL_RATIO" | "FULL_CURRENT_ABSOLUTE_POSITION" | null;
   }>;
+};
+
+type HeldPositionStage6Lineage = {
+  status: "MATCHED_HISTORICAL_STAGE6_ROW" | "STAGE6_ROW_MISSING" | "MULTIPLE_HISTORICAL_STAGE6_ROWS";
+  stage6File: string | null;
+  stage6Hash: string | null;
+  candidateCount: number;
 };
 
 type PreflightStatus = "pass" | "warn" | "fail" | "skip";
@@ -5698,7 +5717,7 @@ function resolveHeldPreferredAction(
 }
 
 function resolveHeldLifecycleAction(
-  row: Stage6CandidateSummary,
+  row: HeldLifecycleSignal & Partial<Stage6CandidateSummary>,
   conviction: number | null,
   effectiveExecutable: boolean,
   effectiveWatchlist: boolean,
@@ -5966,11 +5985,53 @@ function resolveHeldLifecycleAction(
   };
 }
 
+function buildHeldPositionStage6LineageMap(
+  heldPositions: Map<string, HeldPositionSnapshot>,
+  ledgerState: OrderLedgerState
+): Map<string, HeldPositionStage6Lineage> {
+  const lineagesBySymbol = new Map<string, Map<string, { stage6File: string; stage6Hash: string }>>();
+  for (const row of Object.values(ledgerState.orders)) {
+    const symbol = String(row?.symbol ?? "").trim().toUpperCase();
+    if (!heldPositions.has(symbol)) continue;
+    if (row.status !== "filled" && row.status !== "partially_filled") continue;
+    if (isLifecycleExitActionType(normalizeLifecycleActionType(row.actionType) ?? undefined)) continue;
+    const stage6File = String(row.stage6File ?? "").trim();
+    const stage6Hash = String(row.stage6Hash ?? "").trim().toLowerCase();
+    if (!stage6File || !isSha256Hex(stage6Hash)) continue;
+    const byKey = lineagesBySymbol.get(symbol) ?? new Map();
+    byKey.set(`${stage6Hash}|${stage6File}`, { stage6File, stage6Hash });
+    lineagesBySymbol.set(symbol, byKey);
+  }
+
+  const out = new Map<string, HeldPositionStage6Lineage>();
+  for (const symbol of [...heldPositions.keys()].sort((left, right) => left.localeCompare(right))) {
+    const candidates = [...(lineagesBySymbol.get(symbol)?.values() ?? [])]
+      .sort((left, right) => `${left.stage6Hash}|${left.stage6File}`.localeCompare(`${right.stage6Hash}|${right.stage6File}`));
+    if (candidates.length === 1) {
+      out.set(symbol, {
+        status: "MATCHED_HISTORICAL_STAGE6_ROW",
+        stage6File: candidates[0].stage6File,
+        stage6Hash: candidates[0].stage6Hash,
+        candidateCount: 1
+      });
+    } else {
+      out.set(symbol, {
+        status: candidates.length > 1 ? "MULTIPLE_HISTORICAL_STAGE6_ROWS" : "STAGE6_ROW_MISSING",
+        stage6File: null,
+        stage6Hash: null,
+        candidateCount: candidates.length
+      });
+    }
+  }
+  return out;
+}
+
 function buildPaperExitShadowIntent(
   stage6: Stage6LoadResult,
   lifecycle: PositionLifecycleConfig,
   heldPositions: Map<string, HeldPositionSnapshot> | null,
-  regime: RegimeSelection
+  regime: RegimeSelection,
+  historicalLineage: Map<string, HeldPositionStage6Lineage> = new Map()
 ): PaperExitShadowIntent {
   const shadowEvaluatedActionTypes: LifecycleActionType[] = [
     "SCALE_UP",
@@ -5987,32 +6048,48 @@ function buildPaperExitShadowIntent(
   const rows: PaperExitShadowIntent["rows"] = [];
 
   for (const [symbol, position] of [...(heldPositions ?? new Map()).entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const row = stage6BySymbol.get(symbol);
-    if (!row) {
+    const currentRow = stage6BySymbol.get(symbol);
+    const historical = historicalLineage.get(symbol);
+    if (!currentRow && historical?.status !== "MATCHED_HISTORICAL_STAGE6_ROW") {
+      const ambiguous = historical?.status === "MULTIPLE_HISTORICAL_STAGE6_ROWS";
       rows.push({
         symbol,
-        evaluationStatus: "STAGE6_LINEAGE_MISSING",
-        positionLineageStatus: "STAGE6_ROW_MISSING",
-        stage6File: stage6.fileName,
-        stage6Hash: stage6.sha256,
+        evaluationStatus: ambiguous ? "STAGE6_LINEAGE_AMBIGUOUS" : "STAGE6_LINEAGE_MISSING",
+        positionLineageStatus: ambiguous ? "MULTIPLE_HISTORICAL_STAGE6_ROWS" : "STAGE6_ROW_MISSING",
+        lineageSource: null,
+        signalEvaluationBasis: null,
+        lineageCandidateCount: historical?.candidateCount ?? 0,
+        stage6File: null,
+        stage6Hash: null,
         actionType: null,
-        actionReason: "held_position_stage6_lineage_missing",
+        actionReason: ambiguous
+          ? "held_position_stage6_lineage_ambiguous"
+          : "held_position_stage6_lineage_missing",
         expectedExecutionSide: position.side === "short" ? "buy" : "sell",
         exitQuantityPolicy: null
       });
       continue;
     }
 
+    const historicalFallback = !currentRow;
+    const row: HeldLifecycleSignal = currentRow ?? {
+      verdict: "N/A",
+      finalDecision: "N/A",
+      decisionReason: "historical_entry_lineage_only",
+      symbolLifecycleState: "UNKNOWN"
+    };
     const effectiveExecutable =
-      row.executionBucket === "EXECUTABLE" || row.finalDecision === "EXECUTABLE_NOW";
+      !historicalFallback && (currentRow?.executionBucket === "EXECUTABLE" || row.finalDecision === "EXECUTABLE_NOW");
     const effectiveWatchlist =
-      row.executionBucket === "WATCHLIST" ||
-      row.finalDecision === "WAIT_PRICE" ||
-      row.finalDecision === "BLOCKED_RISK" ||
-      row.finalDecision === "BLOCKED_EVENT";
+      !historicalFallback && (
+        currentRow?.executionBucket === "WATCHLIST" ||
+        row.finalDecision === "WAIT_PRICE" ||
+        row.finalDecision === "BLOCKED_RISK" ||
+        row.finalDecision === "BLOCKED_EVENT"
+      );
     const decision = resolveHeldLifecycleAction(
       row,
-      parseConviction(row.conviction),
+      historicalFallback ? null : parseConviction(currentRow?.conviction ?? ""),
       effectiveExecutable,
       effectiveWatchlist,
       shadowLifecycle,
@@ -6025,9 +6102,14 @@ function buildPaperExitShadowIntent(
     rows.push({
       symbol,
       evaluationStatus: "EVALUATED",
-      positionLineageStatus: "MATCHED_STAGE6_ROW",
-      stage6File: stage6.fileName,
-      stage6Hash: stage6.sha256,
+      positionLineageStatus: historicalFallback ? "MATCHED_HISTORICAL_STAGE6_ROW" : "MATCHED_STAGE6_ROW",
+      lineageSource: historicalFallback ? "FILLED_ORDER_LEDGER" : "CURRENT_STAGE6",
+      signalEvaluationBasis: historicalFallback
+        ? "DYNAMIC_BROKER_RISK_WITH_HISTORICAL_ENTRY_LINEAGE"
+        : "CURRENT_STAGE6_SIGNAL",
+      lineageCandidateCount: 1,
+      stage6File: historicalFallback ? historical?.stage6File ?? null : stage6.fileName,
+      stage6Hash: historicalFallback ? historical?.stage6Hash ?? null : stage6.sha256,
       actionType,
       actionReason: decision.actionReason,
       expectedExecutionSide: position.side === "short" ? "buy" : "sell",
@@ -9645,20 +9727,54 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     ["SHADOW_PARTIAL", { ...heldForExitPartial, symbol: "SHADOW_PARTIAL" }],
     ["SHADOW_FULL", { ...heldForExitFull, symbol: "SHADOW_FULL", qty: -10, side: "short" }],
     ["SHADOW_WAIT", { ...heldForScaleDown, symbol: "SHADOW_WAIT", ageDays: 1, unrealizedPnlPct: 0, intradayPnlPct: 0 }],
-    ["SHADOW_MISSING", { ...heldForScaleDown, symbol: "SHADOW_MISSING" }]
+    ["SHADOW_MISSING", { ...heldForScaleDown, symbol: "SHADOW_MISSING" }],
+    ["SHADOW_HISTORICAL", { ...heldForExitFull, symbol: "SHADOW_HISTORICAL" }],
+    ["SHADOW_AMBIGUOUS", { ...heldForExitFull, symbol: "SHADOW_AMBIGUOUS" }]
   ]);
+  const historicalStage6Hash = "b".repeat(64);
+  const historicalLineage = buildHeldPositionStage6LineageMap(
+    shadowHeldPositions,
+    {
+      orders: {
+        "historical-entry": {
+          symbol: "SHADOW_HISTORICAL",
+          status: "filled",
+          actionType: "ENTRY_NEW",
+          stage6File: "STAGE6_ALPHA_FINAL_HISTORICAL.json",
+          stage6Hash: historicalStage6Hash
+        },
+        "ambiguous-entry-1": {
+          symbol: "SHADOW_AMBIGUOUS",
+          status: "filled",
+          actionType: "ENTRY_NEW",
+          stage6File: "STAGE6_ALPHA_FINAL_AMBIGUOUS_1.json",
+          stage6Hash: "c".repeat(64)
+        },
+        "ambiguous-entry-2": {
+          symbol: "SHADOW_AMBIGUOUS",
+          status: "filled",
+          actionType: "ENTRY_NEW",
+          stage6File: "STAGE6_ALPHA_FINAL_AMBIGUOUS_2.json",
+          stage6Hash: "d".repeat(64)
+        }
+      },
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    } as unknown as OrderLedgerState
+  );
   const productionAllowedBefore = JSON.stringify(shadowLifecycleCfg.allowedActionTypes);
   const shadowIntent = buildPaperExitShadowIntent(
     shadowStage6,
     shadowLifecycleCfg,
     shadowHeldPositions,
-    regimeDefault
+    regimeDefault,
+    historicalLineage
   );
   const shadowIntentRerun = buildPaperExitShadowIntent(
     shadowStage6,
     shadowLifecycleCfg,
     shadowHeldPositions,
-    regimeDefault
+    regimeDefault,
+    historicalLineage
   );
   const longFull = resolveLifecycleExitOrderIntent("EXIT_FULL", 10, cfg.positionLifecycle);
   const longPartial = resolveLifecycleExitOrderIntent("EXIT_PARTIAL", 10, cfg.positionLifecycle);
@@ -9749,14 +9865,18 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     actionExitFull.actionType === "EXIT_FULL" &&
     shadowIntent.mode === "REPORT_ONLY_SHADOW" &&
     shadowIntent.status === "STAGE6_LINEAGE_INCOMPLETE" &&
-    shadowIntent.evaluatedPositionRows === 5 &&
+    shadowIntent.evaluatedPositionRows === 7 &&
     shadowIntent.exitNotDueRows === 1 &&
     shadowIntent.scaleDownDueRows === 1 &&
     shadowIntent.exitPartialDueRows === 1 &&
-    shadowIntent.exitFullDueRows === 1 &&
-    shadowIntent.evidenceIncompleteRows === 1 &&
+    shadowIntent.exitFullDueRows === 2 &&
+    shadowIntent.evidenceIncompleteRows === 2 &&
     shadowIntent.unknownOrUnclassifiedRows === 0 &&
     shadowIntent.rows.find((row) => row.symbol === "SHADOW_FULL")?.expectedExecutionSide === "buy" &&
+    shadowIntent.rows.find((row) => row.symbol === "SHADOW_HISTORICAL")?.positionLineageStatus === "MATCHED_HISTORICAL_STAGE6_ROW" &&
+    shadowIntent.rows.find((row) => row.symbol === "SHADOW_HISTORICAL")?.stage6Hash === historicalStage6Hash &&
+    shadowIntent.rows.find((row) => row.symbol === "SHADOW_HISTORICAL")?.actionType === "EXIT_FULL" &&
+    shadowIntent.rows.find((row) => row.symbol === "SHADOW_AMBIGUOUS")?.evaluationStatus === "STAGE6_LINEAGE_AMBIGUOUS" &&
     shadowIntent.wouldCreateBrokerPayload === false &&
     shadowIntent.brokerMutationAttempted === false &&
     shadowIntent.stateMutationAttempted === false &&
@@ -14350,6 +14470,7 @@ async function main() {
   let lifecycleHeldSymbols: Set<string> | undefined;
   let lifecycleHeldContext: Map<string, HeldPositionSnapshot> | undefined;
   let shadowLifecycleHeldContext: Map<string, HeldPositionSnapshot> | null = null;
+  let shadowLifecycleStage6Lineage = new Map<string, HeldPositionStage6Lineage>();
   let portfolioHeldSymbols: Set<string> | undefined;
   const portfolioAdmissionPolicyForPreGate = buildPortfolioAdmissionPolicy();
   if (
@@ -14361,6 +14482,10 @@ async function main() {
       portfolioHeldSymbols = new Set(heldContext.keys());
       if (cfg.positionLifecycle.enabled && cfg.positionLifecycle.previewOnly) {
         shadowLifecycleHeldContext = heldContext;
+        shadowLifecycleStage6Lineage = buildHeldPositionStage6LineageMap(
+          heldContext,
+          await loadOrderLedgerState()
+        );
         console.log(`[LIFECYCLE_SHADOW] mode=REPORT_ONLY_SHADOW held_positions=${heldContext.size}`);
       } else if (cfg.positionLifecycle.enabled) {
         lifecycleHeldContext = heldContext;
@@ -14386,7 +14511,13 @@ async function main() {
     );
   }
   const paperExitShadowIntent = cfg.positionLifecycle.enabled && cfg.positionLifecycle.previewOnly
-    ? buildPaperExitShadowIntent(stage6, cfg.positionLifecycle, shadowLifecycleHeldContext, regime)
+    ? buildPaperExitShadowIntent(
+      stage6,
+      cfg.positionLifecycle,
+      shadowLifecycleHeldContext,
+      regime,
+      shadowLifecycleStage6Lineage
+    )
     : undefined;
   const dryExecBaseRaw: DryExecBuildResult = {
     ...buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
