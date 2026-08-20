@@ -588,6 +588,7 @@ function buildPaperExitReadiness({
   brokerChildReconciliation,
   orderLedger,
   orderIdempotency,
+  orderState,
 }) {
   const requiredExitActions = [...EXIT_ACTIONS];
   const actionIntent = preview?.actionIntent && typeof preview.actionIntent === "object"
@@ -599,7 +600,32 @@ function buildPaperExitReadiness({
   const missingExitActions = requiredExitActions.filter((action) => !allowedActionTypes.includes(action));
   const producerEnabled = actionIntent?.enabled === true;
   const producerPreviewOnly = actionIntent?.previewOnly !== false;
-  const producerReady = producerEnabled && !producerPreviewOnly && missingExitActions.length === 0;
+  const productionProducerReady = producerEnabled && !producerPreviewOnly && missingExitActions.length === 0;
+  const shadowIntent = preview?.paperExitShadowIntent?.mode === "REPORT_ONLY_SHADOW"
+    ? preview.paperExitShadowIntent
+    : null;
+  const shadowRows = Array.isArray(shadowIntent?.rows) ? shadowIntent.rows : [];
+  const shadowCountMatches = Boolean(shadowIntent) && (
+    asNumber(shadowIntent?.exitNotDueRows, 0)
+    + asNumber(shadowIntent?.scaleDownDueRows, 0)
+    + asNumber(shadowIntent?.exitPartialDueRows, 0)
+    + asNumber(shadowIntent?.exitFullDueRows, 0)
+    + asNumber(shadowIntent?.evidenceIncompleteRows, 0) === shadowRows.length
+  );
+  const shadowSafetyValid = shadowIntent?.wouldCreateBrokerPayload === false
+    && shadowIntent?.brokerMutationAttempted === false
+    && shadowIntent?.brokerMutationSubmitted === false
+    && shadowIntent?.stateMutationAttempted === false
+    && shadowIntent?.stateMutationSubmitted === false;
+  const shadowProducerReady = Boolean(
+    shadowIntent
+    && shadowSafetyValid
+    && shadowCountMatches
+    && asNumber(shadowIntent?.evaluatedPositionRows, -1) === shadowRows.length
+    && asNumber(shadowIntent?.unknownOrUnclassifiedRows, -1) === 0
+    && shadowIntent?.status !== "HELD_POSITION_EVIDENCE_UNAVAILABLE"
+  );
+  const producerReady = productionProducerReady || shadowProducerReady;
 
   const payloadRows = Array.isArray(preview?.payloads) ? preview.payloads : [];
   const skippedRows = Array.isArray(preview?.skipped) ? preview.skipped : [];
@@ -611,9 +637,16 @@ function buildPaperExitReadiness({
       if (symbol && EXIT_ACTIONS.has(actionType)) exitIntentBySymbol.set(symbol, { ...row, actionType, source });
     }
   }
+  if (shadowIntent) {
+    for (const row of shadowRows) {
+      const symbol = String(row?.symbol || "").trim().toUpperCase();
+      if (symbol) exitIntentBySymbol.set(symbol, { ...row, source: "shadow" });
+    }
+  }
 
   const protectionBySymbol = latestEvidenceBySymbol(rowsArray(positionProtectionAudit));
   const brokerChildrenBySymbol = latestEvidenceBySymbol(rowsArray(brokerChildReconciliation));
+  const orderStateBySymbol = latestEvidenceBySymbol(rowsArray(orderState));
   const ledgerExitRows = ordersArray(orderLedger).filter(isExitEvidence);
   const idempotencyExitRows = ordersArray(orderIdempotency).filter(isExitEvidence);
   const ledgerExitBySymbol = latestEvidenceBySymbol(ledgerExitRows);
@@ -621,10 +654,14 @@ function buildPaperExitReadiness({
   const livePositions = Array.isArray(performance?.live?.positions)
     ? performance.live.positions
     : rowsArray(positionProtectionAudit).filter((row) => normalizedStatus(row?.normalizedFillState) === "filled");
-  const positions = uniqueRowsBySymbol(livePositions.filter((row) => {
+  const positionRows = livePositions.filter((row) => {
     const qty = finiteNumber(row?.qty ?? row?.quantity);
     return qty == null ? normalizedStatus(row?.normalizedFillState) === "filled" : qty !== 0;
-  })).sort((a, b) => String(a?.symbol || "").localeCompare(String(b?.symbol || "")));
+  });
+  const positions = uniqueRowsBySymbol([
+    ...positionRows,
+    ...shadowRows.map((row) => ({ symbol: row?.symbol })),
+  ]).sort((a, b) => String(a?.symbol || "").localeCompare(String(b?.symbol || "")));
 
   const preflightCode = String(preview?.preflight?.code || "").trim().toUpperCase() || null;
   const marketSessionEligible = preflightCode === "PREFLIGHT_PASS"
@@ -640,13 +677,19 @@ function buildPaperExitReadiness({
     const action = exitIntentBySymbol.get(symbol) || null;
     const ledgerExit = ledgerExitBySymbol.get(symbol) || null;
     const idempotencyExit = idempotencyExitBySymbol.get(symbol) || null;
+    const terminalState = orderStateBySymbol.get(symbol) || null;
     const signedQty = finiteNumber(position?.qty ?? position?.quantity ?? protection?.qty);
     const sideToken = normalizedStatus(position?.side ?? position?.positionSide);
+    const expectedShadowSide = action?.expectedExecutionSide === "buy"
+      ? "short"
+      : action?.expectedExecutionSide === "sell"
+        ? "long"
+        : null;
     const positionSide = sideToken === "short" || (signedQty != null && signedQty < 0)
       ? "short"
       : sideToken === "long" || (signedQty != null && signedQty > 0)
         ? "long"
-        : null;
+        : expectedShadowSide;
     const ownershipClassification = protection?.ownershipClassification
       || brokerChildren?.ownershipClassification
       || null;
@@ -660,33 +703,62 @@ function buildPaperExitReadiness({
     const idempotencyConflict = hasIdempotencyConflict(ledgerExit, idempotencyExit);
     const openExitOrderPresent = openExitRows.length > 0
       || OPEN_STATES.has(normalizedStatus(idempotencyExit?.brokerStatus || idempotencyExit?.status));
-    const actionDue = Boolean(action);
+    const actionDue = EXIT_ACTIONS.has(String(action?.actionType || "").trim().toUpperCase());
+    const shadowEvaluated = action?.source === "shadow" && action?.evaluationStatus === "EVALUATED";
     const actionPropagated = action?.source === "payload";
     const stage6LineagePresent = Boolean(preview?.stage6Hash && preview?.stage6File);
+    const terminalReconciliationBlocked = terminalState?.terminalReconciliationRequired === true
+      || String(terminalState?.category || "").trim().toUpperCase() === "TERMINAL_RECONCILIATION_REQUIRED";
 
-    let classification = "EXIT_EVIDENCE_INCOMPLETE";
+    let baseClassification = "EXIT_EVIDENCE_INCOMPLETE";
     let blocker = "exit_action_producer_runtime_evidence_incomplete";
-    if (!actionDue && producerReady) {
-      classification = "EXIT_NOT_DUE";
+    if (!actionDue && producerReady && (!shadowIntent || shadowEvaluated)) {
+      baseClassification = "EXIT_NOT_DUE";
       blocker = null;
     } else if (actionDue && !ownershipVerified) {
-      classification = "EXIT_BLOCKED_OWNERSHIP";
+      baseClassification = "EXIT_BLOCKED_OWNERSHIP";
       blocker = "ownership_proof_required";
     } else if (actionDue && (duplicateOpenExit || idempotencyConflict || openExitOrderPresent)) {
-      classification = "EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY";
+      baseClassification = "EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY";
       blocker = duplicateOpenExit ? "duplicate_open_exit_order" : idempotencyConflict ? "exit_idempotency_conflict" : "open_exit_order_already_present";
+    } else if (actionDue && terminalReconciliationBlocked) {
+      baseClassification = "EXIT_BLOCKED_TERMINAL_RECONCILIATION";
+      blocker = "terminal_reconciliation_required";
     } else if (actionDue && marketSessionEligible === false) {
-      classification = "EXIT_BLOCKED_MARKET_SESSION";
+      baseClassification = "EXIT_BLOCKED_MARKET_SESSION";
       blocker = "market_session_not_eligible";
     } else if (actionDue && protectiveChildConflict) {
-      classification = "EXIT_BLOCKED_PROTECTION_CONFLICT";
+      baseClassification = "EXIT_BLOCKED_PROTECTION_CONFLICT";
       blocker = "cancel_protective_children_before_direct_exit";
-    } else if (actionDue && actionPropagated && protectionEvidencePresent && positionSide && stage6LineagePresent && marketSessionEligible === true) {
-      classification = "EXIT_READY_REPORT_ONLY";
+    } else if (
+      actionDue
+      && (actionPropagated || shadowEvaluated)
+      && protectionEvidencePresent
+      && positionSide
+      && signedQty != null
+      && signedQty !== 0
+      && stage6LineagePresent
+      && marketSessionEligible === true
+    ) {
+      baseClassification = "EXIT_READY_REPORT_ONLY";
       blocker = null;
     } else if (actionDue) {
-      blocker = actionPropagated ? "exit_safety_evidence_incomplete" : "exit_action_not_propagated_to_payload";
+      blocker = actionPropagated || shadowEvaluated
+        ? "exit_safety_evidence_incomplete"
+        : "exit_action_not_propagated_to_payload";
     }
+    const classification = shadowIntent
+      ? {
+        EXIT_NOT_DUE: "EXIT_SHADOW_NOT_DUE",
+        EXIT_READY_REPORT_ONLY: "EXIT_SHADOW_READY_REPORT_ONLY",
+        EXIT_BLOCKED_PROTECTION_CONFLICT: "EXIT_SHADOW_BLOCKED_PROTECTION",
+        EXIT_BLOCKED_OWNERSHIP: "EXIT_SHADOW_BLOCKED_OWNERSHIP",
+        EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY: "EXIT_SHADOW_BLOCKED_LEDGER_OR_IDEMPOTENCY",
+        EXIT_BLOCKED_TERMINAL_RECONCILIATION: "EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION",
+        EXIT_BLOCKED_MARKET_SESSION: "EXIT_SHADOW_BLOCKED_MARKET_SESSION",
+        EXIT_EVIDENCE_INCOMPLETE: "EXIT_SHADOW_EVIDENCE_INCOMPLETE",
+      }[baseClassification]
+      : baseClassification;
 
     const expectedExecutionSide = positionSide === "short" ? "buy" : positionSide === "long" ? "sell" : null;
     return {
@@ -700,11 +772,13 @@ function buildPaperExitReadiness({
       actionType: action?.actionType || null,
       actionReason: action?.actionReason || action?.reason || null,
       actionPropagatedAsPayload: actionPropagated,
+      shadowEvaluated,
       brokerStopPresent,
       brokerTargetPresent,
       openExitOrderPresent,
       duplicateOpenExit,
       idempotencyConflict,
+      terminalReconciliationBlocked,
       expectedExecutionSide,
       expectedExitQuantityPolicy: action?.actionType === "EXIT_FULL"
         ? "FULL_CURRENT_ABSOLUTE_POSITION"
@@ -715,11 +789,11 @@ function buildPaperExitReadiness({
             : null,
       marketSessionEligible,
       blocker,
-      nextAction: classification === "EXIT_READY_REPORT_ONLY"
+      nextAction: baseClassification === "EXIT_READY_REPORT_ONLY"
         ? "prepare_scoped_paper_exit_approval_only"
-        : classification === "EXIT_NOT_DUE"
+        : baseClassification === "EXIT_NOT_DUE"
           ? "wait_for_policy_exit_condition"
-          : classification === "EXIT_BLOCKED_PROTECTION_CONFLICT"
+          : baseClassification === "EXIT_BLOCKED_PROTECTION_CONFLICT"
             ? "report_only_cancel_confirm_exit_residual_verify_plan"
             : "resolve_classified_blocker_before_exit_review",
       protectionSafeExitPlan: {
@@ -735,7 +809,9 @@ function buildPaperExitReadiness({
   });
 
   const count = (classification) => rows.filter((row) => row.classification === classification).length;
-  const readyRows = rows.filter((row) => row.classification === "EXIT_READY_REPORT_ONLY");
+  const readyRows = rows.filter((row) =>
+    row.classification === "EXIT_READY_REPORT_ONLY" || row.classification === "EXIT_SHADOW_READY_REPORT_ONLY"
+  );
   const selected = readyRows[0] || null;
   const realizedPnlRows = Array.isArray(performance?.realizedPnl?.rows) ? performance.realizedPnl.rows : [];
   const verifiedPnlRows = realizedPnlRows.filter((row) => row?.status === "VERIFIED_NET_REALIZED_PNL");
@@ -745,13 +821,17 @@ function buildPaperExitReadiness({
     : [];
   const primaryRootCause = rows.length === 0
     ? "HELD_POSITION_LINEAGE_MISSING"
-    : !producerReady
-      ? "EXIT_ACTION_PRODUCER_DISABLED"
-      : rows.every((row) => row.classification === "EXIT_NOT_DUE")
+    : shadowIntent && !shadowProducerReady
+      ? shadowIntent?.primaryLivenessGap || "SHADOW_RESULT_NOT_PROPAGATED"
+      : !producerReady
+        ? "EXIT_ACTION_PRODUCER_DISABLED"
+        : rows.every((row) => row.classification === "EXIT_NOT_DUE" || row.classification === "EXIT_SHADOW_NOT_DUE")
         ? "EXIT_CONDITION_NOT_REACHED"
-        : rows.some((row) => row.blocker === "exit_action_not_propagated_to_payload")
-          ? "EXIT_ACTION_NOT_PROPAGATED"
-          : null;
+          : rows.some((row) => row.blocker === "exit_action_not_propagated_to_payload")
+            ? "EXIT_ACTION_NOT_PROPAGATED"
+            : readyRows.length > 0
+              ? null
+              : rows.find((row) => row.blocker)?.blocker || null;
 
   return {
     contractVersion: "paper-exit-readiness-v1",
@@ -764,8 +844,33 @@ function buildPaperExitReadiness({
       allowedActionTypes,
       requiredExitActions,
       missingExitActions,
+      productionRuntimeReadyForExitIntentGeneration: productionProducerReady,
+      shadowRuntimeReadyForExitIntentGeneration: shadowProducerReady,
       runtimeReadyForExitIntentGeneration: producerReady,
-      actionTypeConfigured: Object.fromEntries(requiredExitActions.map((action) => [action, producerReady && allowedActionTypes.includes(action)])),
+      actionTypeConfigured: Object.fromEntries(requiredExitActions.map((action) => [action, productionProducerReady && allowedActionTypes.includes(action)])),
+      shadowActionTypeEvaluated: Object.fromEntries(requiredExitActions.map((action) => [action, shadowProducerReady])),
+    },
+    shadowEvaluation: {
+      mode: shadowIntent?.mode || null,
+      status: shadowIntent?.status || "NOT_AVAILABLE",
+      countMatches: shadowCountMatches,
+      evaluatedPositionRows: asNumber(shadowIntent?.evaluatedPositionRows, 0),
+      exitNotDueRows: count("EXIT_SHADOW_NOT_DUE"),
+      scaleDownDueRows: asNumber(shadowIntent?.scaleDownDueRows, 0),
+      exitPartialDueRows: asNumber(shadowIntent?.exitPartialDueRows, 0),
+      exitFullDueRows: asNumber(shadowIntent?.exitFullDueRows, 0),
+      protectionBlockedRows: count("EXIT_SHADOW_BLOCKED_PROTECTION"),
+      ownershipBlockedRows: count("EXIT_SHADOW_BLOCKED_OWNERSHIP"),
+      ledgerOrIdempotencyBlockedRows: count("EXIT_SHADOW_BLOCKED_LEDGER_OR_IDEMPOTENCY"),
+      terminalReconciliationBlockedRows: count("EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION"),
+      marketSessionBlockedRows: count("EXIT_SHADOW_BLOCKED_MARKET_SESSION"),
+      evidenceIncompleteRows: count("EXIT_SHADOW_EVIDENCE_INCOMPLETE"),
+      unknownOrUnclassifiedRows: asNumber(shadowIntent?.unknownOrUnclassifiedRows, 0),
+      wouldCreateBrokerPayload: shadowIntent?.wouldCreateBrokerPayload === true,
+      brokerMutationAttempted: shadowIntent?.brokerMutationAttempted === true,
+      brokerMutationSubmitted: shadowIntent?.brokerMutationSubmitted === true,
+      stateMutationAttempted: shadowIntent?.stateMutationAttempted === true,
+      stateMutationSubmitted: shadowIntent?.stateMutationSubmitted === true,
     },
     realizedPnlProducer: {
       status: performance?.realizedPnl?.status || "REALIZED_PNL_PRODUCER_GAP",
@@ -780,14 +885,24 @@ function buildPaperExitReadiness({
     },
     summary: {
       filledPositionRows: rows.length,
+      evaluatedPositionRows: asNumber(shadowIntent?.evaluatedPositionRows, 0),
       exitNotDueRows: count("EXIT_NOT_DUE"),
       exitReadyReportOnlyRows: count("EXIT_READY_REPORT_ONLY"),
       exitBlockedProtectionConflictRows: count("EXIT_BLOCKED_PROTECTION_CONFLICT"),
       exitBlockedOwnershipRows: count("EXIT_BLOCKED_OWNERSHIP"),
       exitBlockedLedgerOrIdempotencyRows: count("EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY"),
+      exitBlockedTerminalReconciliationRows: count("EXIT_BLOCKED_TERMINAL_RECONCILIATION"),
       exitBlockedMarketSessionRows: count("EXIT_BLOCKED_MARKET_SESSION"),
       exitEvidenceIncompleteRows: count("EXIT_EVIDENCE_INCOMPLETE"),
-      unknownRows: 0,
+      exitShadowNotDueRows: count("EXIT_SHADOW_NOT_DUE"),
+      exitShadowReadyReportOnlyRows: count("EXIT_SHADOW_READY_REPORT_ONLY"),
+      exitShadowBlockedProtectionRows: count("EXIT_SHADOW_BLOCKED_PROTECTION"),
+      exitShadowBlockedOwnershipRows: count("EXIT_SHADOW_BLOCKED_OWNERSHIP"),
+      exitShadowBlockedLedgerOrIdempotencyRows: count("EXIT_SHADOW_BLOCKED_LEDGER_OR_IDEMPOTENCY"),
+      exitShadowBlockedTerminalReconciliationRows: count("EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION"),
+      exitShadowBlockedMarketSessionRows: count("EXIT_SHADOW_BLOCKED_MARKET_SESSION"),
+      exitShadowEvidenceIncompleteRows: count("EXIT_SHADOW_EVIDENCE_INCOMPLETE"),
+      unknownRows: asNumber(shadowIntent?.unknownOrUnclassifiedRows, 0),
       selectedCandidateCount: selected ? 1 : 0,
     },
     rows,
@@ -1378,30 +1493,27 @@ function renderMarkdown(report) {
   lines.push(`- contract: \`${lifecycle.contractVersion}\` / \`${lifecycle.contractScope}\``);
   lines.push(`- status: \`${lifecycle.status}\` | evidence=\`${lifecycle.summary.closedLoopEvidenceStatus}\` | rows=\`${lifecycle.summary.totalLifecycleRows}\` | closedLoop=\`${lifecycle.summary.closedLoopRows}\` | pnlVerified=\`${lifecycle.summary.realizedPnlVerifiedRows}\``);
   lines.push(`- integrity: \`duplicateOpen=${lifecycle.summary.duplicateOpenRows} idempotencyConflict=${lifecycle.summary.idempotencyConflictRows} terminalMismatch=${lifecycle.summary.terminalLedgerMismatchRows} unknown=${lifecycle.summary.lifecycleUnknownRows}\``);
-  lines.push("| Symbol | Classification | Entry State | Exit State | Protected | P&L Evidence | Blocker Domain | Next Action |");
-  lines.push("|---|---|---|---|---|---|---|---|");
-  for (const row of lifecycle.rows) {
-    lines.push(`| ${row.symbol} | \`${row.classification}\` | \`${row.normalizedState || row.ledgerStatus || "N/A"}\` | \`${row.exitLedgerStatus || row.exitIdempotencyBrokerStatus || "N/A"}\` | \`${row.protectionConfirmed}\` | \`${row.realizedPnlEvidence.status}\` | \`${row.blockerDomain}\` | ${row.nextLifecycleAction} |`);
-  }
+  lines.push("- rowDetails: `private_json_only`");
   lines.push("");
   lines.push("### PAPER Exit Readiness");
   const exitReadiness = report.paperExitReadiness;
   lines.push(`- rootCause: \`${exitReadiness.primaryRootCause || "none"}\``);
-  lines.push(`- producer: \`enabled=${exitReadiness.producerLiveness.enabled} previewOnly=${exitReadiness.producerLiveness.previewOnly} runtimeReady=${exitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration} missing=${exitReadiness.producerLiveness.missingExitActions.join("/") || "none"}\``);
-  lines.push(`- rows: \`filled=${exitReadiness.summary.filledPositionRows} notDue=${exitReadiness.summary.exitNotDueRows} ready=${exitReadiness.summary.exitReadyReportOnlyRows} protection=${exitReadiness.summary.exitBlockedProtectionConflictRows} ownership=${exitReadiness.summary.exitBlockedOwnershipRows} ledger=${exitReadiness.summary.exitBlockedLedgerOrIdempotencyRows} market=${exitReadiness.summary.exitBlockedMarketSessionRows} incomplete=${exitReadiness.summary.exitEvidenceIncompleteRows} unknown=${exitReadiness.summary.unknownRows}\``);
+  lines.push(`- producer: \`enabled=${exitReadiness.producerLiveness.enabled} previewOnly=${exitReadiness.producerLiveness.previewOnly} productionReady=${exitReadiness.producerLiveness.productionRuntimeReadyForExitIntentGeneration} shadowReady=${exitReadiness.producerLiveness.shadowRuntimeReadyForExitIntentGeneration} runtimeReady=${exitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration} missing=${exitReadiness.producerLiveness.missingExitActions.join("/") || "none"}\``);
+  lines.push(`- rows: \`filled=${exitReadiness.summary.filledPositionRows} evaluated=${exitReadiness.summary.evaluatedPositionRows} notDue=${exitReadiness.summary.exitNotDueRows + exitReadiness.summary.exitShadowNotDueRows} ready=${exitReadiness.summary.exitReadyReportOnlyRows + exitReadiness.summary.exitShadowReadyReportOnlyRows} protection=${exitReadiness.summary.exitBlockedProtectionConflictRows + exitReadiness.summary.exitShadowBlockedProtectionRows} ownership=${exitReadiness.summary.exitBlockedOwnershipRows + exitReadiness.summary.exitShadowBlockedOwnershipRows} ledger=${exitReadiness.summary.exitBlockedLedgerOrIdempotencyRows + exitReadiness.summary.exitShadowBlockedLedgerOrIdempotencyRows} terminal=${exitReadiness.summary.exitBlockedTerminalReconciliationRows + exitReadiness.summary.exitShadowBlockedTerminalReconciliationRows} market=${exitReadiness.summary.exitBlockedMarketSessionRows + exitReadiness.summary.exitShadowBlockedMarketSessionRows} incomplete=${exitReadiness.summary.exitEvidenceIncompleteRows + exitReadiness.summary.exitShadowEvidenceIncompleteRows} unknown=${exitReadiness.summary.unknownRows}\``);
+  lines.push(`- shadowSafety: \`payload=${exitReadiness.shadowEvaluation.wouldCreateBrokerPayload} brokerAttempted=${exitReadiness.shadowEvaluation.brokerMutationAttempted} brokerSubmitted=${exitReadiness.shadowEvaluation.brokerMutationSubmitted} stateAttempted=${exitReadiness.shadowEvaluation.stateMutationAttempted} stateSubmitted=${exitReadiness.shadowEvaluation.stateMutationSubmitted}\``);
   lines.push(`- realizedPnlProducer: \`${exitReadiness.realizedPnlProducer.status}\``);
   lines.push(`- canary: \`${exitReadiness.canaryApprovalPackage.status}\` | selected=\`${exitReadiness.canaryApprovalPackage.selectedCandidateCount}\``);
   lines.push("");
   lines.push("### Blocker Split");
   for (const [name, blockers] of Object.entries(report.categoryBlockers)) {
-    lines.push(`- ${name}: \`${blockers.length ? blockers.join(",") : "none"}\``);
+    lines.push(`- ${name}: \`${blockers.length ? `${blockers.length} blocker(s); private_json_only` : "none"}\``);
   }
   lines.push("");
   lines.push("### Blocker Group Separation");
-  lines.push("| Group | Status | Count | Symbols | Next Action | Safety Gate |");
-  lines.push("|---|---:|---:|---|---|---|");
+  lines.push("| Group | Status | Count | Next Action | Safety Gate |");
+  lines.push("|---|---:|---:|---|---|");
   for (const group of Object.values(report.blockerGroupSeparation || {})) {
-    lines.push(`| ${group.name} | \`${group.status}\` | ${group.count} | ${group.affectedSymbols.join(",") || "none"} | ${group.nextAction} | ${group.safetyGate} |`);
+    lines.push(`| ${group.name} | \`${group.status}\` | ${group.count} | ${group.nextAction} | ${group.safetyGate} |`);
   }
   lines.push("");
   lines.push("### Observation Stop Rules");

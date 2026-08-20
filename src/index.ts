@@ -733,6 +733,7 @@ type DryExecBuildResult = {
     allowedActionTypes: LifecycleActionType[];
     counts: Record<LifecycleActionType, number>;
   };
+  paperExitShadowIntent?: PaperExitShadowIntent;
   notionalPerOrder: number;
   maxOrders: number;
   maxTotalNotional: number;
@@ -815,6 +816,38 @@ type DryExecBuildResult = {
     brokerReleasedCount: number;
     brokerHeldCount: number;
   };
+};
+
+type PaperExitShadowIntent = {
+  contractVersion: "paper-exit-shadow-intent-v1";
+  mode: "REPORT_ONLY_SHADOW";
+  status: "READY" | "NO_HELD_POSITIONS" | "HELD_POSITION_EVIDENCE_UNAVAILABLE" | "STAGE6_LINEAGE_INCOMPLETE";
+  primaryLivenessGap: "NONE" | "HELD_POSITION_EVIDENCE_UNAVAILABLE" | "HELD_POSITION_LINEAGE_MISSING";
+  productionAllowedActionTypes: LifecycleActionType[];
+  shadowEvaluatedActionTypes: LifecycleActionType[];
+  evaluatedPositionRows: number;
+  exitNotDueRows: number;
+  scaleDownDueRows: number;
+  exitPartialDueRows: number;
+  exitFullDueRows: number;
+  evidenceIncompleteRows: number;
+  unknownOrUnclassifiedRows: number;
+  wouldCreateBrokerPayload: false;
+  brokerMutationAttempted: false;
+  brokerMutationSubmitted: false;
+  stateMutationAttempted: false;
+  stateMutationSubmitted: false;
+  rows: Array<{
+    symbol: string;
+    evaluationStatus: "EVALUATED" | "STAGE6_LINEAGE_MISSING";
+    positionLineageStatus: "MATCHED_STAGE6_ROW" | "STAGE6_ROW_MISSING";
+    stage6File: string;
+    stage6Hash: string;
+    actionType: "SCALE_DOWN" | "EXIT_PARTIAL" | "EXIT_FULL" | null;
+    actionReason: string;
+    expectedExecutionSide: "buy" | "sell";
+    exitQuantityPolicy: "CONFIGURED_SCALE_DOWN_RATIO" | "CONFIGURED_EXIT_PARTIAL_RATIO" | "FULL_CURRENT_ABSOLUTE_POSITION" | null;
+  }>;
 };
 
 type PreflightStatus = "pass" | "warn" | "fail" | "skip";
@@ -5933,6 +5966,118 @@ function resolveHeldLifecycleAction(
   };
 }
 
+function buildPaperExitShadowIntent(
+  stage6: Stage6LoadResult,
+  lifecycle: PositionLifecycleConfig,
+  heldPositions: Map<string, HeldPositionSnapshot> | null,
+  regime: RegimeSelection
+): PaperExitShadowIntent {
+  const shadowEvaluatedActionTypes: LifecycleActionType[] = [
+    "SCALE_UP",
+    "SCALE_DOWN",
+    "EXIT_PARTIAL",
+    "EXIT_FULL"
+  ];
+  const shadowLifecycle: PositionLifecycleConfig = {
+    ...lifecycle,
+    allowedActionTypes: shadowEvaluatedActionTypes
+  };
+  const thresholds = resolveLifecycleHeldConvictionThresholds(shadowLifecycle);
+  const stage6BySymbol = new Map(stage6.allCandidates.map((row) => [row.symbol, row]));
+  const rows: PaperExitShadowIntent["rows"] = [];
+
+  for (const [symbol, position] of [...(heldPositions ?? new Map()).entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const row = stage6BySymbol.get(symbol);
+    if (!row) {
+      rows.push({
+        symbol,
+        evaluationStatus: "STAGE6_LINEAGE_MISSING",
+        positionLineageStatus: "STAGE6_ROW_MISSING",
+        stage6File: stage6.fileName,
+        stage6Hash: stage6.sha256,
+        actionType: null,
+        actionReason: "held_position_stage6_lineage_missing",
+        expectedExecutionSide: position.side === "short" ? "buy" : "sell",
+        exitQuantityPolicy: null
+      });
+      continue;
+    }
+
+    const effectiveExecutable =
+      row.executionBucket === "EXECUTABLE" || row.finalDecision === "EXECUTABLE_NOW";
+    const effectiveWatchlist =
+      row.executionBucket === "WATCHLIST" ||
+      row.finalDecision === "WAIT_PRICE" ||
+      row.finalDecision === "BLOCKED_RISK" ||
+      row.finalDecision === "BLOCKED_EVENT";
+    const decision = resolveHeldLifecycleAction(
+      row,
+      parseConviction(row.conviction),
+      effectiveExecutable,
+      effectiveWatchlist,
+      shadowLifecycle,
+      thresholds,
+      position,
+      regime
+    );
+    const resolvedActionType = decision.actionType ?? undefined;
+    const actionType = isLifecycleExitActionType(resolvedActionType) ? resolvedActionType : null;
+    rows.push({
+      symbol,
+      evaluationStatus: "EVALUATED",
+      positionLineageStatus: "MATCHED_STAGE6_ROW",
+      stage6File: stage6.fileName,
+      stage6Hash: stage6.sha256,
+      actionType,
+      actionReason: decision.actionReason,
+      expectedExecutionSide: position.side === "short" ? "buy" : "sell",
+      exitQuantityPolicy: actionType === "EXIT_FULL"
+        ? "FULL_CURRENT_ABSOLUTE_POSITION"
+        : actionType === "EXIT_PARTIAL"
+          ? "CONFIGURED_EXIT_PARTIAL_RATIO"
+          : actionType === "SCALE_DOWN"
+            ? "CONFIGURED_SCALE_DOWN_RATIO"
+            : null
+    });
+  }
+
+  const evidenceIncompleteRows = rows.filter((row) => row.evaluationStatus !== "EVALUATED").length;
+  const evaluatedRows = rows.filter((row) => row.evaluationStatus === "EVALUATED");
+  const status = heldPositions == null
+    ? "HELD_POSITION_EVIDENCE_UNAVAILABLE"
+    : rows.length === 0
+      ? "NO_HELD_POSITIONS"
+      : evidenceIncompleteRows > 0
+        ? "STAGE6_LINEAGE_INCOMPLETE"
+        : "READY";
+
+  return {
+    contractVersion: "paper-exit-shadow-intent-v1",
+    mode: "REPORT_ONLY_SHADOW",
+    status,
+    primaryLivenessGap: heldPositions == null
+      ? "HELD_POSITION_EVIDENCE_UNAVAILABLE"
+      : evidenceIncompleteRows > 0
+        ? "HELD_POSITION_LINEAGE_MISSING"
+        : "NONE",
+    productionAllowedActionTypes: [...lifecycle.allowedActionTypes],
+    shadowEvaluatedActionTypes,
+    evaluatedPositionRows: rows.length,
+    exitNotDueRows: evaluatedRows.filter((row) => row.actionType == null).length,
+    scaleDownDueRows: evaluatedRows.filter((row) => row.actionType === "SCALE_DOWN").length,
+    exitPartialDueRows: evaluatedRows.filter((row) => row.actionType === "EXIT_PARTIAL").length,
+    exitFullDueRows: evaluatedRows.filter((row) => row.actionType === "EXIT_FULL").length,
+    evidenceIncompleteRows,
+    unknownOrUnclassifiedRows: 0,
+    wouldCreateBrokerPayload: false,
+    brokerMutationAttempted: false,
+    brokerMutationSubmitted: false,
+    stateMutationAttempted: false,
+    stateMutationSubmitted: false,
+    rows
+  };
+}
+
 function buildLifecycleExitPriceScaffold(
   entry: number | null,
   target: number | null,
@@ -9444,6 +9589,77 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     heldForExitFull,
     regimeRiskOff
   );
+  const shadowLifecycleCfg: PositionLifecycleConfig = {
+    ...cfg.positionLifecycle,
+    previewOnly: true,
+    allowedActionTypes: ["ENTRY_NEW", "HOLD_WAIT"]
+  };
+  const shadowStage6Rows: Stage6CandidateSummary[] = [
+    {
+      ...baseRow,
+      symbol: "SHADOW_SCALE",
+      conviction: String(thresholds.scaleDownMax - 1),
+      executionBucket: "WATCHLIST",
+      finalDecision: "WAIT_PRICE",
+      decisionReason: "wait_pullback_not_reached"
+    },
+    {
+      ...baseRow,
+      symbol: "SHADOW_PARTIAL",
+      verdict: "PARTIAL_EXIT",
+      executionBucket: "WATCHLIST",
+      finalDecision: "WAIT_PRICE",
+      decisionReason: "wait_pullback_not_reached"
+    },
+    {
+      ...baseRow,
+      symbol: "SHADOW_FULL",
+      conviction: String(thresholds.exitFullMax - 1),
+      executionBucket: "WATCHLIST",
+      finalDecision: "BLOCKED_RISK",
+      decisionReason: "blocked_rr_below_min"
+    },
+    {
+      ...baseRow,
+      symbol: "SHADOW_WAIT",
+      conviction: "99",
+      executionBucket: "WATCHLIST",
+      finalDecision: "WAIT_PRICE",
+      decisionReason: "wait_pullback_not_reached"
+    }
+  ];
+  const shadowStage6: Stage6LoadResult = {
+    fileId: "shadow-stage6-id",
+    fileName: "STAGE6_ALPHA_FINAL_SHADOW_SELFTEST.json",
+    modifiedTime: "2026-01-01T00:00:00.000Z",
+    md5Checksum: "",
+    sha256: "a".repeat(64),
+    candidateSymbols: shadowStage6Rows.map((row) => row.symbol),
+    candidates: shadowStage6Rows,
+    allCandidates: shadowStage6Rows,
+    modelTopCandidates: shadowStage6Rows,
+    contractContext: null
+  };
+  const shadowHeldPositions = new Map<string, HeldPositionSnapshot>([
+    ["SHADOW_SCALE", { ...heldForScaleDown, symbol: "SHADOW_SCALE" }],
+    ["SHADOW_PARTIAL", { ...heldForExitPartial, symbol: "SHADOW_PARTIAL" }],
+    ["SHADOW_FULL", { ...heldForExitFull, symbol: "SHADOW_FULL", qty: -10, side: "short" }],
+    ["SHADOW_WAIT", { ...heldForScaleDown, symbol: "SHADOW_WAIT", ageDays: 1, unrealizedPnlPct: 0, intradayPnlPct: 0 }],
+    ["SHADOW_MISSING", { ...heldForScaleDown, symbol: "SHADOW_MISSING" }]
+  ]);
+  const productionAllowedBefore = JSON.stringify(shadowLifecycleCfg.allowedActionTypes);
+  const shadowIntent = buildPaperExitShadowIntent(
+    shadowStage6,
+    shadowLifecycleCfg,
+    shadowHeldPositions,
+    regimeDefault
+  );
+  const shadowIntentRerun = buildPaperExitShadowIntent(
+    shadowStage6,
+    shadowLifecycleCfg,
+    shadowHeldPositions,
+    regimeDefault
+  );
   const longFull = resolveLifecycleExitOrderIntent("EXIT_FULL", 10, cfg.positionLifecycle);
   const longPartial = resolveLifecycleExitOrderIntent("EXIT_PARTIAL", 10, cfg.positionLifecycle);
   const longScaleDown = resolveLifecycleExitOrderIntent("SCALE_DOWN", 10, cfg.positionLifecycle);
@@ -9531,6 +9747,21 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     actionScaleDown.actionType === "SCALE_DOWN" &&
     actionExitPartial.actionType === "EXIT_PARTIAL" &&
     actionExitFull.actionType === "EXIT_FULL" &&
+    shadowIntent.mode === "REPORT_ONLY_SHADOW" &&
+    shadowIntent.status === "STAGE6_LINEAGE_INCOMPLETE" &&
+    shadowIntent.evaluatedPositionRows === 5 &&
+    shadowIntent.exitNotDueRows === 1 &&
+    shadowIntent.scaleDownDueRows === 1 &&
+    shadowIntent.exitPartialDueRows === 1 &&
+    shadowIntent.exitFullDueRows === 1 &&
+    shadowIntent.evidenceIncompleteRows === 1 &&
+    shadowIntent.unknownOrUnclassifiedRows === 0 &&
+    shadowIntent.rows.find((row) => row.symbol === "SHADOW_FULL")?.expectedExecutionSide === "buy" &&
+    shadowIntent.wouldCreateBrokerPayload === false &&
+    shadowIntent.brokerMutationAttempted === false &&
+    shadowIntent.stateMutationAttempted === false &&
+    productionAllowedBefore === JSON.stringify(shadowLifecycleCfg.allowedActionTypes) &&
+    JSON.stringify(shadowIntent) === JSON.stringify(shadowIntentRerun) &&
     longFull.side === "sell" && longFull.rawQty === 10 &&
     longPartial.side === "sell" && longPartial.rawQty === 10 * cfg.positionLifecycle.exitPartialPct &&
     longScaleDown.side === "sell" && longScaleDown.rawQty === 10 * cfg.positionLifecycle.scaleDownPct &&
@@ -9546,6 +9777,9 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   );
   console.log(
     `[LIFECYCLE_SELFTEST] order_intent longFull=${longFull.side}:${longFull.rawQty} longPartial=${longPartial.side}:${longPartial.rawQty} longScaleDown=${longScaleDown.side}:${longScaleDown.rawQty} shortFull=${shortFull.side}:${shortFull.rawQty}`
+  );
+  console.log(
+    `[LIFECYCLE_SELFTEST] shadow mode=${shadowIntent.mode} evaluated=${shadowIntent.evaluatedPositionRows} notDue=${shadowIntent.exitNotDueRows} scaleDown=${shadowIntent.scaleDownDueRows} partial=${shadowIntent.exitPartialDueRows} full=${shadowIntent.exitFullDueRows} incomplete=${shadowIntent.evidenceIncompleteRows} payload=false`
   );
   console.log(`[LIFECYCLE_SELFTEST] exit_pre_submit_safety fixtures=${exitSafetyFixtures.length} passed=${exitSafetyPassed}`);
 }
@@ -12007,6 +12241,7 @@ async function saveDryExecPreview(
     portfolioAdmission: dryExec.portfolioAdmission,
     recommendationLedger,
     actionIntent: dryExec.actionIntent,
+    paperExitShadowIntent: dryExec.paperExitShadowIntent ?? null,
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
@@ -12061,6 +12296,12 @@ async function saveDryExecPreview(
   console.log(
     `[RUNTIME_EVIDENCE] semantic=${runtimeEvidence.semanticIntegrityStatus} primary=${runtimeEvidence.orderOutcome.primaryNoOrderCause} payloads=${runtimeEvidence.orderOutcome.payloadCount} decisionRows=${runtimeEvidence.decisionAudit.rows} blockerRows=${runtimeEvidence.decisionAudit.blockerSummaryRows} blockerCountMatches=${runtimeEvidence.decisionAudit.blockerSummaryCountMatches} source=${runtimeEvidence.sourceIntegrity.status} previewStale=${runtimeEvidence.sourceIntegrity.previewStale} readOnly=${runtimeEvidence.safety.readOnly} execEnabled=${runtimeEvidence.safety.execEnabled} brokerAttempted=${runtimeEvidence.safety.brokerMutationAttempted} brokerSubmitted=${runtimeEvidence.safety.brokerMutationSubmitted} stateAttempted=${runtimeEvidence.safety.stateMutationAttempted} stateSubmitted=${runtimeEvidence.safety.stateMutationSubmitted}`
   );
+  if (dryExec.paperExitShadowIntent) {
+    const shadow = dryExec.paperExitShadowIntent;
+    console.log(
+      `[PAPER_EXIT_SHADOW] status=${shadow.status} evaluated=${shadow.evaluatedPositionRows} notDue=${shadow.exitNotDueRows} scaleDown=${shadow.scaleDownDueRows} partial=${shadow.exitPartialDueRows} full=${shadow.exitFullDueRows} incomplete=${shadow.evidenceIncompleteRows} unknown=${shadow.unknownOrUnclassifiedRows} payload=false brokerMutation=false stateMutation=false`
+    );
+  }
   console.log(
     `[APPROVAL_QUEUE] enabled=${approvalQueueGate.enabled} required=${approvalQueueGate.required} enforced=${approvalQueueGate.enforced} previewBypassed=${approvalQueueGate.previewBypassed} queueLoaded=${approvalQueueGate.queueLoaded} total=${approvalQueueGate.total} pending=${approvalQueueGate.pending} approved=${approvalQueueGate.approved} rejected=${approvalQueueGate.rejected} expired=${approvalQueueGate.expired} matchedApproved=${approvalQueueGate.matchedApproved} matchedPending=${approvalQueueGate.matchedPending} createdPending=${approvalQueueGate.createdPending} blocked=${approvalQueueGate.blocked} reason=${approvalQueueGate.reason} blockedSymbols=${summarizeSymbols(approvalQueueGate.blockedSymbols)}`
   );
@@ -14108,37 +14349,29 @@ async function main() {
   const actionable = hfPayloadProbeApplied.actionable;
   let lifecycleHeldSymbols: Set<string> | undefined;
   let lifecycleHeldContext: Map<string, HeldPositionSnapshot> | undefined;
+  let shadowLifecycleHeldContext: Map<string, HeldPositionSnapshot> | null = null;
   let portfolioHeldSymbols: Set<string> | undefined;
-  if (cfg.positionLifecycle.enabled && !cfg.positionLifecycle.previewOnly) {
-    try {
-      lifecycleHeldContext = await loadHeldPositionSnapshots();
-      lifecycleHeldSymbols = new Set([...lifecycleHeldContext.keys()]);
-      portfolioHeldSymbols = lifecycleHeldSymbols;
-      console.log(
-        `[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size} symbols=${lifecycleHeldSymbols.size > 0 ? [...lifecycleHeldSymbols].slice(0, 10).join("/") : "none"
-        }`
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[LIFECYCLE_PLAN] held_position_fetch_failed=${message.slice(0, 180)}`);
-    }
-  }
   const portfolioAdmissionPolicyForPreGate = buildPortfolioAdmissionPolicy();
   if (
-    portfolioHeldSymbols == null &&
-    portfolioAdmissionPolicyForPreGate.enabled &&
-    portfolioAdmissionPolicyForPreGate.enforce
+    cfg.positionLifecycle.enabled ||
+    (portfolioAdmissionPolicyForPreGate.enabled && portfolioAdmissionPolicyForPreGate.enforce)
   ) {
     try {
       const heldContext = await loadHeldPositionSnapshots();
-      portfolioHeldSymbols = new Set([...heldContext.keys()]);
-      console.log(
-        `[PORTFOLIO_PRE_ADMISSION] held_positions=${portfolioHeldSymbols.size} symbols=${portfolioHeldSymbols.size > 0 ? [...portfolioHeldSymbols].slice(0, 10).join("/") : "none"
-        }`
-      );
+      portfolioHeldSymbols = new Set(heldContext.keys());
+      if (cfg.positionLifecycle.enabled && cfg.positionLifecycle.previewOnly) {
+        shadowLifecycleHeldContext = heldContext;
+        console.log(`[LIFECYCLE_SHADOW] mode=REPORT_ONLY_SHADOW held_positions=${heldContext.size}`);
+      } else if (cfg.positionLifecycle.enabled) {
+        lifecycleHeldContext = heldContext;
+        lifecycleHeldSymbols = new Set(heldContext.keys());
+        console.log(`[LIFECYCLE_PLAN] held_positions=${lifecycleHeldSymbols.size}`);
+      } else {
+        console.log(`[PORTFOLIO_PRE_ADMISSION] held_positions=${heldContext.size}`);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[PORTFOLIO_PRE_ADMISSION] held_position_fetch_failed=${message.slice(0, 180)}`);
+      console.warn(`[HELD_POSITION_READ] failed=${message.slice(0, 180)}`);
     }
   }
   if (hfPayloadProbeApplied.summary.requestedMode !== "off") {
@@ -14152,12 +14385,18 @@ async function main() {
       `[LIFECYCLE_PLAN] merged_candidates base=${actionable.length} merged=${lifecycleCandidateInputs.length} heldMatched=${lifecycleCandidateInputs.length - actionable.length}`
     );
   }
-  const dryExecBaseRaw = buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
-    lifecycleHeldSymbols,
-    lifecycleHeldContext,
-    portfolioHeldSymbols,
-    stage6
-  });
+  const paperExitShadowIntent = cfg.positionLifecycle.enabled && cfg.positionLifecycle.previewOnly
+    ? buildPaperExitShadowIntent(stage6, cfg.positionLifecycle, shadowLifecycleHeldContext, regime)
+    : undefined;
+  const dryExecBaseRaw: DryExecBuildResult = {
+    ...buildDryExecPayloads(lifecycleCandidateInputs, stage6.sha256, regime, {
+      lifecycleHeldSymbols,
+      lifecycleHeldContext,
+      portfolioHeldSymbols,
+      stage6
+    }),
+    ...(paperExitShadowIntent ? { paperExitShadowIntent } : {})
+  };
   const hfPayloadProbe = finalizeHfPayloadProbeSummary(hfPayloadProbeApplied.summary, dryExecBaseRaw);
   const dryExecBase = dryExecBaseRaw;
   console.log(
