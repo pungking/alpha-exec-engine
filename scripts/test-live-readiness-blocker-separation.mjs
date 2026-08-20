@@ -546,12 +546,16 @@ assert.ok(marketClosedReport.paperExitReadiness.summary.exitBlockedMarketSession
 assert.equal(marketClosedReport.paperExitReadiness.canaryApprovalPackage.status, "NO_SAFE_EXIT_CANARY_AVAILABLE");
 
 const shadowExitStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-"));
-const shadowExitSymbols = [...exitSymbols, "LINEAGE_MISSING"];
+const shadowExitSymbols = [...exitSymbols, "LINEAGE_MISSING", "LINEAGE_INVALID"];
 for (const fileName of fs.readdirSync(exitReadinessStateDir)) {
   if (fileName.startsWith("live-readiness-scorecard.")) continue;
   fs.copyFileSync(path.join(exitReadinessStateDir, fileName), path.join(shadowExitStateDir, fileName));
 }
 const shadowPreview = JSON.parse(fs.readFileSync(path.join(shadowExitStateDir, "last-dry-exec-preview.json"), "utf8"));
+const shadowStage6Lineage = {
+  stage6File: "STAGE6_ALPHA_FINAL_SHADOW_FIXTURE.json",
+  stage6Hash: "a".repeat(64),
+};
 Object.assign(shadowPreview, {
   payloadCount: 1,
   actionIntent: {
@@ -566,11 +570,11 @@ Object.assign(shadowPreview, {
     mode: "REPORT_ONLY_SHADOW",
     status: "STAGE6_LINEAGE_INCOMPLETE",
     primaryLivenessGap: "HELD_POSITION_LINEAGE_MISSING",
-    evaluatedPositionRows: 9,
+    evaluatedPositionRows: 10,
     exitNotDueRows: 1,
     scaleDownDueRows: 1,
     exitPartialDueRows: 1,
-    exitFullDueRows: 5,
+    exitFullDueRows: 6,
     evidenceIncompleteRows: 1,
     unknownOrUnclassifiedRows: 0,
     wouldCreateBrokerPayload: false,
@@ -579,15 +583,16 @@ Object.assign(shadowPreview, {
     stateMutationAttempted: false,
     stateMutationSubmitted: false,
     rows: [
-      { symbol: "IDEMP", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
-      { symbol: "LONG_FULL", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
-      { symbol: "LONG_PART", evaluationStatus: "EVALUATED", actionType: "EXIT_PARTIAL", actionReason: "stage6_partial_exit_verdict" },
-      { symbol: "NO_DUE", evaluationStatus: "EVALUATED", actionType: null, actionReason: "held_position_hold_wait" },
-      { symbol: "OWNER", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
-      { symbol: "PROTECTED", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
-      { symbol: "SCALE_SAFE", evaluationStatus: "EVALUATED", actionType: "SCALE_DOWN", actionReason: "stale_hold_scale_down" },
-      { symbol: "SHORT_FULL", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
-      { symbol: "LINEAGE_MISSING", evaluationStatus: "STAGE6_LINEAGE_MISSING", actionType: null, actionReason: "held_position_stage6_lineage_missing" },
+      { ...shadowStage6Lineage, symbol: "IDEMP", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
+      { ...shadowStage6Lineage, symbol: "LONG_FULL", evaluationStatus: "EVALUATED", positionLineageStatus: "MATCHED_HISTORICAL_STAGE6_ROW", lineageSource: "FILLED_ORDER_LEDGER", signalEvaluationBasis: "DYNAMIC_BROKER_RISK_WITH_HISTORICAL_ENTRY_LINEAGE", lineageCandidateCount: 1, actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { ...shadowStage6Lineage, symbol: "LONG_PART", evaluationStatus: "EVALUATED", actionType: "EXIT_PARTIAL", actionReason: "stage6_partial_exit_verdict" },
+      { ...shadowStage6Lineage, symbol: "NO_DUE", evaluationStatus: "EVALUATED", actionType: null, actionReason: "held_position_hold_wait" },
+      { ...shadowStage6Lineage, symbol: "OWNER", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "held_blocked_hard_exit" },
+      { ...shadowStage6Lineage, symbol: "PROTECTED", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { ...shadowStage6Lineage, symbol: "SCALE_SAFE", evaluationStatus: "EVALUATED", actionType: "SCALE_DOWN", actionReason: "stale_hold_scale_down" },
+      { ...shadowStage6Lineage, symbol: "SHORT_FULL", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full" },
+      { symbol: "LINEAGE_MISSING", evaluationStatus: "STAGE6_LINEAGE_MISSING", actionType: null, actionReason: "held_position_stage6_lineage_missing", stage6File: null, stage6Hash: null },
+      { symbol: "LINEAGE_INVALID", evaluationStatus: "EVALUATED", actionType: "EXIT_FULL", actionReason: "loss_exit_full", stage6File: null, stage6Hash: null },
     ],
   },
 });
@@ -606,19 +611,22 @@ assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.previewOnly, t
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.productionRuntimeReadyForExitIntentGeneration, false);
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.shadowRuntimeReadyForExitIntentGeneration, true);
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.runtimeReadyForExitIntentGeneration, true);
-assert.equal(shadowExitReport.paperExitReadiness.summary.evaluatedPositionRows, 9);
+assert.equal(shadowExitReport.paperExitReadiness.summary.evaluatedPositionRows, 10);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowNotDueRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowReadyReportOnlyRows, 3);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedProtectionRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedOwnershipRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedLedgerOrIdempotencyRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedTerminalReconciliationRows, 1);
-assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowEvidenceIncompleteRows, 1);
+assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowEvidenceIncompleteRows, 2);
 assert.equal(shadowExitReport.paperExitReadiness.summary.unknownRows, 0);
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "SHORT_FULL").classification, "EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION");
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "NO_DUE").classification, "EXIT_SHADOW_NOT_DUE");
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LINEAGE_INVALID").classification, "EXIT_SHADOW_EVIDENCE_INCOMPLETE");
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").actionPropagatedAsPayload, false);
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").shadowEvaluated, true);
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").positionLineageStatus, "MATCHED_HISTORICAL_STAGE6_ROW");
+assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").signalEvaluationBasis, "DYNAMIC_BROKER_RISK_WITH_HISTORICAL_ENTRY_LINEAGE");
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.wouldCreateBrokerPayload, false);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.countMatches, true);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.brokerMutationAttempted, false);

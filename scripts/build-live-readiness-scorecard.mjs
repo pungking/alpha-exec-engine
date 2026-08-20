@@ -706,13 +706,22 @@ function buildPaperExitReadiness({
     const actionDue = EXIT_ACTIONS.has(String(action?.actionType || "").trim().toUpperCase());
     const shadowEvaluated = action?.source === "shadow" && action?.evaluationStatus === "EVALUATED";
     const actionPropagated = action?.source === "payload";
-    const stage6LineagePresent = Boolean(preview?.stage6Hash && preview?.stage6File);
+    const actionStage6File = action?.source === "shadow" ? action?.stage6File : preview?.stage6File;
+    const actionStage6Hash = action?.source === "shadow" ? action?.stage6Hash : preview?.stage6Hash;
+    const stage6LineagePresent = action?.source === "shadow"
+      ? Boolean(
+        String(actionStage6File || "").trim()
+        && /^[a-f0-9]{64}$/i.test(String(actionStage6Hash || "").trim())
+      )
+      : Boolean(String(actionStage6File || "").trim() && String(actionStage6Hash || "").trim());
     const terminalReconciliationBlocked = terminalState?.terminalReconciliationRequired === true
       || String(terminalState?.category || "").trim().toUpperCase() === "TERMINAL_RECONCILIATION_REQUIRED";
 
     let baseClassification = "EXIT_EVIDENCE_INCOMPLETE";
     let blocker = "exit_action_producer_runtime_evidence_incomplete";
-    if (!actionDue && producerReady && (!shadowIntent || shadowEvaluated)) {
+    if (action?.source === "shadow" && (!shadowEvaluated || !stage6LineagePresent)) {
+      blocker = "held_position_stage6_lineage_incomplete";
+    } else if (!actionDue && producerReady && (!shadowIntent || shadowEvaluated)) {
       baseClassification = "EXIT_NOT_DUE";
       blocker = null;
     } else if (actionDue && !ownershipVerified) {
@@ -767,8 +776,12 @@ function buildPaperExitReadiness({
       ownershipClassification,
       positionSide,
       quantityEvidencePresent: signedQty != null && signedQty !== 0,
-      stage6File: preview?.stage6File || null,
-      stage6Hash: preview?.stage6Hash || null,
+      stage6File: actionStage6File || null,
+      stage6Hash: actionStage6Hash || null,
+      positionLineageStatus: action?.positionLineageStatus || null,
+      lineageSource: action?.lineageSource || null,
+      signalEvaluationBasis: action?.signalEvaluationBasis || null,
+      lineageCandidateCount: finiteNumber(action?.lineageCandidateCount),
       actionType: action?.actionType || null,
       actionReason: action?.actionReason || action?.reason || null,
       actionPropagatedAsPayload: actionPropagated,
