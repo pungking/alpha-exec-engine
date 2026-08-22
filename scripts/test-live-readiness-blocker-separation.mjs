@@ -557,17 +557,23 @@ const shadowStage6Lineage = {
   stage6Hash: "a".repeat(64),
 };
 Object.assign(shadowPreview, {
-  payloadCount: 1,
+  payloadCount: 0,
+  preflight: { code: "PREFLIGHT_NOT_RUN_DEDUPE", blocking: false, marketOpen: null },
   actionIntent: {
     enabled: true,
     previewOnly: true,
     allowedActionTypes: ["ENTRY_NEW", "HOLD_WAIT"],
-    counts: { ENTRY_NEW: 1, HOLD_WAIT: 0, SCALE_UP: 0, SCALE_DOWN: 0, EXIT_PARTIAL: 0, EXIT_FULL: 0 },
+    counts: { ENTRY_NEW: 0, HOLD_WAIT: 0, SCALE_UP: 0, SCALE_DOWN: 0, EXIT_PARTIAL: 0, EXIT_FULL: 0 },
   },
-  payloads: [{ symbol: "ENTRY_ONLY", actionType: "ENTRY_NEW", actionReason: "stage6_executable_now" }],
+  payloads: [],
   paperExitShadowIntent: {
     contractVersion: "paper-exit-shadow-intent-v1",
     mode: "REPORT_ONLY_SHADOW",
+    marketSessionEvidence: {
+      status: "MARKET_SESSION_RTH_ELIGIBLE",
+      marketOpen: true,
+      source: "ALPACA_CLOCK",
+    },
     status: "STAGE6_LINEAGE_INCOMPLETE",
     primaryLivenessGap: "HELD_POSITION_LINEAGE_MISSING",
     evaluatedPositionRows: 10,
@@ -629,16 +635,48 @@ assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol =
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").signalEvaluationBasis, "DYNAMIC_BROKER_RISK_WITH_HISTORICAL_ENTRY_LINEAGE");
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.wouldCreateBrokerPayload, false);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.countMatches, true);
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.marketSessionStatus, "MARKET_SESSION_RTH_ELIGIBLE");
+assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.marketSessionEligible, true);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.brokerMutationAttempted, false);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.stateMutationAttempted, false);
 assert.equal(shadowExitReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 1);
-assert.equal(shadowPreview.payloadCount, 1);
+assert.equal(shadowPreview.payloadCount, 0);
 assert.equal(shadowPreview.actionIntent.counts.EXIT_FULL, 0);
 const shadowMarkdown = fs.readFileSync(path.join(shadowExitStateDir, "live-readiness-scorecard.md"), "utf8");
 for (const symbol of shadowExitSymbols) {
   const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.equal(new RegExp(`(^|[^A-Z0-9_.-])${escaped}([^A-Z0-9_.-]|$)`).test(shadowMarkdown), false);
 }
+
+const runShadowMarketSessionFixture = (status, marketOpen) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-session-"));
+  for (const fileName of fs.readdirSync(shadowExitStateDir)) {
+    if (fileName.startsWith("live-readiness-scorecard.")) continue;
+    fs.copyFileSync(path.join(shadowExitStateDir, fileName), path.join(dir, fileName));
+  }
+  const preview = JSON.parse(fs.readFileSync(path.join(dir, "last-dry-exec-preview.json"), "utf8"));
+  preview.paperExitShadowIntent.marketSessionEvidence = { status, marketOpen, source: "ALPACA_CLOCK" };
+  writeJsonAt(dir, "last-dry-exec-preview.json", preview);
+  return runScorecard(dir);
+};
+
+const shadowMarketClosedReport = runShadowMarketSessionFixture("MARKET_SESSION_CLOSED", false);
+assert.equal(shadowMarketClosedReport.paperExitReadiness.shadowEvaluation.marketSessionStatus, "MARKET_SESSION_CLOSED");
+assert.equal(shadowMarketClosedReport.paperExitReadiness.shadowEvaluation.marketSessionEligible, false);
+assert.equal(shadowMarketClosedReport.paperExitReadiness.summary.exitShadowBlockedMarketSessionRows, 4);
+assert.equal(shadowMarketClosedReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
+
+const shadowMarketUnavailableReport = runShadowMarketSessionFixture("MARKET_SESSION_EVIDENCE_UNAVAILABLE", null);
+assert.equal(shadowMarketUnavailableReport.paperExitReadiness.shadowEvaluation.marketSessionStatus, "MARKET_SESSION_EVIDENCE_UNAVAILABLE");
+assert.equal(shadowMarketUnavailableReport.paperExitReadiness.shadowEvaluation.marketSessionEligible, null);
+assert.equal(shadowMarketUnavailableReport.paperExitReadiness.rows.find((row) => row.symbol === "LONG_FULL").classification, "EXIT_SHADOW_EVIDENCE_INCOMPLETE");
+assert.equal(shadowMarketUnavailableReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
+
+const shadowMarketInvalidReport = runShadowMarketSessionFixture("MARKET_SESSION_CONTRACT_INVALID", null);
+assert.equal(shadowMarketInvalidReport.paperExitReadiness.shadowEvaluation.marketSessionStatus, "MARKET_SESSION_CONTRACT_INVALID");
+assert.equal(shadowMarketInvalidReport.paperExitReadiness.shadowEvaluation.marketSessionEligible, null);
+assert.equal(shadowMarketInvalidReport.paperExitReadiness.rows.find((row) => row.symbol === "PROTECTED").classification, "EXIT_SHADOW_BLOCKED_PROTECTION");
+assert.equal(shadowMarketInvalidReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
 
 const pnlMismatchStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "live-readiness-pnl-mismatch-"));
 for (const fileName of fs.readdirSync(microLiveStateDir)) {

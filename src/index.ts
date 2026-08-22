@@ -842,6 +842,7 @@ type PaperExitShadowIntent = {
   brokerMutationSubmitted: false;
   stateMutationAttempted: false;
   stateMutationSubmitted: false;
+  marketSessionEvidence?: PaperExitShadowMarketSessionEvidence;
   rows: Array<{
     symbol: string;
     evaluationStatus: "EVALUATED" | "STAGE6_LINEAGE_MISSING" | "STAGE6_LINEAGE_AMBIGUOUS";
@@ -860,6 +861,16 @@ type PaperExitShadowIntent = {
     expectedExecutionSide: "buy" | "sell";
     exitQuantityPolicy: "CONFIGURED_SCALE_DOWN_RATIO" | "CONFIGURED_EXIT_PARTIAL_RATIO" | "FULL_CURRENT_ABSOLUTE_POSITION" | null;
   }>;
+};
+
+type PaperExitShadowMarketSessionEvidence = {
+  status:
+    | "MARKET_SESSION_RTH_ELIGIBLE"
+    | "MARKET_SESSION_CLOSED"
+    | "MARKET_SESSION_EVIDENCE_UNAVAILABLE"
+    | "MARKET_SESSION_CONTRACT_INVALID";
+  marketOpen: boolean | null;
+  source: "ALPACA_CLOCK";
 };
 
 type HeldPositionStage6Lineage = {
@@ -6160,6 +6171,34 @@ function buildPaperExitShadowIntent(
   };
 }
 
+function classifyPaperExitShadowMarketSession(rawClock: unknown): PaperExitShadowMarketSessionEvidence {
+  if (!rawClock || typeof rawClock !== "object") {
+    return { status: "MARKET_SESSION_CONTRACT_INVALID", marketOpen: null, source: "ALPACA_CLOCK" };
+  }
+  const marketOpen = (rawClock as Record<string, unknown>).is_open;
+  if (typeof marketOpen !== "boolean") {
+    return { status: "MARKET_SESSION_CONTRACT_INVALID", marketOpen: null, source: "ALPACA_CLOCK" };
+  }
+  return {
+    status: marketOpen ? "MARKET_SESSION_RTH_ELIGIBLE" : "MARKET_SESSION_CLOSED",
+    marketOpen,
+    source: "ALPACA_CLOCK"
+  };
+}
+
+async function resolvePaperExitShadowMarketSession(
+  preflight: PreflightResult
+): Promise<PaperExitShadowMarketSessionEvidence> {
+  if (typeof preflight.marketOpen === "boolean") {
+    return classifyPaperExitShadowMarketSession({ is_open: preflight.marketOpen });
+  }
+  try {
+    return classifyPaperExitShadowMarketSession(await fetchAlpacaJson("/v2/clock"));
+  } catch {
+    return { status: "MARKET_SESSION_EVIDENCE_UNAVAILABLE", marketOpen: null, source: "ALPACA_CLOCK" };
+  }
+}
+
 function buildLifecycleExitPriceScaffold(
   entry: number | null,
   target: number | null,
@@ -9858,6 +9897,9 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     filledLedger,
     { orders: {}, releases: [], updatedAt: "" }
   );
+  const shadowMarketOpen = classifyPaperExitShadowMarketSession({ is_open: true });
+  const shadowMarketClosed = classifyPaperExitShadowMarketSession({ is_open: false });
+  const shadowMarketInvalid = classifyPaperExitShadowMarketSession({ is_open: "true" });
   const selfTestPassed =
     overExitBlocked &&
     actionScaleDown.actionType === "SCALE_DOWN" &&
@@ -9890,6 +9932,9 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     directExitOrderEvidence.known && directExitOrderEvidence.openExitOrderCount === 1 &&
     matchedStateEvidence.ownershipVerified && !matchedStateEvidence.terminalReconciliationRequired &&
     !missingTerminalEvidence.ownershipVerified && missingTerminalEvidence.terminalReconciliationRequired &&
+    shadowMarketOpen.status === "MARKET_SESSION_RTH_ELIGIBLE" && shadowMarketOpen.marketOpen === true &&
+    shadowMarketClosed.status === "MARKET_SESSION_CLOSED" && shadowMarketClosed.marketOpen === false &&
+    shadowMarketInvalid.status === "MARKET_SESSION_CONTRACT_INVALID" && shadowMarketInvalid.marketOpen === null &&
     exitSafetyPassed;
   if (!selfTestPassed) throw new Error("lifecycle_exit_selftest_failed");
   console.log(
@@ -12321,6 +12366,20 @@ async function saveDryExecPreview(
     topSkipReasonCategories
   );
   const recommendationLedger = await updateRecommendationLedger(result, dryExec, preflight, brokerSubmit);
+  const paperExitShadowIntent = dryExec.paperExitShadowIntent
+    ? {
+      ...dryExec.paperExitShadowIntent,
+      marketSessionEvidence: dryExec.paperExitShadowIntent.scaleDownDueRows
+        + dryExec.paperExitShadowIntent.exitPartialDueRows
+        + dryExec.paperExitShadowIntent.exitFullDueRows > 0
+        ? await resolvePaperExitShadowMarketSession(preflight)
+        : {
+          status: "MARKET_SESSION_EVIDENCE_UNAVAILABLE" as const,
+          marketOpen: null,
+          source: "ALPACA_CLOCK" as const
+        }
+    }
+    : null;
   await mkdir("state", { recursive: true });
   const preview = {
     stage6File: result.fileName,
@@ -12361,7 +12420,7 @@ async function saveDryExecPreview(
     portfolioAdmission: dryExec.portfolioAdmission,
     recommendationLedger,
     actionIntent: dryExec.actionIntent,
-    paperExitShadowIntent: dryExec.paperExitShadowIntent ?? null,
+    paperExitShadowIntent,
     orderReadiness: buildOrderReadinessSummary(dryExec, preflight, brokerSubmit),
     stage6Contract: dryExec.stage6Contract,
     stage6ContractReasonCountsPrimary,
@@ -12416,10 +12475,10 @@ async function saveDryExecPreview(
   console.log(
     `[RUNTIME_EVIDENCE] semantic=${runtimeEvidence.semanticIntegrityStatus} primary=${runtimeEvidence.orderOutcome.primaryNoOrderCause} payloads=${runtimeEvidence.orderOutcome.payloadCount} decisionRows=${runtimeEvidence.decisionAudit.rows} blockerRows=${runtimeEvidence.decisionAudit.blockerSummaryRows} blockerCountMatches=${runtimeEvidence.decisionAudit.blockerSummaryCountMatches} source=${runtimeEvidence.sourceIntegrity.status} previewStale=${runtimeEvidence.sourceIntegrity.previewStale} readOnly=${runtimeEvidence.safety.readOnly} execEnabled=${runtimeEvidence.safety.execEnabled} brokerAttempted=${runtimeEvidence.safety.brokerMutationAttempted} brokerSubmitted=${runtimeEvidence.safety.brokerMutationSubmitted} stateAttempted=${runtimeEvidence.safety.stateMutationAttempted} stateSubmitted=${runtimeEvidence.safety.stateMutationSubmitted}`
   );
-  if (dryExec.paperExitShadowIntent) {
-    const shadow = dryExec.paperExitShadowIntent;
+  if (paperExitShadowIntent) {
+    const shadow = paperExitShadowIntent;
     console.log(
-      `[PAPER_EXIT_SHADOW] status=${shadow.status} evaluated=${shadow.evaluatedPositionRows} notDue=${shadow.exitNotDueRows} scaleDown=${shadow.scaleDownDueRows} partial=${shadow.exitPartialDueRows} full=${shadow.exitFullDueRows} incomplete=${shadow.evidenceIncompleteRows} unknown=${shadow.unknownOrUnclassifiedRows} payload=false brokerMutation=false stateMutation=false`
+      `[PAPER_EXIT_SHADOW] status=${shadow.status} marketSession=${shadow.marketSessionEvidence.status} evaluated=${shadow.evaluatedPositionRows} notDue=${shadow.exitNotDueRows} scaleDown=${shadow.scaleDownDueRows} partial=${shadow.exitPartialDueRows} full=${shadow.exitFullDueRows} incomplete=${shadow.evidenceIncompleteRows} unknown=${shadow.unknownOrUnclassifiedRows} payload=false brokerMutation=false stateMutation=false`
     );
   }
   console.log(
