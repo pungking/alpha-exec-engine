@@ -664,11 +664,26 @@ function buildPaperExitReadiness({
   ]).sort((a, b) => String(a?.symbol || "").localeCompare(String(b?.symbol || "")));
 
   const preflightCode = String(preview?.preflight?.code || "").trim().toUpperCase() || null;
-  const marketSessionEligible = preflightCode === "PREFLIGHT_PASS"
-    ? true
-    : preflightCode === "PREFLIGHT_MARKET_CLOSED" || preview?.preflight?.blocking === true
-      ? false
-      : null;
+  const rawShadowMarketStatus = String(shadowIntent?.marketSessionEvidence?.status || "").trim().toUpperCase();
+  const shadowMarketOpen = shadowIntent?.marketSessionEvidence?.marketOpen;
+  const shadowMarketSession = rawShadowMarketStatus === "MARKET_SESSION_RTH_ELIGIBLE" && shadowMarketOpen === true
+    ? { status: rawShadowMarketStatus, eligible: true }
+    : rawShadowMarketStatus === "MARKET_SESSION_CLOSED" && shadowMarketOpen === false
+      ? { status: rawShadowMarketStatus, eligible: false }
+      : rawShadowMarketStatus === "MARKET_SESSION_EVIDENCE_UNAVAILABLE" && shadowMarketOpen == null
+        ? { status: rawShadowMarketStatus, eligible: null }
+        : rawShadowMarketStatus === "MARKET_SESSION_CONTRACT_INVALID" && shadowMarketOpen == null
+          ? { status: rawShadowMarketStatus, eligible: null }
+          : rawShadowMarketStatus
+            ? { status: "MARKET_SESSION_CONTRACT_INVALID", eligible: null }
+            : { status: "MARKET_SESSION_EVIDENCE_UNAVAILABLE", eligible: null };
+  const marketSessionEligible = shadowIntent
+    ? shadowMarketSession.eligible
+    : preflightCode === "PREFLIGHT_PASS"
+      ? true
+      : preflightCode === "PREFLIGHT_MARKET_CLOSED" || preview?.preflight?.blocking === true
+        ? false
+        : null;
 
   const rows = positions.map((position) => {
     const symbol = String(position?.symbol || "").trim().toUpperCase();
@@ -866,6 +881,8 @@ function buildPaperExitReadiness({
     shadowEvaluation: {
       mode: shadowIntent?.mode || null,
       status: shadowIntent?.status || "NOT_AVAILABLE",
+      marketSessionStatus: shadowIntent ? shadowMarketSession.status : "NOT_APPLICABLE",
+      marketSessionEligible: shadowIntent ? shadowMarketSession.eligible : null,
       countMatches: shadowCountMatches,
       evaluatedPositionRows: asNumber(shadowIntent?.evaluatedPositionRows, 0),
       exitNotDueRows: count("EXIT_SHADOW_NOT_DUE"),
