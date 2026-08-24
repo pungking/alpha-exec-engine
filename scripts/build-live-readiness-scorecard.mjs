@@ -731,6 +731,10 @@ function buildPaperExitReadiness({
       : Boolean(String(actionStage6File || "").trim() && String(actionStage6Hash || "").trim());
     const terminalReconciliationBlocked = terminalState?.terminalReconciliationRequired === true
       || String(terminalState?.category || "").trim().toUpperCase() === "TERMINAL_RECONCILIATION_REQUIRED";
+    const heldPositionIdempotencyStatus = normalizedStatus(protection?.idempotencyStatus);
+    const heldPositionIdempotencyUnresolved = heldPositionIdempotencyStatus === "not_recorded";
+    const shadowLineageUnresolved = action?.source === "shadow" && (!shadowEvaluated || !stage6LineagePresent);
+    const unresolvedHeldIdentity = heldPositionIdempotencyUnresolved || shadowLineageUnresolved;
 
     let baseClassification = "EXIT_EVIDENCE_INCOMPLETE";
     let blocker = "exit_action_producer_runtime_evidence_incomplete";
@@ -742,9 +746,15 @@ function buildPaperExitReadiness({
     } else if (actionDue && !ownershipVerified) {
       baseClassification = "EXIT_BLOCKED_OWNERSHIP";
       blocker = "ownership_proof_required";
-    } else if (actionDue && (duplicateOpenExit || idempotencyConflict || openExitOrderPresent)) {
+    } else if (actionDue && (heldPositionIdempotencyUnresolved || duplicateOpenExit || idempotencyConflict || openExitOrderPresent)) {
       baseClassification = "EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY";
-      blocker = duplicateOpenExit ? "duplicate_open_exit_order" : idempotencyConflict ? "exit_idempotency_conflict" : "open_exit_order_already_present";
+      blocker = heldPositionIdempotencyUnresolved
+        ? "held_position_idempotency_evidence_unresolved"
+        : duplicateOpenExit
+          ? "duplicate_open_exit_order"
+          : idempotencyConflict
+            ? "exit_idempotency_conflict"
+            : "open_exit_order_already_present";
     } else if (actionDue && terminalReconciliationBlocked) {
       baseClassification = "EXIT_BLOCKED_TERMINAL_RECONCILIATION";
       blocker = "terminal_reconciliation_required";
@@ -807,6 +817,8 @@ function buildPaperExitReadiness({
       duplicateOpenExit,
       idempotencyConflict,
       terminalReconciliationBlocked,
+      heldPositionIdempotencyStatus: heldPositionIdempotencyStatus || null,
+      unresolvedHeldIdentity,
       expectedExecutionSide,
       expectedExitQuantityPolicy: action?.actionType === "EXIT_FULL"
         ? "FULL_CURRENT_ABSOLUTE_POSITION"
@@ -840,7 +852,8 @@ function buildPaperExitReadiness({
   const readyRows = rows.filter((row) =>
     row.classification === "EXIT_READY_REPORT_ONLY" || row.classification === "EXIT_SHADOW_READY_REPORT_ONLY"
   );
-  const selected = readyRows[0] || null;
+  const unresolvedHeldIdentityRows = rows.filter((row) => row.unresolvedHeldIdentity);
+  const selected = unresolvedHeldIdentityRows.length === 0 ? readyRows[0] || null : null;
   const realizedPnlRows = Array.isArray(performance?.realizedPnl?.rows) ? performance.realizedPnl.rows : [];
   const verifiedPnlRows = realizedPnlRows.filter((row) => row?.status === "VERIFIED_NET_REALIZED_PNL");
   const partialPnlRows = realizedPnlRows.filter((row) => row?.status === "PARTIAL_EXIT_PNL_ONLY");
@@ -857,7 +870,9 @@ function buildPaperExitReadiness({
         ? "EXIT_CONDITION_NOT_REACHED"
           : rows.some((row) => row.blocker === "exit_action_not_propagated_to_payload")
             ? "EXIT_ACTION_NOT_PROPAGATED"
-            : readyRows.length > 0
+            : unresolvedHeldIdentityRows.length > 0
+              ? "held_position_identity_evidence_unresolved"
+              : readyRows.length > 0
               ? null
               : rows.find((row) => row.blocker)?.blocker || null;
 
@@ -932,6 +947,7 @@ function buildPaperExitReadiness({
       exitShadowBlockedTerminalReconciliationRows: count("EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION"),
       exitShadowBlockedMarketSessionRows: count("EXIT_SHADOW_BLOCKED_MARKET_SESSION"),
       exitShadowEvidenceIncompleteRows: count("EXIT_SHADOW_EVIDENCE_INCOMPLETE"),
+      unresolvedHeldIdentityRows: unresolvedHeldIdentityRows.length,
       unknownRows: asNumber(shadowIntent?.unknownOrUnclassifiedRows, 0),
       selectedCandidateCount: selected ? 1 : 0,
     },
