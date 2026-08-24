@@ -6,10 +6,10 @@ const STATE_DIR = String(process.env.LEDGER_FILLED_MIGRATION_APPLY_STATE_DIR || 
 const APPLY_REQUESTED = String(process.env.LEDGER_FILLED_MIGRATION_APPLY || "false").trim().toLowerCase() === "true";
 const APPROVAL = String(process.env.LEDGER_FILLED_MIGRATION_APPROVAL || "").trim();
 const REQUIRED_APPROVAL = "CONFIRM STATE LEDGER MIGRATION";
-const SYMBOL_FILTER = String(process.env.LEDGER_FILLED_MIGRATION_SYMBOLS || "")
+const SYMBOL_FILTER = [...new Set(String(process.env.LEDGER_FILLED_MIGRATION_SYMBOLS || "")
   .split(",")
   .map((value) => value.trim().toUpperCase())
-  .filter(Boolean);
+  .filter(Boolean))];
 const MAX_ROWS = Number(process.env.LEDGER_FILLED_MIGRATION_MAX_ROWS || "1");
 
 const FILES = {
@@ -113,10 +113,12 @@ const buildRow = ({ planRow, orderLedger, idempotency, generatedAt }) => {
 };
 
 const selectRows = (planRows) => {
-  let rows = planRows.filter((row) => row?.readyForApplyReview === true && String(row?.proposedTerminalState || "").toLowerCase() === "filled");
+  let rows = planRows.filter((row) => String(row?.proposedTerminalState || "").toLowerCase() === "filled");
   if (SYMBOL_FILTER.length > 0) {
     const allow = new Set(SYMBOL_FILTER);
     rows = rows.filter((row) => allow.has(asSymbol(row?.symbol)));
+  } else {
+    rows = rows.filter((row) => row?.readyForApplyReview === true);
   }
   rows = rows.sort((a, b) => asSymbol(a?.symbol).localeCompare(asSymbol(b?.symbol)));
   if (SYMBOL_FILTER.length === 0 && Number.isFinite(MAX_ROWS) && MAX_ROWS > 0) {
@@ -157,6 +159,10 @@ const main = () => {
   const planRows = Array.isArray(plan?.rows) ? plan.rows : [];
   const selectedPlanRows = selectRows(planRows);
   const rows = selectedPlanRows.map((planRow) => buildRow({ planRow, orderLedger, idempotency, generatedAt }));
+  const selectedSymbols = new Set(rows.map((row) => row.symbol).filter(Boolean));
+  const scopeComplete = SYMBOL_FILTER.length === 0 || (
+    selectedSymbols.size === SYMBOL_FILTER.length && SYMBOL_FILTER.every((symbol) => selectedSymbols.has(symbol))
+  );
   const globalGates = [];
   const addGlobalGate = (id, pass, detail) => globalGates.push({ id, status: pass ? "PASS" : "BLOCK", detail: short(detail, 360) });
 
@@ -166,7 +172,8 @@ const main = () => {
   addGlobalGate("idempotency_present", Boolean(idempotency?.orders), `idempotency=${FILES.idempotency}`);
   addGlobalGate("ready_rows_present", rows.length > 0, `selectedRows=${rows.length}`);
   addGlobalGate("max_rows_guard", !APPLY_REQUESTED || (Number.isFinite(MAX_ROWS) && MAX_ROWS > 0 && rows.length <= MAX_ROWS), `selectedRows=${rows.length} maxRows=${MAX_ROWS}`);
-  addGlobalGate("symbol_scope_required_for_multi_row", !APPLY_REQUESTED || rows.length <= 1 || SYMBOL_FILTER.length > 0, `symbols=${SYMBOL_FILTER.join(",") || "dynamic_single_row"}`);
+  addGlobalGate("symbol_scope_required_for_multi_row", !APPLY_REQUESTED || rows.length <= 1 || SYMBOL_FILTER.length > 0, `scopeCount=${SYMBOL_FILTER.length}`);
+  addGlobalGate("symbol_scope_complete", !APPLY_REQUESTED || scopeComplete, `requestedRows=${SYMBOL_FILTER.length} selectedRows=${selectedSymbols.size}`);
   addGlobalGate("ledger_hash_matches_plan", !APPLY_REQUESTED || plan?.fileHashes?.orderLedger?.sha256 === sha256(ledgerBeforeText || ""), `plan=${plan?.fileHashes?.orderLedger?.sha256 || "N/A"} current=${sha256(ledgerBeforeText || "")}`);
   addGlobalGate("idempotency_hash_matches_plan", !APPLY_REQUESTED || plan?.fileHashes?.idempotency?.sha256 === sha256(idempotencyBeforeText || ""), `plan=${plan?.fileHashes?.idempotency?.sha256 || "N/A"} current=${sha256(idempotencyBeforeText || "")}`);
 

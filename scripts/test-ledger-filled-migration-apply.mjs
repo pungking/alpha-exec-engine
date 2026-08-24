@@ -61,4 +61,54 @@ assert.equal(report.summary.selectedRows, 1);
 assert.equal(report.rows[0].symbol, "AAA");
 assert.equal(postLedger.orders["aaa:AAA:buy"].status, "filled");
 assert.equal(postLedger.orders["bbb:BBB:buy"].status, "submitted");
+
+writeJson("order-ledger.json", ledger);
+writeJson("order-idempotency.json", idem);
+const allOrNothingLedgerText = fs.readFileSync(path.join(stateDir, "order-ledger.json"), "utf8");
+const allOrNothingIdemText = fs.readFileSync(path.join(stateDir, "order-idempotency.json"), "utf8");
+writeJson("ledger-filled-migration-plan.json", {
+  fileHashes: {
+    orderLedger: { sha256: sha256(allOrNothingLedgerText) },
+    idempotency: { sha256: sha256(allOrNothingIdemText) }
+  },
+  rows: [
+    {
+      symbol: "AAA",
+      readyForApplyReview: true,
+      proposedTerminalState: "filled",
+      brokerEvidenceVerdict: "BROKER_FILLED_CONFIRMED",
+      keys: { ledgerKey: keyFor("AAA"), idempotencyKey: keyFor("AAA") },
+      diffPreview: {
+        orderLedger: { key: keyFor("AAA"), after: { status: "filled", brokerStatus: "filled" } },
+        orderIdempotency: { key: keyFor("AAA"), after: { brokerStatus: "filled", terminal: false, releaseReason: null } }
+      }
+    },
+    {
+      symbol: "BBB",
+      readyForApplyReview: false,
+      proposedTerminalState: "filled",
+      brokerEvidenceVerdict: "BROKER_FILLED_CONFIRMED",
+      keys: { ledgerKey: keyFor("BBB"), idempotencyKey: null },
+      diffPreview: {
+        orderLedger: { key: keyFor("BBB"), after: { status: "filled", brokerStatus: "filled" } },
+        orderIdempotency: { key: null, after: null }
+      }
+    }
+  ]
+});
+runApply({
+  LEDGER_FILLED_MIGRATION_APPLY: "true",
+  LEDGER_FILLED_MIGRATION_APPROVAL: "CONFIRM STATE LEDGER MIGRATION",
+  LEDGER_FILLED_MIGRATION_SYMBOLS: "AAA,BBB",
+  LEDGER_FILLED_MIGRATION_MAX_ROWS: "2"
+});
+report = JSON.parse(fs.readFileSync(path.join(stateDir, "ledger-filled-migration-apply-report.json"), "utf8"));
+assert.equal(report.overall, "apply_blocked_by_safety_gates");
+assert.equal(report.summary.selectedRows, 2);
+assert.equal(report.summary.readyRows, 1);
+assert.equal(report.summary.blockedRows, 1);
+assert.equal(report.summary.stateMutationAttempted, false);
+assert.equal(report.summary.stateMutationApplied, false);
+assert.equal(fs.readFileSync(path.join(stateDir, "order-ledger.json"), "utf8"), allOrNothingLedgerText);
+assert.equal(fs.readFileSync(path.join(stateDir, "order-idempotency.json"), "utf8"), allOrNothingIdemText);
 console.log("[LEDGER_FILLED_MIGRATION_APPLY_TEST] pass");
