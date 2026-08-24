@@ -186,18 +186,22 @@ const indexBySymbol = (rows) => {
   }
   return out;
 };
-const objectRows = (object) => Object.entries(object?.orders || {}).map(([key, value]) => ({ key, ...value }));
-const latestObjectBySymbol = (object) => {
-  const out = new Map();
-  for (const row of objectRows(object)) {
-    const symbol = asSymbol(row?.symbol);
-    if (!symbol) continue;
-    const prev = out.get(symbol);
-    const at = Date.parse(String(row?.updatedAt || row?.brokerCheckedAt || row?.lastSeenAt || row?.createdAt || ""));
-    const prevAt = Date.parse(String(prev?.updatedAt || prev?.brokerCheckedAt || prev?.lastSeenAt || prev?.createdAt || ""));
-    if (!prev || (Number.isFinite(at) && (!Number.isFinite(prevAt) || at >= prevAt))) out.set(symbol, row);
-  }
-  return out;
+const objectEntryByKey = (object, key) => {
+  const exactKey = String(key || "").trim();
+  const value = exactKey ? object?.orders?.[exactKey] : null;
+  if (!value) return null;
+  const embeddedKeys = [value.key, value.idempotencyKey]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean);
+  if (embeddedKeys.some((embeddedKey) => embeddedKey !== exactKey)) return null;
+  return { ...value, key: exactKey };
+};
+
+const exactFillsForOrder = (fills, symbol, brokerOrderId) => {
+  const exactSymbol = asSymbol(symbol);
+  const exactOrderId = String(brokerOrderId || "").trim();
+  if (!exactSymbol || !exactOrderId) return [];
+  return fills.filter((fill) => fill.symbol === exactSymbol && fill.orderId === exactOrderId);
 };
 
 const classifyEvidence = ({ candidate, brokerPosition, clientOrder, openOrders, closedOrders, fills }) => {
@@ -284,7 +288,7 @@ const classifyEvidence = ({ candidate, brokerPosition, clientOrder, openOrders, 
 
 const fetchEvidenceForCandidate = async ({ candidate, ledgerRow, idempotencyRow, creds, after }) => {
   const symbol = asSymbol(candidate.symbol);
-  const clientOrderId = firstNonEmpty(candidate?.ledger?.clientOrderId, candidate?.idempotency?.clientOrderId, ledgerRow?.clientOrderId, idempotencyRow?.clientOrderId);
+  const clientOrderId = firstNonEmpty(ledgerRow?.clientOrderId, idempotencyRow?.clientOrderId, candidate?.ledger?.clientOrderId, candidate?.idempotency?.clientOrderId);
   const openPath = `/v2/orders?status=open&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=100`;
   const closedPath = `/v2/orders?status=closed&nested=true&symbols=${encodeURIComponent(symbol)}&direction=desc&limit=100&after=${encodeURIComponent(after)}`;
   const fillsPath = `/v2/account/activities/FILL?after=${encodeURIComponent(after)}&direction=desc&page_size=100`;
@@ -301,9 +305,18 @@ const fetchEvidenceForCandidate = async ({ candidate, ledgerRow, idempotencyRow,
   const clientOrder = clientRes.ok ? normalizeOrder(clientRes.data) : null;
   const openOrders = Array.isArray(openRes.data) ? openRes.data.map(normalizeOrder) : [];
   const closedOrders = Array.isArray(closedRes.data) ? closedRes.data.map(normalizeOrder) : [];
-  const fills = Array.isArray(fillsRes.data)
-    ? fillsRes.data.map(normalizeFill).filter((fill) => fill.symbol === symbol)
-    : [];
+  const expectedBrokerOrderId = firstNonEmpty(
+    ledgerRow?.brokerOrderId,
+    idempotencyRow?.brokerOrderId,
+    candidate?.ledger?.brokerOrderId,
+    candidate?.idempotency?.brokerOrderId,
+    clientOrder?.id
+  );
+  const fills = exactFillsForOrder(
+    Array.isArray(fillsRes.data) ? fillsRes.data.map(normalizeFill) : [],
+    symbol,
+    expectedBrokerOrderId
+  );
   const classification = classifyEvidence({ candidate, brokerPosition, clientOrder, openOrders, closedOrders, fills });
   return {
     symbol,
@@ -336,7 +349,8 @@ const fetchEvidenceForCandidate = async ({ candidate, ledgerRow, idempotencyRow,
     fillActivity: {
       count: fills.length,
       qty: fills.reduce((acc, fill) => acc + (toNum(fill.qty) || 0), 0),
-      latest: latest(fills, (fill) => fill.transactionTime)
+      latest: latest(fills, (fill) => fill.transactionTime),
+      exactOrderIdMatched: fills.length > 0
     },
     ...classification,
     brokerMutationAllowed: false,
@@ -378,8 +392,6 @@ const main = async () => {
   const idempotency = readJson(FILES.idempotency);
   const targetRows = (Array.isArray(fillStateAudit?.rows) ? fillStateAudit.rows : [])
     .filter((row) => row.requiresLedgerTerminalizationReview === true || row.reconciliationDecision === "POSITION_PRESENT_WITH_OPEN_LEDGER_STATE");
-  const ledgerBySymbol = latestObjectBySymbol(orderLedger);
-  const idempotencyBySymbol = latestObjectBySymbol(idempotency);
   const creds = credentials();
   const readVerifyEnabled = boolEnv("BROKER_FILL_STATE_READ_VERIFY", true);
   const paperOnly = creds.baseUrl === PAPER_BASE_URL;
@@ -405,11 +417,12 @@ const main = async () => {
     brokerReadAttempted = true;
     rows = [];
     for (const candidate of targetRows) {
-      const symbol = asSymbol(candidate?.symbol);
+      const ledgerRow = objectEntryByKey(orderLedger, candidate?.ledger?.key);
+      const idempotencyKey = candidate?.idempotency?.key || ledgerRow?.idempotencyKey;
       rows.push(await fetchEvidenceForCandidate({
         candidate,
-        ledgerRow: ledgerBySymbol.get(symbol) || null,
-        idempotencyRow: idempotencyBySymbol.get(symbol) || null,
+        ledgerRow,
+        idempotencyRow: objectEntryByKey(idempotency, idempotencyKey),
         creds,
         after
       }));
@@ -471,7 +484,26 @@ const main = async () => {
   );
 };
 
-main().catch((error) => {
+const runSelfTestIfEnabled = () => {
+  if (!boolEnv("BROKER_FILL_STATE_EVIDENCE_SELFTEST", false)) return false;
+  const fills = [
+    { symbol: "SELFTEST", orderId: "expected" },
+    { symbol: "SELFTEST", orderId: "other" },
+    { symbol: "OTHER", orderId: "expected" }
+  ];
+  const exact = exactFillsForOrder(fills, "SELFTEST", "expected");
+  const malformed = objectEntryByKey(
+    { orders: { expected: { key: "expected", idempotencyKey: "other" } } },
+    "expected"
+  );
+  if (exact.length !== 1 || exact[0]?.orderId !== "expected" || malformed) {
+    throw new Error("broker_fill_exact_order_selftest_failed");
+  }
+  console.log("[BROKER_FILL_STATE_EVIDENCE_SELFTEST] exact_order_fill_match=true");
+  return true;
+};
+
+if (!runSelfTestIfEnabled()) main().catch((error) => {
   const report = {
     generatedAt: new Date().toISOString(),
     overall: "script_error",
