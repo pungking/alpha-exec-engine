@@ -612,7 +612,7 @@ writeJsonAt(shadowExitStateDir, "order-state-consistency-report.json", {
   })),
 });
 const shadowExitReport = runScorecard(shadowExitStateDir);
-assert.equal(shadowExitReport.paperExitReadiness.primaryRootCause, null);
+assert.equal(shadowExitReport.paperExitReadiness.primaryRootCause, "held_position_identity_evidence_unresolved");
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.previewOnly, true);
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.productionRuntimeReadyForExitIntentGeneration, false);
 assert.equal(shadowExitReport.paperExitReadiness.producerLiveness.shadowRuntimeReadyForExitIntentGeneration, true);
@@ -625,6 +625,7 @@ assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedOwners
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedLedgerOrIdempotencyRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowBlockedTerminalReconciliationRows, 1);
 assert.equal(shadowExitReport.paperExitReadiness.summary.exitShadowEvidenceIncompleteRows, 2);
+assert.equal(shadowExitReport.paperExitReadiness.summary.unresolvedHeldIdentityRows, 2);
 assert.equal(shadowExitReport.paperExitReadiness.summary.unknownRows, 0);
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "SHORT_FULL").classification, "EXIT_SHADOW_BLOCKED_TERMINAL_RECONCILIATION");
 assert.equal(shadowExitReport.paperExitReadiness.rows.find((row) => row.symbol === "NO_DUE").classification, "EXIT_SHADOW_NOT_DUE");
@@ -639,7 +640,8 @@ assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.marketSessionS
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.marketSessionEligible, true);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.brokerMutationAttempted, false);
 assert.equal(shadowExitReport.paperExitReadiness.shadowEvaluation.stateMutationAttempted, false);
-assert.equal(shadowExitReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 1);
+assert.equal(shadowExitReport.paperExitReadiness.canaryApprovalPackage.status, "NO_SAFE_EXIT_CANARY_AVAILABLE");
+assert.equal(shadowExitReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
 assert.equal(shadowPreview.payloadCount, 0);
 assert.equal(shadowPreview.actionIntent.counts.EXIT_FULL, 0);
 const shadowMarkdown = fs.readFileSync(path.join(shadowExitStateDir, "live-readiness-scorecard.md"), "utf8");
@@ -647,6 +649,54 @@ for (const symbol of shadowExitSymbols) {
   const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.equal(new RegExp(`(^|[^A-Z0-9_.-])${escaped}([^A-Z0-9_.-]|$)`).test(shadowMarkdown), false);
 }
+
+const unresolvedIdentityStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-unresolved-identity-"));
+for (const fileName of fs.readdirSync(shadowExitStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(shadowExitStateDir, fileName), path.join(unresolvedIdentityStateDir, fileName));
+}
+const unresolvedIdentityPreview = JSON.parse(
+  fs.readFileSync(path.join(unresolvedIdentityStateDir, "last-dry-exec-preview.json"), "utf8")
+);
+unresolvedIdentityPreview.paperExitShadowIntent.rows = unresolvedIdentityPreview.paperExitShadowIntent.rows.slice(0, 8);
+Object.assign(unresolvedIdentityPreview.paperExitShadowIntent, {
+  status: "READY",
+  primaryLivenessGap: "NONE",
+  evaluatedPositionRows: 8,
+  exitNotDueRows: 1,
+  scaleDownDueRows: 1,
+  exitPartialDueRows: 1,
+  exitFullDueRows: 5,
+  evidenceIncompleteRows: 0,
+});
+writeJsonAt(unresolvedIdentityStateDir, "last-dry-exec-preview.json", unresolvedIdentityPreview);
+const unresolvedIdentityProtection = JSON.parse(
+  fs.readFileSync(path.join(unresolvedIdentityStateDir, "position-protection-root-cause-audit.json"), "utf8")
+);
+for (const row of unresolvedIdentityProtection.rows) {
+  row.idempotencyStatus = row.symbol === "NO_DUE" ? "not_recorded" : "filled";
+}
+writeJsonAt(
+  unresolvedIdentityStateDir,
+  "position-protection-root-cause-audit.json",
+  unresolvedIdentityProtection
+);
+const unresolvedIdentityReport = runScorecard(unresolvedIdentityStateDir);
+const unresolvedIdentityRow = unresolvedIdentityReport.paperExitReadiness.rows.find(
+  (row) => row.symbol === "NO_DUE"
+);
+assert.equal(unresolvedIdentityRow.heldPositionIdempotencyStatus, "not_recorded");
+assert.equal(unresolvedIdentityRow.unresolvedHeldIdentity, true);
+assert.equal(unresolvedIdentityReport.paperExitReadiness.summary.unresolvedHeldIdentityRows, 1);
+assert.equal(
+  unresolvedIdentityReport.paperExitReadiness.primaryRootCause,
+  "held_position_identity_evidence_unresolved"
+);
+assert.equal(
+  unresolvedIdentityReport.paperExitReadiness.canaryApprovalPackage.status,
+  "NO_SAFE_EXIT_CANARY_AVAILABLE"
+);
+assert.equal(unresolvedIdentityReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
 
 const runShadowMarketSessionFixture = (status, marketOpen) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-session-"));
