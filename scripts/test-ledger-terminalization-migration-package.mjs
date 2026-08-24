@@ -9,19 +9,26 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ledger-terminalization-p
 const writeJson = (name, value) => fs.writeFileSync(path.join(stateDir, name), `${JSON.stringify(value, null, 2)}\n`, "utf8");
 
 writeJson("protection-blocker-reduction-plan.json", { finalVerdict: "BLOCKED" });
-writeJson("order-ledger.json", { orders: { "aaa:AAA:buy": { symbol: "AAA", status: "submitted" } } });
+writeJson("order-ledger.json", { orders: {
+  "aaa:AAA:buy": { symbol: "AAA", status: "submitted" },
+  "ledgeronly:LEDGERONLY:buy": { symbol: "LEDGERONLY", status: "submitted" }
+} });
 writeJson("order-idempotency.json", { orders: { "aaa:AAA:buy": { symbol: "AAA", brokerStatus: "submitted" } } });
 writeJson("fill-state-reconciliation-audit.json", {
   rows: [
     { symbol: "AAA", ownershipClassification: "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED" },
     { symbol: "BBB", ownershipClassification: "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED" },
     { symbol: "CCC", ownershipClassification: "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED" },
+    { symbol: "LEDGERONLY", ownershipClassification: "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED" },
     { symbol: "EXT", ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION" },
   ]
 });
 writeJson("broker-fill-state-evidence.json", {
   overall: "terminal_or_filled_evidence_ready",
-  rows: [{ symbol: "AAA", evidenceVerdict: "BROKER_FILLED_CONFIRMED" }]
+  rows: [
+    { symbol: "AAA", evidenceVerdict: "BROKER_FILLED_CONFIRMED" },
+    { symbol: "LEDGERONLY", evidenceVerdict: "BROKER_FILLED_CONFIRMED" }
+  ]
 });
 writeJson("position-ownership-recovery-decision.json", {
   rows: [{ symbol: "EXT", ownershipClassification: "EXTERNAL_OR_MANUAL_POSITION", ownershipRecoveryDecision: "DO_NOT_AUTO_RECOVER_EXTERNAL_NO_OWNERSHIP_NO_GUARD_SOURCE" }]
@@ -45,6 +52,18 @@ writeJson("ledger-terminalization-proposal.json", {
     },
     { symbol: "BBB", proposalReady: false, blockers: ["broker_evidence_missing"] },
     { symbol: "CCC", proposalReady: false, blockers: ["broker_order_still_working"] },
+    {
+      symbol: "LEDGERONLY",
+      ledgerStatus: "submitted",
+      brokerEvidenceVerdict: "BROKER_FILLED_CONFIRMED",
+      proposedTerminalState: "filled",
+      proposalReady: true,
+      ledgerKey: "ledgeronly:LEDGERONLY:buy",
+      blockers: [],
+      proposedPatchPreview: {
+        orderLedger: { key: "ledgeronly:LEDGERONLY:buy", before: { status: "submitted" }, proposed: { status: "filled" } }
+      }
+    },
     {
       symbol: "EXT",
       proposalReady: true,
@@ -71,6 +90,7 @@ assert.equal(report.summary.readyForMigrationReview, 1);
 assert.equal(report.summary.needsBrokerOrLifecycleEvidence, 1);
 assert.equal(report.summary.blocked, 1);
 assert.equal(report.summary.ownershipRecoveryTrack, 1);
+assert.equal(report.summary.applyContractIncomplete, 1);
 const bySymbol = new Map(report.rows.map((row) => [row.symbol, row]));
 assert.equal(bySymbol.get("AAA").packageDecision, "proposal_ready");
 assert.equal(bySymbol.get("AAA").backupRequired, true);
@@ -78,5 +98,13 @@ assert.deepEqual(bySymbol.get("AAA").affectedStateFiles, ["order-ledger.json", "
 assert.equal(bySymbol.get("AAA").requiredApprovalPhrase, "CONFIRM STATE LEDGER MIGRATION");
 assert.equal(bySymbol.get("BBB").packageDecision, "needs_broker_or_lifecycle_evidence");
 assert.equal(bySymbol.get("CCC").packageDecision, "blocked");
+assert.equal(bySymbol.get("LEDGERONLY").packageDecision, "proposal_ready");
+assert.equal(bySymbol.get("LEDGERONLY").readyForMigrationReview, false);
+assert.deepEqual(bySymbol.get("LEDGERONLY").migrationReadinessBlockers, [
+  "idempotency_key_missing",
+  "idempotency_current_entry_missing",
+  "idempotency_patch_missing"
+]);
+assert.equal(bySymbol.get("LEDGERONLY").nextAction, "complete_missing_ledger_or_idempotency_proposal_evidence_before_migration");
 assert.equal(bySymbol.get("EXT").packageDecision, "ownership_recovery_track");
 console.log("[LEDGER_TERMINALIZATION_MIGRATION_PACKAGE_TEST] pass");

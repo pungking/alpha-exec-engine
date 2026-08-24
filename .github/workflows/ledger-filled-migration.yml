@@ -106,8 +106,14 @@ jobs:
           const fill = JSON.parse(fs.readFileSync('state/fill-state-reconciliation-audit.json', 'utf8'));
           const terminal = JSON.parse(fs.readFileSync('state/ledger-terminalization-proposal.json', 'utf8'));
           const lanes = JSON.parse(fs.readFileSync('state/ops-lane-status-report.json', 'utf8'));
-          const applyOk = apply.overall === 'state_migration_applied_and_verified' && apply.summary?.postVerifiedRows > 0;
+          const selectedRows = Number(apply.summary?.selectedRows || 0);
+          const postVerifiedRows = Number(apply.summary?.postVerifiedRows || 0);
+          const expectedScopeCount = new Set(String(process.env.LEDGER_FILLED_MIGRATION_SYMBOLS || '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)).size;
+          const scopeParity = expectedScopeCount === 0 || selectedRows === expectedScopeCount;
+          const postVerifyParity = postVerifiedRows === selectedRows;
           const selectedSymbols = new Set((apply.rows || []).filter((row) => row.stateMutationApplied).map((row) => row.symbol));
+          const selectedCountParity = selectedSymbols.size === selectedRows;
+          const applyOk = apply.overall === 'state_migration_applied_and_verified' && selectedRows > 0 && apply.summary?.readyRows === selectedRows && apply.summary?.blockedRows === 0 && postVerifyParity && scopeParity && selectedCountParity;
           const fillRows = Array.isArray(fill.rows) ? fill.rows : [];
           const terminalRows = Array.isArray(terminal.rows) ? terminal.rows : [];
           const fillOk = [...selectedSymbols].every((symbol) => !fillRows.some((row) => row.symbol === symbol && row.requiresLedgerTerminalizationReview === true));
@@ -115,11 +121,15 @@ jobs:
           const repairLane = (lanes.lanes || []).find((lane) => lane.id === 'track_4_valid_guard_missing_child_repair_candidate');
           const repairBlocked = repairLane && String(repairLane.status || '').startsWith('blocked_');
           if (!applyOk || selectedSymbols.size === 0 || !fillOk || !terminalOk || !repairBlocked) {
-            console.error(JSON.stringify({ applyOk, selectedSymbols: [...selectedSymbols], fillOk, terminalOk, repairBlocked, apply: apply.overall, fill: fill.summary, terminal: terminal.summary, repairLane }, null, 2));
+            console.error(JSON.stringify({ applyOk, selectedCount: selectedSymbols.size, expectedScopeCount, scopeParity, selectedCountParity, postVerifyParity, fillOk, terminalOk, repairBlocked, apply: apply.overall, fill: fill.summary, terminal: terminal.summary, repairStatus: repairLane?.status || null, repairCount: Number(repairLane?.count || 0) }, null, 2));
             process.exit(1);
           }
-          console.log(JSON.stringify({ applyOk, selectedSymbols: [...selectedSymbols], fillOk, terminalOk, repairBlocked, repairStatus: repairLane.status }, null, 2));
+          console.log(JSON.stringify({ applyOk, selectedCount: selectedSymbols.size, expectedScopeCount, scopeParity, selectedCountParity, postVerifyParity, fillOk, terminalOk, repairBlocked, repairStatus: repairLane.status }, null, 2));
           NODE
+
+      - name: Build redacted migration evidence
+        if: always()
+        run: npm run ops:ledger-filled-migration-public-evidence
 
       - name: Publish migration summary
         if: always()
@@ -129,13 +139,7 @@ jobs:
             echo "- state mutation scope: \`order-ledger + order-idempotency only\`"
             echo "- broker mutation: \`false\`"
             echo ""
-            cat state/ledger-filled-migration-apply-report.md || true
-            cat state/fill-state-reconciliation-audit.md || true
-            cat state/position-lifecycle-guard-source-plan.md || true
-            cat state/guard-source-recovery-plan.md || true
-            cat state/stop-only-oco-conversion-plan.md || true
-            cat state/ops-lane-status-report.md || true
-            cat state/ops-health-report.md || true
+            cat state/ledger-filled-migration-public-evidence.md || true
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload migration artifact
@@ -144,33 +148,8 @@ jobs:
         with:
           name: sidecar-ledger-filled-migration-${{ github.run_id }}
           path: |
-            state/order-ledger.json
-            state/order-idempotency.json
-            state/ledger-filled-migration-plan.json
-            state/ledger-filled-migration-plan.md
-            state/ledger-filled-migration-apply-report.json
-            state/ledger-filled-migration-apply-report.md
-            state/fill-state-reconciliation-audit.json
-            state/fill-state-reconciliation-audit.md
-            state/ledger-terminalization-proposal.json
-            state/ledger-terminalization-proposal.md
-            state/ledger-terminalization-migration-package.json
-            state/ledger-terminalization-migration-package.md
-            state/guard-source-recovery-plan.json
-            state/guard-source-recovery-plan.md
-            state/position-lifecycle-guard-source-plan.json
-            state/position-lifecycle-guard-source-plan.md
-            state/guarded-child-order-repair-plan.json
-            state/guarded-child-order-repair-plan.md
-            state/persistent-oco-repair-plan.json
-            state/persistent-oco-repair-plan.md
-            state/stop-only-oco-conversion-plan.json
-            state/stop-only-oco-conversion-plan.md
-            state/ops-lane-status-report.json
-            state/ops-lane-status-report.md
-            state/ops-health-report.json
-            state/ops-health-report.md
-            state/migration-backups/**
+            state/ledger-filled-migration-public-evidence.json
+            state/ledger-filled-migration-public-evidence.md
           if-no-files-found: warn
 
       - name: Save sidecar state

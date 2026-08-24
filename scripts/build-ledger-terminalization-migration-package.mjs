@@ -51,16 +51,26 @@ function classify({ proposalRow, fillRow, ownershipRow }) {
   return "blocked";
 }
 
-function buildPackageRow({ proposalRow, fillRow, brokerRow, ownershipRow, generatedAt }) {
+function buildPackageRow({ proposalRow, fillRow, brokerRow, ownershipRow, orderLedger, idempotency, generatedAt }) {
   const symbol = sym(proposalRow?.symbol);
   const packageDecision = classify({ proposalRow, fillRow, ownershipRow });
   const patch = proposalRow?.proposedPatchPreview || {};
+  const ledgerKey = proposalRow?.ledgerKey || patch.orderLedger?.key || null;
+  const idempotencyKey = proposalRow?.idempotencyKey || patch.orderIdempotency?.key || null;
+  const migrationReadinessBlockers = [
+    ledgerKey ? null : "order_ledger_key_missing",
+    idempotencyKey ? null : "idempotency_key_missing",
+    ledgerKey && orderLedger?.orders?.[ledgerKey] ? null : "order_ledger_current_entry_missing",
+    idempotencyKey && idempotency?.orders?.[idempotencyKey] ? null : "idempotency_current_entry_missing",
+    patch.orderLedger?.proposed ? null : "order_ledger_patch_missing",
+    patch.orderIdempotency?.proposed ? null : "idempotency_patch_missing",
+  ].filter(Boolean);
   const affectedStateFiles = [
     patch.orderLedger ? "order-ledger.json" : null,
     patch.orderIdempotency ? "order-idempotency.json" : null,
   ].filter(Boolean);
   const proposedTerminalStatus = proposalRow?.proposedTerminalState || patch.orderLedger?.proposed?.status || patch.orderIdempotency?.proposed?.brokerStatus || null;
-  const readyForMigrationReview = packageDecision === "proposal_ready" && affectedStateFiles.length > 0;
+  const readyForMigrationReview = packageDecision === "proposal_ready" && migrationReadinessBlockers.length === 0;
   return {
     symbol,
     packageDecision,
@@ -69,6 +79,7 @@ function buildPackageRow({ proposalRow, fillRow, brokerRow, ownershipRow, genera
     brokerEvidenceStatus: proposalRow?.brokerEvidenceVerdict || brokerRow?.evidenceVerdict || null,
     proposedTerminalStatus,
     affectedStateFiles,
+    migrationReadinessBlockers,
     backupRequired: true,
     diffPreview: {
       orderLedger: patch.orderLedger ? {
@@ -110,9 +121,11 @@ function buildPackageRow({ proposalRow, fillRow, brokerRow, ownershipRow, genera
     stateMutationAttempted: false,
     stateMutationSubmitted: false,
     requiredApprovalPhrase: REQUIRED_APPROVAL,
-    blockers: Array.isArray(proposalRow?.blockers) ? proposalRow.blockers : [],
+    blockers: [...(Array.isArray(proposalRow?.blockers) ? proposalRow.blockers : []), ...migrationReadinessBlockers],
     nextAction: packageDecision === "proposal_ready"
-      ? "manual_review_then_separate_state_migration_task"
+      ? readyForMigrationReview
+        ? "manual_review_then_separate_state_migration_task"
+        : "complete_missing_ledger_or_idempotency_proposal_evidence_before_migration"
       : packageDecision === "ownership_recovery_track"
         ? "move_to_ownership_recovery_track_before_ledger_migration"
         : packageDecision === "needs_broker_or_lifecycle_evidence"
@@ -145,6 +158,8 @@ function buildReport() {
   const fill = readJson(FILES.fillStateAudit);
   const proposal = readJson(FILES.terminalizationProposal);
   const broker = readJson(FILES.brokerEvidence);
+  const orderLedger = readJson(FILES.orderLedger);
+  const idempotency = readJson(FILES.idempotency);
   const ownership = readJson(FILES.ownershipDecision);
   const fillBySymbol = indexBySymbol(fill);
   const brokerBySymbol = indexBySymbol(broker);
@@ -156,6 +171,8 @@ function buildReport() {
       fillRow: fillBySymbol.get(symbol) || null,
       brokerRow: brokerBySymbol.get(symbol) || null,
       ownershipRow: ownershipBySymbol.get(symbol) || null,
+      orderLedger,
+      idempotency,
       generatedAt,
     });
   });
@@ -167,6 +184,7 @@ function buildReport() {
     needsBrokerOrLifecycleEvidence: count("needs_broker_or_lifecycle_evidence"),
     blocked: count("blocked"),
     ownershipRecoveryTrack: count("ownership_recovery_track"),
+    applyContractIncomplete: packageRows.filter((row) => row.packageDecision === "proposal_ready" && !row.readyForMigrationReview).length,
     affectedSymbols: uniqueSymbols(packageRows),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
