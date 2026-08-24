@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 
 const STATE_DIR = String(process.env.LEDGER_TERMINALIZATION_PROPOSAL_STATE_DIR || "state").trim() || "state";
 const FILES = {
@@ -42,36 +43,87 @@ const fmt = (value, digits = 2) => {
   return n == null ? "N/A" : n.toFixed(digits);
 };
 
-const rowTimestamp = (row) => Date.parse(String(row?.updatedAt || row?.brokerCheckedAt || row?.lastSeenAt || row?.createdAt || ""));
-
-const latestObjectBySymbol = (object) => {
-  const out = new Map();
-  for (const [key, value] of Object.entries(object?.orders || {})) {
-    const row = { key, ...value };
-    const symbol = asSymbol(row?.symbol);
-    if (!symbol) continue;
-    const prev = out.get(symbol);
-    const at = rowTimestamp(row);
-    const prevAt = rowTimestamp(prev);
-    if (!prev || (Number.isFinite(at) && (!Number.isFinite(prevAt) || at >= prevAt))) out.set(symbol, row);
-  }
-  return out;
+const objectEntryByKey = (object, key) => {
+  const exactKey = String(key || "").trim();
+  const value = exactKey ? object?.orders?.[exactKey] : null;
+  if (!value) return null;
+  const embeddedKeys = [value.key, value.idempotencyKey]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean);
+  if (embeddedKeys.some((embeddedKey) => embeddedKey !== exactKey)) return null;
+  return { ...value, key: exactKey };
 };
 
-const latestObjectBySymbolAndStage6 = (object, symbol, stage6Hash) => {
-  const targetSymbol = asSymbol(symbol);
-  const targetHash = String(stage6Hash || "").trim();
-  let selected = null;
-  for (const [key, value] of Object.entries(object?.orders || {})) {
-    const row = { key, ...value };
-    if (asSymbol(row?.symbol) !== targetSymbol) continue;
-    if (targetHash && String(row?.stage6Hash || "") !== targetHash) continue;
-    const at = rowTimestamp(row);
-    const selectedAt = rowTimestamp(selected);
-    if (!selected || (Number.isFinite(at) && (!Number.isFinite(selectedAt) || at >= selectedAt))) selected = row;
-  }
-  return selected;
+const sameNonEmpty = (left, right) => {
+  const a = String(left || "").trim();
+  const b = String(right || "").trim();
+  return Boolean(a && b && a === b);
 };
+
+const idempotencyIdentityMatches = (ledgerRow, candidate) => Boolean(
+  ledgerRow &&
+  candidate &&
+  sameNonEmpty(ledgerRow.idempotencyKey, candidate.key) &&
+  sameNonEmpty(asSymbol(ledgerRow.symbol), asSymbol(candidate.symbol)) &&
+  sameNonEmpty(ledgerRow.side, candidate.side) &&
+  sameNonEmpty(ledgerRow.stage6File, candidate.stage6File) &&
+  sameNonEmpty(ledgerRow.stage6Hash, candidate.stage6Hash) &&
+  sameNonEmpty(ledgerRow.clientOrderId, candidate.clientOrderId) &&
+  sameNonEmpty(ledgerRow.brokerOrderId, candidate.brokerOrderId)
+);
+
+const resolveIdempotencyEvidence = (ledgerRow, idempotency) => {
+  const key = String(ledgerRow?.idempotencyKey || "").trim();
+  if (!key) return { row: null, source: "none", status: "IDEMPOTENCY_KEY_BASIS_MISSING", candidateRows: 0 };
+  const current = objectEntryByKey(idempotency, key);
+  if (current) {
+    return idempotencyIdentityMatches(ledgerRow, current)
+      ? { row: current, source: "current", status: "IDEMPOTENCY_CURRENT_EXACT_MATCH", candidateRows: 1 }
+      : { row: null, source: "none", status: "IDEMPOTENCY_EXACT_KEY_IDENTITY_MISMATCH", candidateRows: 1 };
+  }
+  const releases = (Array.isArray(idempotency?.releases) ? idempotency.releases : [])
+    .filter((row) => String(row?.key || "").trim() === key)
+    .map((row) => ({ ...row, key }));
+  if (releases.length > 1) {
+    return { row: null, source: "none", status: "IDEMPOTENCY_MULTIPLE_CANDIDATES", candidateRows: releases.length };
+  }
+  if (releases.length === 1) {
+    return idempotencyIdentityMatches(ledgerRow, releases[0])
+      ? { row: releases[0], source: "legacy_release", status: "IDEMPOTENCY_LEGACY_RELEASE_EXACT_MATCH", candidateRows: 1 }
+      : { row: null, source: "none", status: "IDEMPOTENCY_EXACT_KEY_IDENTITY_MISMATCH", candidateRows: 1 };
+  }
+  return { row: null, source: "none", status: "IDEMPOTENCY_ENTRY_ABSENT", candidateRows: 0 };
+};
+
+const brokerFillLineageMatches = (ledgerRow, evidenceRow) => Boolean(
+  ledgerRow &&
+  evidenceRow &&
+  sameNonEmpty(ledgerRow.clientOrderId, evidenceRow.clientOrderId) &&
+  sameNonEmpty(ledgerRow.brokerOrderId, evidenceRow?.brokerOrder?.id)
+);
+
+const brokerFilledEvidenceBasisVerified = (evidenceRow) => {
+  if (evidenceRow?.fillActivity?.exactOrderIdMatched === true) return true;
+  const filledAt = Date.parse(String(evidenceRow?.brokerOrder?.filledAt || ""));
+  return (
+    String(evidenceRow?.brokerOrder?.status || "").trim().toLowerCase() === "filled" &&
+    (toNum(evidenceRow?.brokerOrder?.filledQty) ?? 0) > 0 &&
+    Number.isFinite(filledAt)
+  );
+};
+
+const sha256Text = (value) => {
+  const text = String(value || "").trim();
+  return text ? createHash("sha256").update(text).digest("hex") : null;
+};
+
+const entryBrokerLineageMatches = (ledgerRow, fillRow) => Boolean(
+  ledgerRow &&
+  fillRow &&
+  sameNonEmpty(sha256Text(ledgerRow.clientOrderId), fillRow.brokerClosedClientOrderIdSha256) &&
+  sameNonEmpty(sha256Text(ledgerRow.brokerOrderId), fillRow.brokerClosedOrderIdSha256)
+);
+
 const indexRows = (rows) => {
   const out = new Map();
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -127,10 +179,23 @@ const terminalUpdatePatch = ({ evidenceRow, ledgerRow, idempotencyRow, terminalS
   };
 };
 
-const buildDecision = ({ evidenceRow, fillRow, ledgerRow, idempotencyRow, guardRecoveryRow }) => {
+const buildDecision = ({ evidenceRow, fillRow, ledgerRow, idempotencyRow, guardRecoveryRow, lineageBlockers = [] }) => {
   const verdict = String(evidenceRow?.evidenceVerdict || "");
   const proposedState = String(evidenceRow?.proposedTerminalState || "").trim().toLowerCase();
   const positionQty = toNum(evidenceRow?.brokerPosition?.qty) ?? 0;
+  if (lineageBlockers.length > 0 && (
+    (verdict === "BROKER_FILLED_CONFIRMED" && proposedState === "filled") ||
+    (verdict === "BROKER_TERMINAL_UNFILLED_CONFIRMED" && proposedState && positionQty <= 0)
+  )) {
+    return {
+      proposalDecision: "BLOCK_TERMINALIZATION_EXACT_LINEAGE_INCOMPLETE",
+      proposalReady: false,
+      proposedTerminalState: proposedState || null,
+      blockers: lineageBlockers,
+      nextAction: "complete_exact_ledger_idempotency_and_broker_lineage_before_migration",
+      patch: null
+    };
+  }
   if (verdict === "BROKER_FILLED_CONFIRMED" && proposedState === "filled") {
     return {
       proposalDecision: "PROPOSE_LEDGER_IDEMPOTENCY_MARK_FILLED",
@@ -210,6 +275,10 @@ const buildEntryOrderDecision = ({ fillRow, orderStateRow, ledgerRow, idempotenc
   if (!proposedState) blockers.push("terminal_unfilled_state_missing");
   if (!ledgerRow) blockers.push("ledger_row_missing");
   if (!idempotencyRow) blockers.push("idempotency_row_missing");
+  if (ledgerRow && !["", "ENTRY_NEW"].includes(String(ledgerRow.actionType || "").trim().toUpperCase())) {
+    blockers.push("ledger_action_not_entry_new");
+  }
+  if (!entryBrokerLineageMatches(ledgerRow, fillRow)) blockers.push("fillability_exact_order_lineage_missing");
   if (orderStateRow && orderStateRow.terminalReconciliationRequired !== true) blockers.push("order_state_terminal_reconciliation_not_required");
 
   const syntheticEvidence = {
@@ -270,18 +339,33 @@ const main = () => {
   const evidenceBySymbol = indexRows(brokerEvidence?.rows);
   const fillRows = (Array.isArray(fillStateAudit?.rows) ? fillStateAudit.rows : [])
     .filter((row) => row.requiresLedgerTerminalizationReview === true || row.reconciliationDecision === "POSITION_PRESENT_WITH_OPEN_LEDGER_STATE");
-  const ledgerBySymbol = latestObjectBySymbol(orderLedger);
-  const idempotencyBySymbol = latestObjectBySymbol(idempotency);
   const guardRecoveryBySymbol = indexRows(guardSourceRecovery?.rows);
   const orderStateBySymbol = indexRows(orderState?.rows);
 
   const rows = fillRows.map((fillRow) => {
     const symbol = asSymbol(fillRow?.symbol);
     const evidenceRow = evidenceBySymbol.get(symbol) || null;
-    const ledgerRow = ledgerBySymbol.get(symbol) || null;
-    const idempotencyRow = idempotencyBySymbol.get(symbol) || null;
+    const ledgerRow = objectEntryByKey(orderLedger, fillRow?.ledger?.key);
+    const idempotencyEvidence = resolveIdempotencyEvidence(ledgerRow, idempotency);
+    const idempotencyRow = idempotencyEvidence.row;
     const guardRecoveryRow = guardRecoveryBySymbol.get(symbol) || null;
-    const decision = buildDecision({ evidenceRow, fillRow, ledgerRow, idempotencyRow, guardRecoveryRow });
+    const brokerVerdict = String(evidenceRow?.evidenceVerdict || "");
+    const requiresExactBrokerLineage = [
+      "BROKER_FILLED_CONFIRMED",
+      "BROKER_TERMINAL_UNFILLED_CONFIRMED",
+    ].includes(brokerVerdict);
+    const lineageBlockers = [
+      ledgerRow ? null : "order_ledger_exact_match_missing",
+      idempotencyRow ? null : idempotencyEvidence.status.toLowerCase(),
+      idempotencyEvidence.source === "legacy_release" ? "idempotency_current_entry_missing_legacy_release_exact" : null,
+      requiresExactBrokerLineage && !brokerFillLineageMatches(ledgerRow, evidenceRow)
+        ? "broker_fill_exact_lineage_mismatch"
+        : null,
+      brokerVerdict === "BROKER_FILLED_CONFIRMED" && !brokerFilledEvidenceBasisVerified(evidenceRow)
+        ? "broker_filled_evidence_basis_unverified"
+        : null,
+    ].filter(Boolean);
+    const decision = buildDecision({ evidenceRow, fillRow, ledgerRow, idempotencyRow, guardRecoveryRow, lineageBlockers });
     return {
       symbol,
       fillStateDecision: fillRow?.reconciliationDecision || null,
@@ -291,8 +375,11 @@ const main = () => {
       brokerPositionQty: toNum(evidenceRow?.brokerPosition?.qty),
       ledgerKey: ledgerRow?.key || null,
       ledgerStatus: ledgerRow?.status || null,
-      idempotencyKey: idempotencyRow?.key || null,
+      idempotencyKey: idempotencyRow?.key || ledgerRow?.idempotencyKey || null,
       idempotencyBrokerStatus: idempotencyRow?.brokerStatus || idempotencyRow?.status || null,
+      idempotencyEvidenceSource: idempotencyEvidence.source,
+      idempotencyEvidenceStatus: idempotencyEvidence.status,
+      idempotencyEvidenceCandidateRows: idempotencyEvidence.candidateRows,
       proposalDecision: decision.proposalDecision,
       proposalReady: decision.proposalReady,
       proposedTerminalState: decision.proposedTerminalState,
@@ -314,13 +401,16 @@ const main = () => {
     .map((fillRow) => {
       const symbol = asSymbol(fillRow?.symbol);
       const orderStateRow = orderStateBySymbol.get(symbol) || null;
-      const ledgerRow = latestObjectBySymbolAndStage6(orderLedger, symbol, fillRow?.stage6Hash) || ledgerBySymbol.get(symbol) || null;
-      const idempotencyRow = latestObjectBySymbolAndStage6(idempotency, symbol, fillRow?.stage6Hash) || idempotencyBySymbol.get(symbol) || null;
+      const stage6Hash = fillRow?.stage6Hash || fillability?.summary?.stage6Hash;
+      const entryKey = stage6Hash && symbol ? `${stage6Hash}:${symbol}:buy` : null;
+      const ledgerRow = objectEntryByKey(orderLedger, entryKey);
+      const idempotencyEvidence = resolveIdempotencyEvidence(ledgerRow, idempotency);
+      const idempotencyRow = idempotencyEvidence.row;
       const decision = buildEntryOrderDecision({
         fillRow,
         orderStateRow,
         ledgerRow,
-        idempotencyRow,
+        idempotencyRow: idempotencyEvidence.source === "current" ? idempotencyRow : null,
         fillabilityGeneratedAt: fillability?.generatedAt || fillability?.summary?.generatedAt || null
       });
       return {
@@ -334,6 +424,9 @@ const main = () => {
         ledgerStatus: ledgerRow?.status || null,
         idempotencyKey: idempotencyRow?.key || null,
         idempotencyBrokerStatus: idempotencyRow?.brokerStatus || idempotencyRow?.status || null,
+        idempotencyEvidenceSource: idempotencyEvidence.source,
+        idempotencyEvidenceStatus: idempotencyEvidence.status,
+        idempotencyEvidenceCandidateRows: idempotencyEvidence.candidateRows,
         proposalDecision: decision.proposalDecision,
         proposalReady: decision.proposalReady,
         proposedTerminalState: decision.proposedTerminalState,
@@ -370,6 +463,7 @@ const main = () => {
     entryTerminalUnfilledReady: count(rows, (row) => row.proposalDecision === "PROPOSE_ENTRY_ORDER_LEDGER_IDEMPOTENCY_MARK_TERMINAL_UNFILLED"),
     entryTerminalUnfilledRows: entryTerminalRows.length,
     blocked: count(rows, (row) => !row.proposalReady),
+    unknownOrUnclassifiedRows: count(rows, (row) => !String(row.idempotencyEvidenceStatus || "").startsWith("IDEMPOTENCY_")),
     brokerMutationAttempted: false,
     brokerMutationSubmitted: false,
     stateMutationAttempted: false

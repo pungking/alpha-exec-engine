@@ -9900,6 +9900,55 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
   const shadowMarketOpen = classifyPaperExitShadowMarketSession({ is_open: true });
   const shadowMarketClosed = classifyPaperExitShadowMarketSession({ is_open: false });
   const shadowMarketInvalid = classifyPaperExitShadowMarketSession({ is_open: "true" });
+  const expiredIdempotencyKey = "selftest-stage6:SELFTEST_IDEMP:buy";
+  const expiredIdempotencyState: OrderIdempotencyState = {
+    orders: {
+      [expiredIdempotencyKey]: {
+        symbol: "SELFTEST_IDEMP",
+        side: "buy",
+        stage6Hash: "selftest-stage6",
+        stage6File: "STAGE6_ALPHA_FINAL_selftest.json",
+        clientOrderId: "selftest-client-order",
+        brokerOrderId: "selftest-broker-order",
+        brokerStatus: "filled",
+        firstSeenAt: "2000-01-01T00:00:00.000Z",
+        lastSeenAt: "2000-01-01T00:00:00.000Z"
+      }
+    },
+    releases: [],
+    updatedAt: "2000-01-01T00:00:00.000Z"
+  };
+  const expiredIdempotencyRows = pruneOrderIdempotencyState(expiredIdempotencyState, 30);
+  const expiredIdempotencyEvidencePreserved =
+    expiredIdempotencyRows === 1 &&
+    !expiredIdempotencyState.orders[expiredIdempotencyKey] &&
+    expiredIdempotencyState.releases.length === 1 &&
+    expiredIdempotencyState.releases[0]?.key === expiredIdempotencyKey &&
+    expiredIdempotencyState.releases[0]?.reason === "ttl_expired";
+  const invalidTimestampKey = "selftest-stage6:SELFTEST_INVALID:buy";
+  const invalidTimestampState: OrderIdempotencyState = {
+    orders: {
+      [invalidTimestampKey]: {
+        symbol: "SELFTEST_INVALID",
+        side: "buy",
+        stage6Hash: "selftest-stage6",
+        stage6File: "STAGE6_ALPHA_FINAL_selftest.json",
+        clientOrderId: "selftest-invalid-client-order",
+        brokerOrderId: "selftest-invalid-broker-order",
+        brokerStatus: "filled",
+        firstSeenAt: " 2000-01-01T00:00:00.000Z ",
+        lastSeenAt: " 2000-01-01T00:00:00.000Z "
+      }
+    },
+    releases: [],
+    updatedAt: ""
+  };
+  const invalidTimestampRows = pruneOrderIdempotencyState(invalidTimestampState, 30);
+  const invalidTimestampEvidenceBlocked =
+    invalidTimestampRows === 0 &&
+    Boolean(invalidTimestampState.orders[invalidTimestampKey]) &&
+    invalidTimestampState.releases.length === 0;
+
   const selfTestPassed =
     overExitBlocked &&
     actionScaleDown.actionType === "SCALE_DOWN" &&
@@ -9935,7 +9984,9 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     shadowMarketOpen.status === "MARKET_SESSION_RTH_ELIGIBLE" && shadowMarketOpen.marketOpen === true &&
     shadowMarketClosed.status === "MARKET_SESSION_CLOSED" && shadowMarketClosed.marketOpen === false &&
     shadowMarketInvalid.status === "MARKET_SESSION_CONTRACT_INVALID" && shadowMarketInvalid.marketOpen === null &&
-    exitSafetyPassed;
+    exitSafetyPassed &&
+    expiredIdempotencyEvidencePreserved &&
+    invalidTimestampEvidenceBlocked;
   if (!selfTestPassed) throw new Error("lifecycle_exit_selftest_failed");
   console.log(
     `[LIFECYCLE_SELFTEST] held_rules scaleDown=${actionScaleDown.actionType ?? "HOLD_WAIT"} partial=${actionExitPartial.actionType ?? "HOLD_WAIT"} full=${actionExitFull.actionType ?? "HOLD_WAIT"}`
@@ -9947,6 +9998,8 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     `[LIFECYCLE_SELFTEST] shadow mode=${shadowIntent.mode} evaluated=${shadowIntent.evaluatedPositionRows} notDue=${shadowIntent.exitNotDueRows} scaleDown=${shadowIntent.scaleDownDueRows} partial=${shadowIntent.exitPartialDueRows} full=${shadowIntent.exitFullDueRows} incomplete=${shadowIntent.evidenceIncompleteRows} payload=false`
   );
   console.log(`[LIFECYCLE_SELFTEST] exit_pre_submit_safety fixtures=${exitSafetyFixtures.length} passed=${exitSafetyPassed}`);
+  console.log(`[LIFECYCLE_SELFTEST] idempotency_ttl_release_preserved=${expiredIdempotencyEvidencePreserved}`);
+  console.log(`[LIFECYCLE_SELFTEST] idempotency_invalid_timestamp_blocked=${invalidTimestampEvidenceBlocked}`);
 }
 
 const REQUIRED_BROKER_MUTATION_APPROVAL = "CONFIRM LIVE EXECUTION";
@@ -13238,13 +13291,31 @@ async function saveOrderIdempotencyState(state: OrderIdempotencyState): Promise<
   console.log(`[STATE] saved ${ORDER_IDEMPOTENCY_PATH}`);
 }
 
+function parseCanonicalStateTimestamp(value: string): number | null {
+  if (value !== value.trim()) return null;
+  const text = value;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text)) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === text ? parsed : null;
+}
+
 function pruneOrderIdempotencyState(state: OrderIdempotencyState, ttlDays: number): number {
   const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - ttlMs;
+  const releasedAt = new Date().toISOString();
   let removed = 0;
   for (const [key, entry] of Object.entries(state.orders)) {
-    const ts = Date.parse(entry.lastSeenAt);
-    if (!Number.isFinite(ts) || ts < cutoff) {
+    const ts = parseCanonicalStateTimestamp(entry.lastSeenAt);
+    if (ts != null && ts < cutoff) {
+      recordOrderIdempotencyRelease(
+        state,
+        key,
+        entry,
+        releasedAt,
+        "ttl_expired",
+        entry.brokerOrderId ?? null,
+        entry.brokerStatus ?? null
+      );
       delete state.orders[key];
       removed += 1;
     }

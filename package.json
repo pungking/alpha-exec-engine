@@ -93,6 +93,7 @@
     "ops:test:guard-refresh-source-precedence": "node scripts/test-guard-metadata-refresh-source-precedence.mjs",
     "ops:test:protection-blocker-reduction": "node scripts/test-protection-blocker-reduction-plan.mjs",
     "ops:test:ledger-terminalization-migration-package": "node scripts/test-ledger-terminalization-migration-package.mjs",
+    "ops:test:ledger-terminalization-proposal": "node scripts/test-ledger-terminalization-proposal.mjs",
     "ops:test:ledger-filled-migration-apply": "node scripts/test-ledger-filled-migration-apply.mjs",
     "ops:test:ledger-filled-migration-public-evidence": "node scripts/test-ledger-filled-migration-public-evidence.mjs",
     "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs",
