@@ -1,0 +1,109 @@
+name: paper-five-row-broker-evidence-recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval_phrase:
+        description: "Required exact phrase: AUTHORIZE PAPER FIVE-ROW BROKER EVIDENCE READ-ONLY ONE-SHOT"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: paper-five-row-broker-evidence-recovery
+  cancel-in-progress: false
+
+jobs:
+  restore-and-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      ALPHA_ENV: PAPER
+      EXEC_ENABLED: "false"
+      READ_ONLY: "true"
+      LIVE_ORDER_SUBMIT_ENABLED: "false"
+      MARKET_GUARD_MODE: observe
+      GUARD_EXECUTE_TIGHTEN_STOPS: "false"
+      GUARD_EXECUTE_REDUCE_POSITIONS: "false"
+      GUARD_EXECUTE_FLATTEN: "false"
+      SAFE_OUTPUT: safe-output/paper-five-row-broker-evidence-safe.json
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Validate approval and initialize safe evidence
+        env:
+          APPROVAL_PHRASE: ${{ inputs.approval_phrase }}
+        run: |
+          set -euo pipefail
+          test "${APPROVAL_PHRASE}" = "AUTHORIZE PAPER FIVE-ROW BROKER EVIDENCE READ-ONLY ONE-SHOT"
+          test "${GITHUB_REF_NAME}" = "main"
+          git merge-base --is-ancestor 7a5c664665342eebb8a0f19fbf24379efc47ab2b HEAD
+          mkdir -p safe-output
+          PAPER_FIVE_ROW_SAFE_PHASE=initialize node scripts/build-paper-five-row-broker-evidence-safe.mjs
+
+      - name: Restore exact saved PAPER state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-main-32742503181
+          fail-on-cache-miss: true
+
+      - name: Copy restored state and preflight exact five-row scope
+        id: preflight
+        env:
+          CACHE_HIT: ${{ steps.restore_state.outputs.cache-hit }}
+          PRIVATE_STATE_DIR: ${{ runner.temp }}/paper-five-row-state
+          PREFLIGHT_FILE: ${{ runner.temp }}/paper-five-row-preflight.json
+        run: |
+          set -euo pipefail
+          test "${CACHE_HIT}" = "true"
+          mkdir -p "${PRIVATE_STATE_DIR}"
+          cp -R state/. "${PRIVATE_STATE_DIR}/"
+          BROKER_FILL_STATE_EVIDENCE_STATE_DIR="${PRIVATE_STATE_DIR}" \
+          PAPER_FIVE_ROW_PREFLIGHT_FILE="${PREFLIGHT_FILE}" \
+          PAPER_FIVE_ROW_CACHE_HIT="${CACHE_HIT}" \
+          PAPER_FIVE_ROW_SAFE_PHASE=preflight \
+            node scripts/build-paper-five-row-broker-evidence-safe.mjs
+
+      - name: Collect private PAPER broker evidence once
+        id: broker_evidence
+        if: steps.preflight.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          ALPACA_BASE_URL: https://paper-api.alpaca.markets
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          BROKER_FILL_STATE_EVIDENCE_STATE_DIR: ${{ runner.temp }}/paper-five-row-state
+          BROKER_FILL_STATE_READ_VERIFY: "true"
+        run: node scripts/build-broker-fill-state-evidence.mjs
+
+      - name: Build aggregate-only evidence and verify no state mutation
+        if: always() && steps.preflight.outputs.ready == 'true'
+        env:
+          BROKER_FILL_STATE_EVIDENCE_STATE_DIR: ${{ runner.temp }}/paper-five-row-state
+          PAPER_FIVE_ROW_PREFLIGHT_FILE: ${{ runner.temp }}/paper-five-row-preflight.json
+          PAPER_FIVE_ROW_BROKER_STEP_OUTCOME: ${{ steps.broker_evidence.outcome }}
+          PAPER_FIVE_ROW_SAFE_PHASE: postflight
+        run: node scripts/build-paper-five-row-broker-evidence-safe.mjs
+
+      - name: Upload aggregate-only evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-five-row-broker-evidence-safe-${{ github.run_id }}
+          path: safe-output/paper-five-row-broker-evidence-safe.json
+          if-no-files-found: error
+          retention-days: 14
