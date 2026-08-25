@@ -96,6 +96,7 @@
     "ops:test:ledger-terminalization-proposal": "node scripts/test-ledger-terminalization-proposal.mjs",
     "ops:test:ledger-filled-migration-apply": "node scripts/test-ledger-filled-migration-apply.mjs",
     "ops:test:ledger-filled-migration-public-evidence": "node scripts/test-ledger-filled-migration-public-evidence.mjs",
+    "ops:test:active-position-limited-recovery": "node scripts/test-active-position-limited-recovery-contract.mjs",
     "ops:safety:telegram-routing": "node scripts/check-telegram-routing-policy.mjs",
     "ops:live-readiness": "node scripts/build-live-readiness-scorecard.mjs",
     "ops:test:dry-run-dispatch-safety": "node scripts/check-dry-run-dispatch-safety.mjs",

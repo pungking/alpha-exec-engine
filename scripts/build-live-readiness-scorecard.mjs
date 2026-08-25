@@ -733,8 +733,11 @@ function buildPaperExitReadiness({
       || String(terminalState?.category || "").trim().toUpperCase() === "TERMINAL_RECONCILIATION_REQUIRED";
     const heldPositionIdempotencyStatus = normalizedStatus(protection?.idempotencyStatus);
     const heldPositionIdempotencyUnresolved = heldPositionIdempotencyStatus === "not_recorded";
+    const heldPositionLimitedRecovery = heldPositionIdempotencyStatus === "active_position_limited_control";
     const shadowLineageUnresolved = action?.source === "shadow" && (!shadowEvaluated || !stage6LineagePresent);
-    const unresolvedHeldIdentity = heldPositionIdempotencyUnresolved || shadowLineageUnresolved;
+    const unresolvedHeldIdentity = heldPositionIdempotencyUnresolved
+      || heldPositionLimitedRecovery
+      || shadowLineageUnresolved;
 
     let baseClassification = "EXIT_EVIDENCE_INCOMPLETE";
     let blocker = "exit_action_producer_runtime_evidence_incomplete";
@@ -743,6 +746,9 @@ function buildPaperExitReadiness({
     } else if (!actionDue && producerReady && (!shadowIntent || shadowEvaluated)) {
       baseClassification = "EXIT_NOT_DUE";
       blocker = null;
+    } else if (actionDue && heldPositionLimitedRecovery) {
+      baseClassification = "EXIT_BLOCKED_LEDGER_OR_IDEMPOTENCY";
+      blocker = "active_position_limited_control_broker_submit_forbidden";
     } else if (actionDue && !ownershipVerified) {
       baseClassification = "EXIT_BLOCKED_OWNERSHIP";
       blocker = "ownership_proof_required";
@@ -818,6 +824,14 @@ function buildPaperExitReadiness({
       idempotencyConflict,
       terminalReconciliationBlocked,
       heldPositionIdempotencyStatus: heldPositionIdempotencyStatus || null,
+      recoveryMode: heldPositionLimitedRecovery ? "ACTIVE_POSITION_LIMITED_CONTROL" : null,
+      entryAllowed: heldPositionLimitedRecovery ? false : null,
+      scaleInAllowed: heldPositionLimitedRecovery ? false : null,
+      riskIncreasingActionAllowed: heldPositionLimitedRecovery ? false : null,
+      reportOnlyExitEvaluationAllowed: heldPositionLimitedRecovery ? true : null,
+      brokerSubmitAllowed: heldPositionLimitedRecovery ? false : null,
+      realizedPnlVerified: heldPositionLimitedRecovery ? false : null,
+      historicalEvidenceNormalized: heldPositionLimitedRecovery ? false : null,
       unresolvedHeldIdentity,
       expectedExecutionSide,
       expectedExitQuantityPolicy: action?.actionType === "EXIT_FULL"
@@ -948,6 +962,7 @@ function buildPaperExitReadiness({
       exitShadowBlockedMarketSessionRows: count("EXIT_SHADOW_BLOCKED_MARKET_SESSION"),
       exitShadowEvidenceIncompleteRows: count("EXIT_SHADOW_EVIDENCE_INCOMPLETE"),
       unresolvedHeldIdentityRows: unresolvedHeldIdentityRows.length,
+      activePositionLimitedControlRows: rows.filter((row) => row.recoveryMode === "ACTIVE_POSITION_LIMITED_CONTROL").length,
       unknownRows: asNumber(shadowIntent?.unknownOrUnclassifiedRows, 0),
       selectedCandidateCount: selected ? 1 : 0,
     },

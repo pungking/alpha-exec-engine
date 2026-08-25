@@ -143,6 +143,39 @@ for (const row of report.rows) {
   assert.ok(row.nextAction);
 }
 
+const limitedRecoveryDir = fs.mkdtempSync(path.join(os.tmpdir(), "position-protection-limited-recovery-"));
+for (const fileName of fs.readdirSync(stateDir)) {
+  if (fileName.startsWith("position-protection-root-cause-audit.")) continue;
+  fs.copyFileSync(path.join(stateDir, fileName), path.join(limitedRecoveryDir, fileName));
+}
+const limitedRecoveryIdempotency = JSON.parse(
+  fs.readFileSync(path.join(limitedRecoveryDir, "order-idempotency.json"), "utf8")
+);
+limitedRecoveryIdempotency.orders["hash-FFF:FFF:buy"] = {
+  ...limitedRecoveryIdempotency.orders["hash-FFF:FFF:buy"],
+  recoveryMode: "ACTIVE_POSITION_LIMITED_CONTROL",
+  brokerSubmitAllowed: false,
+  historicalEvidenceNormalized: false,
+};
+fs.writeFileSync(
+  path.join(limitedRecoveryDir, "order-idempotency.json"),
+  `${JSON.stringify(limitedRecoveryIdempotency, null, 2)}\n`
+);
+execFileSync(process.execPath, ["scripts/build-position-protection-root-cause-audit.mjs"], {
+  env: { ...process.env, POSITION_PROTECTION_AUDIT_STATE_DIR: limitedRecoveryDir },
+  stdio: "pipe"
+});
+const limitedRecoveryReport = JSON.parse(
+  fs.readFileSync(path.join(limitedRecoveryDir, "position-protection-root-cause-audit.json"), "utf8")
+);
+const limitedRecoveryRow = limitedRecoveryReport.rows.find((row) => row.symbol === "FFF");
+assert.equal(limitedRecoveryRow.idempotencyStatus, "active_position_limited_control");
+assert.equal(limitedRecoveryRow.ownershipClassification, "SIDECAR_MANAGED_LIMITED_CONTROL");
+assert.equal(limitedRecoveryRow.repairAllowedByOwnership, false);
+assert.equal(limitedRecoveryRow.recoveryMode, "ACTIVE_POSITION_LIMITED_CONTROL");
+assert.equal(limitedRecoveryRow.brokerSubmitAllowed, false);
+assert.equal(limitedRecoveryRow.historicalEvidenceNormalized, false);
+
 writeJson("broker-child-order-reconciliation.json", {
   generatedAt: now,
   overall: "fixture",

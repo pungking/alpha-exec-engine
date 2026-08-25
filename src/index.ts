@@ -1035,6 +1035,7 @@ type LifecycleExitPreSubmitSafetyInput = {
   protectiveChildCount: number;
   openExitOrderCount: number;
   idempotencyConflict: boolean;
+  limitedRecoveryBlocked: boolean;
   terminalReconciliationRequired: boolean;
   marketSessionEligible: boolean;
 };
@@ -1488,12 +1489,24 @@ type OrderIdempotencyEntry = {
   submittedQty?: number | null;
   stage6Hash: string;
   stage6File: string;
-  firstSeenAt: string;
-  lastSeenAt: string;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
   clientOrderId?: string;
   brokerOrderId?: string | null;
   brokerStatus?: OrderLifecycleStatus | null;
   brokerCheckedAt?: string;
+  recoveryMode?: "ACTIVE_POSITION_LIMITED_CONTROL";
+  originalIdempotencyEvidenceStatus?: string;
+  recoveryEvidenceSha256?: string;
+  recoveryRecordedAt?: string;
+  recoveryRecordedAtIsOriginalTimestamp?: false;
+  entryAllowed?: false;
+  scaleInAllowed?: false;
+  riskIncreasingActionAllowed?: false;
+  reportOnlyExitEvaluationAllowed?: true;
+  brokerSubmitAllowed?: false;
+  realizedPnlVerified?: false;
+  historicalEvidenceNormalized?: false;
 };
 
 type OrderIdempotencyReleaseRecord = {
@@ -1508,10 +1521,14 @@ type OrderIdempotencyReleaseRecord = {
   clientOrderId: string | null;
   brokerOrderId: string | null;
   brokerStatus: OrderLifecycleStatus | null;
-  firstSeenAt: string;
-  lastSeenAt: string;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
   releasedAt: string;
   reason: string;
+  recoveryMode?: "ACTIVE_POSITION_LIMITED_CONTROL";
+  brokerSubmitAllowed?: false;
+  realizedPnlVerified?: false;
+  historicalEvidenceNormalized?: false;
 };
 
 type OrderIdempotencyState = {
@@ -9201,6 +9218,29 @@ function isLifecycleExitAction(
   return isLifecycleExitActionType(actionType);
 }
 
+function isActivePositionLimitedRecoveryEvidence(
+  evidence: OrderIdempotencyEntry | OrderIdempotencyReleaseRecord | null | undefined
+): boolean {
+  return evidence?.recoveryMode === "ACTIVE_POSITION_LIMITED_CONTROL";
+}
+
+function activeLimitedRecoveryPayloadBlockReason(
+  symbol: string,
+  actionType: LifecycleActionType | undefined,
+  state: OrderIdempotencyState
+): string | null {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  // Exposure matching only widens this fail-closed block; it never establishes identity or ownership.
+  const exposureControlled = Object.values(state.orders).some((entry) =>
+    isActivePositionLimitedRecoveryEvidence(entry)
+    && entry.symbol.trim().toUpperCase() === normalizedSymbol
+  );
+  if (!exposureControlled) return null;
+  return !actionType || actionType === "ENTRY_NEW" || actionType === "SCALE_UP"
+    ? "active_position_limited_control_risk_increase_forbidden"
+    : "active_position_limited_control_broker_submit_forbidden";
+}
+
 function evaluateLifecycleExitPreSubmitSafety(
   input: LifecycleExitPreSubmitSafetyInput
 ): { allowed: boolean; reason: string } {
@@ -9209,6 +9249,9 @@ function evaluateLifecycleExitPreSubmitSafety(
   }
   if (!input.approvalScopePassed) {
     return { allowed: false, reason: "explicit_execution_approval_required" };
+  }
+  if (input.limitedRecoveryBlocked) {
+    return { allowed: false, reason: "active_position_limited_control_broker_submit_forbidden" };
   }
   if (!input.ownershipVerified) {
     return { allowed: false, reason: "ownership_proof_required" };
@@ -9327,24 +9370,35 @@ function classifyLifecycleExitStateEvidence(
   ownershipVerified: boolean;
   openExitOrderCount: number;
   idempotencyConflict: boolean;
+  limitedRecoveryBlocked: boolean;
   terminalReconciliationRequired: boolean;
 } {
   const ledgerRows = Object.values(ledgerState.orders).filter((row) => row?.symbol === symbol);
   let ownershipVerified = false;
   let idempotencyConflict = false;
+  let limitedRecoveryBlocked = false;
   let terminalReconciliationRequired = false;
   const openExitKeys = new Set<string>();
 
   for (const ledger of ledgerRows) {
-    const entry = findOrderIdempotencyEntryForLedgerRecord(ledger, idempotencyState);
-    const release = entry ? null : findOrderIdempotencyReleaseForLedgerRecord(ledger, idempotencyState);
+    const entryResolution = resolveOrderIdempotencyEntryForLedgerRecord(ledger, idempotencyState);
+    const releaseResolution = entryResolution.record
+      ? { record: null, ambiguous: false }
+      : resolveOrderIdempotencyReleaseForLedgerRecord(ledger, idempotencyState);
+    const entry = entryResolution.record;
+    const release = releaseResolution.record;
     const evidence = entry ?? release;
+    const limitedRecoveryEvidence = isActivePositionLimitedRecoveryEvidence(evidence);
+    if (limitedRecoveryEvidence) limitedRecoveryBlocked = true;
     const evidenceStatus = evidence?.brokerStatus ?? null;
     const idsConflict = evidence ? lifecycleEvidenceIdsConflict(ledger, evidence) : false;
-    if (idsConflict) idempotencyConflict = true;
+    if (entryResolution.ambiguous || releaseResolution.ambiguous || idsConflict) {
+      idempotencyConflict = true;
+    }
     if (
       (ledger.status === "filled" || ledger.status === "partially_filled") &&
       (evidenceStatus === "filled" || evidenceStatus === "partially_filled") &&
+      !limitedRecoveryEvidence &&
       !idsConflict
     ) {
       ownershipVerified = true;
@@ -9378,6 +9432,7 @@ function classifyLifecycleExitStateEvidence(
     ownershipVerified,
     openExitOrderCount: openExitKeys.size,
     idempotencyConflict,
+    limitedRecoveryBlocked,
     terminalReconciliationRequired
   };
 }
@@ -9437,6 +9492,7 @@ async function buildLifecycleExitPreSubmitSafetyInput(
     protectiveChildCount: openOrderEvidence.protectiveChildCount,
     openExitOrderCount: openOrderEvidence.openExitOrderCount + stateEvidence.openExitOrderCount,
     idempotencyConflict: stateEvidence.idempotencyConflict,
+    limitedRecoveryBlocked: stateEvidence.limitedRecoveryBlocked,
     terminalReconciliationRequired: stateEvidence.terminalReconciliationRequired,
     marketSessionEligible
   };
@@ -9830,6 +9886,7 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     protectiveChildCount: 0,
     openExitOrderCount: 0,
     idempotencyConflict: false,
+    limitedRecoveryBlocked: false,
     terminalReconciliationRequired: false,
     marketSessionEligible: true
   };
@@ -9841,6 +9898,7 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     [{ ...exitSafetyBase, ownershipVerified: false }, false, "ownership_proof_required"],
     [{ ...exitSafetyBase, submittedQty: 11 }, false, "exit_quantity_exceeds_current_position"],
     [{ ...exitSafetyBase, idempotencyConflict: true }, false, "exit_idempotency_conflict"],
+    [{ ...exitSafetyBase, limitedRecoveryBlocked: true }, false, "active_position_limited_control_broker_submit_forbidden"],
     [{ ...exitSafetyBase, terminalReconciliationRequired: true }, false, "terminal_reconciliation_required"],
     [{ ...exitSafetyBase, marketSessionEligible: false }, false, "market_session_not_eligible"],
     [{ ...exitSafetyBase, positionQty: -10, executionSide: "sell" as const }, false, "exit_execution_side_mismatch"]
@@ -9896,6 +9954,107 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     "new-exit",
     filledLedger,
     { orders: {}, releases: [], updatedAt: "" }
+  );
+  const ambiguousIdempotencyEvidence = classifyLifecycleExitStateEvidence(
+    symbol,
+    "new-exit",
+    filledLedger,
+    {
+      orders: {
+        "legacy-entry-a": {
+          symbol,
+          side: "buy",
+          stage6Hash: "a".repeat(64),
+          stage6File: "STAGE6_ALPHA_FINAL_SELFTEST.json",
+          clientOrderId: "filled-entry-client",
+          brokerOrderId: "filled-entry-broker",
+          brokerStatus: "filled",
+          firstSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z"
+        },
+        "legacy-entry-b": {
+          symbol,
+          side: "buy",
+          stage6Hash: "b".repeat(64),
+          stage6File: "STAGE6_ALPHA_FINAL_SELFTEST.json",
+          clientOrderId: "filled-entry-client",
+          brokerOrderId: "filled-entry-broker",
+          brokerStatus: "filled",
+          firstSeenAt: "2026-01-01T00:00:00.000Z",
+          lastSeenAt: "2026-01-01T00:00:00.000Z"
+        }
+      },
+      releases: [],
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  );
+  const limitedRecoveryStateEvidence = classifyLifecycleExitStateEvidence(
+    symbol,
+    "new-exit",
+    filledLedger,
+    {
+      orders: {
+        "filled-entry": {
+          symbol,
+          side: "buy",
+          stage6Hash: "a".repeat(64),
+          stage6File: "STAGE6_ALPHA_FINAL_SELFTEST.json",
+          clientOrderId: "filled-entry-client",
+          brokerOrderId: "filled-entry-broker",
+          brokerStatus: "filled",
+          recoveryMode: "ACTIVE_POSITION_LIMITED_CONTROL",
+          brokerSubmitAllowed: false,
+          realizedPnlVerified: false,
+          historicalEvidenceNormalized: false,
+          firstSeenAt: null,
+          lastSeenAt: null
+        }
+      },
+      releases: [],
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  );
+  const limitedControlPayloadState: OrderIdempotencyState = {
+    orders: {
+      "limited-control-entry": {
+        symbol,
+        side: "buy",
+        stage6Hash: "a".repeat(64),
+        stage6File: "STAGE6_ALPHA_FINAL_SELFTEST.json",
+        brokerStatus: "filled",
+        recoveryMode: "ACTIVE_POSITION_LIMITED_CONTROL",
+        brokerSubmitAllowed: false,
+        firstSeenAt: null,
+        lastSeenAt: null
+      }
+    },
+    releases: [],
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  };
+  const limitedEntryBlock = activeLimitedRecoveryPayloadBlockReason(symbol, "ENTRY_NEW", limitedControlPayloadState);
+  const limitedScaleInBlock = activeLimitedRecoveryPayloadBlockReason(symbol, "SCALE_UP", limitedControlPayloadState);
+  const limitedExitBlock = activeLimitedRecoveryPayloadBlockReason(symbol, "EXIT_FULL", limitedControlPayloadState);
+  const unrelatedLimitedBlock = activeLimitedRecoveryPayloadBlockReason("UNRELATED", "ENTRY_NEW", limitedControlPayloadState);
+  const limitedRecoveryLedger = {
+    orders: {
+      "limited-control-entry": {
+        idempotencyKey: "limited-control-entry",
+        symbol,
+        status: "planned",
+        statusReason: "selftest",
+        clientOrderId: "limited-client",
+        brokerOrderId: "limited-broker",
+        history: []
+      }
+    },
+    updatedAt: "2026-01-01T00:00:00.000Z"
+  } as unknown as OrderLedgerState;
+  limitedControlPayloadState.orders["limited-control-entry"].clientOrderId = "limited-client";
+  limitedControlPayloadState.orders["limited-control-entry"].brokerOrderId = "limited-broker";
+  const limitedRecoveryReconciled = reconcileOrderLedgerWithIdempotency(
+    limitedRecoveryLedger,
+    limitedControlPayloadState,
+    "2026-01-01T00:00:00.000Z"
   );
   const shadowMarketOpen = classifyPaperExitShadowMarketSession({ is_open: true });
   const shadowMarketClosed = classifyPaperExitShadowMarketSession({ is_open: false });
@@ -9981,6 +10140,14 @@ function runLifecycleSelfTestIfEnabled(cfg: ReturnType<typeof loadRuntimeConfig>
     directExitOrderEvidence.known && directExitOrderEvidence.openExitOrderCount === 1 &&
     matchedStateEvidence.ownershipVerified && !matchedStateEvidence.terminalReconciliationRequired &&
     !missingTerminalEvidence.ownershipVerified && missingTerminalEvidence.terminalReconciliationRequired &&
+    !ambiguousIdempotencyEvidence.ownershipVerified && ambiguousIdempotencyEvidence.idempotencyConflict &&
+    !limitedRecoveryStateEvidence.ownershipVerified && limitedRecoveryStateEvidence.limitedRecoveryBlocked &&
+    limitedEntryBlock === "active_position_limited_control_risk_increase_forbidden" &&
+    limitedScaleInBlock === "active_position_limited_control_risk_increase_forbidden" &&
+    limitedExitBlock === "active_position_limited_control_broker_submit_forbidden" &&
+    unrelatedLimitedBlock === null &&
+    limitedRecoveryReconciled === 0 &&
+    limitedRecoveryLedger.orders["limited-control-entry"].status === "planned" &&
     shadowMarketOpen.status === "MARKET_SESSION_RTH_ELIGIBLE" && shadowMarketOpen.marketOpen === true &&
     shadowMarketClosed.status === "MARKET_SESSION_CLOSED" && shadowMarketClosed.marketOpen === false &&
     shadowMarketInvalid.status === "MARKET_SESSION_CONTRACT_INVALID" && shadowMarketInvalid.marketOpen === null &&
@@ -10113,6 +10280,26 @@ async function submitOrdersToBroker(
   if (!manualGate.allowed) {
     summary.reason = manualGate.reason;
     for (const row of Object.values(summary.orders)) row.reason = manualGate.reason;
+    return summary;
+  }
+
+  const idempotencyState = await loadOrderIdempotencyState();
+  const limitedRecoveryBlocks = dryExec.payloads
+    .map((payload) => ({
+      payload,
+      reason: activeLimitedRecoveryPayloadBlockReason(
+        payload.symbol,
+        payload.actionType,
+        idempotencyState
+      )
+    }))
+    .filter((row) => Boolean(row.reason));
+  if (limitedRecoveryBlocks.length > 0) {
+    summary.reason = "active_position_limited_control_broker_submit_forbidden";
+    for (const { payload, reason } of limitedRecoveryBlocks) {
+      const row = summary.orders[payload.idempotencyKey];
+      if (row) row.reason = reason ?? summary.reason;
+    }
     return summary;
   }
 
@@ -13291,7 +13478,8 @@ async function saveOrderIdempotencyState(state: OrderIdempotencyState): Promise<
   console.log(`[STATE] saved ${ORDER_IDEMPOTENCY_PATH}`);
 }
 
-function parseCanonicalStateTimestamp(value: string): number | null {
+function parseCanonicalStateTimestamp(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
   if (value !== value.trim()) return null;
   const text = value;
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text)) return null;
@@ -13305,6 +13493,7 @@ function pruneOrderIdempotencyState(state: OrderIdempotencyState, ttlDays: numbe
   const releasedAt = new Date().toISOString();
   let removed = 0;
   for (const [key, entry] of Object.entries(state.orders)) {
+    if (isActivePositionLimitedRecoveryEvidence(entry)) continue;
     const ts = parseCanonicalStateTimestamp(entry.lastSeenAt);
     if (ts != null && ts < cutoff) {
       recordOrderIdempotencyRelease(
@@ -13518,6 +13707,21 @@ async function applyOrderIdempotency(
   for (const payload of dryExec.payloads) {
     const key = payload.idempotencyKey || buildOrderIdempotencyKey(stage6.sha256, payload.symbol, payload.side);
     payload.idempotencyKey = key;
+    const limitedRecoveryBlock = activeLimitedRecoveryPayloadBlockReason(
+      payload.symbol,
+      payload.actionType,
+      state
+    );
+    if (limitedRecoveryBlock) {
+      duplicateCount += 1;
+      skipped.push({
+        symbol: payload.symbol,
+        actionType: payload.actionType,
+        reason: limitedRecoveryBlock,
+        detail: "recoveryMode=ACTIVE_POSITION_LIMITED_CONTROL|brokerSubmitAllowed=false"
+      });
+      continue;
+    }
     let existing: OrderIdempotencyState["orders"][string] | undefined = state.orders[key];
     if (existing && entryResetDaily && persistEffective) {
       const existingTs = Date.parse(existing.lastSeenAt || existing.firstSeenAt || "");
@@ -13732,6 +13936,7 @@ async function updateOrderIdempotencyBrokerSubmission(
     const entry = state.orders[key];
     const brokerRow = brokerSubmit.orders[key];
     if (!entry || !brokerRow) continue;
+    if (isActivePositionLimitedRecoveryEvidence(entry)) continue;
     entry.clientOrderId = brokerRow.clientOrderId || payload.client_order_id;
     entry.brokerOrderId = brokerRow.brokerOrderId;
     entry.brokerStatus = brokerRow.brokerStatus;
@@ -13768,46 +13973,65 @@ function findOrderIdempotencyEntryForLedgerRecord(
   order: OrderLedgerRecord,
   idempotencyState: OrderIdempotencyState
 ): OrderIdempotencyEntry | null {
+  return resolveOrderIdempotencyEntryForLedgerRecord(order, idempotencyState).record;
+}
+
+function resolveOrderIdempotencyEntryForLedgerRecord(
+  order: OrderLedgerRecord,
+  idempotencyState: OrderIdempotencyState
+): { record: OrderIdempotencyEntry | null; ambiguous: boolean } {
   const direct = idempotencyState.orders[order.idempotencyKey];
-  if (direct) return direct;
+  if (direct) return { record: direct, ambiguous: false };
 
   const entries = Object.values(idempotencyState.orders);
   const clientOrderId = order.clientOrderId.trim();
   if (clientOrderId) {
-    const byClientOrderId = entries.find((entry) => entry.clientOrderId === clientOrderId);
-    if (byClientOrderId) return byClientOrderId;
+    const byClientOrderId = entries.filter((entry) => entry.clientOrderId === clientOrderId);
+    if (byClientOrderId.length === 1) return { record: byClientOrderId[0], ambiguous: false };
+    if (byClientOrderId.length > 1) return { record: null, ambiguous: true };
   }
 
   const brokerOrderId = order.brokerOrderId?.trim();
   if (brokerOrderId) {
-    const byBrokerOrderId = entries.find((entry) => entry.brokerOrderId === brokerOrderId);
-    if (byBrokerOrderId) return byBrokerOrderId;
+    const byBrokerOrderId = entries.filter((entry) => entry.brokerOrderId === brokerOrderId);
+    if (byBrokerOrderId.length === 1) return { record: byBrokerOrderId[0], ambiguous: false };
+    if (byBrokerOrderId.length > 1) return { record: null, ambiguous: true };
   }
 
-  return null;
+  return { record: null, ambiguous: false };
 }
 
 function findOrderIdempotencyReleaseForLedgerRecord(
   order: OrderLedgerRecord,
   idempotencyState: OrderIdempotencyState
 ): OrderIdempotencyReleaseRecord | null {
+  return resolveOrderIdempotencyReleaseForLedgerRecord(order, idempotencyState).record;
+}
+
+function resolveOrderIdempotencyReleaseForLedgerRecord(
+  order: OrderLedgerRecord,
+  idempotencyState: OrderIdempotencyState
+): { record: OrderIdempotencyReleaseRecord | null; ambiguous: boolean } {
   const releases = [...idempotencyState.releases].reverse();
-  const direct = releases.find((entry) => entry.key === order.idempotencyKey);
-  if (direct) return direct;
+  const direct = releases.filter((entry) => entry.key === order.idempotencyKey);
+  if (direct.length === 1) return { record: direct[0], ambiguous: false };
+  if (direct.length > 1) return { record: null, ambiguous: true };
 
   const clientOrderId = order.clientOrderId.trim();
   if (clientOrderId) {
-    const byClientOrderId = releases.find((entry) => entry.clientOrderId === clientOrderId);
-    if (byClientOrderId) return byClientOrderId;
+    const byClientOrderId = releases.filter((entry) => entry.clientOrderId === clientOrderId);
+    if (byClientOrderId.length === 1) return { record: byClientOrderId[0], ambiguous: false };
+    if (byClientOrderId.length > 1) return { record: null, ambiguous: true };
   }
 
   const brokerOrderId = order.brokerOrderId?.trim();
   if (brokerOrderId) {
-    const byBrokerOrderId = releases.find((entry) => entry.brokerOrderId === brokerOrderId);
-    if (byBrokerOrderId) return byBrokerOrderId;
+    const byBrokerOrderId = releases.filter((entry) => entry.brokerOrderId === brokerOrderId);
+    if (byBrokerOrderId.length === 1) return { record: byBrokerOrderId[0], ambiguous: false };
+    if (byBrokerOrderId.length > 1) return { record: null, ambiguous: true };
   }
 
-  return null;
+  return { record: null, ambiguous: false };
 }
 
 function canReconcileOrderLedgerStatus(
@@ -13829,6 +14053,7 @@ function reconcileOrderLedgerWithIdempotency(
   for (const order of Object.values(state.orders)) {
     const entry = findOrderIdempotencyEntryForLedgerRecord(order, idempotencyState);
     const release = entry ? null : findOrderIdempotencyReleaseForLedgerRecord(order, idempotencyState);
+    if (isActivePositionLimitedRecoveryEvidence(entry ?? release)) continue;
     const brokerStatus = entry?.brokerStatus ?? release?.brokerStatus ?? null;
     if (!brokerStatus) continue;
 
