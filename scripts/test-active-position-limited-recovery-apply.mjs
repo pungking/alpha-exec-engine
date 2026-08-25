@@ -209,6 +209,13 @@ const workflow = fs.readFileSync(
   path.resolve(".github/workflows/paper-five-row-active-limited-state-recovery.yml"),
   "utf8",
 );
+const workflowJobHeader = workflow.slice(0, workflow.indexOf("\n    steps:"));
+assert.equal(
+  workflowJobHeader.includes("${{ runner."),
+  false,
+  "runner context is unavailable in job-level env",
+);
+assert.equal(workflow.includes('echo "SAFE_OUTPUT=${RUNNER_TEMP}/paper-active-limited-recovery-safe.json"'), true);
 assert.equal(workflow.includes("paper-active-limited-backup-main-${{ github.run_id }}"), true);
 assert.equal(workflow.includes("ALPACA_KEY_ID"), false);
 assert.equal(workflow.includes("ALPACA_SECRET_KEY"), false);

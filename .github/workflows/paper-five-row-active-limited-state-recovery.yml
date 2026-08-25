@@ -32,14 +32,18 @@ jobs:
       SOURCE_CACHE_KEY: sidecar-state-main-32742503181
       EVIDENCE_RUN_ID: "32821694326"
       EVIDENCE_SHA256: 1479a15e37574f976ce075ca898d866623eacaec13308f489bfef53db24a96b7
-      SAFE_OUTPUT: ${{ runner.temp }}/paper-active-limited-recovery-safe.json
-      PRIVATE_STATE_DIR: ${{ runner.temp }}/paper-active-limited-state
-      PRIVATE_BACKUP_DIR: ${{ runner.temp }}/paper-active-limited-backup
 
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Initialize private runner paths
+        run: |
+          set -euo pipefail
+          echo "SAFE_OUTPUT=${RUNNER_TEMP}/paper-active-limited-recovery-safe.json" >> "${GITHUB_ENV}"
+          echo "PRIVATE_STATE_DIR=${RUNNER_TEMP}/paper-active-limited-state" >> "${GITHUB_ENV}"
+          echo "PRIVATE_BACKUP_DIR=${RUNNER_TEMP}/paper-active-limited-backup" >> "${GITHUB_ENV}"
 
       - name: Validate exact approval and integration-only baseline
         env:
@@ -126,9 +130,9 @@ jobs:
 
       - name: Apply all-five limited-control records atomically
         env:
-          ACTIVE_LIMITED_RECOVERY_STATE_DIR: ${{ env.PRIVATE_STATE_DIR }}
-          ACTIVE_LIMITED_RECOVERY_OUTPUT: ${{ env.SAFE_OUTPUT }}
-          ACTIVE_LIMITED_RECOVERY_BACKUP_DIR: ${{ env.PRIVATE_BACKUP_DIR }}
+          ACTIVE_LIMITED_RECOVERY_STATE_DIR: ${{ runner.temp }}/paper-active-limited-state
+          ACTIVE_LIMITED_RECOVERY_OUTPUT: ${{ runner.temp }}/paper-active-limited-recovery-safe.json
+          ACTIVE_LIMITED_RECOVERY_BACKUP_DIR: ${{ runner.temp }}/paper-active-limited-backup
           ACTIVE_LIMITED_RECOVERY_EVIDENCE_FILE: ${{ runner.temp }}/broker-evidence/paper-five-row-broker-evidence-safe.json
           ACTIVE_LIMITED_RECOVERY_EVIDENCE_SHA256: ${{ env.EVIDENCE_SHA256 }}
           ACTIVE_LIMITED_RECOVERY_EXPECTED_ORDER_LEDGER_SHA256: ${{ steps.prewrite.outputs.ledger_sha }}
@@ -155,7 +159,7 @@ jobs:
       - name: Save private atomic backup once
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.PRIVATE_BACKUP_DIR }}
+          path: ${{ runner.temp }}/paper-active-limited-backup
           key: paper-active-limited-backup-main-${{ github.run_id }}
 
       - name: Save recovered sidecar state once
@@ -196,6 +200,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: paper-active-limited-recovery-safe-${{ github.run_id }}
-          path: ${{ env.SAFE_OUTPUT }}
+          path: ${{ runner.temp }}/paper-active-limited-recovery-safe.json
           if-no-files-found: error
           retention-days: 14
