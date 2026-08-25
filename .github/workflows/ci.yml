@@ -30,6 +30,7 @@ jobs:
           npm run ops:test:guard-source-recovery-status
           npm run ops:test:guard-refresh-source-precedence
           npm run ops:test:paper-realized-pnl
+          npm run ops:test:active-position-limited-recovery
           npm run ops:test:order-state-consistency
           npm run ops:test:ledger-terminalization-proposal
           npm run ops:test:live-readiness-blockers

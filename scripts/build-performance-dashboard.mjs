@@ -456,6 +456,7 @@ const buildOwnedOrderIndex = (orderLedger, orderIdempotency) => {
     const clientIds = [...new Set(rows.map((row) => String(row?.clientOrderId || "").trim()).filter(Boolean))];
     const statusClasses = [...new Set(rows.map((row) => orderStatusClass(row?.brokerStatus || row?.status)).filter(Boolean))];
     const quantityRow = rows.find((row) => toNum(row?.submittedQty ?? row?.qty) != null);
+    const limitedRecoveryEvidence = group.idempotency?.recoveryMode === "ACTIVE_POSITION_LIMITED_CONTROL";
     const meta = {
       key: group.key,
       symbol: String(rows.find((row) => row?.symbol)?.symbol || "").trim().toUpperCase(),
@@ -464,7 +465,8 @@ const buildOwnedOrderIndex = (orderLedger, orderIdempotency) => {
       submittedQty: toNum(quantityRow?.submittedQty ?? quantityRow?.qty),
       ledgerEvidencePresent: Boolean(group.ledger),
       idempotencyEvidencePresent: Boolean(group.idempotency),
-      idempotencyConflict: brokerIds.length > 1 || statusClasses.length > 1
+      idempotencyConflict: brokerIds.length > 1 || statusClasses.length > 1,
+      limitedRecoveryEvidence,
     };
     for (const id of brokerIds) byBrokerId.set(id, meta);
     for (const id of clientIds) byClientId.set(id, meta);
@@ -519,6 +521,7 @@ const normalizeOwnedFills = ({ closedOrders, owned, paperMode }) => {
       ledgerEvidencePresent: ownership.meta.ledgerEvidencePresent,
       idempotencyEvidencePresent: ownership.meta.idempotencyEvidencePresent,
       idempotencyConflict: ownership.meta.idempotencyConflict,
+      limitedRecoveryEvidence: ownership.meta.limitedRecoveryEvidence,
       submittedQuantityMismatch: submittedQty != null && Math.abs(Math.abs(submittedQty) - quantity) > QTY_TOLERANCE,
       brokerOrderQuantityMismatch: orderQty != null && Math.abs(Math.abs(orderQty) - quantity) > QTY_TOLERANCE,
       actionType: ownership.meta.actionType
@@ -614,7 +617,9 @@ export const buildBrokerRealizedPnlSummary = ({
     const quantityMismatch = symbolFills.some((fill) => fill.submittedQuantityMismatch || fill.brokerOrderQuantityMismatch)
       || (brokerResidual != null && Math.abs(fillResidual - brokerResidual) > QTY_TOLERANCE);
     const idempotencyConflict = symbolFills.some((fill) => fill.idempotencyConflict);
-    const idempotencyEvidenceComplete = symbolFills.every((fill) => fill.ledgerEvidencePresent && fill.idempotencyEvidencePresent);
+    const limitedRecoveryEvidence = symbolFills.some((fill) => fill.limitedRecoveryEvidence);
+    const idempotencyEvidenceComplete = !limitedRecoveryEvidence
+      && symbolFills.every((fill) => fill.ledgerEvidencePresent && fill.idempotencyEvidencePresent);
     const partialExit = Math.abs(fillResidual) > QTY_TOLERANCE || (brokerResidual != null && Math.abs(brokerResidual) > QTY_TOLERANCE);
     const directions = [...new Set(matches.map((match) => match.direction))];
     const hasExitAction = symbolFills.some((fill) => ["SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"].includes(fill.actionType));
@@ -638,7 +643,15 @@ export const buildBrokerRealizedPnlSummary = ({
       status,
       sourceType: paperMode ? "ALPACA_PAPER_BROKER_FILLS" : "ALPACA_BROKER_FILLS",
       ownershipClassification: idempotencyEvidenceComplete ? "SIDECAR_LEDGER_AND_IDEMPOTENCY_MATCHED" : "SIDECAR_OWNERSHIP_EVIDENCE_INCOMPLETE",
-      idempotencyVerdict: idempotencyConflict ? "CONFLICT" : idempotencyEvidenceComplete ? "PASS" : "MISSING",
+      idempotencyVerdict: limitedRecoveryEvidence
+        ? "LIMITED_RECOVERY_BLOCKED"
+        : idempotencyConflict
+          ? "CONFLICT"
+          : idempotencyEvidenceComplete
+            ? "PASS"
+            : "MISSING",
+      recoveryMode: limitedRecoveryEvidence ? "ACTIVE_POSITION_LIMITED_CONTROL" : null,
+      realizedPnlVerified: !limitedRecoveryEvidence && status === "VERIFIED_NET_REALIZED_PNL",
       entryFillProvenance: matches.length > 0 ? "BROKER_FILLED_AVG_PRICE" : null,
       exitFillProvenance: matches.length > 0 ? "BROKER_FILLED_AVG_PRICE" : null,
       entryOrderIdsPresent: matches.length > 0,

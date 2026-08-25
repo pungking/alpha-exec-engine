@@ -111,6 +111,7 @@ export const classifyProtectionOwnership = ({
   orderStateRow = null,
   fillabilityRow = null
 }) => {
+  const limitedRecovery = idempotencyRow?.recoveryMode === "ACTIVE_POSITION_LIMITED_CONTROL";
   const qty = toNum(position?.qty ?? reconciliationRow?.qty) ?? 0;
   const normalizedFillState = firstPresent(
     position?.normalizedFillState,
@@ -147,7 +148,10 @@ export const classifyProtectionOwnership = ({
 
   let ownershipClass = "EXTERNAL_OR_MANUAL_POSITION";
   let fillStateStatus = "external_position_no_sidecar_fill";
-  if (sidecarEvidence && filledEvidence) {
+  if (limitedRecovery) {
+    ownershipClass = "SIDECAR_MANAGED_LIMITED_CONTROL";
+    fillStateStatus = "historical_idempotency_evidence_limited_control";
+  } else if (sidecarEvidence && filledEvidence) {
     ownershipClass = "SIDECAR_MANAGED_FILLED";
     fillStateStatus = "confirmed_filled";
   } else if (sidecarEvidence && qty > 0 && workingEvidence) {
@@ -170,10 +174,12 @@ export const classifyProtectionOwnership = ({
   if (ownershipClass === "SIDECAR_MANAGED_FILL_RECONCILIATION_REQUIRED") blockers.push("fill_state_reconciliation_required");
   if (ownershipClass === "SIDECAR_MANAGED_TERMINAL_NOT_FILLED") blockers.push("terminal_not_filled_position_present_review");
   if (ownershipClass === "SIDECAR_MANAGED_UNCONFIRMED") blockers.push("fill_state_unknown");
+  if (limitedRecovery) blockers.push("active_position_limited_control");
 
   return {
     ownershipClass,
     sidecarManaged: sidecarEvidence,
+    recoveryMode: limitedRecovery ? "ACTIVE_POSITION_LIMITED_CONTROL" : null,
     repairAllowedByOwnership: !repairBlocked,
     qty,
     fillStateReconciliation: {

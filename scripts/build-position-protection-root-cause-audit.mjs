@@ -137,6 +137,7 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
   const normalizedFillState = position?.normalizedFillState || reconciliationRow?.normalizedFillState || null;
   const ledgerStatus = ledgerRow?.status || position?.ledgerStatus || null;
   const idempotencyBrokerStatus = idempotencyRow?.brokerStatus || position?.idempotencyBrokerStatus || null;
+  const limitedRecovery = idempotencyRow?.recoveryMode === "ACTIVE_POSITION_LIMITED_CONTROL";
   const fillabilityStatus = fillabilityRow?.status || position?.fillabilityStatus || null;
   const plannedStopSource = effectiveGuard.source;
   const plannedTargetSource = effectiveGuard.source;
@@ -333,7 +334,12 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     normalizedFillState,
     ledgerStatus,
     idempotencyBrokerStatus,
-    idempotencyStatus: idempotencyBrokerStatus || (idempotencyRow ? "record_present_status_unknown" : "not_recorded"),
+    idempotencyStatus: limitedRecovery
+      ? "active_position_limited_control"
+      : idempotencyBrokerStatus || (idempotencyRow ? "record_present_status_unknown" : "not_recorded"),
+    recoveryMode: limitedRecovery ? "ACTIVE_POSITION_LIMITED_CONTROL" : null,
+    brokerSubmitAllowed: limitedRecovery ? false : null,
+    historicalEvidenceNormalized: limitedRecovery ? false : null,
     fillabilityStatus,
     orderStateStatus: orderStateRow?.status || null,
     ownershipClassification: ownership.ownershipClass,

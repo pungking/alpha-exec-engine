@@ -191,6 +191,27 @@ const releasedIdempotencyResult = buildBrokerRealizedPnlSummary({
 assert.equal(releasedIdempotencyResult.rows[0].idempotencyVerdict, "PASS");
 assert.equal(releasedIdempotencyResult.rows[0].status, "VERIFIED_NET_REALIZED_PNL");
 
+const limitedRecoveryIdempotency = idempotencyState(longRows);
+limitedRecoveryIdempotency.orders["long-entry"] = {
+  ...limitedRecoveryIdempotency.orders["long-entry"],
+  recoveryMode: "ACTIVE_POSITION_LIMITED_CONTROL",
+  brokerSubmitAllowed: false,
+  realizedPnlVerified: false,
+  historicalEvidenceNormalized: false,
+};
+const limitedRecoveryResult = buildBrokerRealizedPnlSummary({
+  orderLedger: ledgerState(longRows),
+  orderIdempotency: limitedRecoveryIdempotency,
+  closedOrders: longOrders,
+  currentPositions: [],
+  paperMode: true,
+  closedOrdersSourceComplete: true,
+  positionsSourceComplete: true,
+});
+assert.equal(limitedRecoveryResult.rows[0].idempotencyVerdict, "LIMITED_RECOVERY_BLOCKED");
+assert.equal(limitedRecoveryResult.rows[0].status, "TERMINAL_RECONCILIATION_REQUIRED");
+assert.notEqual(limitedRecoveryResult.rows[0].status, "VERIFIED_NET_REALIZED_PNL");
+
 const entryOnlyResult = build({ rows: [longRows[0]], orders: [longOrders[0]] });
 assert.equal(entryOnlyResult.rows[0].status, "EXIT_FILL_EVIDENCE_INCOMPLETE");
 const exitOnlyResult = build({ rows: [longRows[1]], orders: [longOrders[1]] });
@@ -212,7 +233,7 @@ const allowedStatuses = new Set([
   "TERMINAL_RECONCILIATION_REQUIRED",
   "SIMULATION_OR_PROXY_ONLY",
 ]);
-for (const report of [longResult, multiResult, partialResult, shortResult, nestedResult, feeMissingResult, quantityMismatchResult, idempotencyConflictResult, missingIdempotencyResult, releasedIdempotencyResult, entryOnlyResult, exitOnlyResult]) {
+for (const report of [longResult, multiResult, partialResult, shortResult, nestedResult, feeMissingResult, quantityMismatchResult, idempotencyConflictResult, missingIdempotencyResult, releasedIdempotencyResult, limitedRecoveryResult, entryOnlyResult, exitOnlyResult]) {
   assert.equal(report.summary.unknownRows, 0);
   for (const row of report.rows) assert.ok(allowedStatuses.has(row.status), `unexpected status ${row.status}`);
 }

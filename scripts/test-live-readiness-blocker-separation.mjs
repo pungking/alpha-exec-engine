@@ -698,6 +698,39 @@ assert.equal(
 );
 assert.equal(unresolvedIdentityReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
 
+const limitedRecoveryStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-limited-recovery-"));
+for (const fileName of fs.readdirSync(shadowExitStateDir)) {
+  if (fileName.startsWith("live-readiness-scorecard.")) continue;
+  fs.copyFileSync(path.join(shadowExitStateDir, fileName), path.join(limitedRecoveryStateDir, fileName));
+}
+const limitedRecoveryProtection = JSON.parse(
+  fs.readFileSync(path.join(limitedRecoveryStateDir, "position-protection-root-cause-audit.json"), "utf8")
+);
+const limitedRecoveryProtectionRow = limitedRecoveryProtection.rows.find((row) => row.symbol === "LONG_FULL");
+limitedRecoveryProtectionRow.idempotencyStatus = "active_position_limited_control";
+limitedRecoveryProtectionRow.ownershipClassification = "SIDECAR_MANAGED_LIMITED_CONTROL";
+writeJsonAt(
+  limitedRecoveryStateDir,
+  "position-protection-root-cause-audit.json",
+  limitedRecoveryProtection
+);
+const limitedRecoveryReport = runScorecard(limitedRecoveryStateDir);
+const limitedRecoveryRow = limitedRecoveryReport.paperExitReadiness.rows.find(
+  (row) => row.symbol === "LONG_FULL"
+);
+assert.equal(limitedRecoveryRow.classification, "EXIT_SHADOW_BLOCKED_LEDGER_OR_IDEMPOTENCY");
+assert.equal(limitedRecoveryRow.recoveryMode, "ACTIVE_POSITION_LIMITED_CONTROL");
+assert.equal(limitedRecoveryRow.entryAllowed, false);
+assert.equal(limitedRecoveryRow.scaleInAllowed, false);
+assert.equal(limitedRecoveryRow.riskIncreasingActionAllowed, false);
+assert.equal(limitedRecoveryRow.reportOnlyExitEvaluationAllowed, true);
+assert.equal(limitedRecoveryRow.brokerSubmitAllowed, false);
+assert.equal(limitedRecoveryRow.realizedPnlVerified, false);
+assert.equal(limitedRecoveryRow.historicalEvidenceNormalized, false);
+assert.equal(limitedRecoveryRow.shadowEvaluated, true);
+assert.equal(limitedRecoveryRow.actionPropagatedAsPayload, false);
+assert.equal(limitedRecoveryReport.paperExitReadiness.canaryApprovalPackage.selectedCandidateCount, 0);
+
 const runShadowMarketSessionFixture = (status, marketOpen) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-exit-shadow-session-"));
   for (const fileName of fs.readdirSync(shadowExitStateDir)) {
