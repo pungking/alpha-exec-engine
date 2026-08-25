@@ -1,0 +1,201 @@
+name: paper-five-row-active-limited-state-recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval_phrase:
+        description: "Required exact one-shot approval phrase"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: paper-five-row-active-limited-state-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      EXEC_ENABLED: "false"
+      READ_ONLY: "true"
+      LIVE_ORDER_SUBMIT_ENABLED: "false"
+      MARKET_GUARD_MODE: observe
+      GUARD_EXECUTE_TIGHTEN_STOPS: "false"
+      GUARD_EXECUTE_REDUCE_POSITIONS: "false"
+      GUARD_EXECUTE_FLATTEN: "false"
+      SOURCE_CACHE_KEY: sidecar-state-main-32742503181
+      EVIDENCE_RUN_ID: "32821694326"
+      EVIDENCE_SHA256: 1479a15e37574f976ce075ca898d866623eacaec13308f489bfef53db24a96b7
+      SAFE_OUTPUT: ${{ runner.temp }}/paper-active-limited-recovery-safe.json
+      PRIVATE_STATE_DIR: ${{ runner.temp }}/paper-active-limited-state
+      PRIVATE_BACKUP_DIR: ${{ runner.temp }}/paper-active-limited-backup
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate exact approval and integration-only baseline
+        env:
+          APPROVAL_PHRASE: ${{ inputs.approval_phrase }}
+        run: |
+          set -euo pipefail
+          test "${APPROVAL_PHRASE}" = "AUTHORIZE PAPER FIVE-ROW ACTIVE LIMITED STATE RECOVERY ONE-SHOT"
+          test "${GITHUB_EVENT_NAME}" = "workflow_dispatch"
+          test "${GITHUB_REF_NAME}" = "main"
+          git merge-base --is-ancestor d437349eb28cea66d8b6cc99f732db389a52c26a HEAD
+          allowed='^(\.github/workflows/paper-five-row-active-limited-state-recovery\.yml|package\.json|scripts/apply-active-position-limited-recovery\.mjs|scripts/test-active-position-limited-recovery-apply\.mjs)$'
+          unexpected="$(git diff --name-only d437349eb28cea66d8b6cc99f732db389a52c26a..HEAD | grep -Ev "${allowed}" || true)"
+          test -z "${unexpected}"
+          node <<'NODE'
+          const fs = require('fs');
+          fs.writeFileSync(process.env.SAFE_OUTPUT, `${JSON.stringify({
+            schemaVersion: 'paper-active-position-limited-recovery-apply-safe-v1',
+            mode: 'PAPER_STATE_ONLY_ACTIVE_POSITION_LIMITED_RECOVERY',
+            status: 'PREFLIGHT_PENDING',
+            sourceCacheKey: process.env.SOURCE_CACHE_KEY,
+            preservedBrokerEvidenceRunId: Number(process.env.EVIDENCE_RUN_ID),
+            stateMutationAttempted: false,
+            stateMutationApplied: false,
+            orderLedgerMutationApplied: false,
+            brokerRequestAttempted: false,
+            brokerMutationAttempted: false,
+            privateIdentifiersStoredOrPrinted: false,
+          }, null, 2)}\n`, 'utf8');
+          NODE
+
+      - name: Restore exactly-once completion sentinel
+        id: restore_sentinel
+        uses: actions/cache/restore@v4
+        with:
+          path: .one-shot-sentinel/paper-active-limited-recovery
+          key: paper-active-limited-recovery-main-d437349e-v1
+
+      - name: Reject duplicate one-shot
+        env:
+          SENTINEL_HIT: ${{ steps.restore_sentinel.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "${SENTINEL_HIT}" != "true"
+
+      - name: Download preserved aggregate broker evidence once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/broker-evidence"
+          gh run download "${EVIDENCE_RUN_ID}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --name "paper-five-row-broker-evidence-safe-${EVIDENCE_RUN_ID}" \
+            --dir "${RUNNER_TEMP}/broker-evidence"
+          evidence="${RUNNER_TEMP}/broker-evidence/paper-five-row-broker-evidence-safe.json"
+          test "$(sha256sum "${evidence}" | awk '{print $1}')" = "${EVIDENCE_SHA256}"
+
+      - name: Restore exact saved PAPER state
+        id: restore_state
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-main-32742503181
+          fail-on-cache-miss: true
+
+      - name: Copy restored state and capture exact pre-write hashes
+        id: prewrite
+        env:
+          CACHE_HIT: ${{ steps.restore_state.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "${CACHE_HIT}" = "true"
+          test -f state/order-ledger.json
+          test -f state/order-idempotency.json
+          test -f state/fill-state-reconciliation-audit.json
+          mkdir -p "${PRIVATE_STATE_DIR}"
+          cp -R state/. "${PRIVATE_STATE_DIR}/"
+          ledger_sha="$(sha256sum "${PRIVATE_STATE_DIR}/order-ledger.json" | awk '{print $1}')"
+          idempotency_sha="$(sha256sum "${PRIVATE_STATE_DIR}/order-idempotency.json" | awk '{print $1}')"
+          recorded_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+          echo "ledger_sha=${ledger_sha}" >> "${GITHUB_OUTPUT}"
+          echo "idempotency_sha=${idempotency_sha}" >> "${GITHUB_OUTPUT}"
+          echo "recorded_at=${recorded_at}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply all-five limited-control records atomically
+        env:
+          ACTIVE_LIMITED_RECOVERY_STATE_DIR: ${{ env.PRIVATE_STATE_DIR }}
+          ACTIVE_LIMITED_RECOVERY_OUTPUT: ${{ env.SAFE_OUTPUT }}
+          ACTIVE_LIMITED_RECOVERY_BACKUP_DIR: ${{ env.PRIVATE_BACKUP_DIR }}
+          ACTIVE_LIMITED_RECOVERY_EVIDENCE_FILE: ${{ runner.temp }}/broker-evidence/paper-five-row-broker-evidence-safe.json
+          ACTIVE_LIMITED_RECOVERY_EVIDENCE_SHA256: ${{ env.EVIDENCE_SHA256 }}
+          ACTIVE_LIMITED_RECOVERY_EXPECTED_ORDER_LEDGER_SHA256: ${{ steps.prewrite.outputs.ledger_sha }}
+          ACTIVE_LIMITED_RECOVERY_EXPECTED_IDEMPOTENCY_SHA256: ${{ steps.prewrite.outputs.idempotency_sha }}
+          ACTIVE_LIMITED_RECOVERY_RECORDED_AT: ${{ steps.prewrite.outputs.recorded_at }}
+          ACTIVE_LIMITED_RECOVERY_APPROVAL: ${{ inputs.approval_phrase }}
+          ACTIVE_LIMITED_RECOVERY_APPLY: "true"
+        run: node scripts/apply-active-position-limited-recovery.mjs
+
+      - name: Publish only the verified idempotency state into the cache source tree
+        env:
+          EXPECTED_LEDGER_SHA: ${{ steps.prewrite.outputs.ledger_sha }}
+          EXPECTED_IDEMPOTENCY_SHA: ${{ steps.prewrite.outputs.idempotency_sha }}
+        run: |
+          set -euo pipefail
+          test "$(sha256sum state/order-ledger.json | awk '{print $1}')" = "${EXPECTED_LEDGER_SHA}"
+          test "$(sha256sum state/order-idempotency.json | awk '{print $1}')" = "${EXPECTED_IDEMPOTENCY_SHA}"
+          cp "${PRIVATE_STATE_DIR}/order-idempotency.json" state/order-idempotency.json.tmp
+          mv state/order-idempotency.json.tmp state/order-idempotency.json
+          post_sha="$(node -e 'const fs=require("fs"); const r=JSON.parse(fs.readFileSync(process.env.SAFE_OUTPUT,"utf8")); process.stdout.write(r.postWriteIdempotencySha256)')"
+          test "$(sha256sum state/order-idempotency.json | awk '{print $1}')" = "${post_sha}"
+          test "$(sha256sum state/order-ledger.json | awk '{print $1}')" = "${EXPECTED_LEDGER_SHA}"
+
+      - name: Save private atomic backup once
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.PRIVATE_BACKUP_DIR }}
+          key: paper-active-limited-backup-main-${{ github.run_id }}
+
+      - name: Save recovered sidecar state once
+        id: save_state
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: sidecar-state-main-${{ github.run_id }}
+
+      - name: Finalize safe aggregate evidence
+        env:
+          SAVED_CACHE_KEY: sidecar-state-main-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const file = process.env.SAFE_OUTPUT;
+          const report = JSON.parse(fs.readFileSync(file, 'utf8'));
+          report.atomicBackupCacheSaved = true;
+          report.atomicBackupCacheKey = `paper-active-limited-backup-main-${process.env.GITHUB_RUN_ID}`;
+          report.stateCacheSaved = true;
+          report.savedStateCacheKey = process.env.SAVED_CACHE_KEY;
+          const tmp = `${file}.tmp`;
+          fs.writeFileSync(tmp, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+          fs.renameSync(tmp, file);
+          NODE
+          mkdir -p .one-shot-sentinel/paper-active-limited-recovery
+          cp "${SAFE_OUTPUT}" .one-shot-sentinel/paper-active-limited-recovery/complete.json
+
+      - name: Save exactly-once completion sentinel
+        uses: actions/cache/save@v4
+        with:
+          path: .one-shot-sentinel/paper-active-limited-recovery
+          key: paper-active-limited-recovery-main-d437349e-v1
+
+      - name: Upload aggregate-only recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-active-limited-recovery-safe-${{ github.run_id }}
+          path: ${{ env.SAFE_OUTPUT }}
+          if-no-files-found: error
+          retention-days: 14
