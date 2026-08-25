@@ -1,4 +1,12 @@
+import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  buildAggregateSafeEvidence,
+  initializeSafeEvidence,
+  preflightSafeEvidence,
+} from "./build-paper-five-row-broker-evidence-safe.mjs";
 
 const workflow = fs.readFileSync(".github/workflows/dry-run.yml", "utf8");
 const watchdogWorkflow = fs.readFileSync(".github/workflows/dry-run-watchdog.yml", "utf8");
@@ -6,6 +14,11 @@ const marketGuardWorkflow = fs.readFileSync(".github/workflows/market-guard.yml"
 const ciWorkflow = fs.readFileSync(".github/workflows/ci.yml", "utf8");
 const paperOcoWorkflow = fs.readFileSync(".github/workflows/paper-oco-submit-canary.yml", "utf8");
 const persistentRepairWorkflow = fs.readFileSync(".github/workflows/persistent-oco-repair-submit.yml", "utf8");
+const fiveRowRecoveryWorkflowPath = ".github/workflows/paper-five-row-broker-evidence-recovery.yml";
+const fiveRowRecoveryWorkflow = fs.existsSync(fiveRowRecoveryWorkflowPath)
+  ? fs.readFileSync(fiveRowRecoveryWorkflowPath, "utf8")
+  : "";
+const fiveRowSafeEvidenceSource = fs.readFileSync("scripts/build-paper-five-row-broker-evidence-safe.mjs", "utf8");
 const source = fs.readFileSync("src/index.ts", "utf8");
 
 function assertContains(text, needle, label) {
@@ -101,6 +114,112 @@ assertContains(paperOcoWorkflow, "ALPHA_ENV: PAPER", "paper OCO explicit PAPER e
 assertContains(paperOcoWorkflow, '!= "CONFIRM LIVE EXECUTION"', "paper OCO exact approval phrase");
 assertContains(persistentRepairWorkflow, "ALPHA_ENV: PAPER", "persistent repair explicit PAPER environment");
 assertContains(persistentRepairWorkflow, '!= "CONFIRM LIVE EXECUTION"', "persistent repair exact approval phrase");
+
+assertContains(fiveRowRecoveryWorkflow, "workflow_dispatch:", "five-row recovery manual trigger");
+assertContains(
+  fiveRowRecoveryWorkflow,
+  "AUTHORIZE PAPER FIVE-ROW BROKER EVIDENCE READ-ONLY ONE-SHOT",
+  "five-row recovery exact approval phrase",
+);
+assertContains(fiveRowRecoveryWorkflow, "fetch-depth: 0", "five-row recovery full ancestry checkout");
+assertContains(fiveRowRecoveryWorkflow, 'test "${GITHUB_REF_NAME}" = "main"', "five-row recovery main-only guard");
+assertContains(
+  fiveRowRecoveryWorkflow,
+  "git merge-base --is-ancestor 7a5c664665342eebb8a0f19fbf24379efc47ab2b HEAD",
+  "five-row recovery required ancestor guard",
+);
+assertContains(
+  fiveRowRecoveryWorkflow,
+  "sidecar-state-main-32742503181",
+  "five-row recovery exact cache key",
+);
+assertContains(fiveRowRecoveryWorkflow, "fail-on-cache-miss: true", "five-row recovery cache miss block");
+assertContains(fiveRowSafeEvidenceSource, "targetRows !== 5", "five-row recovery exact scope gate");
+assertContains(
+  fiveRowRecoveryWorkflow,
+  "BROKER_FILL_STATE_EVIDENCE_STATE_DIR: ${{ runner.temp }}/paper-five-row-state",
+  "five-row recovery private temp output",
+);
+assertContains(
+  fiveRowRecoveryWorkflow,
+  "safe-output/paper-five-row-broker-evidence-safe.json",
+  "five-row recovery aggregate-only artifact",
+);
+assertContains(fiveRowSafeEvidenceSource, "privateEvidenceUploaded: false", "five-row recovery private upload block");
+assertContains(fiveRowSafeEvidenceSource, "stateMutationAttempted: false", "five-row recovery state mutation block");
+assertContains(fiveRowSafeEvidenceSource, "brokerMutationAttempted: false", "five-row recovery broker mutation block");
+for (const forbidden of [
+  "restore-keys:",
+  "actions/cache/save",
+  "ledger-filled-migration-apply",
+  "submitOrdersToBroker",
+  "broker-fill-state-evidence.md\n",
+]) {
+  if (fiveRowRecoveryWorkflow.includes(forbidden)) {
+    console.error(`[DRY_RUN_DISPATCH_SAFETY] five-row recovery contains forbidden contract: ${forbidden.trim()}`);
+    process.exitCode = 1;
+  }
+}
+for (const forbiddenTrigger of ["push:", "pull_request:", "schedule:", "repository_dispatch:"]) {
+  if (fiveRowRecoveryWorkflow.includes(forbiddenTrigger)) {
+    console.error(`[DRY_RUN_DISPATCH_SAFETY] five-row recovery must not use trigger: ${forbiddenTrigger}`);
+    process.exitCode = 1;
+  }
+}
+
+const safeFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "paper-five-row-safe-"));
+const safeFixtureOutput = path.join(safeFixtureDir, "safe.json");
+const safeFixturePreflight = path.join(safeFixtureDir, "preflight.json");
+fs.writeFileSync(
+  path.join(safeFixtureDir, "fill-state-reconciliation-audit.json"),
+  JSON.stringify({ rows: Array.from({ length: 5 }, (_, index) => ({
+    symbol: `PRIVATE_${index}`,
+    ledger: { key: `PRIVATE_LEDGER_${index}` },
+    requiresLedgerTerminalizationReview: true,
+  })) }),
+);
+fs.writeFileSync(path.join(safeFixtureDir, "order-ledger.json"), JSON.stringify({ orders: {} }));
+fs.writeFileSync(path.join(safeFixtureDir, "order-idempotency.json"), JSON.stringify({ orders: {} }));
+initializeSafeEvidence({ safeOutput: safeFixtureOutput });
+const safeFixturePreflightResult = preflightSafeEvidence({
+  stateDir: safeFixtureDir,
+  safeOutput: safeFixtureOutput,
+  preflightFile: safeFixturePreflight,
+  cacheHit: true,
+});
+assert.equal(safeFixturePreflightResult.targetRows, 5);
+assert.equal(safeFixturePreflightResult.uniqueIdentityRows, 5);
+fs.writeFileSync(
+  path.join(safeFixtureDir, "broker-fill-state-evidence.json"),
+  JSON.stringify({
+    executionPolicy: { stateMutationAttempted: false, brokerMutationAttempted: false },
+    rows: Array.from({ length: 5 }, (_, index) => ({
+      symbol: `PRIVATE_${index}`,
+      clientOrderId: `PRIVATE_CLIENT_${index}`,
+      brokerPosition: index === 0 ? { qty: "1" } : null,
+      evidenceVerdict: index === 0 ? "BROKER_FILLED_CONFIRMED" : "BROKER_EVIDENCE_INCONCLUSIVE",
+      readStatus: {
+        position: { status: index === 1 ? 404 : 200 },
+        openOrders: { count: 0 },
+      },
+    })),
+  }),
+);
+const safeFixtureAggregate = buildAggregateSafeEvidence({
+  stateDir: safeFixtureDir,
+  safeOutput: safeFixtureOutput,
+  preflightFile: safeFixturePreflight,
+  brokerStepOutcome: "success",
+});
+assert.equal(safeFixtureAggregate.status, "PAPER_FIVE_ROW_BROKER_EVIDENCE_AGGREGATE_READY");
+assert.equal(safeFixtureAggregate.targetRows, 5);
+assert.equal(safeFixtureAggregate.brokerGetRequestCount, 25);
+assert.equal(safeFixtureAggregate.activePositionRows, 1);
+assert.equal(safeFixtureAggregate.zeroOrNotFoundPositionRows, 1);
+assert.equal(safeFixtureAggregate.unknownOrUnclassifiedRows, 0);
+const safeFixtureText = fs.readFileSync(safeFixtureOutput, "utf8");
+assert.equal(safeFixtureText.includes("PRIVATE_"), false);
+assert.equal(safeFixtureText.includes("clientOrderId"), false);
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[DRY_RUN_DISPATCH_SAFETY] pass");
