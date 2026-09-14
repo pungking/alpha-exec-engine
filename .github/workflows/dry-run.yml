@@ -204,6 +204,9 @@ jobs:
   dry-run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash scripts/run-private-sidecar-step.sh {0}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       ALPHA_ENV: DRY_RUN
@@ -2284,122 +2287,18 @@ jobs:
           RUN_PAYLOAD_PROBE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.payload_probe || 'false' }}
         run: node scripts/maybe-trigger-validation-pack.mjs
 
+      - name: Publish aggregate-only sidecar evidence
+        if: always()
+        shell: bash
+        run: node scripts/build-sidecar-public-evidence.mjs
+
       - name: Upload sidecar state artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: sidecar-state-${{ github.run_id }}
-          path: |
-            state/last-run.json
-            state/last-dry-exec-preview.json
-            state/symbol-agnostic-runtime-check.json
-            state/symbol-agnostic-runtime-check.md
-            state/last-order-decision-audit.json
-            state/order-decision-audit.jsonl
-            state/hf-marker-audit.json
-            state/hf-shadow-last.json
-            state/hf-shadow-history.jsonl
-            state/hf-evidence-history.jsonl
-            state/hf-tuning-freeze.json
-            state/hf-live-promotion-state.json
-            state/last-run-output.log
-            state/order-idempotency.json
-            state/order-ledger.json
-            state/portfolio-admission-audit.json
-            state/recommendation-ledger.json
-            state/open-entry-replace-guard.json
-            state/regime-guard-state.json
-            state/guard-control.json
-            state/last-market-guard.json
-            state/market-guard-state.json
-            state/guard-action-ledger.json
-            state/stage6-20trade-loop.json
-            state/stage6-20trade-loop.csv
-            state/performance-dashboard-public.json
-            state/performance-dashboard.md
-            state/broker-child-order-reconciliation.json
-            state/broker-child-order-reconciliation.md
-            state/fill-state-reconciliation-audit.json
-            state/fill-state-reconciliation-audit.md
-            state/broker-fill-state-evidence.json
-            state/broker-fill-state-evidence.md
-            state/ledger-terminalization-proposal.json
-            state/ledger-terminalization-proposal.md
-            state/ledger-terminalization-migration-package.json
-            state/ledger-terminalization-migration-package.md
-            state/ledger-filled-migration-plan.json
-            state/ledger-filled-migration-plan.md
-            state/ledger-filled-migration-apply-report.json
-            state/ledger-filled-migration-apply-report.md
-            state/migration-backups/**
-            state/position-protection-root-cause-audit.json
-            state/position-protection-root-cause-audit.md
-            state/position-lifecycle-guard-source-plan.json
-            state/position-lifecycle-guard-source-plan.md
-            state/guard-metadata-refresh-plan.json
-            state/guard-metadata-refresh-plan.md
-            state/guard-metadata-lineage-audit.json
-            state/guard-metadata-lineage-audit.md
-            state/guard-source-recovery-plan.json
-            state/guard-source-recovery-plan.md
-            state/guarded-child-order-repair-plan.json
-            state/guarded-child-order-repair-plan.md
-            state/alpaca-order-payload-schema-report.json
-            state/alpaca-order-payload-schema-report.md
-            state/alpaca-oco-response-fixture-report.json
-            state/alpaca-oco-response-fixture-report.md
-            state/paper-oco-canary-candidate.json
-            state/paper-oco-canary-candidate.md
-            state/paper-oco-canary-approval-gate.json
-            state/paper-oco-canary-approval-gate.md
-            state/paper-oco-canary-submit-gate.json
-            state/paper-oco-canary-submit-gate.md
-            state/paper-oco-canary-submit-ledger.json
-            state/persistent-oco-repair-plan.json
-            state/persistent-oco-repair-plan.md
-            state/stop-only-oco-conversion-plan.json
-            state/stop-only-oco-conversion-plan.md
-            state/limited-multi-oco-repair-plan.json
-            state/limited-multi-oco-repair-plan.md
-            state/position-ownership-guard-gap-audit.json
-            state/position-ownership-guard-gap-audit.md
-            state/position-ownership-recovery-decision.json
-            state/position-ownership-recovery-decision.md
-            state/position-ownership-recovery-approval-gate.json
-            state/position-ownership-recovery-approval-gate.md
-            state/position-ownership-state-migration-review-plan.json
-            state/position-ownership-state-migration-review-plan.md
-            state/multi-oco-submit-safety-gate.json
-            state/multi-oco-submit-safety-gate.md
-            state/no-actionable-event-ledger.json
-            state/no-actionable-event-escalation.json
-            state/no-actionable-event-escalation.md
-            state/fillability-report.json
-            state/fillability-report.md
-            state/entry-reprice-policy-decision.json
-            state/entry-reprice-policy-decision.md
-            state/stage6-fillability-mismatch-audit.json
-            state/stage6-fillability-mismatch-audit.md
-            state/high-price-min-one-share-canary-plan.json
-            state/high-price-min-one-share-canary-plan.md
-            state/order-state-consistency-report.json
-            state/order-state-consistency-report.md
-            state/open-order-reprice-proposal.json
-            state/open-order-reprice-proposal.md
-            state/ops-lane-status-report.json
-            state/ops-lane-status-report.md
-            state/notion-performance-dashboard-schema-report.json
-            state/notion-performance-dashboard-schema-report.md
-            state/ops-health-report.json
-            state/ops-health-report.md
-            state/live-readiness-scorecard.json
-            state/live-readiness-scorecard.md
-            state/protection-blocker-reduction-plan.json
-            state/protection-blocker-reduction-plan.md
-            state/validation-pack-auto-trigger.json
-            state/validation-pack/**
-            state/payload-probe/**
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/sidecar-public-evidence/evidence.json
+          if-no-files-found: error
 
       - name: Save sidecar state
         id: save_state

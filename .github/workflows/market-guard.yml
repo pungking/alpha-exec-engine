@@ -13,6 +13,9 @@ jobs:
   market-guard:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash scripts/run-private-sidecar-step.sh {0}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       ALPHA_ENV: DRY_RUN
@@ -234,26 +237,18 @@ jobs:
           GHA_JOB_STATUS: ${{ job.status }}
         run: node scripts/sync-notion-summary.mjs
 
+      - name: Publish aggregate-only sidecar evidence
+        if: always()
+        shell: bash
+        run: node scripts/build-sidecar-public-evidence.mjs
+
       - name: Upload guard artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: sidecar-guard-state-${{ github.run_id }}
-          path: |
-            state/last-market-guard.json
-            state/market-guard-state.json
-            state/guard-action-ledger.json
-            state/guard-control.json
-            state/last-run.json
-            state/last-dry-exec-preview.json
-            state/order-idempotency.json
-            state/order-ledger.json
-            state/regime-guard-state.json
-            state/performance-dashboard-public.json
-            state/performance-dashboard.md
-            state/ops-health-report.json
-            state/ops-health-report.md
-          if-no-files-found: warn
+          path: ${{ runner.temp }}/sidecar-public-evidence/evidence.json
+          if-no-files-found: error
 
       - name: Save sidecar state
         id: save_state
