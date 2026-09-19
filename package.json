@@ -53,6 +53,8 @@
     "replay:hf:fixture": "npm run build && node dist/src/replay-hf-judgement.js --preview testdata/replay/preview.fixture.json --stage6 testdata/replay/stage6.fixture.json --baseline testdata/replay/baseline.summary.json --out state/replay_fixture_summary.json --strict --expect-no-diff",
     "ops:order-state": "node scripts/build-order-state-consistency-report.mjs",
     "ops:test:sidecar-public-evidence": "node scripts/test-sidecar-public-evidence.mjs",
+    "ops:test:paper-closeout-private-evidence": "node scripts/test-paper-closeout-private-evidence.mjs",
+    "ops:paper-closeout-private-evidence": "node scripts/audit-paper-closeout-private-evidence.mjs",
     "ops:test:order-state-consistency": "node scripts/test-order-state-consistency-report.mjs",
     "ops:open-order-reprice-proposal": "node scripts/build-open-order-reprice-proposal.mjs",
     "ops:alpaca:payload-fixtures": "node scripts/validate-alpaca-order-payload-fixtures.mjs",

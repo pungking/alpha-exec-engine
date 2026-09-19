@@ -22,7 +22,7 @@ const canonicalize = (value) => {
     Object.keys(value).sort().map((key) => [key, canonicalize(value[key])])
   );
 };
-const sha256Canonical = (value) => createHash("sha256")
+export const sha256Canonical = (value) => createHash("sha256")
   .update(JSON.stringify(canonicalize(value)))
   .digest("hex");
 

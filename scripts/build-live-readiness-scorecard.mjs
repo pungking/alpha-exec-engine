@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import fs from "fs";
 import path from "path";
+import { pathToFileURL } from "node:url";
 import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
 
-const STATE_DIR = process.env.LIVE_READINESS_STATE_DIR || process.env.STATE_DIR || "state";
+const RUN_AS_CLI = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const STATE_DIR = RUN_AS_CLI ? process.env.LIVE_READINESS_STATE_DIR || process.env.STATE_DIR || "state" : "state";
 const OUTPUT_JSON = path.join(STATE_DIR, "live-readiness-scorecard.json");
 const OUTPUT_MD = path.join(STATE_DIR, "live-readiness-scorecard.md");
 
@@ -581,7 +583,7 @@ function buildEntryOrderLifecycle({
   };
 }
 
-function buildPaperExitReadiness({
+export function buildPaperExitReadiness({
   preview,
   performance,
   positionProtectionAudit,
@@ -1585,7 +1587,9 @@ function renderMarkdown(report) {
   return `${lines.join("\n")}\n`;
 }
 
-const report = buildReport();
-writeJsonAtomic(OUTPUT_JSON, report);
-writeTextAtomic(OUTPUT_MD, renderMarkdown(report));
-console.log(`[LIVE_READINESS_SCORECARD] saved json=${OUTPUT_JSON} md=${OUTPUT_MD} verdict=${report.finalVerdict} score=${report.overallScore} attempted=${report.brokerMutationAttempted} submitted=${report.brokerMutationSubmitted}`);
+if (RUN_AS_CLI) {
+  const report = buildReport();
+  writeJsonAtomic(OUTPUT_JSON, report);
+  writeTextAtomic(OUTPUT_MD, renderMarkdown(report));
+  console.log(`[LIVE_READINESS_SCORECARD] saved json=${OUTPUT_JSON} md=${OUTPUT_MD} verdict=${report.finalVerdict} score=${report.overallScore} attempted=${report.brokerMutationAttempted} submitted=${report.brokerMutationSubmitted}`);
+}
