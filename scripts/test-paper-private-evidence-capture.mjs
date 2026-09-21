@@ -140,6 +140,9 @@ try {
     await run({ change: d => { d[filename].orders["private-key-0"].updatedAt = "2099-01-01T00:00:00Z"; }, expected: "CAPTURE_SOURCE_FUTURE_TIMESTAMP", expectedRequests: 0 });
   }
   await run({ change: d => { d["order-ledger.json"].orders["private-key-0"].updatedAt = "invalid"; }, expected: "CAPTURE_SOURCE_TIMESTAMP_INVALID", expectedRequests: 0 });
+  await run({ change: d => { d["order-ledger.json"].orders["private-key-0"].updatedAt = "2026-01-01T10:00:00"; }, expected: "CAPTURE_SOURCE_TIMESTAMP_INVALID", expectedRequests: 0 });
+  await run({ change: d => { d["order-idempotency.json"].releases = [{ ...d["order-idempotency.json"].orders["private-key-0"], releasedAt: "2099-01-01T00:00:00Z" }]; },
+    expected: "CAPTURE_SOURCE_FUTURE_TIMESTAMP", expectedRequests: 0 });
   await run({ change: d => { d["order-ledger.json"].orders.extra = { ...d["order-ledger.json"].orders["private-key-0"],
     idempotencyKey: "other-key", clientOrderId: "other-client", brokerOrderId: "other-broker" }; }, expected: "CAPTURE_REPORT_IDENTITY_AMBIGUOUS", expectedRequests: 0 });
   await run({ config: { sourceManifestSha256: "a".repeat(64) }, expected: "PRIVATE_FILE_HASH_MISMATCH", expectedRequests: 0 });
@@ -155,7 +158,7 @@ try {
   await run({ response: () => new Response("not JSON PRIVATE_SECRET_FIXTURE"), expected: "CAPTURE_BROKER_SCHEMA_INVALID", expectedRequests: 1 });
   await run({ response: () => new Response("x".repeat(8 * 1024 * 1024 + 1)), expected: "CAPTURE_RESPONSE_TOO_LARGE", expectedRequests: 1 });
   await run({ response: ({ group, body }) => group === "/v2/account" ? { body: { ...body, raw: "RAW_BODY_MARKER" } }
-    : group === "/v2/clock" ? { body: { timestamp: now, is_open: false, raw: "RAW_BODY_MARKER" } } : null });
+    : group === "/v2/clock" ? { body: { timestamp: now, is_open: false, next_open: "2099-01-01T00:00:00Z", raw: "RAW_BODY_MARKER" } } : null });
   await run({ response: ({ group, body }) => group === "/v2/positions" ? { body: [...body, { symbol: "FIXTURE_NEW", qty: "1", side: "long" }] } : null,
     expected: "CAPTURE_PREVIEW_PORTFOLIO_CHANGED" });
   await run({ response: ({ url }) => url.includes("status=open") ? { body: [{ id: "private-child", symbol: "FIXTURE_0", side: "sell", status: "new", type: "stop", stop_price: "80" }] } : null });

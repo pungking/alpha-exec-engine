@@ -164,7 +164,8 @@ substituting the embedded idempotency key; protection reporting follows the exac
 ledger row to its idempotency entry and retains that map key in its own output.
 Original state bytes are never changed. Present observation timestamps in source
 records and nested broker orders must parse and cannot be later than receipt;
-future source observations fail before any request. Scheduled next-open/expiry
+an explicit ISO8601 timezone is required, and future source observations
+(including idempotency releases) fail before any request. Scheduled next-open/expiry
 times are not treated as observations. No clock tolerance or timestamp fallback
 is introduced.
 

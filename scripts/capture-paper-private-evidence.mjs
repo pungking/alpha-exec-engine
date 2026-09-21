@@ -42,14 +42,16 @@ function writeJson(file, value) {
 function validateObservedTimestamps(value, nowMs, source) {
   // Observation timestamps only: future scheduled expiries and next-open times are not observations.
   const keys = new Set(["generatedAt", "generated_at", "createdAt", "updatedAt", "observedAt", "retrievedAt", "capturedAt",
-    "firstSeenAt", "lastSeenAt", "recoveryRecordedAt", "brokerCheckedAt", "brokerFillTimestamp", "filledAt", "submittedAt",
+    "firstSeenAt", "lastSeenAt", "releasedAt", "recoveryRecordedAt", "brokerCheckedAt", "brokerFillTimestamp", "filledAt", "submittedAt",
     "originalGeneratedAt", "effectiveGuardGeneratedAt", "plannedLedgerUpdatedAt", "sourceAsOf", "timestamp",
+    "idempotencyBrokerCheckedAt", "ledgerUpdatedAt", "lifecycleOriginalGeneratedAt", "performanceDashboardGeneratedAt", "reconciliationGeneratedAt",
     "created_at", "updated_at", "filled_at", "submitted_at", "canceled_at", "expired_at", "failed_at", "replaced_at"]);
   const visit = node => {
     if (!node || typeof node !== "object") return;
     for (const [key, item] of Object.entries(node)) {
       if (keys.has(key) && item != null && item !== "") {
-        const ms = typeof item === "string" ? Date.parse(item) : NaN;
+        const isoWithZone = typeof item === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(item);
+        const ms = isoWithZone ? Date.parse(item) : NaN;
         requireContract(Number.isFinite(ms), `CAPTURE_${source}_TIMESTAMP_INVALID`);
         requireContract(ms <= nowMs, `CAPTURE_${source}_FUTURE_TIMESTAMP`);
       } else if (item && typeof item === "object") visit(item);
