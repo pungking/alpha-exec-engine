@@ -345,10 +345,11 @@ const buildBrokerProtectionBySymbol = (openOrders) => {
   return { bySymbol, flattenedOrders };
 };
 
-const buildStatusBySymbol = () => {
-  const ledger = readJson(ORDER_LEDGER_PATH) || {};
-  const idempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {};
-  const fillability = readJson(FILLABILITY_PATH) || {};
+const buildStatusBySymbol = ({
+  ledger = readJson(ORDER_LEDGER_PATH) || {},
+  idempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {},
+  fillability = readJson(FILLABILITY_PATH) || {}
+} = {}) => {
   const bySymbol = new Map();
 
   const merge = (symbol, patch) => {
@@ -361,7 +362,7 @@ const buildStatusBySymbol = () => {
     });
   };
 
-  for (const row of Object.values(ledger?.orders || {})) {
+  for (const [ledgerKey, row] of Object.entries(ledger?.orders || {})) {
     const symbol = String(row?.symbol || "").toUpperCase();
     merge(symbol, {
       ledgerStatus: row?.status || null,
@@ -373,7 +374,7 @@ const buildStatusBySymbol = () => {
       plannedTargetSource: toNum(row?.takeProfitPrice) != null ? "order_ledger" : null,
       plannedStage6Hash: row?.stage6Hash || null,
       plannedStage6File: row?.stage6File || null,
-      plannedLedgerKey: row?.idempotencyKey || null,
+      plannedLedgerKey: ledgerKey,
       ledgerUpdatedAt: row?.updatedAt || null,
       observedAt: row?.updatedAt || row?.createdAt || null
     });
@@ -748,10 +749,10 @@ const derivePositionStatus = ({
   return "HOLD_MONITOR";
 };
 
-const buildLiveSummary = async () => {
-  const accountRes = await fetchAlpaca("/v2/account");
-  const positionsRes = await fetchAlpaca("/v2/positions");
-  const ordersRes = await fetchAlpaca("/v2/orders?status=open&nested=true&direction=desc&limit=500");
+export const buildLiveSummary = async (read = fetchAlpaca, state = undefined) => {
+  const accountRes = await read("/v2/account");
+  const positionsRes = await read("/v2/positions");
+  const ordersRes = await read("/v2/orders?status=open&nested=true&direction=desc&limit=500");
 
   if (!accountRes.ok || !positionsRes.ok || !ordersRes.ok) {
     return {
@@ -763,7 +764,7 @@ const buildLiveSummary = async () => {
   const account = accountRes.data && typeof accountRes.data === "object" ? accountRes.data : {};
   const positions = Array.isArray(positionsRes.data) ? positionsRes.data : [];
   const openOrders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
-  const statusBySymbol = buildStatusBySymbol();
+  const statusBySymbol = buildStatusBySymbol(state);
   const brokerProtection = buildBrokerProtectionBySymbol(openOrders);
   const orderBySymbol = brokerProtection.bySymbol;
 

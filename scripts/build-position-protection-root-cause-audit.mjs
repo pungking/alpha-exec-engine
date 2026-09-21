@@ -117,7 +117,7 @@ const findIdempotencyRow = (idempotency, symbol, preferredKey) =>
 const findFillabilityRow = (fillability, symbol) =>
   (Array.isArray(fillability?.rows) ? fillability.rows : []).find((row) => asSymbol(row?.symbol) === asSymbol(symbol)) || null;
 
-const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, idempotencyRow, fillabilityRow, lifecycleRow, performanceGeneratedAt, config, nowMs }) => {
+const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, ledgerKey, idempotencyRow, fillabilityRow, lifecycleRow, performanceGeneratedAt, config, nowMs }) => {
   const symbol = asSymbol(position?.symbol);
   const qty = toNum(position?.qty) ?? 0;
   const currentPrice = toNum(position?.currentPrice);
@@ -304,7 +304,7 @@ const classifyRow = ({ position, reconciliationRow, orderStateRow, ledgerRow, id
     staleStateMetadataIgnored: effectiveGuard.staleStateMetadataIgnored,
     plannedStage6Hash: ledgerRow?.stage6Hash || reconciliationRow?.plannedStage6Hash || position?.plannedStage6Hash || null,
     plannedStage6File: ledgerRow?.stage6File || reconciliationRow?.plannedStage6File || position?.plannedStage6File || null,
-    plannedLedgerKey: ledgerRow?.idempotencyKey || position?.plannedLedgerKey || reconciliationRow?.plannedLedgerKey || null,
+    plannedLedgerKey: ledgerRow ? ledgerKey : position?.plannedLedgerKey || reconciliationRow?.plannedLedgerKey || null,
     plannedLedgerUpdatedAt,
     metadataAgeMin,
     guardMetadataMaxAgeMin: config.guardMetadataMaxAgeMin,
@@ -423,12 +423,13 @@ const main = () => {
       const symbol = asSymbol(position?.symbol);
       const fillStateRow = fillStateBySymbol.get(symbol) || null;
       const ledgerKey = fillStateRow?.ledger?.key || position?.plannedLedgerKey || null;
-      const idempotencyKey = fillStateRow?.idempotency?.key || ledgerKey;
+      const ledgerRow = findLedgerRow(ledger, symbol, ledgerKey);
+      const idempotencyKey = fillStateRow?.idempotency?.key || ledgerRow?.idempotencyKey || ledgerKey;
       return classifyRow({
         position,
         reconciliationRow: reconciliationBySymbol.get(symbol) || null,
         orderStateRow: orderStateBySymbol.get(symbol) || null,
-        ledgerRow: findLedgerRow(ledger, symbol, ledgerKey),
+        ledgerRow, ledgerKey,
         idempotencyRow: findIdempotencyRow(idempotency, symbol, idempotencyKey),
         fillabilityRow: findFillabilityRow(fillability, symbol),
         lifecycleRow: lifecycleBySymbol.get(symbol) || null,

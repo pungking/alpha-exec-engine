@@ -112,3 +112,157 @@ abort on missing input, identity ambiguity or hash drift; no retry.
 Tests: `npm run ops:test:paper-closeout-private-evidence` plus existing limited
 recovery, live-readiness, lifecycle, protection, P&L and public-boundary tests.
 Rollback: revert this commit; no state migration or broker action is involved.
+
+## Complete private capture prerequisite
+
+Goal: `PAPER_COMPLETE_PRIVATE_EVIDENCE_CAPTURE_CONTRACT_V1`.
+The preserved run 34639087903 bundle failed the offline input preflight: the
+dashboard was absent and preview was duplicated. Do not re-audit that archive,
+download it again, choose a duplicate arbitrarily, or patch the historical bundle.
+The old private-input goal remains blocked; implementing this prerequisite does
+not make the old snapshot complete.
+
+Sequence: static fixtures and implementation -> CI/main integration -> separately
+approved bounded capture -> privately retained output audit. No scheduled job,
+workflow-dispatch path, cache restore/save or automatic broker request is added.
+This change implements only the first two steps. Existing producers and the
+offline auditor are reused; no new ledger, dependency or execution policy exists.
+
+### Private source preflight
+
+After separate approval, the local/server-side command is:
+
+```sh
+npm run ops:paper-private-evidence-capture -- SOURCE_DIRECTORY SOURCE_MANIFEST_SHA256 OUTPUT_DIRECTORY
+```
+
+Both input and the output parent must already be owner-only real directories
+(0700); output must not exist, overlap input or be inside this checkout. Source
+files must be owner-only regular files (0600), not symlinks. The command neither
+locates nor repairs inputs. Missing source or permissions fail before requests.
+Do not rewrite preserved source evidence to pass these checks.
+
+The separately pinned `source-manifest.json` requires:
+
+- `schemaVersion=paper-private-capture-source-v1`, `environment=PAPER`,
+  `evidenceBasis=PRESERVED_STATE_SNAPSHOT`, numeric-string `sourceRunId`.
+- `expectedPaperAccountSha256`: raw UTF-8 SHA-256 of the independently confirmed
+  PAPER account ID, retained privately. Do not print the ID or derive this pin
+  from an unverified response during capture.
+- `files`: raw-byte hashes of exactly one `last-dry-exec-preview.json`,
+  `order-ledger.json`, `order-idempotency.json`; optionally exact hashed
+  `fillability-report.json`, `fill-state-reconciliation-audit.json`,
+  `position-lifecycle-guard-source-plan.json`. No other filenames are accepted.
+
+Every limited-control identity is resolved by the exact embedded idempotency key
+and validated with the existing immutable Stage6/client/broker/side record
+contract. No symbol-only recovery or timestamp fabrication is performed. Competing
+historical rows for a target symbol fail closed because the reused report joins
+cannot safely disambiguate them. A nullable original broker ID stays nullable.
+The dashboard now carries the actual ledger map key rather than incorrectly
+substituting the embedded idempotency key; protection reporting follows the exact
+ledger row to its idempotency entry and retains that map key in its own output.
+Original state bytes are never changed. Present observation timestamps in source
+records and nested broker orders must parse and cannot be later than receipt;
+future source observations fail before any request. Scheduled next-open/expiry
+times are not treated as observations. No clock tolerance or timestamp fallback
+is introduced.
+
+Required process environment: `ALPHA_ENV=PAPER`,
+`ALPACA_BASE_URL=https://paper-api.alpaca.markets`, `READ_ONLY=true`,
+`EXEC_ENABLED=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`, PAPER credentials in
+`ALPACA_KEY_ID`/`ALPACA_SECRET_KEY`, and
+`PAPER_PRIVATE_CAPTURE_APPROVAL=AUTHORIZE PAPER COMPLETE PRIVATE EVIDENCE READ-ONLY ONE-SHOT`.
+Secrets are passed only to the bounded GET client, never to report subprocesses.
+
+### Request and persistence contract
+
+Budget is **five GETs total**, sequentially, each at most once:
+
+| Group | Fixed PAPER path |
+| --- | --- |
+| Account identity | `/v2/account` |
+| Full positions | `/v2/positions` |
+| Open orders | `/v2/orders?status=open&nested=true&direction=desc&limit=500` |
+| Closed orders | `/v2/orders?status=closed&nested=true&direction=asc&limit=500` |
+| Broker clock | `/v2/clock` |
+
+There are no fill-activity, per-symbol, by-ID or secondary requests. Timeout is
+15 seconds per request; response bytes are bounded to 8 MiB. Redirects, retry and
+pagination are disabled. HTTP/schema/account mismatch, future clock, >=500 orders
+or transport failure terminates the attempt. Short positions fail explicitly:
+the reused protection reports are long-only; no short is omitted or treated as
+sell-side protected. Supporting shorts requires a separate tested producer fix,
+not relaxed capture validation. Closed-order history completeness is **not**
+established by a single page; verified realized P&L is not promoted.
+
+Exclusive output-directory creation and `attempt.json` claim the attempt before
+the first request. Existing output, including failed/in-progress attempts, blocks
+all requests. It is not a cross-directory/global idempotency ledger: operators
+must not change the output path to retry under the same one-shot authorization.
+
+Only normalized reports and hashes are stored, never raw broker responses. All
+writes stay in the new private directory. Existing dashboard, reconciliation,
+order-state and protection producers generate the missing reports from captured
+responses and immutable private state copies; their stdout/stderr is suppressed.
+Full portfolio coverage is checked, including preview/report set parity. Missing
+rows or changed portfolio fail closed rather than creating synthetic preview rows.
+
+`complete/` contains the seven required files, their pinned `manifest.json`,
+aggregate `result-safe.json` and terminal `attempt-terminal.json` (`COMPLETE`).
+They are published together by atomic directory rename after exactly one offline
+audit and source-byte hash parity recheck. Failure preserves the attempt and
+private intermediates without a published complete package. The output root also
+keeps response hashes/times and normalized broker clock in
+`capture-provenance.json`; this file is private. The complete manifest hash is
+recorded before audit. Never upload this directory, manifest, intermediate
+Markdown or logs to a public workflow artifact.
+
+### Evidence meaning and finite exit
+
+`PAPER_PRIVATE_CAPTURE_COMPLETE_CURRENT_PROOF_REQUIRED` certifies the seven-file
+private input contract, **not** fresh exit readiness or order authorization.
+The old preview and state retain their exact bytes and original timestamps.
+Fresh sequential broker observations are distinct from preserved preview/state,
+and are not an atomic portfolio snapshot. Source-state authenticity/currentness,
+historical fill completeness and fresh Stage6/exit-action lineage remain unproven.
+The manifest's `PRESERVED_SNAPSHOT` basis is for offline descriptive replay only.
+It must never be relabeled as one coherent current broker/decision snapshot.
+
+Every aggregate keeps `currentBrokerEvidenceVerified=false`,
+`selectedCandidateCount=0`, `brokerSubmitAllowed=false`, `realizedPnlVerified=false`
+and no entry/scale-in/risk increase. Clock-open alone changes none of these.
+Preserved preview is never regenerated by changing `generatedAt`.
+`captureInputSha256` hashes the pinned source manifest and response hashes;
+identical evidence repeats deterministically. Complete artifact byte hashes also
+bind real report-generation timestamps and may differ between captures. This
+does not authorize rerunning a capture to test determinism.
+
+Next action is **one separately approved private capture**, only after the actual
+merged SHA, source path/manifest SHA, independent account pin and new output path
+have been fixed. If these inputs are unavailable, stop with that prerequisite;
+do not restore a cache or fetch a workflow artifact under this approval.
+The original blocked input goal cannot be declared passed using mixed new/old
+evidence. A capture failure terminates this attempt with one named blocker; no
+repeated audit or broker calls are authorized.
+
+```text
+AUTHORIZE PAPER COMPLETE PRIVATE EVIDENCE READ-ONLY ONE-SHOT —
+alpha-exec-engine merged main and separately pinned private source manifest only;
+preserve all original evidence, ledgers, idempotency and caches;
+one new owner-only private output directory; include every exact limited-control
+identity and the full portfolio; Alpaca PAPER account GET<=1, positions GET<=1,
+open-orders GET<=1, closed-orders GET<=1, clock GET<=1, total GET<=5;
+no retry, pagination, redirects, raw response storage or public private-evidence
+upload; atomically publish all seven files and their terminal receipt only after
+exact source hash parity and one offline audit; retain old preview timestamps;
+selectedCandidateCount=0, currentBrokerEvidenceVerified=false;
+no broker POST/PATCH/DELETE, order/protective-child mutation, ledger/idempotency
+write, cache restore/save, workflow/sidecar run or policy change;
+abort on input, identity, account, schema, scope, budget or hash mismatch.
+```
+
+Tests: `npm run ops:test:paper-private-evidence-capture` uses synthetic responses
+only, including missing input, exact/legacy identity, HTTP/timeout failures,
+private permissions, duplicate/failed attempts, limit/portfolio/short rejection,
+original-byte retention, redaction, terminal parity and deterministic input hash.

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { buildPaperExitReadiness } from "./build-live-readiness-scorecard.mjs";
 import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
 
-const FILES = Object.freeze({
+export const FILES = Object.freeze({
   preview: "last-dry-exec-preview.json",
   performance: "performance-dashboard.json",
   positionProtectionAudit: "position-protection-root-cause-audit.json",
@@ -19,7 +19,7 @@ const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
 const text = v => typeof v === "string" && v.trim().length > 0;
 const hash = v => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
-class ContractError extends Error {}
+export class ContractError extends Error {}
 const requireContract = (ok, code) => { if (!ok) throw new ContractError(code); };
 const SAFETY = Object.freeze({
   readOnly: true, execEnabled: false, liveOrderSubmitEnabled: false, wouldCreateBrokerPayload: false,
@@ -30,7 +30,7 @@ const SAFETY = Object.freeze({
   cacheRestored: false, cacheSaved: false, privateEvidencePublished: false,
 });
 
-function readPrivate(file, expectedHash) {
+export function readPrivateBytes(file, expectedHash) {
   requireContract(hash(expectedHash), "PRIVATE_HASH_PIN_REQUIRED");
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
@@ -39,10 +39,14 @@ function readPrivate(file, expectedHash) {
     requireContract((stat.mode & 0o077) === 0 && stat.uid === process.getuid(), "PRIVATE_INPUT_PERMISSIONS_INVALID");
     const bytes = fs.readFileSync(fd);
     requireContract(digest(bytes) === expectedHash, path.basename(file) === "manifest.json" ? "PRIVATE_MANIFEST_HASH_MISMATCH" : "PRIVATE_FILE_HASH_MISMATCH");
-    const value = JSON.parse(bytes);
-    requireContract(object(value), "PRIVATE_INPUT_SCHEMA_INVALID");
-    return value;
+    return bytes;
   } finally { fs.closeSync(fd); }
+}
+
+export function readPrivate(file, expectedHash) {
+  const value = JSON.parse(readPrivateBytes(file, expectedHash));
+  requireContract(object(value), "PRIVATE_INPUT_SCHEMA_INVALID");
+  return value;
 }
 
 function uniqueReportRows(rows) {
@@ -52,7 +56,7 @@ function uniqueReportRows(rows) {
   return rows;
 }
 
-function validateTargets(targets, reports) {
+export function validateTargets(targets, reports) {
   const ledger = reports.orderLedger.orders;
   const idem = reports.orderIdempotency.orders;
   requireContract(object(ledger) && object(idem) && Array.isArray(reports.orderIdempotency.releases), "PRIVATE_STATE_SCHEMA_INVALID");
@@ -89,7 +93,7 @@ function validateTargets(targets, reports) {
   return { symbols, missingOriginalBrokerIdRows };
 }
 
-function validateShadow(shadow) {
+export function validateShadow(shadow) {
   uniqueReportRows(shadow?.rows);
   const counts = { exitNotDueRows: 0, scaleDownDueRows: 0, exitPartialDueRows: 0, exitFullDueRows: 0, evidenceIncompleteRows: 0 };
   const actionCount = new Map([[null, "exitNotDueRows"], ["SCALE_DOWN", "scaleDownDueRows"], ["EXIT_PARTIAL", "exitPartialDueRows"], ["EXIT_FULL", "exitFullDueRows"]]);
