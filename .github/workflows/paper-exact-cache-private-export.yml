@@ -1,0 +1,98 @@
+name: paper-exact-cache-private-export
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval_phrase:
+        description: Required exact one-shot export approval
+        required: true
+        type: string
+      recipient_public_key:
+        description: Public RSA SPKI DER, base64; NEVER a private key
+        required: true
+        type: string
+      recipient_sha256:
+        description: Locally pinned public DER SHA-256
+        required: true
+        type: string
+      expected_main_sha:
+        description: Exact reviewed merged main commit
+        required: true
+        type: string
+      expected_cache_id:
+        description: Exact approved cache metadata ID
+        required: true
+        type: string
+      expected_cache_version:
+        description: Exact approved cache metadata version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: paper-exact-cache-private-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      READ_ONLY: "true"
+      EXEC_ENABLED: "false"
+      LIVE_ORDER_SUBMIT_ENABLED: "false"
+      APPROVAL_PHRASE: ${{ inputs.approval_phrase }}
+      RECIPIENT_PUBLIC_KEY: ${{ inputs.recipient_public_key }}
+      RECIPIENT_SHA256: ${{ inputs.recipient_sha256 }}
+      EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+      EXPECTED_CACHE_ID: ${{ inputs.expected_cache_id }}
+      EXPECTED_CACHE_VERSION: ${{ inputs.expected_cache_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/paper-exact-cache-private-export.mjs
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Pin exact metadata and reject any prior dispatch or rerun
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "${RUNNER_TEMP}/paper-export"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/paper-exact-cache-private-export.yml/runs?event=workflow_dispatch&per_page=100" > "${RUNNER_TEMP}/paper-export/history.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=sidecar-state-main-35610146111&per_page=100" > "${RUNNER_TEMP}/paper-export/cache.json"
+          node scripts/paper-exact-cache-private-export.mjs preflight "${RUNNER_TEMP}/paper-export/history.json" "${RUNNER_TEMP}/paper-export/cache.json"
+
+      - name: Restore only the exact approved cache into this disposable runner
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: sidecar-state-main-35610146111
+          fail-on-cache-miss: true
+
+      - name: Encrypt exactly three unchanged source files
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+        run: node scripts/paper-exact-cache-private-export.mjs encrypt state "${RUNNER_TEMP}/paper-export/envelope.json"
+
+      - name: Upload ciphertext only
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-exact-cache-encrypted-${{ github.run_id }}
+          path: ${{ runner.temp }}/paper-export/envelope.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
