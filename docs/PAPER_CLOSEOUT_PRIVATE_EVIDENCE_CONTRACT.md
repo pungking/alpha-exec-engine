@@ -267,3 +267,64 @@ Tests: `npm run ops:test:paper-private-evidence-capture` uses synthetic response
 only, including missing input, exact/legacy identity, HTTP/timeout failures,
 private permissions, duplicate/failed attempts, limit/portfolio/short rejection,
 original-byte retention, redaction, terminal parity and deterministic input hash.
+
+## Exact-cache encrypted source export
+
+The separately approved `paper-exact-cache-private-export.yml` is manual-only
+and fixed to `sidecar-state-main-35610146111`. It does not run the capture,
+sidecar, migration or broker code. Before restore it requires the exact reviewed
+main SHA, cache ID/version, approval phrase, and locally pinned public-key hash.
+Workflow run attempt must be one; its dispatch history must contain only the
+current run. A prior/failed/concurrent dispatch blocks restore. Do not delete run
+history or change the workflow name to retry this authorization.
+
+`actions/cache/restore` restores only into a disposable runner with no broker
+secrets. No fallback keys or cache-save step exist. Both `cache-hit=true` and the
+exact matched key are mandatory. The checkout is sparse, contains no tracked
+state, and persists no checkout credential. Only these original bytes are read:
+
+- `order-ledger.json`
+- `order-idempotency.json`
+- `last-dry-exec-preview.json`
+
+The exporter rejects missing, symlinked, hard-linked, oversized or non-object
+JSON files and recognized nonempty credential fields. It never logs source JSON
+or parser errors. Source hashes are checked again before publishing ciphertext.
+This is transport validation, not proof that cache content is trustworthy,
+current, complete, PAPER-account matched or reconstruction-ready.
+
+An RSA key pair (at least 3072 bits) is created locally. The private key stays in
+an owner-only local directory, never a workflow input, repository secret or
+artifact. Only the SPKI DER public key and its SHA-256 enter the runner. The
+Node standard crypto library wraps a fresh 256-bit AES key with RSA-OAEP-SHA256;
+AES-256-GCM encrypts the three files and their hashes with a fresh 96-bit nonce.
+Source key/run, export run/commit and recipient fingerprint are authenticated
+additional data. Ciphertext hash is reported as a safe aggregate. Encryption
+alone does not authenticate the sender: the operator must independently pin
+that hash from the exact successful reviewed workflow run.
+
+The only uploaded file is `envelope.json`, retained for one day. No plaintext,
+private key, manifest or state directory is uploaded. After one download, use:
+
+```sh
+node scripts/paper-exact-cache-private-export.mjs decrypt \
+  ENVELOPE_FILE LOCAL_PRIVATE_KEY NEW_PRIVATE_OUTPUT_DIRECTORY \
+  PINNED_ENVELOPE_SHA256 EXPORT_RUN_ID REVIEWED_MAIN_SHA
+```
+
+Decryption requires an owner-only parent/key, authenticates the complete
+envelope and verifies all three byte hashes before atomically publishing the
+`source` directory (0700, files 0600). An existing output blocks reuse. Failure
+must not be converted into a second dispatch or artifact download. Decryption
+preserves original observation timestamps and labels the resulting
+`export-manifest.json` as `UNVERIFIED_CACHE_SNAPSHOT`. It is **not** a capture
+`source-manifest.json`; no independent PAPER account hash is fabricated.
+Current broker proof remains false and selected candidate count remains zero.
+
+GitHub Actions caches are not a confidential vault or durable ledger backup.
+This one-shot does not fix ongoing cache confidentiality, certify historical
+recovery, or authorize changing cache persistence. It preserves the source
+cache and all prior evidence. No execution policy or Stage6 contract changes.
+
+Validation: `node scripts/test-paper-exact-cache-private-export.mjs` uses only
+synthetic files and locally generated test keys; broker/cache requests are zero.
