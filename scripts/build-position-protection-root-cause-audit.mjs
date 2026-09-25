@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
 import {
   PROTECTION_LANES,
   classifyProtectionLane,
@@ -404,9 +405,11 @@ const main = () => {
   const performance = readJson(PERFORMANCE_PATH);
   const reconciliation = readJson(RECONCILIATION_PATH);
   const orderState = readJson(ORDER_STATE_PATH);
-  const ledger = readJson(ORDER_LEDGER_PATH);
-  const idempotency = readJson(IDEMPOTENCY_PATH);
+  const originalLedger = readJson(ORDER_LEDGER_PATH);
+  const originalIdempotency = readJson(IDEMPOTENCY_PATH);
   const fillability = readJson(FILLABILITY_PATH);
+  const { ledger, idempotency } = buildExactPrivateReportState({ ledger: originalLedger,
+    idempotency: originalIdempotency, fillability }, performance?.privateCaptureTargets);
   const fillStateReconciliation = readJson(FILL_STATE_RECONCILIATION_PATH);
   const preview = readJson(PREVIEW_PATH);
   const lifecyclePlan = readJson(LIFECYCLE_GUARD_SOURCE_PATH);
@@ -422,9 +425,10 @@ const main = () => {
     .map((position) => {
       const symbol = asSymbol(position?.symbol);
       const fillStateRow = fillStateBySymbol.get(symbol) || null;
-      const ledgerKey = fillStateRow?.ledger?.key || position?.plannedLedgerKey || null;
+      const target = performance?.privateCaptureTargets?.find(t => ledger.orders[t.ledgerKey]?.symbol?.toUpperCase() === symbol);
+      const ledgerKey = target?.ledgerKey || fillStateRow?.ledger?.key || position?.plannedLedgerKey || null;
       const ledgerRow = findLedgerRow(ledger, symbol, ledgerKey);
-      const idempotencyKey = fillStateRow?.idempotency?.key || ledgerRow?.idempotencyKey || ledgerKey;
+      const idempotencyKey = target?.idempotencyKey || fillStateRow?.idempotency?.key || ledgerRow?.idempotencyKey || ledgerKey;
       return classifyRow({
         position,
         reconciliationRow: reconciliationBySymbol.get(symbol) || null,

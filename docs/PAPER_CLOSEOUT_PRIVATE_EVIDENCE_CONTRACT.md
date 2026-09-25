@@ -156,9 +156,11 @@ The separately pinned `source-manifest.json` requires:
 
 Every limited-control identity is resolved by the exact embedded idempotency key
 and validated with the existing immutable Stage6/client/broker/side record
-contract. No symbol-only recovery or timestamp fabrication is performed. Competing
-historical rows for a target symbol fail closed because the reused report joins
-cannot safely disambiguate them. A nullable original broker ID stays nullable.
+contract. No symbol-only recovery or timestamp fabrication is performed. Exact
+private target bindings select report inputs without changing the original state.
+Distinct historical identities cannot overwrite the selected target merely by
+sharing its symbol or having a newer timestamp. Unbound or conflicting identities
+still fail closed. A nullable original broker ID stays nullable.
 The dashboard now carries the actual ledger map key rather than incorrectly
 substituting the embedded idempotency key; protection reporting follows the exact
 ledger row to its idempotency entry and retains that map key in its own output.
@@ -328,3 +330,39 @@ cache and all prior evidence. No execution policy or Stage6 contract changes.
 
 Validation: `node scripts/test-paper-exact-cache-private-export.mjs` uses only
 synthetic files and locally generated test keys; broker/cache requests are zero.
+
+## Exact private report identity closure
+
+Goal: `PAPER_PRIVATE_CAPTURE_EXACT_IDENTITY_REPORT_JOIN_V1`.
+
+The capture requires exactly five unique limited-control identities. The existing
+exact record/hash validator runs before network access. A shared in-memory report
+view then selects their exact ledger and idempotency map entries. Dashboard,
+order-state and protection reports reuse this view; no original file is filtered,
+rewritten or normalized. All unscoped portfolio history remains visible. Full
+original ledgers still feed exit-conflict and realized-P&L checks.
+
+The private dashboard carries `privateCaptureTargets` (exact keys and record
+hashes). The offline auditor checks it against the pinned manifest and verifies
+ledger/Stage6 parity across dashboard, child reconciliation, protection and
+order-state reports. This additive field is omitted by the public dashboard.
+Ordinary producers without this explicit private scope retain existing behavior.
+
+Same-identity release evidence remains visible, including terminal conflicts.
+Distinct historical release identities may be excluded from the target report
+view; symbol-only releases, conflicting identity anchors and unidentified
+same-symbol state rows fail closed. Duplicate embedded idempotency keys also
+fail closed; a missing original broker ID cannot prove a release is distinct.
+A scoped row in an optional historical
+fillability, fill-state or lifecycle report is not yet identity-certified and
+blocks capture before requests rather than overriding exact evidence. Unscoped
+optional rows are unchanged. This intentionally does not claim those optional
+report schemas have an exact-target contract.
+
+Tests use synthetic responses only: competing historical rows in both insertion
+orders, legacy map keys, same-identity releases, conflicting/unbound evidence,
+report-binding tampering, five-row scope, unchanged input hashes, public redaction
+and ordinary-call compatibility. No account pin is derived from the recovered
+snapshot, and no broker capture is authorized by static test success. Independent
+PAPER account confirmation and a separately approved bounded capture remain
+required. Rollback is revert of the code commit; no state migration is needed.

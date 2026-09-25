@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
+import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
 
 const STATE_DIR = "state";
 const LOOP_PATH = `${STATE_DIR}/stage6-20trade-loop.json`;
@@ -348,8 +349,10 @@ const buildBrokerProtectionBySymbol = (openOrders) => {
 const buildStatusBySymbol = ({
   ledger = readJson(ORDER_LEDGER_PATH) || {},
   idempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {},
-  fillability = readJson(FILLABILITY_PATH) || {}
+  fillability = readJson(FILLABILITY_PATH) || {},
+  privateCaptureTargets
 } = {}) => {
+  ({ ledger, idempotency, fillability } = buildExactPrivateReportState({ ledger, idempotency, fillability }, privateCaptureTargets));
   const bySymbol = new Map();
 
   const merge = (symbol, patch) => {
