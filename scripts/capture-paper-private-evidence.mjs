@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { FILES, ContractError, readPrivate, readPrivateBytes, validateTargets, validateShadow, auditPrivateCloseoutEvidence } from "./audit-paper-closeout-private-evidence.mjs";
+import { FILES, ContractError, readPrivate, readPrivateBytes, validateTargets, validateShadow, buildExactPrivateReportState, auditPrivateCloseoutEvidence } from "./audit-paper-closeout-private-evidence.mjs";
 import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
 import { buildLiveSummary, buildBrokerRealizedPnlSummary } from "./build-performance-dashboard.mjs";
 
@@ -76,12 +76,13 @@ function preflight(directory, pin) {
     requireContract(matches.length === 1, matches.length ? "PRIVATE_IDENTITY_AMBIGUOUS" : "PRIVATE_EXACT_ENTRY_MISSING");
     return { ledgerKey: matches[0][0], idempotencyKey: key, ledgerRecordSha256: sha256Canonical(matches[0][1]), idempotencyRecordSha256: sha256Canonical(row) };
   }).sort((a, b) => a.idempotencyKey.localeCompare(b.idempotencyKey));
-  validateTargets(targets, { orderLedger: ledger, orderIdempotency: idem });
-  // Existing report joins are symbol-based; never let another historical row replace an exact target.
-  for (const { ledgerKey } of targets) {
-    const symbol = ledger.orders[ledgerKey].symbol.toUpperCase();
-    requireContract([ledger, idem].every(state => Object.values(state.orders)
-      .filter(row => String(row?.symbol || "").toUpperCase() === symbol).length === 1), "CAPTURE_REPORT_IDENTITY_AMBIGUOUS");
+  requireContract(targets.length === 5, "CAPTURE_TARGET_COUNT_INVALID");
+  const { symbols } = validateTargets(targets, { orderLedger: ledger, orderIdempotency: idem });
+  buildExactPrivateReportState({ ledger, idempotency: idem }, targets);
+  // Optional historical reports have no proven exact-target join contract. Never override a pinned target with them.
+  for (const name of OPTIONAL) {
+    requireContract(!(values[name]?.rows || []).some(row => symbols.has(String(row?.symbol || "").toUpperCase())),
+      "PRIVATE_REPORT_IDENTITY_UNVERIFIED");
   }
   validateShadow(preview.paperExitShadowIntent);
   requireContract(Number.isFinite(Date.parse(preview.generatedAt)) && preview.mode?.readOnly === true && preview.mode?.execEnabled === false
@@ -205,8 +206,9 @@ export async function capturePrivateEvidence({ sourceDirectory, sourceManifestSh
     const { results, receipts } = await brokerSnapshot({ fetchImpl, env, requestCounts, manifest: source.manifest, now });
     const orderLedger = source.values[FILES.orderLedger], orderIdempotency = source.values[FILES.orderIdempotency];
     const live = await buildLiveSummary(async route => results[Object.keys(ROUTES).find(k => ROUTES[k] === route)],
-      { ledger: orderLedger, idempotency: orderIdempotency, fillability: source.values["fillability-report.json"] || {} });
-    const dashboard = { generatedAt: now().toISOString(), live,
+      { ledger: orderLedger, idempotency: orderIdempotency, fillability: source.values["fillability-report.json"] || {},
+        privateCaptureTargets: source.targets });
+    const dashboard = { generatedAt: now().toISOString(), live, privateCaptureTargets: source.targets,
       realizedPnl: buildBrokerRealizedPnlSummary({ orderLedger, orderIdempotency, closedOrders: results.closedOrders.data,
         currentPositions: live.positions, paperMode: true, closedOrdersSourceComplete: false, positionsSourceComplete: true }) };
     writeJson(path.join(work, FILES.performance), dashboard);

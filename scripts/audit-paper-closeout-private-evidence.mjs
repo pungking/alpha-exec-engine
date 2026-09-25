@@ -93,6 +93,39 @@ export function validateTargets(targets, reports) {
   return { symbols, missingOriginalBrokerIdRows };
 }
 
+export function buildExactPrivateReportState({ ledger, idempotency, fillability = {} }, targets) {
+  if (targets === undefined) return { ledger, idempotency, fillability };
+  const { symbols } = validateTargets(targets, { orderLedger: ledger, orderIdempotency: idempotency });
+  requireContract(targets.every(t => Object.entries(idempotency.orders)
+    .every(([key, row]) => key === t.idempotencyKey || row?.idempotencyKey !== t.idempotencyKey)), "PRIVATE_IDENTITY_AMBIGUOUS");
+  const ledgerKeys = new Set(targets.map(t => t.ledgerKey)), idemKeys = new Set(targets.map(t => t.idempotencyKey));
+  const bySymbol = new Map(targets.map(t => [ledger.orders[t.ledgerKey].symbol.toUpperCase(), t]));
+  const scoped = row => symbols.has(String(row?.symbol || "").toUpperCase());
+  // In-memory report selection only. All original state and exit-order evidence remain intact.
+  const orders = (state, keys) => Object.fromEntries(Object.entries(state.orders)
+    .filter(([key, row]) => {
+      if (!scoped(row) || keys.has(key)) return true;
+      requireContract(text(row.clientOrderId), "PRIVATE_REPORT_IDENTITY_UNVERIFIED");
+      return false;
+    }));
+  const releases = idempotency.releases.filter(row => {
+    const target = bySymbol.get(String(row?.symbol || "").toUpperCase());
+    if (!target) return true;
+    const original = ledger.orders[target.ledgerKey];
+    const anchors = [["key", target.idempotencyKey], ["idempotencyKey", target.idempotencyKey],
+      ["clientOrderId", original.clientOrderId], ["brokerOrderId", original.brokerOrderId]].filter(([k]) => row[k] != null);
+    requireContract(anchors.length > 0 && anchors.every(([k]) => text(row[k])), "PRIVATE_REPORT_IDENTITY_UNVERIFIED");
+    requireContract(anchors.some(([, expected]) => text(expected)), "PRIVATE_REPORT_IDENTITY_UNVERIFIED");
+    if (!anchors.some(([k, expected]) => row[k] === expected)) return false;
+    requireContract(anchors.every(([k, expected]) => row[k] === expected)
+      && ["side", "stage6File", "stage6Hash"].every(k => row[k] == null || row[k] === original[k]), "PRIVATE_REPORT_IDENTITY_CONFLICT");
+    return true; // A release of this exact identity must remain visible as a possible terminal conflict.
+  });
+  requireContract(!(fillability?.rows || []).some(scoped), "PRIVATE_REPORT_IDENTITY_UNVERIFIED");
+  return { ledger: { ...ledger, orders: orders(ledger, ledgerKeys) },
+    idempotency: { ...idempotency, orders: orders(idempotency, idemKeys), releases }, fillability };
+}
+
 export function validateShadow(shadow) {
   uniqueReportRows(shadow?.rows);
   const counts = { exitNotDueRows: 0, scaleDownDueRows: 0, exitPartialDueRows: 0, exitFullDueRows: 0, evidenceIncompleteRows: 0 };
@@ -118,6 +151,21 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
   const { symbols, missingOriginalBrokerIdRows } = validateTargets(manifest.targets, reports);
   const positions = uniqueReportRows(reports.performance.live?.positions);
   for (const key of ["positionProtectionAudit", "brokerChildReconciliation", "orderState"]) uniqueReportRows(reports[key].rows);
+  if (reports.performance.privateCaptureTargets !== undefined) {
+    requireContract(sha256Canonical(reports.performance.privateCaptureTargets) === sha256Canonical(manifest.targets), "PRIVATE_REPORT_TARGET_MISMATCH");
+    buildExactPrivateReportState({ ledger: reports.orderLedger, idempotency: reports.orderIdempotency }, manifest.targets);
+    for (const target of manifest.targets) {
+      const original = reports.orderLedger.orders[target.ledgerKey];
+      const find = rows => rows.find(r => r.symbol.toUpperCase() === original.symbol.toUpperCase());
+      for (const rows of [positions, reports.positionProtectionAudit.rows, reports.brokerChildReconciliation.rows]) {
+        const row = find(rows);
+        requireContract(row?.plannedLedgerKey === target.ledgerKey && row.plannedStage6File === original.stage6File
+          && row.plannedStage6Hash === original.stage6Hash, "PRIVATE_REPORT_TARGET_MISMATCH");
+      }
+      const row = find(reports.orderState.rows);
+      requireContract(row?.plannedLedgerKey === target.ledgerKey && row.plannedIdempotencyKey === target.idempotencyKey, "PRIVATE_REPORT_TARGET_MISMATCH");
+    }
+  }
   const shadow = reports.preview.paperExitShadowIntent;
   validateShadow(shadow);
   requireContract(reports.preview.mode?.readOnly === true && reports.preview.mode?.execEnabled === false

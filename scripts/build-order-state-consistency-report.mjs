@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
 
 const STATE_DIR = String(process.env.ORDER_STATE_CONSISTENCY_STATE_DIR || "state").trim() || "state";
 const FILES = {
@@ -73,6 +74,7 @@ const latestBySymbol = (rows, mapper) => {
 };
 
 const collectRows = ({ ledger, idempotency, fillability, performance }) => {
+  ({ ledger, idempotency, fillability } = buildExactPrivateReportState({ ledger, idempotency, fillability }, performance?.privateCaptureTargets));
   const ledgerBySymbol = latestBySymbol(Object.values(ledger?.orders || {}), (row) => ({
     symbol: String(row?.symbol || "").toUpperCase(),
     status: row?.status || null,
@@ -118,13 +120,18 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
   ]);
 
   return [...symbols].sort().map((symbol) => {
+    const target = performance?.privateCaptureTargets?.find(t => ledger.orders[t.ledgerKey]?.symbol?.toUpperCase() === symbol);
     const states = {
       ledger: ledgerBySymbol.get(symbol) || null,
       idempotency: idempotencyBySymbol.get(symbol) || null,
       fillability: fillabilityBySymbol.get(symbol) || null,
       performance: performanceBySymbol.get(symbol) || null
     };
-    const observed = Object.values(states).map((row) => row?.normalized).filter(Boolean);
+    // An exact identity's terminal contradiction cannot be erased by a newer release.
+    const terminalHistory = target ? idempotencyRows
+      .filter(row => String(row?.symbol || "").toUpperCase() === symbol)
+      .map(row => normalizeFillState(row?.brokerStatus)).filter(isTerminalState) : [];
+    const observed = Object.values(states).map((row) => row?.normalized).filter(Boolean).concat(terminalHistory);
     const unique = [...new Set(observed)];
     const terminalObserved = unique.filter(isTerminalState);
     const hasTerminalEvidence = terminalObserved.length > 0;
@@ -164,6 +171,7 @@ const collectRows = ({ ledger, idempotency, fillability, performance }) => {
     }
     return {
       symbol,
+      ...(target ? { plannedLedgerKey: target.ledgerKey, plannedIdempotencyKey: target.idempotencyKey } : {}),
       status,
       category,
       normalized: unique.length === 1 ? unique[0] : unique.length > 1 ? "mixed" : null,
