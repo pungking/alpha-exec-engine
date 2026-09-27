@@ -8,12 +8,21 @@ import { spawnSync } from "node:child_process";
 // to export paths or shell overrides must update this security contract.
 const assertWorkflowBoundary = (workflow) => {
   const steps = workflow.split(/^      - /m).slice(1).map(step => step.split(/\n {0,4}\S/)[0]);
-  assert.equal((workflow.match(/actions\/upload-artifact@/g) || []).length, 1, "no additional upload syntax");
   const uploads = steps.filter(step => /uses:\s*[\"\']?actions\/upload-artifact@/.test(step));
-  assert.equal(uploads.length, 1, "exactly one public artifact export");
-  assert.match(uploads[0], /path: \$\{\{ runner.temp \}\}\/sidecar-public-evidence\/evidence.json\n/);
-  assert.equal((uploads[0].match(/^\s+path:/gm) || []).length, 1);
-  assert.ok(!uploads[0].includes("state/") && !uploads[0].includes("**"));
+  const encrypted = uploads.filter(s => /^name: Upload encrypted same-run private evidence\n/.test(s));
+  const expected = workflow.includes("name: sidecar-dry-run\n") ? 2 : 1;
+  assert.equal((workflow.match(/actions\/upload-artifact@/g) || []).length, expected, "no additional upload syntax");
+  assert.equal(uploads.length, expected);
+  assert.equal(encrypted.length, expected - 1);
+  for (const step of uploads) {
+    assert.equal((step.match(/^\s+path:/gm) || []).length, 1);
+    assert.ok(!step.includes("state/") && !step.includes("**"));
+    if (encrypted.includes(step)) {
+      assert.match(step, /path: \$\{\{ runner.temp \}\}\/paper-runtime-encrypted\/envelope.json\n/);
+      assert.match(step, /steps.paper_binding.outcome == 'success' && steps.paper_binding.outputs.encrypted == 'true'/);
+      assert.match(step, /retention-days: 1\n/);
+    } else assert.match(step, /path: \$\{\{ runner.temp \}\}\/sidecar-public-evidence\/evidence.json\n/);
+  }
   const shells = [...workflow.matchAll(/^\s+shell:\s*(.+)$/gm)].map(match => match[1]);
   assert.deepEqual(shells, ["bash scripts/run-private-sidecar-step.sh {0}", "bash"]);
   const publicSteps = steps.filter(step => /^\s+shell:/m.test(step));
@@ -78,6 +87,23 @@ assert.equal(evidence.headSha, null);
 assert.ok(![first, result.stdout, result.stderr, fs.readFileSync(summary, "utf8")].join("").includes(secret));
 assert.equal(runExport().status, 0);
 assert.equal(fs.readFileSync(output, "utf8"), first, "deterministic aggregate");
+env.GITHUB_RUN_ID = "12345"; env.GITHUB_SHA = "a".repeat(40);
+const binding = { status: "PAPER_RUNTIME_PRIVATE_BINDING_ENCRYPTED", runId: env.GITHUB_RUN_ID, headSha: env.GITHUB_SHA,
+  envelopeSha256: "b".repeat(64), bindingSha256: "c".repeat(64), sameRunBindingVerified: true, raw: secret };
+const bindingFile = path.join(dir, "paper-runtime-binding-safe.json");
+fs.writeFileSync(bindingFile, JSON.stringify(binding));
+assert.equal(runExport().status, 0);
+const bound = JSON.parse(fs.readFileSync(output, "utf8")).privateBinding;
+assert.equal(bound.sameRunBindingVerified, true);
+assert.equal(bound.executionReadinessVerified, false);
+assert.equal(bound.envelopeSha256, binding.envelopeSha256);
+assert.ok(!fs.readFileSync(output, "utf8").includes(secret));
+fs.writeFileSync(bindingFile, JSON.stringify({ ...binding, runId: "777" }));
+assert.equal(runExport().status, 0);
+const mismatched = JSON.parse(fs.readFileSync(output, "utf8")).privateBinding;
+assert.equal(mismatched.sameRunBindingVerified, false);
+assert.equal(mismatched.status, "BINDING_INCOMPLETE");
+assert.equal(mismatched.envelopeSha256, null);
 assert.equal(fs.readFileSync(path.join(state, "live-readiness-scorecard.json"), "utf8"), JSON.stringify(raw));
 fs.writeFileSync(path.join(state, "live-readiness-scorecard.json"), "{invalid " + secret);
 assert.equal(runExport().status, 0);

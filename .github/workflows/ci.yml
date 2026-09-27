@@ -46,6 +46,8 @@ jobs:
         run: npm run ops:test:paper-private-evidence-capture
       - name: Exact-cache encrypted export (synthetic files only)
         run: node scripts/test-paper-exact-cache-private-export.mjs
+      - name: Same-run private evidence binding (offline synthetic files only)
+        run: npm run ops:test:paper-runtime-private-binding
       - name: Sidecar runtime evidence semantic contract
         run: npm run ops:test:sidecar-runtime-evidence
       - name: Telegram routing policy audit

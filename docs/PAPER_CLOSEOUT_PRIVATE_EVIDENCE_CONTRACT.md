@@ -366,3 +366,83 @@ and ordinary-call compatibility. No account pin is derived from the recovered
 snapshot, and no broker capture is authorized by static test success. Independent
 PAPER account confirmation and a separately approved bounded capture remain
 required. Rollback is revert of the code commit; no state migration is needed.
+
+## Current runtime binding (static integration)
+
+Goal: `PAPER_CURRENT_RUNTIME_PRIVATE_EVIDENCE_BINDING_V1`.
+
+The preserved snapshot goal remains blocked, not retroactively completed. A new
+runtime binding must never relabel an old preview with a new broker observation.
+
+Implementation sequence:
+1. Failing synthetic fixtures for same-run producer receipts, mixed/stale inputs,
+   immutable state hashes, safe encrypted delivery and zero network access.
+2. Reuse the private step wrapper to bracket the existing preview/dashboard/report
+   producers. Keep receipts in RUNNER_TEMP, never in the state cache. Require
+   successful producer completion, changed output, bounded generation timestamps,
+   unchanged report inputs and exact final-byte parity. No producer is rerun.
+3. Bind all seven required files and consumed auxiliary report files. Reuse the
+   existing RSA-OAEP-SHA256/AES-256-GCM implementation; upload only ciphertext when
+   a pinned public recipient is configured. Missing recipient means no export.
+4. Run offline fixtures, safety/type/build checks and PR CI, then merge. Do not
+   run a workflow, broker request, cache operation or state recovery in this task.
+
+Binding means files were observed around successful producers in one automatic
+run, not that recovered history is authentic or that PAPER execution is ready.
+Restored ledgers retain their original bytes and timestamps. Stage6 source-byte
+verification, broker identity/closed-history completeness, protection and market
+session eligibility remain separate checks; selectedCandidateCount stays zero
+in the binding result. No readiness or submission consumer is changed.
+
+Next runtime evaluation uses one newly bound automatic bundle, never another
+audit of the missing historical snapshot. Public recipient configuration and
+any runtime execution are not performed by static integration.
+
+### Deployment and evidence use
+
+The four receipt phases bracket the existing bootstrap, performance dashboard,
+order-state report and final protection-chain rebuild. They do not invoke those
+producers a second time. A failed/missing/no-op producer, duplicate receipt,
+non-monotonic generation time, input drift or final hash mismatch prevents an
+encrypted bundle. Binding failure does not suppress existing canonical reporting.
+Even failures before a receipt can be created invalidate that run's binding set;
+repairing inputs or repeating a step cannot reuse earlier successful receipts.
+Report-critical auxiliary inputs are included with their original timestamps;
+an auxiliary file is not certified fresh just because a report consumed it.
+
+`PAPER_PRIVATE_EVIDENCE_PUBLIC_KEY` is base64 DER SPKI RSA (at least 3072 bits),
+and `PAPER_PRIVATE_EVIDENCE_PUBLIC_KEY_SHA256` pins those decoded public bytes.
+Both are repository variables, **not** a private key. They are not set by this
+change. Without them, automatic runs emit `BINDING_RECIPIENT_NOT_CONFIGURED` and
+upload no private bundle. When separately configured, only original main
+schedule/repository-dispatch runs can seal a bundle. Manual runs, reruns and
+execution-enabled settings cannot. The private key never enters CI.
+
+The only additional private-artifact upload path is
+`RUNNER_TEMP/paper-runtime-encrypted/envelope.json` (one-day retention). No glob,
+state folder, plaintext manifest, logs or raw API responses are uploaded. The
+ordinary public aggregate contains only binding status, run-bound hashes and
+booleans. The existing cache export one-shot and source cache are unchanged.
+The private dashboard now includes the SHA-256 of the actual account ID from its
+existing account GET, so local review can compare a previously independently
+confirmed account pin without performing another request. This hash is omitted
+from public dashboard/summary output. It is evidence for comparison, not an
+independent account confirmation.
+
+Local decryption (arguments are paths, hashes and non-sensitive GitHub metadata):
+`node scripts/paper-runtime-private-binding.mjs decrypt <envelope> <private-key-file> <new-private-directory> <trusted-envelope-sha256> <run-id> <head-sha>`.
+Take the envelope hash from the authenticated GitHub run's safe aggregate, not
+from an untrusted envelope alone. Encryption is confidentiality/authenticated
+ciphertext, not a producer digital signature. Decryption validates context,
+receipt/input/output parity and every file before publishing a 0700 directory
+with 0600 files. It never writes the original state or promotes execution/P&L.
+
+Static done-when: new binding fixture, existing encrypted export/capture/auditor,
+public-boundary, lifecycle/protection/idempotency safety tests and PR CI pass;
+no production runtime or broker request is performed. Runtime acceptance remains
+`pending_same_run_private_evidence_binding_proof`, followed by offline identity,
+protection, Stage6 and market-session review of that one coherent bundle.
+This is not completion of the missing-snapshot goal or authorization to close a
+position. Existing public-repository state-cache confidentiality is also not
+fixed by encrypting this additional artifact; cache migration requires its own
+bounded scope. Rollback: revert this integration commit; no ledger migration.

@@ -16,13 +16,13 @@ const object = v => v !== null && typeof v === "object" && !Array.isArray(v);
 class ExportError extends Error {}
 const requireContract = (ok, code) => { if (!ok) throw new ExportError(code); };
 
-function directory(dir, privateOnly = false) {
+export function directory(dir, privateOnly = false) {
   const stat = fs.lstatSync(dir);
   requireContract(stat.isDirectory() && !stat.isSymbolicLink() && fs.realpathSync(dir) === path.resolve(dir), "EXPORT_DIRECTORY_INVALID");
   if (privateOnly) requireContract(stat.uid === process.getuid() && (stat.mode & 0o077) === 0, "EXPORT_PRIVATE_PERMISSIONS_INVALID");
 }
 
-function readBytes(file, maxBytes = MAX_FILE_BYTES, privateOnly = false) {
+export function readBytes(file, maxBytes = MAX_FILE_BYTES, privateOnly = false) {
   let fd;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
@@ -38,7 +38,7 @@ function readBytes(file, maxBytes = MAX_FILE_BYTES, privateOnly = false) {
   } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
-function sourceJson(bytes) {
+export function sourceJson(bytes) {
   let value;
   try { value = JSON.parse(bytes.toString("utf8")); } catch { throw new ExportError("EXPORT_SOURCE_JSON_INVALID"); }
   requireContract(object(value), "EXPORT_SOURCE_JSON_INVALID");
@@ -56,7 +56,7 @@ function sourceJson(bytes) {
   return value;
 }
 
-function recipient(env) {
+export function recipient(env) {
   try {
     requireContract(typeof env.RECIPIENT_PUBLIC_KEY === "string" && env.RECIPIENT_PUBLIC_KEY.length < 4096, "EXPORT_RECIPIENT_INVALID");
     const bytes = Buffer.from(env.RECIPIENT_PUBLIC_KEY, "base64");
@@ -90,7 +90,7 @@ export function preflight(env, history, caches) {
     && /^[a-f0-9]{64}$/.test(env.EXPECTED_CACHE_VERSION || "") && cache.version === env.EXPECTED_CACHE_VERSION, "EXPORT_EXACT_CACHE_UNAVAILABLE");
 }
 
-function outputFile(file, bytes) {
+export function outputFile(file, bytes) {
   directory(path.dirname(path.resolve(file)));
   requireContract(!fs.existsSync(file) && !fs.existsSync(`${file}.partial`), "EXPORT_OUTPUT_EXISTS");
   fs.writeFileSync(`${file}.partial`, bytes, { flag: "wx", mode: 0o600 });
@@ -109,21 +109,42 @@ export function encryptSource(sourceDirectory, output, env) {
     const bytes = readBytes(path.join(sourceDirectory, name)); sourceJson(bytes);
     return { name, sha256: sha(bytes), bytes: bytes.toString("base64") };
   });
-  const plaintext = Buffer.from(JSON.stringify({ context, evidenceBasis: "UNVERIFIED_CACHE_SNAPSHOT", files }));
+  const bytes = encryptPayload({ context, evidenceBasis: "UNVERIFIED_CACHE_SNAPSHOT", files }, context, publicKey, SCHEMA);
+  for (const file of files) requireContract(sha(readBytes(path.join(sourceDirectory, file.name))) === file.sha256, "EXPORT_SOURCE_CHANGED");
+  outputFile(output, bytes);
+  return { status: "ENCRYPTED_PRIVATE_EXPORT_CREATED", envelopeSha256: sha(bytes), fileCount: FILES.length,
+    brokerRequests: 0, cacheSaved: false, sourceStateModified: false, plaintextPublished: false };
+}
+
+// Shared encryption only; callers retain their own scope and approval gates.
+export function encryptPayload(payload, context, publicKey, schemaVersion) {
+  const plaintext = Buffer.from(JSON.stringify(payload));
   const key = randomBytes(32), iv = randomBytes(12);
   try {
     const cipher = createCipheriv("aes-256-gcm", key, iv);
     cipher.setAAD(Buffer.from(JSON.stringify(context)));
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    const envelope = { schemaVersion: SCHEMA, algorithm: ALGORITHM, context,
+    const envelope = { schemaVersion, algorithm: ALGORITHM, context,
       wrappedKey: publicEncrypt({ key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, key).toString("base64"),
       iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") };
-    for (const file of files) requireContract(sha(readBytes(path.join(sourceDirectory, file.name))) === file.sha256, "EXPORT_SOURCE_CHANGED");
-    const bytes = Buffer.from(`${JSON.stringify(envelope)}\n`);
-    outputFile(output, bytes);
-    return { status: "ENCRYPTED_PRIVATE_EXPORT_CREATED", envelopeSha256: sha(bytes), fileCount: FILES.length,
-      brokerRequests: 0, cacheSaved: false, sourceStateModified: false, plaintextPublished: false };
+    return Buffer.from(`${JSON.stringify(envelope)}\n`);
   } finally { key.fill(0); plaintext.fill(0); }
+}
+
+export function decryptPayload(envelope, keyObject, context) {
+  let plaintext, key;
+  try {
+    key = privateDecrypt({ key: keyObject, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, Buffer.from(envelope.wrappedKey, "base64"));
+    const iv = Buffer.from(envelope.iv, "base64"), tag = Buffer.from(envelope.tag, "base64");
+    requireContract(key.length === 32 && iv.length === 12 && tag.length === 16, "EXPORT_DECRYPTION_FAILED");
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(Buffer.from(JSON.stringify(context))); decipher.setAuthTag(tag);
+    plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, "base64")), decipher.final()]);
+  } catch { throw new ExportError("EXPORT_DECRYPTION_FAILED"); }
+  finally { key?.fill(0); }
+  let payload;
+  try { payload = JSON.parse(plaintext.toString("utf8")); } finally { plaintext.fill(0); }
+  return payload;
 }
 
 export function decryptSource(input, privateKeyFile, outputDirectory, envelopeSha256, expectedRunId, expectedCommit) {
@@ -138,18 +159,7 @@ export function decryptSource(input, privateKeyFile, outputDirectory, envelopeSh
   const context = { sourceCacheKey: CACHE_KEY, sourceRunId: "35610146111", exportRunId: expectedRunId,
     exportCommit: expectedCommit, recipientSha256 };
   requireContract(JSON.stringify(envelope.context) === JSON.stringify(context), "EXPORT_CONTEXT_MISMATCH");
-  let plaintext, key;
-  try {
-    key = privateDecrypt({ key: keyObject, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, Buffer.from(envelope.wrappedKey, "base64"));
-    const iv = Buffer.from(envelope.iv, "base64"), tag = Buffer.from(envelope.tag, "base64");
-    requireContract(key.length === 32 && iv.length === 12 && tag.length === 16, "EXPORT_DECRYPTION_FAILED");
-    const decipher = createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAAD(Buffer.from(JSON.stringify(context))); decipher.setAuthTag(tag);
-    plaintext = Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, "base64")), decipher.final()]);
-  } catch { throw new ExportError("EXPORT_DECRYPTION_FAILED"); }
-  finally { key?.fill(0); }
-  let payload;
-  try { payload = JSON.parse(plaintext.toString("utf8")); } finally { plaintext.fill(0); }
+  const payload = decryptPayload(envelope, keyObject, context);
   requireContract(JSON.stringify(payload.context) === JSON.stringify(context) && payload.evidenceBasis === "UNVERIFIED_CACHE_SNAPSHOT"
     && Array.isArray(payload.files) && payload.files.length === FILES.length
     && payload.files.every((f, i) => f.name === FILES[i]), "EXPORT_FILE_SET_INVALID");
