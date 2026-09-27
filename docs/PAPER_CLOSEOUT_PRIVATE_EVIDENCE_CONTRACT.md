@@ -417,6 +417,10 @@ change. Without them, automatic runs emit `BINDING_RECIPIENT_NOT_CONFIGURED` and
 upload no private bundle. When separately configured, only original main
 schedule/repository-dispatch runs can seal a bundle. Manual runs, reruns and
 execution-enabled settings cannot. The private key never enters CI.
+An absent/blank `POSITION_LIFECYCLE_PREVIEW_ONLY` uses the existing runtime's
+safe `true` default. Explicit false or unrecognized values still block binding,
+and the produced preview must independently declare `actionIntent.previewOnly=true`.
+No execution variable or runtime policy is changed by this compatibility check.
 
 The only additional private-artifact upload path is
 `RUNNER_TEMP/paper-runtime-encrypted/envelope.json` (one-day retention). No glob,

@@ -71,6 +71,18 @@ try {
   check(() => assert.equal(bundle.manifest.sameRunBindingVerified, true));
   check(() => assert.equal(bundle.manifest.selectedCandidateCount, 0));
   check(() => assert.equal(bundle.manifest.currentBrokerEvidenceVerified, false));
+  check(() => assert.match(fs.readFileSync("config/policy.ts", "utf8"),
+    /previewOnly: envBool\(process\.env\.POSITION_LIFECYCLE_PREVIEW_ONLY, true\)/));
+  for (const value of [undefined, "", "  ", "true"]) {
+    const defaults = fixture(); defaults.env = { ...env, POSITION_LIFECYCLE_PREVIEW_ONLY: value };
+    check(() => assert.equal(complete(defaults).manifest.sameRunBindingVerified, true));
+  }
+  for (const value of ["false", "0", "off", "unrecognized"]) {
+    rejected(() => beginPhase("preview", { ...fixture(), env: { ...env, POSITION_LIFECYCLE_PREVIEW_ONLY: value }, now: at(1) }), "BINDING_SAFETY_INVALID");
+  }
+  const unsafeDefault = fixture(); unsafeDefault.env = { ...env, POSITION_LIFECYCLE_PREVIEW_ONLY: "" };
+  unsafeDefault.data[outputs.preview[0]].actionIntent.previewOnly = false;
+  rejected(() => complete(unsafeDefault), "BINDING_SHADOW_SAFETY_INVALID");
   check(() => assert.deepEqual(buildRuntimeBundle({ ...f, now: at(20) }), bundle));
   const dup = fixture(); complete(dup);
   rejected(() => beginPhase("preview", { ...dup, now: at(21) }), "BINDING_PHASE_ALREADY_ATTEMPTED");

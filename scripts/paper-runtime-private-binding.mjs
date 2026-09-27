@@ -26,13 +26,15 @@ const SAFETY = Object.freeze({ brokerRequests: 0, sourceStateModified: false, ca
   stage6SourceBytesVerified: false, reportIdentityJoinVerified: false, realizedPnlVerified: false });
 
 function context(env) {
+  // config/policy.ts defaults an absent/blank preview-only setting to true.
+  const previewOnly = (env.POSITION_LIFECYCLE_PREVIEW_ONLY ?? "").trim().toLowerCase();
   requireContract(["schedule", "repository_dispatch"].includes(env.GITHUB_EVENT_NAME)
     && env.GITHUB_REF === "refs/heads/main" && env.GITHUB_RUN_ATTEMPT === "1"
     && env.GITHUB_WORKFLOW === "sidecar-dry-run" && /^\d+$/.test(env.GITHUB_RUN_ID || "")
     && /^[a-f0-9]{40}$/.test(env.GITHUB_SHA || ""), "BINDING_AUTOMATIC_RUN_REQUIRED");
   requireContract(env.READ_ONLY === "true" && env.EXEC_ENABLED === "false" && env.LIVE_ORDER_SUBMIT_ENABLED === "false"
     && ["PAPER", "DRY_RUN"].includes(env.ALPHA_ENV) && env.ALPACA_BASE_URL === "https://paper-api.alpaca.markets"
-    && env.POSITION_LIFECYCLE_PREVIEW_ONLY === "true" && env.MARKET_GUARD_MODE === "observe"
+    && ["", "true"].includes(previewOnly) && env.MARKET_GUARD_MODE === "observe"
     && ["GUARD_EXECUTE_TIGHTEN_STOPS", "GUARD_EXECUTE_REDUCE_POSITIONS", "GUARD_EXECUTE_FLATTEN"]
       .every(key => env[key] === "false"), "BINDING_SAFETY_INVALID");
   return { runId: env.GITHUB_RUN_ID, runAttempt: 1, headSha: env.GITHUB_SHA,
