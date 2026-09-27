@@ -30,6 +30,21 @@ const readiness = read("live-readiness-scorecard.json");
 const preview = read("last-dry-exec-preview.json");
 const protection = read("position-protection-root-cause-audit.json");
 const performance = read("performance-dashboard-public.json");
+// This file is created outside the restored cache by the current run's sealer.
+let binding = null;
+try {
+  const result = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP || "", "paper-runtime-binding-safe.json"), "utf8"));
+  const matched = result.runId === process.env.GITHUB_RUN_ID && result.headSha === process.env.GITHUB_SHA
+    && validated(result.runId, /^\d+$/) && validated(result.headSha, /^[a-f0-9]{40}$/);
+  binding = {
+    status: matched && result.status === "PAPER_RUNTIME_PRIVATE_BINDING_ENCRYPTED" ? result.status
+      : result.status === "BINDING_RECIPIENT_NOT_CONFIGURED" ? result.status : "BINDING_INCOMPLETE",
+    envelopeSha256: matched ? validated(result.envelopeSha256, /^[a-f0-9]{64}$/) : null,
+    bindingSha256: matched ? validated(result.bindingSha256, /^[a-f0-9]{64}$/) : null,
+    sameRunBindingVerified: Boolean(matched && result.status === "PAPER_RUNTIME_PRIVATE_BINDING_ENCRYPTED" && result.sameRunBindingVerified === true),
+    executionReadinessVerified: false,
+  };
+} catch { /* Missing binding is not a current-state proof. */ }
 const evidence = {
   schemaVersion: "sidecar-public-evidence-v1",
   runId: validated(process.env.GITHUB_RUN_ID, /^\d+$/),
@@ -37,6 +52,7 @@ const evidence = {
   status: readiness && preview && protection && performance ? "AGGREGATE_AVAILABLE" : "SOURCE_INCOMPLETE",
   sourceHashes,
   sourceGeneratedAt,
+  privateBinding: binding,
   paperExit: counts(readiness?.paperExitReadiness?.summary, [
     "filledPositionRows", "evaluatedPositionRows", "exitShadowNotDueRows", "exitShadowReadyReportOnlyRows",
     "exitShadowBlockedProtectionRows", "exitShadowBlockedOwnershipRows", "exitShadowBlockedLedgerOrIdempotencyRows",

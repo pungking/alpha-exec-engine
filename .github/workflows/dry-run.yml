@@ -796,6 +796,8 @@ jobs:
           PY
 
       - name: Run dry-run bootstrap
+        env:
+          PAPER_EVIDENCE_PHASE: preview
         if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.validation_pack == 'true' || inputs.payload_probe == 'true')) }}
         run: |
           set -euo pipefail
@@ -1739,6 +1741,8 @@ jobs:
 
       - name: Build performance dashboard snapshot
         if: always()
+        env:
+          PAPER_EVIDENCE_PHASE: performance
         run: npm run dashboard:perf
 
       - name: Publish performance dashboard summary
@@ -1769,6 +1773,8 @@ jobs:
 
       - name: Build order state consistency report
         if: always()
+        env:
+          PAPER_EVIDENCE_PHASE: orderState
         run: npm run ops:order-state
 
       - name: Publish order state consistency summary
@@ -1919,6 +1925,8 @@ jobs:
 
       - name: Rebuild protection chain with lifecycle guard source
         if: always()
+        env:
+          PAPER_EVIDENCE_PHASE: protection
         run: |
           npm run ops:broker-child-reconcile
           npm run ops:position-protection:audit
@@ -2286,6 +2294,24 @@ jobs:
           RUN_VALIDATION_PACK_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.validation_pack || 'false' }}
           RUN_PAYLOAD_PROBE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.payload_probe || 'false' }}
         run: node scripts/maybe-trigger-validation-pack.mjs
+
+      - name: Seal same-run private evidence (no new provider requests)
+        id: paper_binding
+        if: ${{ always() && github.ref == 'refs/heads/main' && github.run_attempt == 1 && (github.event_name == 'schedule' || github.event_name == 'repository_dispatch') }}
+        continue-on-error: true
+        env:
+          RECIPIENT_PUBLIC_KEY: ${{ vars.PAPER_PRIVATE_EVIDENCE_PUBLIC_KEY }}
+          RECIPIENT_SHA256: ${{ vars.PAPER_PRIVATE_EVIDENCE_PUBLIC_KEY_SHA256 }}
+        run: node scripts/paper-runtime-private-binding.mjs seal
+
+      - name: Upload encrypted same-run private evidence
+        if: ${{ always() && steps.paper_binding.outcome == 'success' && steps.paper_binding.outputs.encrypted == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: paper-runtime-encrypted-${{ github.run_id }}
+          path: ${{ runner.temp }}/paper-runtime-encrypted/envelope.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Publish aggregate-only sidecar evidence
         if: always()

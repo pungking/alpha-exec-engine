@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
 
@@ -849,6 +850,9 @@ export const buildLiveSummary = async (read = fetchAlpaca, state = undefined) =>
   return {
     available: true,
     account: {
+      // Private-only; lets offline review compare an independently confirmed account pin.
+      identitySha256: typeof account.id === "string" && account.id.trim()
+        ? createHash("sha256").update(account.id).digest("hex") : null,
       accountNumber: redactAccountNumber(account?.account_number || ""),
       accountNumberRedacted: true,
       status: short(account?.status || "N/A", 40),
