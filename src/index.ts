@@ -8,6 +8,12 @@ import {
   deriveHfTuningAdviceCore,
   deriveHfTuningPhaseCore
 } from "./hf-judgement-core.js";
+import {
+  OrderLedgerStorageError,
+  loadOrderLedgerState as readOrderLedgerState,
+  saveOrderLedgerState as writeOrderLedgerState
+} from "./order-ledger-storage.js";
+import type { OrderLedgerRecord, OrderLedgerState, OrderLifecycleHistoryEntry } from "./order-ledger-storage.js";
 import { parseJsonText } from "./json-utils.js";
 import {
   OrderIdempotencyStorageError,
@@ -906,44 +912,6 @@ type PreflightResult = {
   buyingPower: number | null;
   marketOpen: boolean | null;
   nextOpen: string | null;
-};
-
-type OrderLifecycleHistoryEntry = {
-  at: string;
-  from: OrderLifecycleStatus | null;
-  to: OrderLifecycleStatus;
-  reason: string;
-  source: string;
-};
-
-type OrderLedgerRecord = {
-  idempotencyKey: string;
-  symbol: string;
-  side: "buy";
-  executionSide?: "buy" | "sell" | null;
-  actionType?: LifecycleActionType;
-  submittedQty?: number | null;
-  stage6Hash: string;
-  stage6File: string;
-  mode: string;
-  clientOrderId: string;
-  status: OrderLifecycleStatus;
-  statusReason: string;
-  preflightCode: string;
-  regimeProfile: RegimeProfile;
-  notional: number;
-  limitPrice: number;
-  takeProfitPrice: number;
-  stopLossPrice: number;
-  brokerOrderId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  history: OrderLifecycleHistoryEntry[];
-};
-
-type OrderLedgerState = {
-  orders: Record<string, OrderLedgerRecord>;
-  updatedAt: string;
 };
 
 type OrderLedgerUpdateResult = {
@@ -7915,6 +7883,7 @@ async function applyPortfolioAdmissionToDryExec(
   try {
     heldPositions = await loadHeldPositionSnapshots();
   } catch (error) {
+    if (error instanceof OrderLedgerStorageError) throw error;
     const msg = error instanceof Error ? error.message : String(error);
     console.warn(`[PORTFOLIO_ADMISSION] held_position_load_failed=${msg.slice(0, 160)}`);
   }
@@ -10225,6 +10194,7 @@ async function submitOrdersToBroker(
     return summary;
   }
 
+  await loadOrderLedgerState();
   const idempotencyState = await loadOrderIdempotencyState();
   const limitedRecoveryBlocks = dryExec.payloads
     .map((payload) => ({
@@ -10306,6 +10276,7 @@ async function submitOrdersToBroker(
       heldQtyBySymbol = await loadHeldPositionMap();
       heldSymbols = new Set([...heldQtyBySymbol.keys()]);
     } catch (error) {
+      if (error instanceof OrderLedgerStorageError) throw error;
       const msg = error instanceof Error ? error.message : String(error);
       summary.reason = "position_fetch_failed";
       summary.perfGateReason = `position_fetch_failed:${msg.slice(0, 120)}`;
@@ -10536,7 +10507,7 @@ async function submitOrdersToBroker(
         : `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
       );
     } catch (error) {
-      if (error instanceof OrderIdempotencyStorageError) throw error;
+      if (error instanceof OrderIdempotencyStorageError || error instanceof OrderLedgerStorageError) throw error;
       row.submitted = false;
       row.brokerOrderId = null;
       row.brokerStatus = null;
@@ -13828,25 +13799,11 @@ async function applyOrderIdempotency(
 }
 
 async function loadOrderLedgerState(): Promise<OrderLedgerState> {
-  try {
-    const raw = await readFile(ORDER_LEDGER_PATH, "utf8");
-    const parsed = parseJsonText<Partial<OrderLedgerState>>(raw, "order_ledger_state");
-    const orders =
-      parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
-        ? (parsed.orders as Record<string, OrderLedgerRecord>)
-        : {};
-    return {
-      orders,
-      updatedAt: typeof parsed?.updatedAt === "string" ? parsed.updatedAt : ""
-    };
-  } catch {
-    return { orders: {}, updatedAt: "" };
-  }
+  return readOrderLedgerState(ORDER_LEDGER_PATH);
 }
 
 async function saveOrderLedgerState(state: OrderLedgerState): Promise<void> {
-  await mkdir("state", { recursive: true });
-  await writeFile(ORDER_LEDGER_PATH, JSON.stringify(state, null, 2), "utf8");
+  await writeOrderLedgerState(ORDER_LEDGER_PATH, state);
   console.log(`[STATE] saved ${ORDER_LEDGER_PATH}`);
 }
 
@@ -14710,6 +14667,7 @@ async function main() {
   const cfg = loadRuntimeConfig();
   runLifecycleSelfTestIfEnabled(cfg);
   if (readBoolEnv("LIFECYCLE_SELFTEST_ONLY", false)) return;
+  await loadOrderLedgerState();
   printStartupSummary();
   const accessToken = await getGoogleAccessToken();
   const stage6 = await loadLatestStage6FromDrive(accessToken);
@@ -14778,6 +14736,7 @@ async function main() {
         console.log(`[PORTFOLIO_PRE_ADMISSION] held_positions=${heldContext.size}`);
       }
     } catch (error) {
+      if (error instanceof OrderLedgerStorageError) throw error;
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[HELD_POSITION_READ] failed=${message.slice(0, 180)}`);
     }
