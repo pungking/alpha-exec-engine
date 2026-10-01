@@ -57,6 +57,7 @@
     "ops:test:paper-private-evidence-capture": "node scripts/test-paper-private-evidence-capture.mjs",
     "ops:paper-private-evidence-capture": "node scripts/capture-paper-private-evidence.mjs",
     "ops:paper-closeout-private-evidence": "node scripts/audit-paper-closeout-private-evidence.mjs",
+    "ops:test:order-idempotency-storage": "npm run build && node scripts/test-order-idempotency-storage.mjs",
     "ops:test:order-state-consistency": "node scripts/test-order-state-consistency-report.mjs",
     "ops:open-order-reprice-proposal": "node scripts/build-open-order-reprice-proposal.mjs",
     "ops:alpaca:payload-fixtures": "node scripts/validate-alpaca-order-payload-fixtures.mjs",

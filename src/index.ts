@@ -9,6 +9,14 @@ import {
   deriveHfTuningPhaseCore
 } from "./hf-judgement-core.js";
 import { parseJsonText } from "./json-utils.js";
+import {
+  OrderIdempotencyStorageError,
+  loadOrderIdempotencyState as readOrderIdempotencyState,
+  saveOrderIdempotencyState as writeOrderIdempotencyState
+} from "./order-idempotency-storage.js";
+import type {
+  OrderIdempotencyEntry, OrderIdempotencyReleaseRecord, OrderIdempotencyState, OrderLifecycleStatus
+} from "./order-idempotency-storage.js";
 import { buildSidecarRuntimeEvidenceSummary } from "./sidecar-runtime-evidence-core.js";
 
 function mask(value: string): string {
@@ -900,16 +908,6 @@ type PreflightResult = {
   nextOpen: string | null;
 };
 
-type OrderLifecycleStatus =
-  | "planned"
-  | "submitted"
-  | "accepted"
-  | "partially_filled"
-  | "filled"
-  | "canceled"
-  | "rejected"
-  | "expired";
-
 type OrderLifecycleHistoryEntry = {
   at: string;
   from: OrderLifecycleStatus | null;
@@ -1479,62 +1477,6 @@ type HfAnomalyAlert = {
     shadowNotionalDeltaAbs: number;
     shadowSkippedDeltaAbs: number;
   };
-};
-
-type OrderIdempotencyEntry = {
-  symbol: string;
-  side: "buy";
-  executionSide?: "buy" | "sell" | null;
-  actionType?: LifecycleActionType;
-  submittedQty?: number | null;
-  stage6Hash: string;
-  stage6File: string;
-  firstSeenAt: string | null;
-  lastSeenAt: string | null;
-  clientOrderId?: string;
-  brokerOrderId?: string | null;
-  brokerStatus?: OrderLifecycleStatus | null;
-  brokerCheckedAt?: string;
-  recoveryMode?: "ACTIVE_POSITION_LIMITED_CONTROL";
-  originalIdempotencyEvidenceStatus?: string;
-  recoveryEvidenceSha256?: string;
-  recoveryRecordedAt?: string;
-  recoveryRecordedAtIsOriginalTimestamp?: false;
-  entryAllowed?: false;
-  scaleInAllowed?: false;
-  riskIncreasingActionAllowed?: false;
-  reportOnlyExitEvaluationAllowed?: true;
-  brokerSubmitAllowed?: false;
-  realizedPnlVerified?: false;
-  historicalEvidenceNormalized?: false;
-};
-
-type OrderIdempotencyReleaseRecord = {
-  key: string;
-  symbol: string;
-  side: "buy";
-  executionSide?: "buy" | "sell" | null;
-  actionType?: LifecycleActionType;
-  submittedQty?: number | null;
-  stage6Hash: string;
-  stage6File: string;
-  clientOrderId: string | null;
-  brokerOrderId: string | null;
-  brokerStatus: OrderLifecycleStatus | null;
-  firstSeenAt: string | null;
-  lastSeenAt: string | null;
-  releasedAt: string;
-  reason: string;
-  recoveryMode?: "ACTIVE_POSITION_LIMITED_CONTROL";
-  brokerSubmitAllowed?: false;
-  realizedPnlVerified?: false;
-  historicalEvidenceNormalized?: false;
-};
-
-type OrderIdempotencyState = {
-  orders: Record<string, OrderIdempotencyEntry>;
-  releases: OrderIdempotencyReleaseRecord[];
-  updatedAt: string;
 };
 
 type OrderIdempotencyBrokerReconcilePolicy = {
@@ -10594,6 +10536,7 @@ async function submitOrdersToBroker(
         : `[BROKER_SUBMIT] symbol=${payload.symbol} action=${row.actionType} status=${brokerStatus} orderId=${brokerOrderId ?? "N/A"}`
       );
     } catch (error) {
+      if (error instanceof OrderIdempotencyStorageError) throw error;
       row.submitted = false;
       row.brokerOrderId = null;
       row.brokerStatus = null;
@@ -13455,26 +13398,11 @@ async function updatePerformanceLoop(
 }
 
 async function loadOrderIdempotencyState(): Promise<OrderIdempotencyState> {
-  try {
-    const raw = await readFile(ORDER_IDEMPOTENCY_PATH, "utf8");
-    const parsed = parseJsonText<Partial<OrderIdempotencyState>>(raw, "order_idempotency_state");
-    const orders =
-      parsed && typeof parsed === "object" && parsed.orders && typeof parsed.orders === "object"
-        ? (parsed.orders as OrderIdempotencyState["orders"])
-        : {};
-    const releases = Array.isArray(parsed?.releases)
-      ? (parsed.releases as OrderIdempotencyReleaseRecord[])
-      : [];
-    const updatedAt = typeof parsed?.updatedAt === "string" ? parsed.updatedAt : "";
-    return { orders, releases, updatedAt };
-  } catch {
-    return { orders: {}, releases: [], updatedAt: "" };
-  }
+  return readOrderIdempotencyState(ORDER_IDEMPOTENCY_PATH);
 }
 
 async function saveOrderIdempotencyState(state: OrderIdempotencyState): Promise<void> {
-  await mkdir("state", { recursive: true });
-  await writeFile(ORDER_IDEMPOTENCY_PATH, JSON.stringify(state, null, 2), "utf8");
+  await writeOrderIdempotencyState(ORDER_IDEMPOTENCY_PATH, state);
   console.log(`[STATE] saved ${ORDER_IDEMPOTENCY_PATH}`);
 }
 
