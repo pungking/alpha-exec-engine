@@ -56,6 +56,8 @@ jobs:
         run: npm run ops:test:sidecar-runtime-evidence
       - name: Telegram routing policy audit
         run: npm run ops:safety:telegram-routing
+      - name: PAPER notification semantics and delivery receipts (mock sender only)
+        run: npm run ops:test:paper-order-notifications
       - name: High-price min-one-share report-only self-test
         run: node scripts/build-high-price-min-one-share-canary-plan.mjs --self-test
       - name: High-price min-one-share report-only fixtures

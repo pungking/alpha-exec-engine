@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
+import { buildNotificationSnapshot } from "./paper-order-notifications.mjs";
 
 const STATE_DIR = "state";
 const LOOP_PATH = `${STATE_DIR}/stage6-20trade-loop.json`;
@@ -753,7 +754,7 @@ const derivePositionStatus = ({
   return "HOLD_MONITOR";
 };
 
-export const buildLiveSummary = async (read = fetchAlpaca, state = undefined) => {
+export const buildLiveSummary = async (read = fetchAlpaca, state = undefined, observe = () => {}) => {
   const accountRes = await read("/v2/account");
   const positionsRes = await read("/v2/positions");
   const ordersRes = await read("/v2/orders?status=open&nested=true&direction=desc&limit=500");
@@ -768,6 +769,8 @@ export const buildLiveSummary = async (read = fetchAlpaca, state = undefined) =>
   const account = accountRes.data && typeof accountRes.data === "object" ? accountRes.data : {};
   const positions = Array.isArray(positionsRes.data) ? positionsRes.data : [];
   const openOrders = Array.isArray(ordersRes.data) ? ordersRes.data : [];
+  observe({ accountId: account.id, positions, openOrders,
+    liveComplete: Array.isArray(positionsRes.data) && Array.isArray(ordersRes.data) && openOrders.length < 500 });
   const statusBySymbol = buildStatusBySymbol(state);
   const brokerProtection = buildBrokerProtectionBySymbol(openOrders);
   const orderBySymbol = brokerProtection.bySymbol;
@@ -883,7 +886,7 @@ export const buildLiveSummary = async (read = fetchAlpaca, state = undefined) =>
   };
 };
 
-const buildBrokerRealizedPnlRuntime = async (live) => {
+const buildBrokerRealizedPnlRuntime = async (live, observe = () => {}) => {
   const orderLedger = readJson(ORDER_LEDGER_PATH) || {};
   const orderIdempotency = readJson(ORDER_IDEMPOTENCY_PATH) || {};
   const timestampRows = [
@@ -902,6 +905,8 @@ const buildBrokerRealizedPnlRuntime = async (live) => {
     `/v2/orders?status=closed&nested=true&direction=asc&limit=500&after=${encodeURIComponent(after)}`
   );
   const closedOrders = closedRes.ok && Array.isArray(closedRes.data) ? closedRes.data : [];
+  observe({ closedOrders, orderLedger, orderIdempotency,
+    closedComplete: closedRes.ok && Array.isArray(closedRes.data) && closedOrders.length < 500 });
   const paperMode = String(process.env.ALPACA_BASE_URL || "").includes("paper-api.alpaca.markets");
   const report = buildBrokerRealizedPnlSummary({
     orderLedger,
@@ -1017,15 +1022,23 @@ const main = async () => {
 
   const loop = readJson(LOOP_PATH) || {};
   const simulation = buildSimulationSummary(loop);
-  const live = await buildLiveSummary();
-  const realizedPnl = await buildBrokerRealizedPnlRuntime(live);
+  // Observe only responses already fetched by this producer. Raw responses never enter the snapshot.
+  const notificationEvidence = {};
+  const observe = value => Object.assign(notificationEvidence, value);
+  const live = await buildLiveSummary(fetchAlpaca, undefined, observe);
+  const realizedPnl = await buildBrokerRealizedPnlRuntime(live, observe);
   const generatedAt = new Date().toISOString();
+  const notificationSnapshot = buildNotificationSnapshot({ ...notificationEvidence, realizedPnl,
+    paper: process.env.ALPACA_BASE_URL === 'https://paper-api.alpaca.markets',
+    complete: notificationEvidence.liveComplete === true && notificationEvidence.closedComplete === true,
+    runId: process.env.GITHUB_RUN_ID, headSha: process.env.GITHUB_SHA, observedAt: generatedAt });
 
   const output = {
     generatedAt,
     simulation,
     live,
-    realizedPnl
+    realizedPnl,
+    notificationSnapshot
   };
 
   writeTextAtomic(OUTPUT_JSON, `${JSON.stringify(output, null, 2)}\n`);
