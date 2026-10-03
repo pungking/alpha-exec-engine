@@ -9,6 +9,7 @@ const HASH = /^[a-f0-9]{64}$/;
 const SYMBOL = /^[A-Z0-9][A-Z0-9.-]{0,19}$/;
 const ACCEPTED = new Set(['new', 'accepted']);
 const END = new Set(['canceled', 'rejected', 'expired']);
+const TERMINAL = new Set(['filled', ...END]);
 const TEXT = Object.freeze({
   ORDER_ACCEPTED: '주문 접수 관측 (체결 아님)',
   ORDER_PARTIALLY_FILLED: '부분 체결 관측',
@@ -17,6 +18,7 @@ const TEXT = Object.freeze({
   ORDER_REJECTED: '주문 거절 관측 (상세 사유는 broker 확인 필요)',
   ORDER_EXPIRED: '주문 만료 관측',
   PROTECTION_CHILDREN_OBSERVED: '연결된 stop/target 주문 관측 (보호 적정성 별도 검증)',
+  PROTECTION_CHILDREN_TERMINAL_OBSERVED: '보호 주문 종료 및 잔여 포지션 없음 관측 (청산 정합 판정과 별개)',
   PROTECTION_REVIEW_REQUIRED: '연결된 보호 주문 증거 불완전: 확인 필요',
   POSITION_CLOSEOUT_RECONCILED: '청산 완료: 체결/잔여 포지션/종결 정합 확인'
 });
@@ -51,7 +53,15 @@ function flatten(orders) {
   return result;
 }
 
-function closeoutVerified(raw, input, allOpen) {
+function flatWithoutOpenEvidence(symbol, input, allOpen, all, validGroups) {
+  return !input.positions.some(row => row.symbol === symbol && number(row.qty) !== 0)
+    && !allOpen.some(row => row?.symbol === symbol)
+    && !all.some(row => row?.symbol === symbol && (!TERMINAL.has(row.status) || !validGroups.get(row.id)
+      || (Array.isArray(row.legs) && row.legs.some(child => child?.symbol !== symbol
+        || !TERMINAL.has(child?.status) || !validGroups.get(child?.id)))));
+}
+
+function closeoutVerified(raw, input, allOpen, all, validGroups) {
   const matches = entries(input.orderLedger).filter(([, row]) => row.brokerOrderId === raw.id);
   if (matches.length !== 1) return false;
   const [key, ledger] = matches[0];
@@ -66,8 +76,7 @@ function closeoutVerified(raw, input, allOpen) {
   }
   if (ledger.status !== 'filled' || idem.brokerStatus !== 'filled' || !HASH.test(ledger.stage6Hash)
       || ledger.stage6Hash !== idem.stage6Hash) return false;
-  if (input.positions.some(row => row.symbol === raw.symbol && number(row.qty) !== 0)
-      || allOpen.some(row => row.symbol === raw.symbol)) return false;
+  if (!flatWithoutOpenEvidence(raw.symbol, input, allOpen, all, validGroups)) return false;
   const pnlRows = (Array.isArray(input.realizedPnl?.rows) ? input.realizedPnl.rows : []).filter(row => row?.symbol === raw.symbol);
   if (pnlRows.length !== 1) return false;
   const pnl = pnlRows[0];
@@ -77,6 +86,22 @@ function closeoutVerified(raw, input, allOpen) {
     && pnl.residualSignedQuantity === 0 && pnl.idempotencyVerdict === 'PASS' && !pnl.recoveryMode
     && pnl.costDoubleCountViolation === false && pnl.matchedQuantity > 0
     && pnl.entryFillProvenance === 'BROKER_FILLED_AVG_PRICE' && pnl.exitFillProvenance === 'BROKER_FILLED_AVG_PRICE';
+}
+
+function protectionObservation(raw, group, input, allOpen, all, validGroups) {
+  const childSets = group.filter(item => Array.isArray(item.legs) && item.legs.length);
+  const children = childSets[0].legs;
+  const shapeValid = childSets.every(item => sha256Canonical(item.legs) === sha256Canonical(children))
+    && children.length === 2 && new Set(children.map(child => child?.id)).size === 2
+    && children.every(child => child && validGroups.get(child.id) && child.symbol === raw.symbol
+      && child.side !== raw.side && number(child.qty) === number(raw.filled_qty))
+    && children.some(child => ['stop', 'stop_limit'].includes(child.type)) && children.some(child => child.type === 'limit');
+  const terminal = shapeValid && children.every(child => TERMINAL.has(child.status))
+    && flatWithoutOpenEvidence(raw.symbol, input, allOpen, all, validGroups);
+  const active = shapeValid && children.every(child => normalizeOrder(child, input.observedAt)?.type === 'ORDER_ACCEPTED');
+  return { type: terminal ? 'PROTECTION_CHILDREN_TERMINAL_OBSERVED' : active ? 'PROTECTION_CHILDREN_OBSERVED' : 'PROTECTION_REVIEW_REQUIRED',
+    detail: children.map(child => [child?.id ?? null, child?.status ?? null, child?.type ?? null])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))) };
 }
 
 export function buildNotificationSnapshot(input) {
@@ -102,27 +127,23 @@ export function buildNotificationSnapshot(input) {
     const eventKey = sha256Canonical([result.accountSha256, raw.id, type, raw.side, number(raw.filled_qty), detail]);
     result.events.push({ eventKey, type, symbol: raw.symbol, side: raw.side });
   };
-  for (const group of groups.values()) {
+  const validGroups = new Map([...groups].map(([id, group]) => {
     const normalized = group.map(row => normalizeOrder(row, input.observedAt));
-    if (normalized.some(row => !row) || new Set(normalized.map(row => sha256Canonical(row))).size !== 1) {
+    return [id, normalized.every(Boolean) && new Set(normalized.map(row => sha256Canonical(row))).size === 1];
+  }));
+  for (const group of groups.values()) {
+    if (!validGroups.get(group[0].id)) {
       result.excludedRows++; continue;
     }
-    const raw = group[0], row = normalized[0];
+    const raw = group[0], row = normalizeOrder(raw, input.observedAt);
     add(raw, row.type);
     if (END.has(raw.status) && row.filled > 0 && (row.filled < row.qty || validTime(raw.filled_at, input.observedAt))) {
       add(raw, row.filled < row.qty ? 'ORDER_PARTIALLY_FILLED' : 'ORDER_FILLED');
     }
-    if (row.type === 'ORDER_FILLED' && closeoutVerified(raw, input, allOpen)) add(raw, 'POSITION_CLOSEOUT_RECONCILED');
+    if (row.type === 'ORDER_FILLED' && closeoutVerified(raw, input, allOpen, all, validGroups)) add(raw, 'POSITION_CLOSEOUT_RECONCILED');
     if (row.type === 'ORDER_FILLED' && group.some(item => Array.isArray(item.legs) && item.legs.length)) {
-      const childSets = group.filter(item => Array.isArray(item.legs) && item.legs.length);
-      const children = childSets[0].legs;
-      const childrenValid = childSets.every(item => sha256Canonical(item.legs) === sha256Canonical(children))
-        && children.length === 2 && new Set(children.map(child => child.id)).size === 2
-        && children.every(child => normalizeOrder(child, input.observedAt)?.type === 'ORDER_ACCEPTED'
-          && child.symbol === raw.symbol && child.side !== raw.side && number(child.qty) === row.filled)
-        && children.some(child => ['stop', 'stop_limit'].includes(child.type)) && children.some(child => child.type === 'limit');
-      add(raw, childrenValid ? 'PROTECTION_CHILDREN_OBSERVED' : 'PROTECTION_REVIEW_REQUIRED',
-        children.map(child => [child.id, child.status, child.type]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+      const protection = protectionObservation(raw, group, input, allOpen, all, validGroups);
+      add(raw, protection.type, protection.detail);
     }
   }
   result.events.sort((a, b) => a.eventKey.localeCompare(b.eventKey));

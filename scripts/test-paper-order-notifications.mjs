@@ -64,6 +64,26 @@ const protectedSnapshot = buildNotificationSnapshot(input({ openOrders: [{ ...fi
 assert.ok(types(protectedSnapshot).includes('PROTECTION_CHILDREN_OBSERVED'));
 const unknownProtection = buildNotificationSnapshot(input({ openOrders: [{ ...fill, legs: children.slice(0, 1) }] }));
 assert.ok(types(unknownProtection).includes('PROTECTION_REVIEW_REQUIRED'));
+// An open-orders snapshot cannot erase active nested children observed in closed orders.
+assert.equal(types(buildNotificationSnapshot({ ...closeoutInput, closedOrders: [exit,
+  { ...fill, legs: children }] })).includes('POSITION_CLOSEOUT_RECONCILED'), false);
+assert.equal(types(buildNotificationSnapshot({ ...closeoutInput, closedOrders: [exit,
+  { ...fill, legs: [{ id: 'unresolved-child', status: 'new' }] }] })).includes('POSITION_CLOSEOUT_RECONCILED'), false);
+// Contradictory observations for one child invalidate a positive parent classification.
+const childConflict = buildNotificationSnapshot(input({ openOrders: [{ ...fill, legs: children }],
+  closedOrders: [{ ...children[0], status: 'canceled' }] }));
+assert.equal(types(childConflict).includes('PROTECTION_CHILDREN_OBSERVED'), false);
+assert.ok(types(childConflict).includes('PROTECTION_REVIEW_REQUIRED'));
+// Flat, filled target plus canceled sibling is terminal evidence, not a missing-protection alarm.
+const terminalChildren = [{ ...children[0], status: 'canceled' },
+  { ...children[1], status: 'filled', filled_qty: '2', filled_avg_price: '12', filled_at: at }];
+const bracketDone = buildNotificationSnapshot(input({ openOrders: [], closedOrders: [{ ...fill, legs: terminalChildren }] }));
+assert.equal(types(bracketDone).includes('PROTECTION_REVIEW_REQUIRED'), false);
+assert.ok(types(bracketDone).includes('PROTECTION_CHILDREN_TERMINAL_OBSERVED'));
+assert.equal(types(bracketDone).includes('POSITION_CLOSEOUT_RECONCILED'), false);
+const stillHeld = buildNotificationSnapshot(input({ positions: [{ symbol: fill.symbol, qty: '2' }],
+  openOrders: [], closedOrders: [{ ...fill, legs: terminalChildren }] }));
+assert.ok(types(stillHeld).includes('PROTECTION_REVIEW_REQUIRED'));
 const privateText = JSON.stringify(accepted);
 for (const sensitive of ['synthetic-order', 'synthetic-client', 'synthetic-account']) assert.equal(privateText.includes(sensitive), false);
 assert.equal(JSON.stringify(buildPublicDashboard({ notificationSnapshot: accepted })).includes('TESTX'), false);
