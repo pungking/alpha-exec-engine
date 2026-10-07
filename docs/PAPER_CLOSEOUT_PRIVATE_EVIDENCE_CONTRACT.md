@@ -533,3 +533,44 @@ Compatibility: v1 inputs keep every existing rejection, including nonempty
 preview payloads and unverified optional target joins. Old consumers must reject
 v2 rather than reinterpret it as execution-ready v1. No migration rewrites any
 historical source. Rollback is a code revert; preserve all attempts/evidence.
+
+## Safe response-failure diagnostics
+
+Both capture modes add `responseDiagnostic` to the returned safe result and
+owner-only `failure-safe.json` only when a broker response/read/validation fails.
+Existing top-level failure codes remain unchanged. Pre-network failures and
+successful captures do not gain this field. No historical receipt is rewritten.
+
+- `schemaVersion=paper-private-capture-response-diagnostic-v1`
+- `endpointGroup`: `account`, `positions`, `openOrders`, `closedOrders`, or `clock`
+- `httpStatusCategory`: `HTTP_1XX` through `HTTP_5XX`, or `UNAVAILABLE`
+- `responseSha256`: exact, fully consumed, size-bounded response bytes only;
+  `responseHashBasis=COMPLETE_RESPONSE_BYTES`. Both fields are null for transport
+  failures, oversized/incomplete reads, and non-success HTTP responses whose
+  bodies are deliberately not read. Invalid JSON can still have a complete hash.
+- `validationFailure`: a fixed code, never response text or an exception message.
+
+Clock shape checks distinguish `CLOCK_OBJECT_INVALID`, `CLOCK_IS_OPEN_INVALID`,
+`CLOCK_TIMESTAMP_MISSING`, `CLOCK_TIMESTAMP_UNPARSEABLE`, and
+`CLOCK_TIMESTAMP_AFTER_LOCAL_REFERENCE`, in that precedence. The existing
+recursive observation-time check reports `OBSERVATION_TIMESTAMP_INVALID` or
+`OBSERVATION_TIMESTAMP_AFTER_LOCAL_REFERENCE`. The latter checks also apply to
+other endpoint groups. `RESPONSE_JSON_INVALID`, `HTTP_NON_SUCCESS`,
+`RESPONSE_TRANSPORT_FAILURE`, `RESPONSE_SIZE_LIMIT_EXCEEDED`,
+`RESPONSE_ROW_LIMIT_REACHED`, `ACCOUNT_PIN_MISMATCH`, `PORTFOLIO_CHANGED`,
+`SHORT_PROTECTION_UNSUPPORTED`, and `RESPONSE_CONTRACT_INVALID` cover the remaining
+response boundaries. Earlier endpoint failure is never labeled as clock failure.
+
+The local-reference comparison is unchanged: no future tolerance, server-time
+fallback, timestamp replacement, or inferred clock synchronization. A valid
+closed clock can complete a review-only read; it does not authorize execution.
+The diagnostic contains no raw timestamps, headers, URLs, broker identifiers,
+positions, credentials, response content, or partial-body hashes. The original
+five-GET budget, early abort, no retry/pagination, exclusive attempt claim and
+failed-output preservation remain intact. Receipt/result parity and duplicate
+zero-request behavior are tested for both modes using synthetic responses only.
+
+This diagnostic cannot retrospectively identify a prior failed response that
+was not retained. A new runtime observation requires separate bounded approval,
+reviewed main/code hashes and a new unused owner-only attempt directory; no
+previous failure is reset or re-executed by this contract change.

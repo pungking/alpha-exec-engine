@@ -80,7 +80,8 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   assert.equal(result.currentBrokerEvidenceVerified, false); assert.equal(result.stateMutationAttempted, false);
   assert.equal(result.brokerSubmitAllowed, false); assert.equal(result.requestBudgetCompliant, true);
   const publicText = JSON.stringify(result);
-  for (const marker of ["FIXTURE_", "private-client", "private-broker", "private-key", "private-account", "ACCOUNT_FIXTURE", env.ALPACA_KEY_ID, env.ALPACA_SECRET_KEY]) assert.ok(!publicText.includes(marker));
+  for (const marker of ["FIXTURE_", "private-client", "private-broker", "private-key", "private-account", "ACCOUNT_FIXTURE", "RAW_BODY_MARKER", now, env.ALPACA_KEY_ID, env.ALPACA_SECRET_KEY]) assert.ok(!publicText.includes(marker));
+  if (!expected || expectedRequests === 0) assert.equal(result.responseDiagnostic, undefined);
   if (!expected) {
     const input = path.join(output, "complete");
     const manifest = JSON.parse(fs.readFileSync(path.join(input, "manifest.json")));
@@ -129,10 +130,18 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   } else {
     assert.ok(!fs.existsSync(path.join(output, "complete")));
     if (expectedRequests > 0) {
+      const receipt = path.join(output, "failure-safe.json"), receiptHash = sha(fs.readFileSync(receipt));
+      assert.deepEqual(JSON.parse(fs.readFileSync(receipt)), result);
+      assert.equal(fs.statSync(receipt).mode & 0o077, 0);
+      for (const name of fs.readdirSync(output, { recursive: true })) {
+        const file = path.join(output, name);
+        if (fs.statSync(file).isFile()) assert.ok(!fs.readFileSync(file, "utf8").includes("RAW_BODY_MARKER"));
+      }
       const duplicate = await capturePrivateEvidence({ sourceDirectory: s.directory, sourceManifestSha256: pin,
         outputDirectory: output, approval: CAPTURE_APPROVAL, env, fetchImpl });
       assert.equal(duplicate.status, "CAPTURE_OUTPUT_ALREADY_EXISTS"); assert.equal(duplicate.requestCounts.total, 0);
       assert.equal(calls.length, expectedRequests);
+      assert.equal(sha(fs.readFileSync(receipt)), receiptHash);
     }
   }
   if (expected !== "CAPTURE_SOURCE_CHANGED") assert.deepEqual(Object.fromEntries(fs.readdirSync(s.directory).map(n => [n, sha(fs.readFileSync(path.join(s.directory, n)))])), before);
@@ -140,6 +149,77 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   return result;
 }
 try {
+  const invalidClock = JSON.stringify({ timestamp: "bad", is_open: true, raw: "RAW_BODY_MARKER" });
+  const clockFailure = await run({ reviewOnly: true,
+    response: ({ group }) => group === "/v2/clock" ? new Response(invalidClock) : null,
+    expected: "CAPTURE_BROKER_SCHEMA_INVALID" });
+  assert.deepEqual(clockFailure.responseDiagnostic, {
+    schemaVersion: "paper-private-capture-response-diagnostic-v1", endpointGroup: "clock",
+    httpStatusCategory: "HTTP_2XX", responseSha256: sha(invalidClock),
+    responseHashBasis: "COMPLETE_RESPONSE_BYTES", validationFailure: "CLOCK_TIMESTAMP_UNPARSEABLE"
+  });
+  const checkDiagnostic = (result, reason, { group = "clock", category = "HTTP_2XX", bytes = null } = {}) => {
+    assert.deepEqual(result.responseDiagnostic, {
+      schemaVersion: "paper-private-capture-response-diagnostic-v1", endpointGroup: group,
+      httpStatusCategory: category, responseSha256: bytes === null ? null : sha(bytes),
+      responseHashBasis: bytes === null ? null : "COMPLETE_RESPONSE_BYTES", validationFailure: reason
+    });
+  };
+  for (const reviewOnly of [false, true]) {
+    for (const [body, reason, status = "CAPTURE_BROKER_SCHEMA_INVALID"] of [
+      [null, "CLOCK_OBJECT_INVALID"], [[], "CLOCK_OBJECT_INVALID"], ["RAW_BODY_MARKER", "CLOCK_OBJECT_INVALID"],
+      [{}, "CLOCK_IS_OPEN_INVALID"], [{ timestamp: now, is_open: "true" }, "CLOCK_IS_OPEN_INVALID"],
+      [{ is_open: false }, "CLOCK_TIMESTAMP_MISSING"], [{ is_open: true, timestamp: null }, "CLOCK_TIMESTAMP_MISSING"],
+      [{ is_open: true, timestamp: "" }, "CLOCK_TIMESTAMP_MISSING"],
+      [{ is_open: true, timestamp: "bad" }, "CLOCK_TIMESTAMP_UNPARSEABLE"],
+      [{ is_open: true, timestamp: "2026-01-05T15:00:00.001Z" }, "CLOCK_TIMESTAMP_AFTER_LOCAL_REFERENCE"],
+      [{ is_open: true, timestamp: "2026-01-01T15:00:00" }, "OBSERVATION_TIMESTAMP_INVALID", "CAPTURE_BROKER_TIMESTAMP_INVALID"],
+      [{ is_open: true, timestamp: 2000 }, "OBSERVATION_TIMESTAMP_INVALID", "CAPTURE_BROKER_TIMESTAMP_INVALID"],
+      [{ is_open: true, timestamp: now, updated_at: "2099-01-01T00:00:00Z" }, "OBSERVATION_TIMESTAMP_AFTER_LOCAL_REFERENCE", "CAPTURE_BROKER_FUTURE_TIMESTAMP"],
+    ]) {
+      const bytes = JSON.stringify(body);
+      const options = { reviewOnly, response: ({ group }) => group === "/v2/clock" ? new Response(bytes) : null, expected: status };
+      const result = await run(options);
+      checkDiagnostic(result, reason, { bytes });
+      if (reason === "CLOCK_TIMESTAMP_AFTER_LOCAL_REFERENCE") assert.deepEqual(await run(options), result);
+    }
+    const bytes = " { broken JSON RAW_BODY_MARKER PRIVATE_SECRET_FIXTURE ";
+    checkDiagnostic(await run({ reviewOnly, response: ({ group }) => group === "/v2/clock" ? new Response(bytes) : null,
+      expected: "CAPTURE_BROKER_SCHEMA_INVALID" }), "RESPONSE_JSON_INVALID", { bytes });
+    await run({ reviewOnly, response: ({ group }) => group === "/v2/clock"
+      ? { body: { timestamp: now, is_open: false, next_open: "2099-01-01T00:00:00Z" } } : null });
+  }
+  // The hash commits exact complete bytes, including whitespace, not a parsed/canonical object.
+  const spacedClock = `  ${invalidClock}\n`;
+  const spacedFailure = await run({ response: ({ group }) => group === "/v2/clock" ? new Response(spacedClock) : null,
+    expected: "CAPTURE_BROKER_SCHEMA_INVALID" });
+  checkDiagnostic(spacedFailure, "CLOCK_TIMESTAMP_UNPARSEABLE", { bytes: spacedClock });
+  assert.notEqual(spacedFailure.responseDiagnostic.responseSha256, clockFailure.responseDiagnostic.responseSha256);
+  for (const status of [302, 401, 403, 429, 500, 503]) {
+    const response = new Response("RAW_BODY_MARKER", { status });
+    checkDiagnostic(await run({ response: ({ group }) => group === "/v2/clock" ? response : null,
+      expected: "CAPTURE_BROKER_HTTP_FAILURE" }), "HTTP_NON_SUCCESS", { category: `HTTP_${Math.floor(status / 100)}XX` });
+    assert.equal(response.bodyUsed, false);
+  }
+  checkDiagnostic(await run({ response: ({ group }) => group === "/v2/clock" ? new Error("RAW_BODY_MARKER PRIVATE_SECRET_FIXTURE") : null,
+    expected: "CAPTURE_BROKER_TRANSPORT_FAILURE" }), "RESPONSE_TRANSPORT_FAILURE", { category: "UNAVAILABLE" });
+  for (const oversized of [false, true]) {
+    let pulls = 0;
+    const response = new Response(new ReadableStream({ pull(controller) {
+      if (pulls++ === 0) controller.enqueue(Buffer.from("RAW_BODY_MARKER"));
+      else if (oversized) { controller.enqueue(Buffer.alloc(8 * 1024 * 1024)); controller.close(); }
+      else controller.error(new Error("PRIVATE_SECRET_FIXTURE"));
+    } }));
+    checkDiagnostic(await run({ response: ({ group }) => group === "/v2/clock" ? response : null,
+      expected: oversized ? "CAPTURE_RESPONSE_TOO_LARGE" : "CAPTURE_BROKER_TRANSPORT_FAILURE" }),
+    oversized ? "RESPONSE_SIZE_LIMIT_EXCEEDED" : "RESPONSE_TRANSPORT_FAILURE");
+  }
+  for (const [route, group, count] of [["/v2/account", "account", 1], ["/v2/positions", "positions", 2],
+    ["status=open", "openOrders", 3], ["status=closed", "closedOrders", 4]]) {
+    const bytes = "RAW_BODY_MARKER not JSON";
+    checkDiagnostic(await run({ response: ({ url }) => url.includes(route) ? new Response(bytes) : null,
+      expected: "CAPTURE_BROKER_SCHEMA_INVALID", expectedRequests: count }), "RESPONSE_JSON_INVALID", { group, bytes });
+  }
   const historicalContext = d => {
     d["last-dry-exec-preview.json"].payloads = [{ symbol: "PRIVATE_PAYLOAD_MARKER", actionType: "EXIT_FULL" }];
     for (const name of ["fillability-report.json", "fill-state-reconciliation-audit.json", "position-lifecycle-guard-source-plan.json"]) {
