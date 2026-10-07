@@ -117,7 +117,7 @@ function validateBaselinePortfolio(baseline, positions) {
   requireContract(sha256Canonical(exposure(baseline)) === sha256Canonical(exposure(positions)), "CAPTURE_PREVIEW_PORTFOLIO_CHANGED");
 }
 
-function validateResponse(group, data, manifest, nowMs) {
+function validateResponse(group, data, manifest, nowMs, diagnostic) {
   if (group === "account") {
     requireContract(object(data) && typeof data.id === "string", "CAPTURE_BROKER_SCHEMA_INVALID");
     requireContract(digest(data.id) === manifest.expectedPaperAccountSha256, "CAPTURE_ACCOUNT_MISMATCH");
@@ -130,6 +130,11 @@ function validateResponse(group, data, manifest, nowMs) {
     requireContract(data.every(p => Number(p.qty) > 0), "CAPTURE_UNSUPPORTED_SHORT_PROTECTION");
   } else if (group === "clock") {
     const ms = Date.parse(data?.timestamp);
+    diagnostic.validationFailure = !object(data) ? "CLOCK_OBJECT_INVALID"
+      : typeof data.is_open !== "boolean" ? "CLOCK_IS_OPEN_INVALID"
+      : data.timestamp == null || data.timestamp === "" ? "CLOCK_TIMESTAMP_MISSING"
+      : !Number.isFinite(ms) ? "CLOCK_TIMESTAMP_UNPARSEABLE"
+      : ms > nowMs ? "CLOCK_TIMESTAMP_AFTER_LOCAL_REFERENCE" : null;
     requireContract(object(data) && typeof data.is_open === "boolean" && Number.isFinite(ms) && ms <= nowMs, "CAPTURE_BROKER_SCHEMA_INVALID");
   } else {
     requireContract(Array.isArray(data), "CAPTURE_BROKER_SCHEMA_INVALID");
@@ -147,32 +152,54 @@ function validateResponse(group, data, manifest, nowMs) {
   validateObservedTimestamps(data, nowMs, "BROKER");
 }
 
-async function brokerSnapshot({ fetchImpl, env, requestCounts, manifest, baselinePositions, now }) {
+async function brokerSnapshot({ fetchImpl, env, requestCounts, manifest, baselinePositions, now, onFailure }) {
   const results = {}, receipts = {};
   for (const [group, route] of Object.entries(ROUTES)) {
     requireContract(requestCounts[group] === 0 && requestCounts.total < 5, "CAPTURE_REQUEST_BUDGET_EXCEEDED");
     requestCounts[group]++; requestCounts.total++;
     let response, bytes;
     const requestedAt = now().toISOString();
+    const diagnostic = { schemaVersion: "paper-private-capture-response-diagnostic-v1", endpointGroup: group,
+      httpStatusCategory: "UNAVAILABLE", responseSha256: null, responseHashBasis: null, validationFailure: null };
     try {
-      response = await fetchImpl(`${PAPER}${route}`, { method: "GET", redirect: "error", signal: AbortSignal.timeout(15000),
-        headers: { "APCA-API-KEY-ID": env.ALPACA_KEY_ID, "APCA-API-SECRET-KEY": env.ALPACA_SECRET_KEY } });
-      requireContract(response.ok, "CAPTURE_BROKER_HTTP_FAILURE");
-      const chunks = []; let size = 0;
-      for await (const chunk of response.body) {
-        size += chunk.length; requireContract(size <= 8 * 1024 * 1024, "CAPTURE_RESPONSE_TOO_LARGE"); chunks.push(chunk);
+      try {
+        response = await fetchImpl(`${PAPER}${route}`, { method: "GET", redirect: "error", signal: AbortSignal.timeout(15000),
+          headers: { "APCA-API-KEY-ID": env.ALPACA_KEY_ID, "APCA-API-SECRET-KEY": env.ALPACA_SECRET_KEY } });
+        if (Number.isInteger(response.status) && response.status >= 100 && response.status < 600) {
+          diagnostic.httpStatusCategory = `HTTP_${Math.floor(response.status / 100)}XX`;
+        }
+        requireContract(response.ok, "CAPTURE_BROKER_HTTP_FAILURE");
+        const chunks = []; let size = 0;
+        for await (const chunk of response.body) {
+          size += chunk.length; requireContract(size <= 8 * 1024 * 1024, "CAPTURE_RESPONSE_TOO_LARGE"); chunks.push(chunk);
+        }
+        bytes = Buffer.concat(chunks);
+      } catch (error) {
+        if (error instanceof ContractError) throw error;
+        throw new ContractError("CAPTURE_BROKER_TRANSPORT_FAILURE");
       }
-      bytes = Buffer.concat(chunks);
+      // Hash only the fully consumed bounded body; never publish a partial-body hash or raw response.
+      diagnostic.responseSha256 = digest(bytes);
+      diagnostic.responseHashBasis = "COMPLETE_RESPONSE_BYTES";
+      let data;
+      try { data = JSON.parse(bytes.toString("utf8")); } catch {
+        diagnostic.validationFailure = "RESPONSE_JSON_INVALID";
+        throw new ContractError("CAPTURE_BROKER_SCHEMA_INVALID");
+      }
+      validateResponse(group, data, manifest, now().getTime(), diagnostic);
+      if (group === "positions" && baselinePositions) validateBaselinePortfolio(baselinePositions, data);
+      results[group] = { ok: true, status: response.status, data, reason: "ok" };
+      receipts[group] = { requestedAt, retrievedAt: now().toISOString(), responseSha256: diagnostic.responseSha256, httpStatus: response.status };
     } catch (error) {
-      if (error instanceof ContractError) throw error;
-      throw new ContractError("CAPTURE_BROKER_TRANSPORT_FAILURE");
+      const reasons = { CAPTURE_BROKER_HTTP_FAILURE: "HTTP_NON_SUCCESS", CAPTURE_BROKER_TRANSPORT_FAILURE: "RESPONSE_TRANSPORT_FAILURE",
+        CAPTURE_RESPONSE_TOO_LARGE: "RESPONSE_SIZE_LIMIT_EXCEEDED", CAPTURE_RESPONSE_LIMIT_REACHED: "RESPONSE_ROW_LIMIT_REACHED",
+        CAPTURE_BROKER_TIMESTAMP_INVALID: "OBSERVATION_TIMESTAMP_INVALID", CAPTURE_BROKER_FUTURE_TIMESTAMP: "OBSERVATION_TIMESTAMP_AFTER_LOCAL_REFERENCE",
+        CAPTURE_ACCOUNT_MISMATCH: "ACCOUNT_PIN_MISMATCH", CAPTURE_PREVIEW_PORTFOLIO_CHANGED: "PORTFOLIO_CHANGED",
+        CAPTURE_UNSUPPORTED_SHORT_PROTECTION: "SHORT_PROTECTION_UNSUPPORTED" };
+      diagnostic.validationFailure ??= Object.hasOwn(reasons, error?.message) ? reasons[error.message] : "RESPONSE_CONTRACT_INVALID";
+      onFailure(diagnostic);
+      throw error;
     }
-    let data;
-    try { data = JSON.parse(bytes.toString("utf8")); } catch { throw new ContractError("CAPTURE_BROKER_SCHEMA_INVALID"); }
-    validateResponse(group, data, manifest, now().getTime());
-    if (group === "positions" && baselinePositions) validateBaselinePortfolio(baselinePositions, data);
-    results[group] = { ok: true, status: response.status, data, reason: "ok" };
-    receipts[group] = { requestedAt, retrievedAt: now().toISOString(), responseSha256: digest(bytes), httpStatus: response.status };
   }
   return { results, receipts };
 }
@@ -234,7 +261,8 @@ export async function capturePrivateEvidence({ sourceDirectory, sourceManifestSh
       }
     }
     const startedAt = now().toISOString();
-    const { results, receipts } = await brokerSnapshot({ fetchImpl, env, requestCounts, manifest: source.manifest, baselinePositions: source.baselinePositions, now });
+    const { results, receipts } = await brokerSnapshot({ fetchImpl, env, requestCounts, manifest: source.manifest, baselinePositions: source.baselinePositions, now,
+      onFailure: diagnostic => { safe.responseDiagnostic = diagnostic; } });
     const orderLedger = source.values[FILES.orderLedger], orderIdempotency = source.values[FILES.orderIdempotency];
     const live = await buildLiveSummary(async route => results[Object.keys(ROUTES).find(k => ROUTES[k] === route)],
       { ledger: orderLedger, idempotency: orderIdempotency, fillability: source.historicalContextOnly ? {} : source.values["fillability-report.json"] || {},
