@@ -450,3 +450,86 @@ This is not completion of the missing-snapshot goal or authorization to close a
 position. Existing public-repository state-cache confidentiality is also not
 fixed by encrypting this additional artifact; cache migration requires its own
 bounded scope. Rollback: revert this integration commit; no ledger migration.
+
+## Historical-context source isolation (v2)
+
+A normal preserved dry-run snapshot can contain entry payloads and auxiliary
+reports selected by symbol. It is not a v1 closeout-ready input. Do not delete
+those rows, clear payloads, or relax the v1 contract to pass preflight.
+
+The explicit opt-in `paper-private-capture-source-v2` requires
+`sourceUsage=HISTORICAL_CONTEXT_ONLY_NO_EXECUTION`. It retains the v1 environment,
+account hash, source run and byte-hash requirements, and additionally requires
+the exact preserved `performance-dashboard.json`. Its full positive signed
+position quantities must match the historical SHADOW portfolio; all five exact
+limited identities must be present. Shorts remain unsupported, not omitted.
+This portfolio comparison is drift detection, not symbol-based ownership proof.
+
+Prepare a NEW owner-only source directory and pin its NEW manifest hash under a
+new approval. Copy original files byte-for-byte; never alter old manifests,
+failed attempt directories, saved state or source artifacts. The source can
+include all three historical auxiliary reports. They and the original preview
+remain hashed but **cannot** be inputs to regenerated reports:
+
+| Source | v2 use |
+| --- | --- |
+| Order ledger and idempotency | Exact pinned report identity context; immutable copies |
+| Original performance | Account-wide signed exposure drift comparison only |
+| Original preview | Historical schema/portfolio verification and preservation only |
+| Fillability, fill reconciliation, lifecycle guard plan | Preservation only; unverified joins remain excluded |
+
+Before any credential loading or runtime approval, run:
+
+```sh
+node scripts/capture-paper-private-evidence.mjs --preflight SOURCE_DIRECTORY SOURCE_MANIFEST_SHA256
+```
+
+This read-only CLI uses the same full source checks as capture (including source
+timestamps and exact identities), without credentials, fetch, report producers
+or output writes. `PAPER_PRIVATE_CAPTURE_SOURCE_PREFLIGHT_PASS` proves only
+local source compatibility. Actual capture separately checks safe process flags,
+PAPER host/credentials and exclusive output directory before its first GET.
+Offline preflight is not an attempt and never consumes or resets a runtime one-shot.
+
+The v2 collector preserves the entire input, including original manifest bytes,
+in `complete/preserved-source/`. Only ledger/idempotency are copied into the report
+workspace. No empty preview or synthetic fillability report is created. Original
+preview bytes are included unchanged in the seven-file review output, but neither
+payloads nor historical SHADOW intents are used for execution-readiness selection.
+Missing auxiliary evidence remains missing in generated protection reports; it
+must not be interpreted as proof of protection or absence of conflicts.
+
+After account validation, the positions response must match the preserved full
+portfolio by symbol and signed quantity; drift stops after at most two GETs.
+This does not prove unchanged lots, unchanged basis, no intervening fills or
+current sidecar-state authenticity. Account mismatch stops after one GET. Other
+failure/budget rules are unchanged (five total, no retries, redirects or
+pagination). Current clock observations do not make the old preview current.
+
+The output manifest is `paper-closeout-private-evidence-v2`. The private auditor
+verifies archive and core byte parity, exactly five limited identities, report
+joins, portfolio parity and explicit isolation markers. Forbidden historical
+input flags must be explicitly false and their source references explicitly
+null in generated reports; missing or contradictory declarations are rejected.
+It **does not call**
+`buildPaperExitReadiness` or compute realized P&L for v2. The dashboard records
+`realizedPnl=null` and `realizedPnlEvaluationStatus=NOT_EVALUATED_REVIEW_ONLY`.
+
+Success labels are deliberately distinct:
+
+- Capture: `PAPER_PRIVATE_CAPTURE_REVIEW_ONLY_COMPLETE`
+- Audit: `PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED`
+
+They retain `selectedCandidateCount=0`, `executionReadinessEvaluated=false`,
+`currentStateAuthenticityVerified=false`, `currentBrokerEvidenceVerified=false`,
+`brokerSubmitAllowed=false`, `realizedPnlVerified=false`, and
+`historicalEvidenceNormalized=false`. Unscoped positions are not adopted;
+origin-unverified management references do not become entry provenance. Review
+observations cannot complete an older missing-original-input goal or authorize
+risk reduction. No schema/default changes reach automatic sidecar, readiness,
+submission, state persistence, notification, Stage6 or OOS consumers.
+
+Compatibility: v1 inputs keep every existing rejection, including nonempty
+preview payloads and unverified optional target joins. Old consumers must reject
+v2 rather than reinterpret it as execution-ready v1. No migration rewrites any
+historical source. Rollback is a code revert; preserve all attempts/evidence.

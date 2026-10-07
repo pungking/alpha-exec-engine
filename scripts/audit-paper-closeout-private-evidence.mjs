@@ -139,12 +139,76 @@ export function validateShadow(shadow) {
     && Object.entries(counts).every(([key, value]) => Number.isSafeInteger(shadow[key]) && shadow[key] === value), "PRIVATE_SHADOW_CONTRACT_INVALID");
 }
 
+export function validatePrivatePreview(preview, historicalContextOnly = false) {
+  const shadow = preview.paperExitShadowIntent;
+  validateShadow(shadow);
+  requireContract(preview.mode?.readOnly === true && preview.mode?.execEnabled === false
+    && preview.actionIntent?.previewOnly === true && Array.isArray(preview.payloads)
+    && (historicalContextOnly || preview.payloads.length === 0)
+    && shadow.mode === "REPORT_ONLY_SHADOW"
+    && ["wouldCreateBrokerPayload", "brokerMutationAttempted", "brokerMutationSubmitted", "stateMutationAttempted", "stateMutationSubmitted"]
+      .every(k => shadow[k] === false), "PRIVATE_SHADOW_CONTRACT_INVALID");
+}
+
+export const HISTORICAL_SOURCE_USAGE = "HISTORICAL_CONTEXT_ONLY_NO_EXECUTION";
+export const HISTORICAL_AUXILIARY_FILES = Object.freeze([
+  "fillability-report.json", "fill-state-reconciliation-audit.json", "position-lifecycle-guard-source-plan.json",
+]);
+
+export function validateHistoricalReviewSource(manifest, values) {
+  requireContract(manifest.schemaVersion === "paper-private-capture-source-v2" && manifest.environment === "PAPER"
+    && manifest.evidenceBasis === "PRESERVED_STATE_SNAPSHOT" && /^\d+$/.test(manifest.sourceRunId)
+    && hash(manifest.expectedPaperAccountSha256) && manifest.sourceUsage === HISTORICAL_SOURCE_USAGE,
+  "CAPTURE_SOURCE_MANIFEST_INVALID");
+  const required = [FILES.preview, FILES.orderLedger, FILES.orderIdempotency, FILES.performance];
+  requireContract(object(manifest.files) && required.every(n => Object.hasOwn(manifest.files, n))
+    && Object.keys(manifest.files).every(n => [...required, ...HISTORICAL_AUXILIARY_FILES].includes(n)), "CAPTURE_SOURCE_FILE_SET_INVALID");
+  const positions = uniqueReportRows(values[FILES.performance]?.live?.positions);
+  requireContract(positions.every(r => r.qty != null && String(r.qty).trim()
+    && Number.isFinite(Number(r.qty)) && Number(r.qty) > 0), "CAPTURE_BASELINE_PORTFOLIO_INVALID");
+  validatePrivatePreview(values[FILES.preview], true);
+  const symbols = rows => rows.map(r => r.symbol.trim().toUpperCase()).sort().join("\n");
+  requireContract(symbols(positions) === symbols(values[FILES.preview].paperExitShadowIntent.rows), "CAPTURE_BASELINE_PORTFOLIO_INVALID");
+  return positions;
+}
+
+function auditHistoricalReviewSource(directory, manifest, reports) {
+  const archive = path.join(directory, "preserved-source");
+  const stat = fs.lstatSync(archive);
+  requireContract(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid()
+    && (stat.mode & 0o077) === 0, "PRIVATE_INPUT_PERMISSIONS_INVALID");
+  const source = readPrivate(path.join(archive, "source-manifest.json"), manifest.sourceManifestSha256);
+  requireContract(object(source.files), "CAPTURE_SOURCE_MANIFEST_INVALID");
+  requireContract(Object.keys(source.files).every(n => [FILES.preview, FILES.orderLedger, FILES.orderIdempotency,
+    FILES.performance, ...HISTORICAL_AUXILIARY_FILES].includes(n)), "CAPTURE_SOURCE_FILE_SET_INVALID");
+  const values = Object.fromEntries(Object.entries(source.files).map(([name, pin]) => [name, readPrivate(path.join(archive, name), pin)]));
+  const baseline = validateHistoricalReviewSource(source, values);
+  requireContract([FILES.preview, FILES.orderLedger, FILES.orderIdempotency].every(n => manifest.files[n] === source.files[n]), "PRIVATE_FILE_HASH_MISMATCH");
+  requireContract(manifest.sourceUsage === HISTORICAL_SOURCE_USAGE && reports.performance.sourceUsage === HISTORICAL_SOURCE_USAGE
+    && Array.isArray(reports.performance.privateCaptureTargets), "PRIVATE_REVIEW_ISOLATION_INVALID");
+  requireContract(reports.performance.realizedPnl === null && reports.performance.realizedPnlEvaluationStatus === "NOT_EVALUATED_REVIEW_ONLY",
+    "PRIVATE_REVIEW_ISOLATION_INVALID");
+  requireContract(["fillability", "preview", "positionLifecycleGuardSourcePlan"]
+    .every(k => reports.positionProtectionAudit.files?.[k] === false)
+    && reports.orderState.files?.fillability === false
+    && reports.brokerChildReconciliation.files?.positionLifecycleGuardSourcePlan === false
+    && ["lifecycleGuardSourceOverall", "stage6File", "stage6Hash"]
+      .every(k => reports.positionProtectionAudit.source?.[k] === null)
+    && reports.brokerChildReconciliation.source?.lifecycleGuardSourceOverall === null, "PRIVATE_REVIEW_ISOLATION_INVALID");
+  const exposure = rows => rows.map(r => [r.symbol.toUpperCase(), Number(r.qty)]).sort((a, b) => a[0].localeCompare(b[0]));
+  requireContract(sha256Canonical(exposure(baseline)) === sha256Canonical(exposure(reports.performance.live.positions)), "CAPTURE_PREVIEW_PORTFOLIO_CHANGED");
+  return { historicalPayloadRows: values[FILES.preview].payloads.length,
+    preservedSourceFileCount: Object.keys(source.files).length,
+    quarantinedAuxiliaryFileCount: HISTORICAL_AUXILIARY_FILES.filter(n => Object.hasOwn(source.files, n)).length };
+}
+
 export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
   const root = fs.lstatSync(directory);
   requireContract(root.isDirectory() && !root.isSymbolicLink(), "PRIVATE_DIRECTORY_INVALID");
   requireContract((root.mode & 0o077) === 0 && root.uid === process.getuid(), "PRIVATE_INPUT_PERMISSIONS_INVALID");
   const manifest = readPrivate(path.join(directory, "manifest.json"), manifestSha256);
-  requireContract(manifest.schemaVersion === "paper-closeout-private-evidence-v1" && manifest.environment === "PAPER"
+  const historicalContextOnly = manifest.schemaVersion === "paper-closeout-private-evidence-v2";
+  requireContract(["paper-closeout-private-evidence-v1", "paper-closeout-private-evidence-v2"].includes(manifest.schemaVersion) && manifest.environment === "PAPER"
     && manifest.evidenceBasis === "PRESERVED_SNAPSHOT" && object(manifest.files), "PRIVATE_MANIFEST_SCHEMA_INVALID");
   requireContract(Object.keys(manifest.files).sort().join("\n") === Object.values(FILES).sort().join("\n"), "PRIVATE_FILE_SET_INVALID");
   const reports = Object.fromEntries(Object.entries(FILES).map(([key, file]) => [key, readPrivate(path.join(directory, file), manifest.files[file])]));
@@ -167,18 +231,24 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
     }
   }
   const shadow = reports.preview.paperExitShadowIntent;
-  validateShadow(shadow);
-  requireContract(reports.preview.mode?.readOnly === true && reports.preview.mode?.execEnabled === false
-    && reports.preview.actionIntent?.previewOnly === true
-    && Array.isArray(reports.preview.payloads) && reports.preview.payloads.length === 0
-    && shadow.mode === "REPORT_ONLY_SHADOW"
-    && ["wouldCreateBrokerPayload", "brokerMutationAttempted", "brokerMutationSubmitted", "stateMutationAttempted", "stateMutationSubmitted"].every(k => shadow[k] === false), "PRIVATE_SHADOW_CONTRACT_INVALID");
-  const replay = buildPaperExitReadiness(reports);
-  requireContract(replay.shadowEvaluation.countMatches && replay.shadowEvaluation.unknownOrUnclassifiedRows === 0
-    && shadow.evaluatedPositionRows === shadow.rows.length, "PRIVATE_SHADOW_CONTRACT_INVALID");
+  validatePrivatePreview(reports.preview, historicalContextOnly);
   requireContract([...symbols].every(symbol => positions.some(r => r.symbol.toUpperCase() === symbol)), "PRIVATE_SCOPED_POSITION_MISSING");
   requireContract([...symbols].every(symbol => reports.positionProtectionAudit.rows.some(r =>
     r.symbol.toUpperCase() === symbol && r.idempotencyStatus === "active_position_limited_control")), "PRIVATE_LIMITED_REPORT_MISMATCH");
+  if (historicalContextOnly) {
+    requireContract(manifest.targets.length === 5, "CAPTURE_TARGET_COUNT_INVALID");
+    // Mixed-time observations are not an exit-readiness replay. Original payloads remain opaque preserved evidence.
+    const preserved = auditHistoricalReviewSource(directory, manifest, reports);
+    return { schemaVersion: "paper-closeout-private-evidence-audit-v2", status: "PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED",
+      evidenceBasis: "PRESERVED_SNAPSHOT_WITH_BOUNDED_OBSERVATIONS", manifestSha256, inputFileCount: Object.keys(FILES).length,
+      exactLimitedIdentityRows: manifest.targets.length, missingOriginalBrokerIdRows, snapshotPositionRows: positions.length,
+      unscopedPositionRows: positions.filter(r => !symbols.has(r.symbol.toUpperCase())).length,
+      executionReadinessEvaluated: false, currentStateAuthenticityVerified: false, unknownOrUnclassifiedRows: 0,
+      ...preserved, ...SAFETY };
+  }
+  const replay = buildPaperExitReadiness(reports);
+  requireContract(replay.shadowEvaluation.countMatches && replay.shadowEvaluation.unknownOrUnclassifiedRows === 0
+    && shadow.evaluatedPositionRows === shadow.rows.length, "PRIVATE_SHADOW_CONTRACT_INVALID");
   const count = predicate => replay.rows.filter(predicate).length;
   // Symbol-based report joins are descriptive replay only, never identity or current broker proof.
   return {
