@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { capturePrivateEvidence, CAPTURE_APPROVAL } from "./capture-paper-private-evidence.mjs";
+import { spawnSync } from "node:child_process";
+import { capturePrivateEvidence, inspectCaptureSource, CAPTURE_APPROVAL } from "./capture-paper-private-evidence.mjs";
 import { buildLiveSummary, buildPublicDashboard } from "./build-performance-dashboard.mjs";
 import { auditPrivateCloseoutEvidence } from "./audit-paper-closeout-private-evidence.mjs";
 
@@ -37,21 +38,25 @@ function source() {
         unknownOrUnclassifiedRows: 0, wouldCreateBrokerPayload: false, brokerMutationAttempted: false,
         brokerMutationSubmitted: false, stateMutationAttempted: false, stateMutationSubmitted: false } },
   };
-  function persist() {
+  function persist(reviewOnly = false) {
     const files = {};
     for (const [n, v] of Object.entries(data)) {
       const bytes = JSON.stringify(v); fs.writeFileSync(path.join(directory, n), bytes, { mode: 0o600 }); files[n] = sha(bytes);
     }
-    const manifest = { schemaVersion: "paper-private-capture-source-v1", environment: "PAPER", sourceRunId: "12345",
+    const manifest = { schemaVersion: reviewOnly ? "paper-private-capture-source-v2" : "paper-private-capture-source-v1", environment: "PAPER", sourceRunId: "12345",
       evidenceBasis: "PRESERVED_STATE_SNAPSHOT", expectedPaperAccountSha256: sha("private-account"), files };
+    if (reviewOnly) manifest.sourceUsage = "HISTORICAL_CONTEXT_ONLY_NO_EXECUTION";
     const bytes = JSON.stringify(manifest); fs.writeFileSync(path.join(directory, "source-manifest.json"), bytes, { mode: 0o600 });
     return sha(bytes);
   }
   return { directory, data, persist };
 }
 let cases = 0;
-async function run({ change = () => {}, tamper = () => {}, response = () => {}, inspect = () => {}, config = {}, expected = null, expectedRequests = 5 } = {}) {
-  const s = source(); change(s.data); const pin = s.persist(); tamper(s.directory);
+async function run({ change = () => {}, tamper = () => {}, response = () => {}, inspect = () => {}, config = {}, reviewOnly = false, expected = null, expectedRequests = 5 } = {}) {
+  const s = source();
+  if (reviewOnly) s.data["performance-dashboard.json"] = { generatedAt: originalAt,
+    live: { positions: Object.values(s.data["order-ledger.json"].orders).map(r => ({ symbol: r.symbol, qty: 1 })) } };
+  change(s.data); const pin = s.persist(reviewOnly); tamper(s.directory);
   const before = Object.fromEntries(fs.readdirSync(s.directory).map(n => [n, sha(fs.readFileSync(path.join(s.directory, n)))]));
   const output = path.join(root, `capture-${cases}`), calls = [];
   const fetchImpl = async (url, options) => {
@@ -69,7 +74,7 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   };
   const result = await capturePrivateEvidence({ sourceDirectory: s.directory, sourceManifestSha256: pin, outputDirectory: output,
     approval: CAPTURE_APPROVAL, env, fetchImpl, now: () => new Date(now), ...config });
-  assert.equal(result.status, expected || "PAPER_PRIVATE_CAPTURE_COMPLETE_CURRENT_PROOF_REQUIRED");
+  assert.equal(result.status, expected || (reviewOnly ? "PAPER_PRIVATE_CAPTURE_REVIEW_ONLY_COMPLETE" : "PAPER_PRIVATE_CAPTURE_COMPLETE_CURRENT_PROOF_REQUIRED"));
   assert.equal(calls.length, expectedRequests);
   assert.equal(result.requestCounts.total, calls.length); assert.equal(result.selectedCandidateCount, 0);
   assert.equal(result.currentBrokerEvidenceVerified, false); assert.equal(result.stateMutationAttempted, false);
@@ -85,8 +90,18 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
       const file = path.join(input, n); assert.equal(sha(fs.readFileSync(file)), h); assert.equal(fs.statSync(file).mode & 0o077, 0);
     }
     assert.equal(fs.statSync(input).mode & 0o077, 0);
-    for (const n of Object.keys(s.data)) assert.equal(sha(fs.readFileSync(path.join(input, n))), before[n]);
-    assert.equal(result.inputAuditStatus, "PRIVATE_EVIDENCE_CONTRACT_VALID_CURRENT_PROOF_REQUIRED");
+    for (const n of Object.keys(s.data)) assert.equal(sha(fs.readFileSync(path.join(input, ...(reviewOnly ? ["preserved-source", n] : [n])))), before[n]);
+    assert.equal(result.inputAuditStatus, reviewOnly ? "PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED" : "PRIVATE_EVIDENCE_CONTRACT_VALID_CURRENT_PROOF_REQUIRED");
+    if (reviewOnly) {
+      assert.equal(result.executionReadinessEvaluated, false);
+      assert.equal(result.historicalPayloadRows, s.data["last-dry-exec-preview.json"].payloads.length);
+      assert.equal(sha(fs.readFileSync(path.join(input, "preserved-source", "source-manifest.json"))), pin);
+      const work = path.join(output, "private-work");
+      for (const n of ["last-dry-exec-preview.json", "fillability-report.json", "fill-state-reconciliation-audit.json", "position-lifecycle-guard-source-plan.json"]) {
+        assert.equal(fs.existsSync(path.join(work, n)), false);
+      }
+      assert.equal(sha(fs.readFileSync(path.join(input, "last-dry-exec-preview.json"))), before["last-dry-exec-preview.json"]);
+    }
     const dashboard = JSON.parse(fs.readFileSync(path.join(input, "performance-dashboard.json")));
     const protection = JSON.parse(fs.readFileSync(path.join(input, "position-protection-root-cause-audit.json")));
     const orderState = JSON.parse(fs.readFileSync(path.join(input, "order-state-consistency-report.json")));
@@ -97,7 +112,7 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
       assert.equal(orderState.rows.find(p => p.symbol === ledger.symbol)?.ledger, ledger.status);
     }
     assert.ok(!JSON.stringify(buildPublicDashboard(dashboard)).includes("private-key"));
-    inspect({ dashboard, protection, orderState, input });
+    inspect({ dashboard, protection, orderState, input, output });
     const terminal = JSON.parse(fs.readFileSync(path.join(input, "attempt-terminal.json")));
     assert.equal(terminal.status, "COMPLETE"); assert.equal(terminal.manifestSha256, result.manifestSha256);
     const provenance = JSON.parse(fs.readFileSync(path.join(output, "capture-provenance.json")));
@@ -125,6 +140,150 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   return result;
 }
 try {
+  const historicalContext = d => {
+    d["last-dry-exec-preview.json"].payloads = [{ symbol: "PRIVATE_PAYLOAD_MARKER", actionType: "EXIT_FULL" }];
+    for (const name of ["fillability-report.json", "fill-state-reconciliation-audit.json", "position-lifecycle-guard-source-plan.json"]) {
+      d[name] = { rows: [{ symbol: "FIXTURE_0", status: "filled", stopPrice: 99999, originalMarker: "HISTORICAL_ONLY" }] };
+    }
+  };
+  await run({ reviewOnly: true, change: historicalContext, inspect: ({ dashboard, protection, orderState, input }) => {
+    for (const report of [dashboard, protection, orderState]) {
+      assert.ok(!JSON.stringify(report).includes("HISTORICAL_ONLY"));
+      assert.ok(!JSON.stringify(report).includes("PRIVATE_PAYLOAD_MARKER"));
+    }
+    assert.equal(protection.rows[0].brokerStopPresent, false);
+    assert.equal(protection.rows[0].brokerTargetPresent, false);
+    const manifest = JSON.parse(fs.readFileSync(path.join(input, "manifest.json")));
+    const audit = auditPrivateCloseoutEvidence(input, sha(fs.readFileSync(path.join(input, "manifest.json"))));
+    assert.equal(audit.status, "PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED");
+    assert.equal(audit.selectedCandidateCount, 0);
+    assert.equal(audit.executionReadinessEvaluated, false);
+    // V1 cannot silently acquire review-only semantics from the same seven files.
+    manifest.schemaVersion = "paper-closeout-private-evidence-v1";
+    const bytes = JSON.stringify(manifest); fs.writeFileSync(path.join(input, "manifest.json"), bytes);
+    assert.throws(() => auditPrivateCloseoutEvidence(input, sha(bytes)), /PRIVATE_SHADOW_CONTRACT_INVALID/);
+  } });
+  await run({ reviewOnly: true, inspect: ({ input }) => {
+    const read = file => JSON.parse(fs.readFileSync(file));
+    const write = (file, value) => { const bytes = JSON.stringify(value); fs.writeFileSync(file, bytes); return sha(bytes); };
+    const manifestPath = path.join(input, "manifest.json"), manifest = read(manifestPath);
+    const removed = manifest.targets.pop();
+    const ledger = read(path.join(input, "order-ledger.json"));
+    const symbol = ledger.orders[removed.ledgerKey].symbol;
+    // A complete, hash-consistent four-identity package must still fail the v2 five-row boundary.
+    const trim = value => {
+      if (value.orders) { delete value.orders[removed.ledgerKey]; delete value.orders[removed.idempotencyKey]; }
+      if (value.rows) value.rows = value.rows.filter(r => r.symbol !== symbol);
+      if (value.live?.positions) value.live.positions = value.live.positions.filter(r => r.symbol !== symbol);
+      if (value.privateCaptureTargets) value.privateCaptureTargets = manifest.targets;
+      if (value.paperExitShadowIntent) {
+        const shadow = value.paperExitShadowIntent;
+        shadow.rows = shadow.rows.filter(r => r.symbol !== symbol);
+        shadow.evaluatedPositionRows--; shadow.exitFullDueRows--;
+      }
+      return value;
+    };
+    for (const name of Object.keys(manifest.files)) {
+      const file = path.join(input, name); manifest.files[name] = write(file, trim(read(file)));
+    }
+    const archive = path.join(input, "preserved-source"), sourcePath = path.join(archive, "source-manifest.json"), source = read(sourcePath);
+    for (const name of Object.keys(source.files)) {
+      const file = path.join(archive, name); source.files[name] = write(file, trim(read(file)));
+    }
+    manifest.sourceManifestSha256 = write(sourcePath, source);
+    const pin = write(manifestPath, manifest);
+    assert.throws(() => auditPrivateCloseoutEvidence(input, pin), /CAPTURE_TARGET_COUNT_INVALID/);
+  } });
+  for (const [name, field] of [
+    ["position-protection-root-cause-audit.json", "fillability"],
+    ["position-protection-root-cause-audit.json", "preview"],
+    ["position-protection-root-cause-audit.json", "positionLifecycleGuardSourcePlan"],
+    ["order-state-consistency-report.json", "fillability"],
+    ["broker-child-order-reconciliation.json", "positionLifecycleGuardSourcePlan"],
+  ]) for (const declared of [true, undefined]) await run({ reviewOnly: true, inspect: ({ input }) => {
+    const file = path.join(input, name), report = JSON.parse(fs.readFileSync(file));
+    report.files[field] = declared;
+    const bytes = JSON.stringify(report); fs.writeFileSync(file, bytes);
+    const manifestPath = path.join(input, "manifest.json"), manifest = JSON.parse(fs.readFileSync(manifestPath));
+    manifest.files[name] = sha(bytes);
+    const manifestBytes = JSON.stringify(manifest); fs.writeFileSync(manifestPath, manifestBytes);
+    assert.throws(() => auditPrivateCloseoutEvidence(input, sha(manifestBytes)), /PRIVATE_REVIEW_ISOLATION_INVALID/);
+  } });
+  for (const [name, field] of [
+    ["position-protection-root-cause-audit.json", "lifecycleGuardSourceOverall"],
+    ["position-protection-root-cause-audit.json", "stage6File"],
+    ["position-protection-root-cause-audit.json", "stage6Hash"],
+    ["broker-child-order-reconciliation.json", "lifecycleGuardSourceOverall"],
+  ]) for (const declared of ["HISTORICAL_SOURCE_MARKER", undefined]) await run({ reviewOnly: true, inspect: ({ input }) => {
+    const file = path.join(input, name), report = JSON.parse(fs.readFileSync(file));
+    report.source[field] = declared;
+    const bytes = JSON.stringify(report); fs.writeFileSync(file, bytes);
+    const manifestPath = path.join(input, "manifest.json"), manifest = JSON.parse(fs.readFileSync(manifestPath));
+    manifest.files[name] = sha(bytes);
+    const manifestBytes = JSON.stringify(manifest); fs.writeFileSync(manifestPath, manifestBytes);
+    assert.throws(() => auditPrivateCloseoutEvidence(input, sha(manifestBytes)), /PRIVATE_REVIEW_ISOLATION_INVALID/);
+  } });
+  await run({ reviewOnly: true, change: d => { delete d["performance-dashboard.json"]; }, expected: "CAPTURE_SOURCE_FILE_SET_INVALID", expectedRequests: 0 });
+  await run({ reviewOnly: true, change: d => {
+    d["performance-dashboard.json"].live.positions.pop();
+    const shadow = d["last-dry-exec-preview.json"].paperExitShadowIntent;
+    shadow.rows.pop(); shadow.evaluatedPositionRows--; shadow.exitFullDueRows--;
+  }, expected: "PRIVATE_SCOPED_POSITION_MISSING", expectedRequests: 0 });
+  for (const change of [
+    d => { d["performance-dashboard.json"].live.positions[0].qty = null; },
+    d => { d["performance-dashboard.json"].live.positions[0].qty = -1; },
+    d => { d["performance-dashboard.json"].live.positions.pop(); },
+  ]) await run({ reviewOnly: true, change, expected: "CAPTURE_BASELINE_PORTFOLIO_INVALID", expectedRequests: 0 });
+  await run({ reviewOnly: true, change: d => { d["last-dry-exec-preview.json"].mode.execEnabled = true; }, expected: "PRIVATE_SHADOW_CONTRACT_INVALID", expectedRequests: 0 });
+  await run({ reviewOnly: true, change: d => { d["last-dry-exec-preview.json"].paperExitShadowIntent.brokerMutationSubmitted = true; }, expected: "PRIVATE_SHADOW_CONTRACT_INVALID", expectedRequests: 0 });
+  await run({ reviewOnly: true, change: d => { d["order-idempotency.json"].orders["private-key-0"].entryAllowed = true; }, expected: "LIMITED_CONTROL_CONTRACT_INVALID", expectedRequests: 0 });
+  await run({ reviewOnly: true, change: d => { d["performance-dashboard.json"].generatedAt = "2099-01-01T00:00:00Z"; }, expected: "CAPTURE_SOURCE_FUTURE_TIMESTAMP", expectedRequests: 0 });
+  await run({ reviewOnly: true, config: { env: { ...env, ALPACA_KEY_ID: "" } }, expected: "CAPTURE_CREDENTIALS_MISSING", expectedRequests: 0 });
+  await run({ reviewOnly: true, config: { env: { ...env, ALPACA_BASE_URL: "https://api.alpaca.markets" } }, expected: "CAPTURE_PAPER_ONLY_REQUIRED", expectedRequests: 0 });
+  await run({ reviewOnly: true, response: ({ group }) => group === "/v2/account" ? { body: { id: "mismatch" } } : null, expected: "CAPTURE_ACCOUNT_MISMATCH", expectedRequests: 1 });
+  await run({ reviewOnly: true, response: ({ group, body }) => group === "/v2/positions" ? { body: body.map(p => ({ ...p, qty: "2" })) } : null,
+    expected: "CAPTURE_PREVIEW_PORTFOLIO_CHANGED", expectedRequests: 2 });
+  await run({ reviewOnly: true, response: ({ group, body }) => group === "/v2/positions" ? { body: body.slice(1) } : null,
+    expected: "CAPTURE_PREVIEW_PORTFOLIO_CHANGED", expectedRequests: 2 });
+  await run({ change: d => { d["last-dry-exec-preview.json"].payloads = [{ actionType: "ENTRY_NEW" }]; }, expected: "PRIVATE_SHADOW_CONTRACT_INVALID", expectedRequests: 0 });
+  const reviewBaseline = await run({ reviewOnly: true, change: historicalContext });
+  assert.equal((await run({ reviewOnly: true, change: historicalContext })).captureInputSha256, reviewBaseline.captureInputSha256);
+  await run({ reviewOnly: true, change: historicalContext, inspect: ({ input }) => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(input, "manifest.json")));
+    const pin = sha(fs.readFileSync(path.join(input, "manifest.json")));
+    fs.appendFileSync(path.join(input, "preserved-source", "fill-state-reconciliation-audit.json"), " ");
+    assert.throws(() => auditPrivateCloseoutEvidence(input, pin), /PRIVATE_FILE_HASH_MISMATCH/);
+    assert.equal(manifest.sourceUsage, "HISTORICAL_CONTEXT_ONLY_NO_EXECUTION");
+  } });
+  for (const mutate of [
+    d => { d.sourceUsage = "EXECUTION_READY"; },
+    d => { d.realizedPnl = { verified: true }; },
+  ]) await run({ reviewOnly: true, inspect: ({ input, dashboard }) => {
+    mutate(dashboard);
+    const mf = path.join(input, "manifest.json"), manifest = JSON.parse(fs.readFileSync(mf));
+    const bytes = JSON.stringify(dashboard); fs.writeFileSync(path.join(input, "performance-dashboard.json"), bytes);
+    manifest.files["performance-dashboard.json"] = sha(bytes);
+    const mb = JSON.stringify(manifest); fs.writeFileSync(mf, mb);
+    assert.throws(() => auditPrivateCloseoutEvidence(input, sha(mb)), /PRIVATE_REVIEW_ISOLATION_INVALID/);
+  } });
+  const preflightFixture = source();
+  preflightFixture.data["performance-dashboard.json"] = { generatedAt: originalAt, live: {
+    positions: Object.values(preflightFixture.data["order-ledger.json"].orders).map(r => ({ symbol: r.symbol, qty: 1 })) } };
+  historicalContext(preflightFixture.data);
+  const preflightPin = preflightFixture.persist(true);
+  const beforePreflight = fs.readdirSync(preflightFixture.directory).map(n => [n, sha(fs.readFileSync(path.join(preflightFixture.directory, n)))]);
+  const offline = inspectCaptureSource(preflightFixture.directory, preflightPin, () => new Date(now));
+  assert.equal(offline.status, "PAPER_PRIVATE_CAPTURE_SOURCE_PREFLIGHT_PASS");
+  assert.equal(offline.credentialsRead, false); assert.equal(offline.brokerRequests, 0);
+  assert.deepEqual(inspectCaptureSource(preflightFixture.directory, preflightPin, () => new Date(now)), offline);
+  const cli = spawnSync(process.execPath, ["scripts/capture-paper-private-evidence.mjs", "--preflight", preflightFixture.directory, preflightPin],
+    { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(cli.status, 0); assert.equal(cli.stderr, "");
+  assert.deepEqual(JSON.parse(cli.stdout), offline);
+  for (const marker of ["PRIVATE_PAYLOAD_MARKER", "HISTORICAL_ONLY", "FIXTURE_", "private-key"]) assert.ok(!cli.stdout.includes(marker));
+  assert.deepEqual(fs.readdirSync(preflightFixture.directory).map(n => [n, sha(fs.readFileSync(path.join(preflightFixture.directory, n)))]), beforePreflight);
+  assert.equal(inspectCaptureSource(preflightFixture.directory, "0".repeat(64)).status, "PRIVATE_FILE_HASH_MISMATCH");
+  cases++;
   const first = await run({ inspect: ({ dashboard, input }) => {
     const manifest = JSON.parse(fs.readFileSync(path.join(input, "manifest.json")));
     dashboard.live.positions[0].plannedLedgerKey = "different-private-key";
