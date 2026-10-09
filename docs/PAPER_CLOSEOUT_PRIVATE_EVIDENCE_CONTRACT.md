@@ -574,3 +574,88 @@ This diagnostic cannot retrospectively identify a prior failed response that
 was not retained. A new runtime observation requires separate bounded approval,
 reviewed main/code hashes and a new unused owner-only attempt directory; no
 previous failure is reset or re-executed by this contract change.
+
+## Limited-control closeout dry-run terms (offline only)
+
+Goal: `PAPER_LIMITED_CONTROL_CLOSEOUT_DRY_RUN_CONTRACT_V1`.
+The existing auditor gains an opt-in mode, not a submission route:
+
+```sh
+node scripts/audit-paper-closeout-private-evidence.mjs PRIVATE_DIRECTORY MANIFEST_SHA256 --limited-control-dry-run
+node scripts/audit-paper-closeout-private-evidence.mjs PRIVATE_DIRECTORY MANIFEST_SHA256 --limited-control-dry-run PRIVATE_TERMS_FILE TERMS_BYTES_SHA256
+```
+
+Both commands validate the complete v2 historical-context package first. v1 is
+rejected in this mode. Input hashes, exact ledger/idempotency identities, preserved
+source isolation and owner-only file checks are unchanged. No credentials, clock
+or provider calls, output writes, state patches, cache operations, order payloads,
+reservations, Telegram messages or scheduled/workflow execution are added.
+
+Without a terms file the result is `LIMITED_CLOSEOUT_DRY_RUN_TERMS_REQUIRED`.
+Do not invent quantities, keys or risk limits to turn it green. Supplied private
+terms must have exactly these fields; extra fields fail closed:
+
+- `schemaVersion=paper-limited-control-closeout-terms-v1`, `environment=PAPER`.
+- `manifestSha256`: this exact seven-file manifest, not a latest pointer.
+- `accountSha256`: must match the previously pinned preserved source account.
+  This comparison is not a new independent broker/account verification.
+- `riskLimits`: finite positive numeric `maxOrderNotional`, `maxTotalNotional`
+  (USD), `maxSpreadBps`, `maxSlippageBps`, `maxEvidenceAgeSeconds`.
+  Per-order cap cannot exceed the total cap. No implicit defaults or coercion.
+- `targets`: exactly five unique manifest targets, each retaining exact
+  `ledgerKey`, `idempotencyKey`, `ledgerRecordSha256`, `idempotencyRecordSha256`,
+  plus `action`, `executionSide`, `quantity`, `exitIdempotencyKey`.
+
+Only `EXIT_FULL`/`EXIT_PARTIAL` and `sell` against positive signed v2 snapshots are
+supported. Quantity must equal the snapshot for full exit, or be positive and
+strictly smaller for partial exit. Shorts remain unsupported. Snapshot quantities
+and prices are used only for bounded arithmetic checking, never current sizing.
+Snapshot notional must fit both explicit caps. Non-finite inputs fail. Products,
+sums and cap comparisons use BigInt rational arithmetic on the decimal string
+representation of validated JSON numbers (including scientific notation), not
+binary floating-point multiplication or a rounding/tolerance allowance. This
+cannot recover precision already lost when a vendor encoded its JSON numbers.
+
+Requested exit keys must be distinct across the five targets and absent from all
+preserved ledger/idempotency keys (including embedded keys and releases). The
+checker neither creates these keys nor reserves them. Original entry timestamps,
+broker IDs, fill lineage and limited-control status remain untouched. A new exit
+key cannot establish strategy ownership, repair entry history or certify that the
+current execution-side idempotency store is free of conflicts.
+
+Validation is all-or-nothing: malformed or conflicting terms yield a fixed safe
+error, never a partial valid set. A successful check reports five validated terms
+and `scopeSha256` using canonical JSON. CLI byte-hash validation and this canonical
+terms hash have different stated bases. Neither hash is an execution approval.
+
+Exact-reference snapshot protection, open-sell and terminal conflicts are counted;
+missing evidence is counted separately. Valid terms with a snapshot blocker return
+`LIMITED_CLOSEOUT_DRY_RUN_SNAPSHOT_BLOCKED`. Otherwise they return
+`LIMITED_CLOSEOUT_DRY_RUN_TERMS_VALID_CURRENT_PROOF_REQUIRED`, not execution PASS.
+Zero recorded open-sell orders is NOT proof that all open orders are absent.
+Spread, slippage, freshness and liquidity cannot be proved from this historical
+package. Their live enforcement remains a required, separately approved boundary.
+
+Every result preserves `selectedCandidateCount=0`, `brokerSubmitAllowed=false`,
+`executionAuthorized=false`, `executionReadinessEvaluated=false`,
+`currentStateAuthenticityVerified=false`, `currentBrokerEvidenceVerified=false`,
+`realizedPnlVerified=false`, `historicalEvidenceNormalized=false` and zero payloads
+and reservations. Raw identifiers, quantities, limit values and requested keys are
+not returned. Public results contain fixed statuses, counts, booleans and hashes.
+
+The result explicitly requires before ANY future submission: scoped approval,
+current state authenticity or explicitly authorized management authority without
+adopting historical provenance, fresh pinned account/positions/RTH/open-order and
+protective-child evidence, conflict-free atomic exit reservation, approved current
+risk checks, and broker-fill/residual-position/terminal post-verification. On
+uncertain submission stop and reconcile, never retry with another client ID.
+Rollback before submission is abort; after a possible fill, reverting code cannot
+undo it and does not authorize reverse orders or cancellation. Original entry-fill
+evidence is still required for verified P&L and verified closed-loop performance.
+
+Compatibility: default v1/v2 auditor output and all automatic consumers are
+unchanged. This is an additive local review schema, not a state/Stage6 migration.
+Existing generic limited-control submission blocks remain unchanged. No execution
+workflow imports or invokes this mode. Rollback is reverting this code/doc change;
+retain all historical/private evidence. Tests run in the existing mock-capture
+fixture suite and CI, with no new dependencies or production workflow.
