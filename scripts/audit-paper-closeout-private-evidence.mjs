@@ -202,12 +202,107 @@ function auditHistoricalReviewSource(directory, manifest, reports) {
     quarantinedAuxiliaryFileCount: HISTORICAL_AUXILIARY_FILES.filter(n => Object.hasOwn(source.files, n)).length };
 }
 
-export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
+const exactFields = (value, fields) => object(value)
+  && Object.keys(value).sort().join("\n") === [...fields].sort().join("\n");
+const positive = value => typeof value === "number" && Number.isFinite(value) && value > 0;
+const TARGET_FIELDS = ["ledgerKey", "idempotencyKey", "ledgerRecordSha256", "idempotencyRecordSha256"];
+const RISK_FIELDS = ["maxOrderNotional", "maxTotalNotional", "maxSpreadBps", "maxSlippageBps", "maxEvidenceAgeSeconds"];
+
+// Compare decimal JSON-number representations exactly; no rounding or cap tolerance.
+function decimalRatio(value) {
+  const [mantissa, exponent = "0"] = String(value).split("e");
+  const [whole, fraction = ""] = mantissa.split(".");
+  const units = BigInt(whole + fraction), scale = fraction.length - Number(exponent);
+  return scale >= 0 ? [units, 10n ** BigInt(scale)] : [units * 10n ** BigInt(-scale), 1n];
+}
+const withinCap = ([n, d], cap) => {
+  const [cn, cd] = decimalRatio(cap);
+  return n * cd <= cn * d;
+};
+
+function validateLimitedCloseoutTerms(scope, manifest, reports, manifestSha256, accountSha256) {
+  requireContract(object(scope), "LIMITED_CLOSEOUT_TERMS_SCHEMA_INVALID");
+  requireContract(Object.hasOwn(scope, "riskLimits"), "LIMITED_CLOSEOUT_RISK_LIMITS_INVALID");
+  requireContract(exactFields(scope, ["schemaVersion", "environment", "manifestSha256", "accountSha256", "riskLimits", "targets"])
+    && scope.schemaVersion === "paper-limited-control-closeout-terms-v1" && scope.environment === "PAPER", "LIMITED_CLOSEOUT_TERMS_SCHEMA_INVALID");
+  requireContract(scope.manifestSha256 === manifestSha256, "LIMITED_CLOSEOUT_SCOPE_PIN_MISMATCH");
+  requireContract(hash(scope.accountSha256) && scope.accountSha256 === accountSha256, "LIMITED_CLOSEOUT_ACCOUNT_PIN_MISMATCH");
+  const limits = scope.riskLimits;
+  requireContract(exactFields(limits, RISK_FIELDS) && RISK_FIELDS.every(k => positive(limits[k]))
+    && limits.maxOrderNotional <= limits.maxTotalNotional, "LIMITED_CLOSEOUT_RISK_LIMITS_INVALID");
+  requireContract(Array.isArray(scope.targets) && scope.targets.length === 5
+    && scope.targets.every(object) && new Set(scope.targets.map(t => t.ledgerKey)).size === 5, "LIMITED_CLOSEOUT_EXACT_FIVE_SCOPE_REQUIRED");
+  const existingKeys = new Set([...Object.keys(reports.orderLedger.orders), ...Object.keys(reports.orderIdempotency.orders),
+    ...Object.values(reports.orderLedger.orders).map(r => r.idempotencyKey),
+    ...Object.values(reports.orderIdempotency.orders).map(r => r.idempotencyKey),
+    ...reports.orderIdempotency.releases.flatMap(r => [r.key, r.idempotencyKey])].filter(text));
+  const newKeys = new Set();
+  let total = [0n, 1n];
+  for (const target of scope.targets) {
+    const original = manifest.targets.find(t => t.ledgerKey === target.ledgerKey);
+    requireContract(exactFields(target, [...TARGET_FIELDS, "action", "executionSide", "quantity", "exitIdempotencyKey"])
+      && original && TARGET_FIELDS.every(k => target[k] === original[k]), "LIMITED_CLOSEOUT_TARGET_LINEAGE_INVALID");
+    const positions = reports.performance.live.positions.filter(p => p.plannedLedgerKey === target.ledgerKey);
+    requireContract(positions.length === 1 && positive(positions[0].qty) && positive(positions[0].currentPrice), "LIMITED_CLOSEOUT_SNAPSHOT_POSITION_INVALID");
+    const position = positions[0];
+    // v2 supports long snapshots only. No historical intent is promoted or new order is built.
+    requireContract(target.executionSide === "sell" && positive(target.quantity)
+      && ((target.action === "EXIT_FULL" && target.quantity === position.qty)
+        || (target.action === "EXIT_PARTIAL" && target.quantity < position.qty)), "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+    const key = target.exitIdempotencyKey;
+    requireContract(text(key) && key === key.trim() && key.length <= 256 && !existingKeys.has(key) && !newKeys.has(key), "LIMITED_CLOSEOUT_EXIT_IDEMPOTENCY_CONFLICT");
+    newKeys.add(key);
+    const [qn, qd] = decimalRatio(target.quantity), [pn, pd] = decimalRatio(position.currentPrice);
+    const notional = [qn * pn, qd * pd];
+    total = [total[0] * notional[1] + notional[0] * total[1], total[1] * notional[1]];
+    requireContract(withinCap(notional, limits.maxOrderNotional) && withinCap(total, limits.maxTotalNotional),
+      "LIMITED_CLOSEOUT_SNAPSHOT_NOTIONAL_LIMIT_EXCEEDED");
+  }
+}
+
+function limitedCloseoutDryRun(directory, manifest, reports, audit, scope) {
+  const snapshots = manifest.targets.map(target => {
+    const matches = reports.performance.live.positions.filter(r => r.plannedLedgerKey === target.ledgerKey);
+    const states = reports.orderState.rows.filter(r => r.plannedLedgerKey === target.ledgerKey && r.plannedIdempotencyKey === target.idempotencyKey);
+    const p = matches[0], state = states[0];
+    const unavailable = matches.length !== 1 || states.length !== 1
+      || typeof p?.brokerStopPresent !== "boolean" || typeof p?.brokerTargetPresent !== "boolean"
+      || !Number.isSafeInteger(p?.brokerSellOrderCount) || p.brokerSellOrderCount < 0
+      || typeof state?.terminalReconciliationRequired !== "boolean" || typeof state?.terminalConflicts !== "boolean";
+    return { unavailable, protection: p?.brokerStopPresent === true || p?.brokerTargetPresent === true,
+      openSell: p?.brokerSellOrderCount > 0, terminal: state?.terminalReconciliationRequired === true || state?.terminalConflicts === true };
+  });
+  const count = predicate => snapshots.filter(predicate).length;
+  const snapshotBlockingRows = count(r => r.unavailable || r.protection || r.openSell || r.terminal);
+  const result = { ...audit, schemaVersion: "paper-limited-control-closeout-dry-run-v1",
+    status: "LIMITED_CLOSEOUT_DRY_RUN_TERMS_REQUIRED", mode: "OFFLINE_REVIEW_ONLY_NO_SUBMISSION",
+    termsValidatedRows: 0, allOrNothingTermsValidated: false, scopeSha256: null, scopeHashBasis: "CANONICAL_JSON",
+    executionAuthorized: false, exitIdempotencyReservationsCreated: 0, brokerPayloadsGenerated: 0,
+    snapshotBlockingRows, snapshotProtectionConflictRows: count(r => r.protection),
+    snapshotOpenSellOrderRows: count(r => r.openSell), snapshotTerminalConflictRows: count(r => r.terminal),
+    snapshotOrderEvidenceUnavailableRows: count(r => r.unavailable),
+    marketSessionEligibilityVerified: false, completeOpenOrderAbsenceVerified: false,
+    requiredBeforeAnySubmission: ["SEPARATE_EXPLICIT_EXECUTION_APPROVAL", "CURRENT_STATE_AUTHENTICITY_OR_EXPLICIT_MANAGEMENT_AUTHORITY",
+      "FRESH_PINNED_PAPER_ACCOUNT_AND_SIGNED_POSITIONS", "FRESH_RTH_CLOCK", "COMPLETE_OPEN_ORDER_AND_PROTECTIVE_CHILD_EVIDENCE",
+      "NO_PROTECTIVE_CHILD_OR_OPEN_EXIT_CONFLICT", "APPROVED_RISK_LIMITS_AND_FRESH_PRICE_SPREAD_LIQUIDITY",
+      "FRESH_STATE_HASH_PARITY_AND_ATOMIC_DISTINCT_EXIT_RESERVATION", "NO_RETRY_ON_UNCERTAIN_SUBMISSION",
+      "BROKER_FILL_RESIDUAL_POSITION_AND_TERMINAL_POSTVERIFY", "ORIGINAL_ENTRY_FILL_REQUIRED_FOR_VERIFIED_PNL"],
+    rollbackContract: "ABORT_BEFORE_SUBMIT_STOP_AND_RECONCILE_AFTER_UNCERTAINTY_NO_AUTOMATIC_REVERSE_OR_CANCEL" };
+  if (scope === undefined) return result;
+  const source = readPrivate(path.join(directory, "preserved-source", "source-manifest.json"), manifest.sourceManifestSha256);
+  validateLimitedCloseoutTerms(scope, manifest, reports, audit.manifestSha256, source.expectedPaperAccountSha256);
+  return { ...result, status: snapshotBlockingRows > 0 ? "LIMITED_CLOSEOUT_DRY_RUN_SNAPSHOT_BLOCKED"
+    : "LIMITED_CLOSEOUT_DRY_RUN_TERMS_VALID_CURRENT_PROOF_REQUIRED",
+    termsValidatedRows: 5, allOrNothingTermsValidated: true, scopeSha256: sha256Canonical(scope) };
+}
+
+export function auditPrivateCloseoutEvidence(directory, manifestSha256, options = {}) {
   const root = fs.lstatSync(directory);
   requireContract(root.isDirectory() && !root.isSymbolicLink(), "PRIVATE_DIRECTORY_INVALID");
   requireContract((root.mode & 0o077) === 0 && root.uid === process.getuid(), "PRIVATE_INPUT_PERMISSIONS_INVALID");
   const manifest = readPrivate(path.join(directory, "manifest.json"), manifestSha256);
   const historicalContextOnly = manifest.schemaVersion === "paper-closeout-private-evidence-v2";
+  requireContract(options.limitedControlDryRun !== true || historicalContextOnly, "LIMITED_CLOSEOUT_V2_REQUIRED");
   requireContract(["paper-closeout-private-evidence-v1", "paper-closeout-private-evidence-v2"].includes(manifest.schemaVersion) && manifest.environment === "PAPER"
     && manifest.evidenceBasis === "PRESERVED_SNAPSHOT" && object(manifest.files), "PRIVATE_MANIFEST_SCHEMA_INVALID");
   requireContract(Object.keys(manifest.files).sort().join("\n") === Object.values(FILES).sort().join("\n"), "PRIVATE_FILE_SET_INVALID");
@@ -239,12 +334,13 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
     requireContract(manifest.targets.length === 5, "CAPTURE_TARGET_COUNT_INVALID");
     // Mixed-time observations are not an exit-readiness replay. Original payloads remain opaque preserved evidence.
     const preserved = auditHistoricalReviewSource(directory, manifest, reports);
-    return { schemaVersion: "paper-closeout-private-evidence-audit-v2", status: "PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED",
+    const audit = { schemaVersion: "paper-closeout-private-evidence-audit-v2", status: "PRIVATE_OBSERVATION_REVIEW_VALID_EXECUTION_NOT_EVALUATED",
       evidenceBasis: "PRESERVED_SNAPSHOT_WITH_BOUNDED_OBSERVATIONS", manifestSha256, inputFileCount: Object.keys(FILES).length,
       exactLimitedIdentityRows: manifest.targets.length, missingOriginalBrokerIdRows, snapshotPositionRows: positions.length,
       unscopedPositionRows: positions.filter(r => !symbols.has(r.symbol.toUpperCase())).length,
       executionReadinessEvaluated: false, currentStateAuthenticityVerified: false, unknownOrUnclassifiedRows: 0,
       ...preserved, ...SAFETY };
+    return options.limitedControlDryRun === true ? limitedCloseoutDryRun(directory, manifest, reports, audit, options.scope) : audit;
   }
   const replay = buildPaperExitReadiness(reports);
   requireContract(replay.shadowEvaluation.countMatches && replay.shadowEvaluation.unknownOrUnclassifiedRows === 0
@@ -272,8 +368,10 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    requireContract(process.argv.length === 4, "PRIVATE_ARGUMENTS_INVALID");
-    console.log(JSON.stringify(auditPrivateCloseoutEvidence(process.argv[2], process.argv[3])));
+    const dryRun = process.argv[4] === "--limited-control-dry-run";
+    requireContract(process.argv.length === 4 || (dryRun && [5, 7].includes(process.argv.length)), "PRIVATE_ARGUMENTS_INVALID");
+    const scope = process.argv.length === 7 ? readPrivate(process.argv[5], process.argv[6]) : undefined;
+    console.log(JSON.stringify(auditPrivateCloseoutEvidence(process.argv[2], process.argv[3], { limitedControlDryRun: dryRun, scope })));
   } catch (error) {
     // Never forward parser errors, paths, OS errors or private report strings to a public console.
     const status = error instanceof ContractError ? error.message : "PRIVATE_INPUT_UNAVAILABLE";

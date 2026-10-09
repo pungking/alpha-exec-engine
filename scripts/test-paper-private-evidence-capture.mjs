@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { capturePrivateEvidence, inspectCaptureSource, CAPTURE_APPROVAL } from "./capture-paper-private-evidence.mjs";
 import { buildLiveSummary, buildPublicDashboard } from "./build-performance-dashboard.mjs";
 import { auditPrivateCloseoutEvidence } from "./audit-paper-closeout-private-evidence.mjs";
+import { sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "private-capture-test-")));
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -148,7 +149,116 @@ async function run({ change = () => {}, tamper = () => {}, response = () => {}, 
   cases++;
   return result;
 }
+function checkLimitedCloseoutDryRun({ input }) {
+  const manifestBytes = fs.readFileSync(path.join(input, "manifest.json"));
+  const manifest = JSON.parse(manifestBytes), pin = sha(manifestBytes);
+  const scope = { schemaVersion: "paper-limited-control-closeout-terms-v1", environment: "PAPER",
+    manifestSha256: pin, accountSha256: sha("private-account"),
+    riskLimits: { maxOrderNotional: 110, maxTotalNotional: 550, maxSpreadBps: 10, maxSlippageBps: 20, maxEvidenceAgeSeconds: 30 },
+    targets: manifest.targets.map((t, n) => ({ ...t, action: "EXIT_FULL", executionSide: "sell", quantity: 1,
+      exitIdempotencyKey: `fixture-closeout-exit-${n}` })) };
+  const review = terms => auditPrivateCloseoutEvidence(input, pin, { limitedControlDryRun: true, scope: terms });
+  const missing = review(undefined);
+  assert.equal(missing.status, "LIMITED_CLOSEOUT_DRY_RUN_TERMS_REQUIRED");
+  assert.equal(missing.termsValidatedRows, 0);
+  const before = sha(fs.readFileSync(path.join(input, "order-idempotency.json")));
+  const valid = review(scope);
+  assert.equal(valid.status, "LIMITED_CLOSEOUT_DRY_RUN_TERMS_VALID_CURRENT_PROOF_REQUIRED");
+  assert.equal(valid.termsValidatedRows, 5);
+  assert.equal(valid.exitIdempotencyReservationsCreated, 0);
+  assert.equal(valid.wouldCreateBrokerPayload, false);
+  assert.equal(valid.selectedCandidateCount, 0);
+  assert.equal(valid.brokerSubmitAllowed, false);
+  assert.equal(valid.currentStateAuthenticityVerified, false);
+  assert.equal(valid.executionReadinessEvaluated, false);
+  assert.equal(valid.realizedPnlVerified, false);
+  assert.equal(valid.executionAuthorized, false);
+  assert.equal(valid.snapshotBlockingRows, 0);
+  assert.equal(valid.marketSessionEligibilityVerified, false);
+  assert.equal(valid.unknownOrUnclassifiedRows, 0);
+  assert.equal(valid.scopeSha256, sha256Canonical(scope));
+  assert.deepEqual(review(scope), valid);
+  assert.equal(sha(fs.readFileSync(path.join(input, "order-idempotency.json"))), before);
+  for (const marker of ["FIXTURE_", "private-account", "private-key", "private-client", "fixture-closeout-exit"])
+    assert.ok(!JSON.stringify(valid).includes(marker));
+  const bad = (change, code) => {
+    const copy = structuredClone(scope); change(copy);
+    assert.throws(() => review(copy), error => error.message === code); cases++;
+  };
+  bad(s => { s.environment = "LIVE"; }, "LIMITED_CLOSEOUT_TERMS_SCHEMA_INVALID");
+  bad(s => { s.manifestSha256 = "f".repeat(64); }, "LIMITED_CLOSEOUT_SCOPE_PIN_MISMATCH");
+  bad(s => { s.accountSha256 = "f".repeat(64); }, "LIMITED_CLOSEOUT_ACCOUNT_PIN_MISMATCH");
+  bad(s => { s.brokerSubmitAllowed = true; }, "LIMITED_CLOSEOUT_TERMS_SCHEMA_INVALID");
+  bad(s => { delete s.riskLimits; }, "LIMITED_CLOSEOUT_RISK_LIMITS_INVALID");
+  for (const key of Object.keys(scope.riskLimits)) for (const value of [null, "10", 0, -1, Infinity])
+    bad(s => { s.riskLimits[key] = value; }, "LIMITED_CLOSEOUT_RISK_LIMITS_INVALID");
+  bad(s => { s.targets.pop(); }, "LIMITED_CLOSEOUT_EXACT_FIVE_SCOPE_REQUIRED");
+  bad(s => { s.targets[1] = s.targets[0]; }, "LIMITED_CLOSEOUT_EXACT_FIVE_SCOPE_REQUIRED");
+  bad(s => { s.targets[0].ledgerKey = "FIXTURE_0"; }, "LIMITED_CLOSEOUT_TARGET_LINEAGE_INVALID");
+  bad(s => { s.targets[0].ledgerRecordSha256 = "f".repeat(64); }, "LIMITED_CLOSEOUT_TARGET_LINEAGE_INVALID");
+  bad(s => { s.targets[0].action = "ENTRY_NEW"; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  bad(s => { s.targets[0].action = "SCALE_UP"; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  bad(s => { s.targets[0].executionSide = "buy"; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  for (const quantity of [0, -1, 2, "1", null]) bad(s => { s.targets[0].quantity = quantity; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  bad(s => { s.targets[0].quantity = 0.5; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  const partial = structuredClone(scope); partial.targets[0].action = "EXIT_PARTIAL"; partial.targets[0].quantity = 0.5;
+  assert.equal(review(partial).termsValidatedRows, 5);
+  bad(s => { s.targets[0].action = "EXIT_PARTIAL"; }, "LIMITED_CLOSEOUT_EXIT_TERMS_INVALID");
+  bad(s => { s.targets[0].exitIdempotencyKey = s.targets[0].idempotencyKey; }, "LIMITED_CLOSEOUT_EXIT_IDEMPOTENCY_CONFLICT");
+  bad(s => { s.targets[0].exitIdempotencyKey = s.targets[1].idempotencyKey; }, "LIMITED_CLOSEOUT_EXIT_IDEMPOTENCY_CONFLICT");
+  bad(s => { s.targets[1].exitIdempotencyKey = s.targets[0].exitIdempotencyKey; }, "LIMITED_CLOSEOUT_EXIT_IDEMPOTENCY_CONFLICT");
+  bad(s => { s.targets[0].exitIdempotencyKey = ""; }, "LIMITED_CLOSEOUT_EXIT_IDEMPOTENCY_CONFLICT");
+  bad(s => { s.targets[0].firstSeenAt = now; }, "LIMITED_CLOSEOUT_TARGET_LINEAGE_INVALID");
+  bad(s => { s.riskLimits.maxOrderNotional = 90; }, "LIMITED_CLOSEOUT_SNAPSHOT_NOTIONAL_LIMIT_EXCEEDED");
+  bad(s => { s.riskLimits.maxTotalNotional = 450; }, "LIMITED_CLOSEOUT_SNAPSHOT_NOTIONAL_LIMIT_EXCEEDED");
+  const termsFile = path.join(input, "fixture-private-terms.json");
+  const bytes = JSON.stringify(scope); fs.writeFileSync(termsFile, bytes, { mode: 0o600 });
+  const cli = path.resolve("scripts/audit-paper-closeout-private-evidence.mjs");
+  const result = spawnSync(process.execPath, [cli, input, pin, "--limited-control-dry-run", termsFile, sha(bytes)],
+    { env: { PATH: process.env.PATH, HOME: root }, encoding: "utf8" });
+  assert.equal(result.status, 0); assert.deepEqual(JSON.parse(result.stdout), valid);
+  const invalid = spawnSync(process.execPath, [cli, input, pin, "--limited-control-dry-run", termsFile, "f".repeat(64)],
+    { env: { PATH: process.env.PATH, HOME: root }, encoding: "utf8" });
+  assert.equal(invalid.status, 1); assert.equal(JSON.parse(invalid.stdout).status, "PRIVATE_FILE_HASH_MISMATCH");
+  assert.ok(!(result.stdout + result.stderr + invalid.stdout + invalid.stderr).includes("private-key"));
+}
 try {
+  await run({ reviewOnly: true, inspect: checkLimitedCloseoutDryRun });
+  await run({ reviewOnly: true,
+    response: ({ url }) => url.includes("status=open") ? { body: [{ id: "private-child", symbol: "FIXTURE_0",
+      side: "sell", status: "new", type: "stop", stop_price: "80" }] } : null,
+    inspect: ({ input }) => {
+      const m = fs.readFileSync(path.join(input, "manifest.json"));
+      const r = auditPrivateCloseoutEvidence(input, sha(m), { limitedControlDryRun: true });
+      assert.equal(r.snapshotProtectionConflictRows, 1); assert.equal(r.snapshotBlockingRows, 1);
+      assert.equal(r.selectedCandidateCount, 0); assert.equal(r.brokerSubmitAllowed, false);
+    } });
+  await run({ reviewOnly: true, change: d => {
+    d["order-idempotency.json"].releases.push({ ...d["order-idempotency.json"].orders["private-key-0"],
+      key: "private-key-0", releasedAt: originalAt, brokerStatus: "canceled" });
+  }, inspect: ({ input }) => {
+    const m = fs.readFileSync(path.join(input, "manifest.json"));
+    const r = auditPrivateCloseoutEvidence(input, sha(m), { limitedControlDryRun: true });
+    assert.equal(r.snapshotTerminalConflictRows, 1); assert.equal(r.snapshotBlockingRows, 1);
+  } });
+  for (const [price, cap] of [[10.05, 30.15], [1e-7, 3e-7]]) await run({ reviewOnly: true,
+    change: d => { d["performance-dashboard.json"].live.positions.forEach(r => { r.qty = 3; }); },
+    response: ({ group, body }) => group === "/v2/positions" ? { body: body.map(r => ({ ...r, qty: "3", current_price: String(price) })) } : null,
+    inspect: ({ input }) => {
+      const bytes = fs.readFileSync(path.join(input, "manifest.json")), manifest = JSON.parse(bytes), pin = sha(bytes);
+      const scope = { schemaVersion: "paper-limited-control-closeout-terms-v1", environment: "PAPER", manifestSha256: pin,
+        accountSha256: sha("private-account"), riskLimits: { maxOrderNotional: cap, maxTotalNotional: price === 10.05 ? 150.75 : 1.5e-6,
+          maxSpreadBps: 10, maxSlippageBps: 20, maxEvidenceAgeSeconds: 30 },
+        targets: manifest.targets.map((t, n) => ({ ...t, action: "EXIT_FULL", executionSide: "sell", quantity: 3,
+          exitIdempotencyKey: `decimal-fixture-exit-${n}` })) };
+      const review = () => auditPrivateCloseoutEvidence(input, pin, { limitedControlDryRun: true, scope });
+      assert.equal(review().termsValidatedRows, 5);
+      scope.riskLimits.maxOrderNotional = cap - cap * 1e-10;
+      assert.throws(review, e => e.message === "LIMITED_CLOSEOUT_SNAPSHOT_NOTIONAL_LIMIT_EXCEEDED");
+      scope.riskLimits.maxOrderNotional = cap;
+      scope.riskLimits.maxTotalNotional -= scope.riskLimits.maxTotalNotional * 1e-10;
+      assert.throws(review, e => e.message === "LIMITED_CLOSEOUT_SNAPSHOT_NOTIONAL_LIMIT_EXCEEDED");
+    } });
   const invalidClock = JSON.stringify({ timestamp: "bad", is_open: true, raw: "RAW_BODY_MARKER" });
   const clockFailure = await run({ reviewOnly: true,
     response: ({ group }) => group === "/v2/clock" ? new Response(invalidClock) : null,
