@@ -6,6 +6,9 @@ import { managementRecord, hash, at } from './fixtures/scoped-closeout.mjs';
 import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 import * as ledger from '../dist/src/order-ledger-storage.js';
 import * as idem from '../dist/src/order-idempotency-storage.js';
+import { withScopedStores, reserveScopedExits, recordScopedAttempt, recordScopedObservation } from './lib/scoped-closeout-storage.mjs';
+import { createHash } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-stores-')); await fs.chmod(root, 0o700);
 let checks = 0;
 try {
@@ -38,4 +41,76 @@ try {
     assert.equal(await fs.readFile(file, 'utf8'), '{broken'); checks++;
   }
 } finally { await fs.rm(root, { recursive: true, force: true }); }
+
+const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-coordinator-'))); await fs.chmod(directory, 0o700);
+const sha = b => createHash('sha256').update(b).digest('hex');
+try {
+  const l = Buffer.from(JSON.stringify({ orders: {}, updatedAt: '', extension: 'preserved' }));
+  const i = Buffer.from(JSON.stringify({ orders: {}, releases: [], updatedAt: '', extension: 'preserved' }));
+  await fs.writeFile(path.join(directory, 'order-ledger.json'), l, { mode: 0o600 });
+  await fs.writeFile(path.join(directory, 'order-idempotency.json'), i, { mode: 0o600 });
+  const expectedHashes = { orderLedger: sha(l), orderIdempotency: sha(i) };
+  const options = { directory, expectedHashes, attemptId: 'fixture-attempt' };
+  await withScopedStores(options, async context => {
+    const records = Array.from({ length: 5 }, (_, n) => ({ ...managementRecord(n), preWriteHashes: expectedHashes }));
+    const receipt = await reserveScopedExits(context, records);
+    assert.equal(receipt.recordsSha256, hash(records)); checks++;
+    await assert.rejects(withScopedStores(options, () => {}), /SCOPED_STORE_/); checks++;
+    const requestSha256 = hash('request'), details = { at, limitPrice: '99.9', evidenceSha256: hash('attempt') };
+    const attempted = await recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details);
+    assert.equal(attempted.recordsSha256.length, 64); checks++;
+    await assert.rejects(recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
+  });
+  await assert.rejects(withScopedStores(options, () => {}), /SCOPED_STORE_/); checks++;
+  assert.deepEqual(await fs.readFile(path.join(directory, '.scoped-closeout-fixture-attempt', 'order-ledger.json')), l); checks++;
+} finally { await fs.rm(directory, { recursive: true, force: true }); }
+
+// Inject failures into real temporary-file writes, including the cross-file gap.
+for (const stage of ['backup-write', 'backup-sync', 'backup-rename',
+  ...['idempotency', 'ledger'].flatMap(file => ['write', 'sync', 'readback', 'rename', 'after-rename', 'directory-sync'].map(op => `${file}-${op}`))]) {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-fault-'))); await fs.chmod(dir, 0o700);
+  const seedL = JSON.stringify({ orders: {}, updatedAt: '', extension: { untouched: true } });
+  const seedI = JSON.stringify({ orders: {}, releases: [], updatedAt: '', extension: { untouched: true } });
+  await fs.writeFile(path.join(dir, 'order-ledger.json'), seedL, { mode: 0o600 });
+  await fs.writeFile(path.join(dir, 'order-idempotency.json'), seedI, { mode: 0o600 });
+  const expectedHashes = { orderLedger: sha(seedL), orderIdempotency: sha(seedI) };
+  const original = { open: fs.open, rename: fs.rename, readFile: fs.readFile };
+  let injected = false, renamed = false; const handles = new Set();
+  const isTarget = file => stage.startsWith('backup-') ? String(file).includes('.scoped-closeout-fixture-')
+    : String(file).startsWith(path.join(dir, `order-${stage.split('-')[0]}.json.`));
+  const fail = () => { injected = true; throw new Error('private-id must not escape'); };
+  fs.open = async (...args) => {
+    const h = await original.open(...args), file = String(args[0]); handles.add(h);
+    return new Proxy(h, { get(target, k) {
+      if (k === 'close') return async () => { try { return await h.close(); } finally { handles.delete(h); } };
+      if (k === 'writeFile' && stage.endsWith('-write') && isTarget(file)) return async () => fail();
+      if (k === 'sync' && ((stage.endsWith('-sync') && !stage.endsWith('directory-sync') && isTarget(file))
+        || (stage.endsWith('directory-sync') && renamed && file === dir))) return async () => fail();
+      const v = target[k]; return typeof v === 'function' ? v.bind(target) : v;
+    } });
+  };
+  fs.rename = async (from, to) => {
+    if (isTarget(from)) {
+      if (stage.endsWith('-rename') && !stage.endsWith('after-rename')) fail();
+      await original.rename(from, to); renamed = true;
+      if (stage.endsWith('after-rename')) fail();
+    } else await original.rename(from, to);
+  };
+  fs.readFile = async (...args) => {
+    if (stage.endsWith('readback') && isTarget(args[0])) { injected = true; return Buffer.from('invalid-private'); }
+    return original.readFile(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(withScopedStores({ directory: dir, expectedHashes, attemptId: 'fixture-fault' }, async context => {
+      await reserveScopedExits(context, Array.from({ length: 5 }, (_, n) => ({ ...managementRecord(n), attemptId: 'fixture-fault', preWriteHashes: expectedHashes })));
+    }), /^Error: SCOPED_STORE_[A-Z_]+$/);
+    assert.equal(injected, true, stage); checks += 2;
+    assert.equal((await fs.stat(path.join(dir, '.scoped-closeout.lock'))).isFile(), true); checks++;
+    assert.equal(handles.size, 0, `file handles closed: ${stage}`); checks++;
+  } finally {
+    Object.assign(fs, original); syncBuiltinESMExports();
+    await Promise.all([...handles].map(h => h.close())); await fs.rm(dir, { recursive: true, force: true });
+  }
+}
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-storage', checks, productionStateWrites: 0 }));

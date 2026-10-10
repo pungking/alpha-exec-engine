@@ -2,10 +2,48 @@ import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { parseStrictJsonText } from "./json-utils.js";
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { resolve, join } from 'node:path';
 
 type Fail = (code: string) => never;
 type Validate<T> = (value: unknown) => asserts value is T;
 const loadedBytes = new WeakMap<object, { file: string; raw: Buffer; validateState: unknown }>();
+const directoryOwner = new AsyncLocalStorage<{ directory: string; token: string }>();
+
+// The local writer fence does not claim to exclude remote account writers.
+export async function withOrderStateDirectoryLock<T>(directory: string, task: () => Promise<T>): Promise<T> {
+  const lock = join(resolve(directory), '.scoped-closeout.lock'), token = randomUUID();
+  let handle;
+  try { handle = await open(lock, 'wx', 0o600); }
+  catch { throw new Error('SCOPED_STORE_LOCK_UNAVAILABLE'); }
+  let complete = false;
+  try {
+    await handle.writeFile(token); await handle.sync();
+    const parent = await open(directory, 'r');
+    try { await parent.sync(); } finally { await parent.close(); }
+    const result = await directoryOwner.run({ directory: resolve(directory), token }, task);
+    if (await readFile(lock, 'utf8') !== token) throw new Error('SCOPED_STORE_LOCK_CHANGED');
+    complete = true;
+    return result;
+  } finally {
+    await handle.close();
+    if (complete) await unlink(lock);
+  }
+}
+
+async function requireDirectoryOwner(file: string, fail: Fail): Promise<void> {
+  const directory = resolve(dirname(file)), owner = directoryOwner.getStore();
+  let token: string;
+  const lock = join(directory, '.scoped-closeout.lock');
+  try { await lstat(lock); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && owner?.directory !== directory) return;
+    fail('LOCK_UNAVAILABLE');
+  }
+  try { token = await readFile(lock, 'utf8'); }
+  catch { fail('LOCK_UNAVAILABLE'); }
+  if (owner?.directory !== directory || owner.token !== token) fail('LOCK_UNAVAILABLE');
+}
 
 export const storageObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -17,6 +55,7 @@ export const storageTimestamp = (value: unknown): boolean =>
   && new Date(`${value.slice(0, 10)}T00:00:00.000Z`).toISOString().startsWith(value.slice(0, 10));
 
 async function requireUnlocked(file: string, fail: Fail): Promise<void> {
+  await requireDirectoryOwner(file, fail);
   try {
     await lstat(`${file}.lock`);
   } catch (error) {
@@ -53,6 +92,7 @@ export async function loadValidatedOrderState<T extends object>(file: string, va
 }
 
 export async function saveValidatedOrderState<T extends object>(file: string, state: T, validateState: Validate<T>, fail: Fail): Promise<void> {
+  await requireDirectoryOwner(file, fail);
   validateState(state);
   const before = loadedBytes.get(state);
   if (!before || before.file !== file || before.validateState !== validateState) fail("UNLOADED_STATE");
@@ -80,6 +120,7 @@ export async function saveValidatedOrderState<T extends object>(file: string, st
     if (!written.equals(raw)) fail("WRITE_VERIFY_FAILED");
     parseState(written, validateState, fail);
     if (!(await readFile(file)).equals(before.raw)) fail("STORE_CHANGED");
+    await requireDirectoryOwner(file, fail);
     await rename(temporary, file);
     committed = true;
     const directory = await open(dirname(file), "r");
@@ -91,14 +132,13 @@ export async function saveValidatedOrderState<T extends object>(file: string, st
     // Never include filesystem errors, paths, or serialized state in public failures.
     fail(committed ? "COMMIT_UNCERTAIN" : "WRITE_FAILED");
   } finally {
-    try {
-      await handle?.close();
-      if (created && !committed) await unlink(temporary);
-      await lock.close();
-      // An uncertain commit must remain blocked; never retry or roll it back silently.
-      if (!committed || durable) await unlink(lockPath);
-    } catch {
-      fail("CLEANUP_FAILED");
-    }
+    // A failed unlink must not strand open handles; keep the lock on uncertainty.
+    const closed = await Promise.allSettled([handle?.close(), lock.close()]);
+    let cleanupFailed = closed.some(result => result.status === 'rejected');
+    try { if (created && !committed) await unlink(temporary); }
+    catch { cleanupFailed = true; }
+    try { if (!cleanupFailed && (!committed || durable)) await unlink(lockPath); }
+    catch { cleanupFailed = true; }
+    if (cleanupFailed) fail('CLEANUP_FAILED');
   }
 }

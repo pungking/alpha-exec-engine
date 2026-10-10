@@ -108,3 +108,162 @@ export function evaluateCloseoutSnapshot(scope, snapshot, clock, committed = {})
     return freeze({ status: 'BLOCKED', reasons: [code], proposedOrders: [], ...SAFETY });
   }
 }
+
+const states = new WeakSet(), consumed = new WeakSet();
+const phases = {
+  initial: ['account', 'positions', 'orders', 'clock', 'calendar', 'assets', 'assets', 'assets', 'assets', 'assets', 'quotes'],
+  presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'],
+  postcheck: ['lookup', 'positions', 'orders', 'clock'],
+};
+export function createScopedCloseoutState(scope) {
+  requireContract(scopes.has(scope), 'UNVALIDATED_SCOPE');
+  const state = freeze({ scope, phase: 'CREATED', index: 0, counts: Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0])),
+    rows: scope.terms.targets.map(t => ({ assetId: t.assetId, phase: 'NOT_ATTEMPTED' })),
+    committed: {}, pendingRecords: [], notificationCount: 0, stickyStop: false, ...SAFETY });
+  states.add(state); return state;
+}
+function reserveRecord(scope, order, at, evidenceSha256) {
+  const target = scope.terms.targets.find(t => t.assetId === order.assetId);
+  return { recordKind: 'SCOPED_MANAGEMENT_EXIT_V1', schemaVersion: 1, attemptId: scope.attemptId,
+    managementAuthoritySha256: scope.authoritySha256, termsSha256: scope.termsSha256,
+    accountSha256: scope.accountSha256, originalIdentitySha256: target.originalIdentitySha256,
+    exitIdempotencyKey: order.exitIdempotencyKey, clientOrderId: order.clientOrderId, assetId: order.assetId,
+    side: 'sell', actionType: 'EXIT_FULL', qty: order.qty, limitPrice: order.limitPrice,
+    observedEvidenceSha256: evidenceSha256, requestSha256: null, preWriteHashes: scope.preWriteHashes,
+    createdAt: at, updatedAt: at, submissionPhase: 'RESERVED', brokerOrderId: null, brokerStatus: null, filledQty: '0',
+    originalOwnershipVerified: false, realizedPnlVerified: false, historicalEvidenceNormalized: false, brokerSubmitAllowed: false,
+    history: [{ at, phase: 'RESERVED', evidenceSha256, brokerStatus: null, filledQty: '0' }] };
+}
+function appendObservation(record, phase, at, evidenceSha256, observation = {}) {
+  const r = { ...record, ...observation, updatedAt: at, observedEvidenceSha256: evidenceSha256, submissionPhase: phase };
+  r.history = [...record.history, { at, phase, evidenceSha256, brokerStatus: r.brokerStatus, filledQty: r.filledQty }];
+  return r;
+}
+function receiptMatches(state, receipt) {
+  requireContract(exact(receipt, 'recordsSha256 storeHashes') && receipt.recordsSha256 === digest(state.pendingRecords)
+    && exact(receipt.storeHashes, 'orderLedger orderIdempotency') && Object.values(receipt.storeHashes).every(hash), 'PERSISTENCE_PARITY_INVALID');
+}
+function reads(state, phase) {
+  state.readGroups = phases[phase];
+  return phases[phase].map(group => {
+    requireContract(++state.counts[group] <= BUDGET[group], 'BUDGET_EXCEEDED');
+    return { type: 'READ', group, phase, modeledOnly: true, maxDurationMs: 3000, maxBytes: 8388608 };
+  });
+}
+const transportValid = r => object(r) && r.complete === true && Number.isInteger(r.status) && r.status >= 200 && r.status < 300
+  && Number.isFinite(r.durationMs) && r.durationMs >= 0 && r.durationMs <= 3000
+  && Number.isInteger(r.bytes) && r.bytes > 0 && r.bytes <= 8388608 && hash(r.responseSha256);
+function validateReads(state, responses) {
+  requireContract(Array.isArray(responses) && responses.length === state.readGroups.length
+    && responses.every((r, i) => r.group === state.readGroups[i] && transportValid(r)), 'READ_FAILED');
+}
+function observationFor(state, o) {
+  const r = state.rows[state.index];
+  requireContract(object(o) && o.accountSha256 === state.scope.accountSha256 && o.assetId === r.assetId
+    && o.clientOrderId === r.clientOrderId && id(o.brokerOrderId)
+    && (r.brokerOrderId === null || r.brokerOrderId === o.brokerOrderId)
+    && ['accepted', 'partially_filled', 'filled', 'canceled', 'rejected', 'expired'].includes(o.brokerStatus)
+    && typeof o.filledQty === 'string' && /^(?:0|[1-9]\d{0,15})(?:\.\d{1,9})?$/.test(o.filledQty)
+    && compare(ratio(o.filledQty), ratio(r.filledQty)) >= 0 && withinCap(ratio(o.filledQty), r.qty), 'BROKER_OBSERVATION_INVALID');
+  const full = compare(ratio(o.filledQty), ratio(r.qty)) === 0, any = ratio(o.filledQty)[0] > 0n;
+  requireContract((o.brokerStatus !== 'filled' || full) && (o.brokerStatus !== 'partially_filled' || (any && !full))
+    && (!['accepted', 'rejected'].includes(o.brokerStatus) || !any)
+    && (!['filled', 'canceled', 'rejected', 'expired'].includes(r.brokerStatus) || o.brokerStatus === r.brokerStatus), 'FILL_CONFLICT');
+  return { brokerOrderId: o.brokerOrderId, brokerStatus: o.brokerStatus, filledQty: o.filledQty };
+}
+function postSnapshotValid(state, event, o) {
+  const s = event.snapshot, now = time(event.clock.now);
+  requireContract(object(s) && s.complete === true && s.evidenceMode === 'SYNTHETIC'
+    && s.accountSha256 === state.scope.accountSha256 && s.sourceSha256 === state.scope.sourceSha256, 'POSTCHECK_INVALID');
+  requireContract(o.brokerStatus === 'filled' && Array.isArray(s.openOrders) && s.openOrders.length === 0, 'POSTCHECK_NOT_FLAT');
+  const removed = new Set([...Object.keys(state.committed), state.rows[state.index].assetId]);
+  const expected = state.scope.terms.portfolio.filter(p => !removed.has(p.assetId));
+  const sorted = rows => [...rows].sort((a, b) => a.assetId.localeCompare(b.assetId));
+  requireContract(Array.isArray(s.portfolio) && digest(sorted(expected)) === digest(sorted(s.portfolio)), 'POSTCHECK_PORTFOLIO_DRIFT');
+  requireContract(s.clock?.version === 'v2' && s.clock.isOpen === true && s.clock.session === state.scope.authority.session
+    && s.clock.clockAlignment === 'SYNTHETIC_VERIFIED' && s.clock.timezone === 'America/New_York'
+    && time(s.clock.timestamp) <= now && now - time(s.clock.timestamp) <= 30000
+    && time(s.clock.open) <= now && time(s.clock.close) > now, 'POSTCHECK_CLOCK_INVALID');
+}
+
+// Inert effects only. This module has no broker, credentials, I/O or activation path.
+export function advanceScopedCloseout(previous, event) {
+  requireContract(states.has(previous), 'UNVALIDATED_STATE');
+  const state = { ...structuredClone(previous), scope: previous.scope }, effects = [];
+  if (previous.phase === 'COMPLETE' || previous.phase === 'STOPPED') return { state: previous, effects };
+  try {
+    requireContract(!consumed.has(previous), 'STATE_REPLAY'); consumed.add(previous);
+    const now = time(event?.clock?.now), elapsed = event?.clock?.elapsedMs;
+    requireContract(Number.isFinite(now) && Number.isFinite(elapsed) && elapsed >= (state.lastElapsed ?? 0) && elapsed <= 300000
+      && now >= (state.lastNow ?? now), 'CLOCK_OR_ATTEMPT_EXPIRED');
+    state.lastNow = now; state.lastElapsed = elapsed;
+    if (event.type === 'INITIALIZE' && state.phase === 'CREATED') {
+      state.phase = 'INITIAL_PREFLIGHT'; effects.push(...reads(state, 'initial'));
+    } else if (event.type === 'PREFLIGHT' && ['INITIAL_PREFLIGHT', 'REVALIDATING'].includes(state.phase)) {
+      validateReads(state, event.responses);
+      const result = evaluateCloseoutSnapshot(state.scope, event.snapshot, event.clock, state.committed);
+      requireContract(result.status === 'READY_REPORT_ONLY', 'PREFLIGHT_BLOCKED');
+      state.snapshot = structuredClone(event.snapshot);
+      if (state.phase === 'INITIAL_PREFLIGHT') {
+        state.rows = result.proposedOrders.map(o => reserveRecord(state.scope, o, event.clock.now, result.evidenceSha256));
+        state.pendingRecords = state.rows; state.phase = 'RESERVING';
+        effects.push({ type: 'RESERVE_ALL', records: state.pendingRecords });
+      } else {
+        const order = result.proposedOrders.find(o => o.assetId === state.rows[state.index].assetId);
+        requireContract(order && state.rows[state.index].submissionPhase === 'RESERVED', 'ATTEMPT_REPLAY');
+        state.order = order;
+        const r = appendObservation(state.rows[state.index], 'ATTEMPTED', event.clock.now, result.evidenceSha256);
+        r.limitPrice = order.limitPrice; r.requestSha256 = digest(order);
+        state.pendingRecords = [r]; state.phase = 'ATTEMPT_PERSIST';
+        effects.push({ type: 'RECORD_ATTEMPT', record: r });
+      }
+    } else if (event.type === 'RESERVED' && state.phase === 'RESERVING') {
+      receiptMatches(state, event.receipt); state.phase = 'REVALIDATING'; effects.push(...reads(state, 'presubmit'));
+    } else if (event.type === 'ATTEMPT_RECORDED' && state.phase === 'ATTEMPT_PERSIST') {
+      receiptMatches(state, event.receipt);
+      requireContract(evaluateCloseoutSnapshot(state.scope, state.snapshot, event.clock, state.committed).status === 'READY_REPORT_ONLY', 'PRESEND_STALE');
+      requireContract(++state.counts.submit <= BUDGET.submit, 'BUDGET_EXCEEDED');
+      state.rows[state.index] = state.pendingRecords[0]; state.phase = 'SUBMITTING';
+      state.submitElapsed = elapsed;
+      effects.push({ type: 'PROPOSE_LIMIT_ORDER', order: state.order, modeledOnly: true, brokerSubmitAllowed: false });
+    } else if (event.type === 'SUBMIT_RESULT' && state.phase === 'SUBMITTING') {
+      let observation = {}, phase = 'OBSERVED';
+      state.outcomeElapsed = elapsed;
+      try {
+        requireContract(transportValid(event.response) && elapsed - state.submitElapsed <= 3000, 'SUBMIT_UNCERTAIN');
+        observation = observationFor(state, event.observation);
+        if (!['accepted', 'filled'].includes(observation.brokerStatus)) state.stickyStop = true;
+      } catch { state.stickyStop = true; phase = 'STOPPED'; }
+      state.pendingRecords = [appendObservation(state.rows[state.index], phase, event.clock.now,
+        hash(event.response?.responseSha256) ? event.response.responseSha256 : digest({ status: 'UNAVAILABLE' }), observation)];
+      state.phase = 'OBSERVATION_PERSIST'; effects.push({ type: 'RECORD_OBSERVATION', record: state.pendingRecords[0] });
+    } else if (event.type === 'OBSERVATION_RECORDED' && state.phase === 'OBSERVATION_PERSIST') {
+      receiptMatches(state, event.receipt); state.rows[state.index] = state.pendingRecords[0];
+      requireContract(elapsed - state.outcomeElapsed <= 2000, 'POSTCHECK_START_EXPIRED');
+      state.phase = 'POSTCHECK'; effects.push(...reads(state, 'postcheck'));
+    } else if (event.type === 'POSTCHECK' && state.phase === 'POSTCHECK') {
+      validateReads(state, event.responses);
+      const observation = observationFor(state, event.observation);
+      let phase = state.rows[state.index].submissionPhase === 'STOPPED' ? 'STOPPED' : 'OBSERVED';
+      try { postSnapshotValid(state, event, observation); if (!state.stickyStop) phase = 'FLAT_RECONCILED'; }
+      catch { state.stickyStop = true; }
+      if (phase !== 'FLAT_RECONCILED') state.stickyStop = true;
+      state.pendingRecords = [appendObservation(state.rows[state.index], phase, event.clock.now, digest(event.snapshot ?? {}), observation)];
+      state.phase = 'FINAL_PERSIST'; effects.push({ type: 'RECORD_OBSERVATION', record: state.pendingRecords[0] });
+    } else if (event.type === 'FINAL_RECORDED' && state.phase === 'FINAL_PERSIST') {
+      receiptMatches(state, event.receipt); const r = state.pendingRecords[0]; state.rows[state.index] = r;
+      if (state.stickyStop || r.submissionPhase !== 'FLAT_RECONCILED') { state.phase = 'STOPPED'; }
+      else {
+        state.committed[r.assetId] = state.order.plannedNotional; state.index++;
+        if (state.index === 5) state.phase = 'COMPLETE';
+        else { state.phase = 'REVALIDATING'; effects.push(...reads(state, 'presubmit')); }
+      }
+    } else requireContract(false, 'EVENT_INVALID');
+  } catch (error) {
+    state.phase = 'STOPPED'; state.stickyStop = true;
+    state.reason = /^SCOPED_CLOSEOUT_[A-Z_]+$/.test(error.message) ? error.message : 'SCOPED_CLOSEOUT_EVENT_INVALID';
+    effects.length = 0;
+  }
+  const result = freeze(state); states.add(result);
+  return { state: result, effects: freeze(effects) };
+}
