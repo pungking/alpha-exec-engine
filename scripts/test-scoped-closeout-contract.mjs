@@ -105,6 +105,7 @@ for (const submitStatus of ['accepted', 'filled']) {
   assert.equal(done.state.phase, 'COMPLETE');
   assert.deepEqual(done.state.counts, { account: 6, positions: 11, orders: 11, clock: 11, calendar: 1, assets: 10, lookup: 5, quotes: 6, submit: 5 });
   assert.equal(done.state.rows.filter(r => r.submissionPhase === 'FLAT_RECONCILED').length, 5); checks += 3;
+  assert.equal(done.state.notificationCount, submitStatus === 'accepted' ? 15 : 10); checks++;
 }
 for (const scenario of [
   { submitStatus: 'partially_filled', postStatus: 'canceled' }, { submitStatus: 'accepted', postStatus: 'accepted' },

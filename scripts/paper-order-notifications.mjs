@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sha256Canonical } from './lib/active-position-limited-recovery.mjs';
+import { decimalRatio, compare } from './lib/closeout-decimal.mjs';
 
 const SCHEMA = 'paper-order-notification-v1';
 const RECEIPT_SCHEMA = 'paper-order-notification-receipts-v1';
@@ -20,7 +21,8 @@ const TEXT = Object.freeze({
   PROTECTION_CHILDREN_OBSERVED: '연결된 stop/target 주문 관측 (보호 적정성 별도 검증)',
   PROTECTION_CHILDREN_TERMINAL_OBSERVED: '보호 주문 종료 및 잔여 포지션 없음 관측 (청산 정합 판정과 별개)',
   PROTECTION_REVIEW_REQUIRED: '연결된 보호 주문 증거 불완전: 확인 필요',
-  POSITION_CLOSEOUT_RECONCILED: '청산 완료: 체결/잔여 포지션/종결 정합 확인'
+  POSITION_CLOSEOUT_RECONCILED: '청산 완료: 체결/잔여 포지션/종결 정합 확인',
+  MANAGEMENT_POSITION_FLAT_RECONCILED: '제한관리 정리: 전량 체결/잔여 없음 확인 (원래 전략 귀속 및 실현손익 미검증)'
 });
 const number = value => value === null || value === undefined || String(value).trim() === '' ? NaN : Number(value);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -70,7 +72,7 @@ function closeoutVerified(raw, input, allOpen, all, validGroups) {
   if (idempotencyMatches.length !== 1 || idempotencyMatches[0][0] !== key || ledger.idempotencyKey !== key) return false;
   const idem = idempotencyMatches[0][1];
   for (const row of [ledger, idem]) {
-    if (!raw.client_order_id || row.clientOrderId !== raw.client_order_id || row.symbol !== raw.symbol
+    if (row.recordKind !== undefined || !raw.client_order_id || row.clientOrderId !== raw.client_order_id || row.symbol !== raw.symbol
         || row.actionType !== 'EXIT_FULL' || row.executionSide !== raw.side
         || number(row.submittedQty) !== number(raw.filled_qty) || row.recoveryMode === 'ACTIVE_POSITION_LIMITED_CONTROL') return false;
   }
@@ -86,6 +88,30 @@ function closeoutVerified(raw, input, allOpen, all, validGroups) {
     && pnl.residualSignedQuantity === 0 && pnl.idempotencyVerdict === 'PASS' && !pnl.recoveryMode
     && pnl.costDoubleCountViolation === false && pnl.matchedQuantity > 0
     && pnl.entryFillProvenance === 'BROKER_FILLED_AVG_PRICE' && pnl.exitFillProvenance === 'BROKER_FILLED_AVG_PRICE';
+}
+
+function managementFlatVerified(raw, input, allOpen, all, validGroups) {
+  const matches = entries(input.orderLedger).filter(([, r]) => r.brokerOrderId === raw.id);
+  const peers = entries(input.orderIdempotency).filter(([, r]) => r.brokerOrderId === raw.id);
+  if (matches.length !== 1 || peers.length !== 1 || matches[0][0] !== peers[0][0]) return false;
+  const [key, r] = matches[0];
+  if (sha256Canonical(r) !== sha256Canonical(peers[0][1]) || r.recordKind !== 'SCOPED_MANAGEMENT_EXIT_V1'
+    || r.schemaVersion !== 1 || r.exitIdempotencyKey !== key || r.submissionPhase !== 'FLAT_RECONCILED'
+    || r.side !== 'sell' || raw.side !== 'sell' || r.actionType !== 'EXIT_FULL' || r.brokerStatus !== 'filled'
+    || !raw.client_order_id || r.clientOrderId !== raw.client_order_id || !raw.asset_id || r.assetId !== raw.asset_id
+    || r.accountSha256 !== sha256Canonical(['PAPER', input.accountId])
+    || !['managementAuthoritySha256', 'termsSha256', 'originalIdentitySha256', 'requestSha256', 'observedEvidenceSha256'].every(k => HASH.test(r[k] || ''))
+    || !['originalOwnershipVerified', 'realizedPnlVerified', 'historicalEvidenceNormalized', 'brokerSubmitAllowed'].every(k => r[k] === false)
+    || ['firstSeenAt', 'lastSeenAt', 'stage6Hash', 'stage6File'].some(k => Object.hasOwn(r, k))
+    || !validTime(r.createdAt, r.updatedAt) || !validTime(r.updatedAt, input.observedAt)
+    || !Array.isArray(r.history) || r.history[0]?.phase !== 'RESERVED' || r.history.at(-1)?.phase !== 'FLAT_RECONCILED'
+    || r.history.at(-1)?.at !== r.updatedAt || r.history.at(-1)?.evidenceSha256 !== r.observedEvidenceSha256
+    || (input.orderIdempotency.releases || []).some(v => v?.key === key || v?.brokerOrderId === raw.id)) return false;
+  try {
+    if (compare(decimalRatio(r.qty), decimalRatio(raw.qty)) !== 0
+      || compare(decimalRatio(r.filledQty), decimalRatio(raw.filled_qty)) !== 0) return false;
+  } catch { return false; }
+  return flatWithoutOpenEvidence(raw.symbol, input, allOpen, all, validGroups);
 }
 
 function protectionObservation(raw, group, input, allOpen, all, validGroups) {
@@ -141,6 +167,7 @@ export function buildNotificationSnapshot(input) {
       add(raw, row.filled < row.qty ? 'ORDER_PARTIALLY_FILLED' : 'ORDER_FILLED');
     }
     if (row.type === 'ORDER_FILLED' && closeoutVerified(raw, input, allOpen, all, validGroups)) add(raw, 'POSITION_CLOSEOUT_RECONCILED');
+    if (row.type === 'ORDER_FILLED' && managementFlatVerified(raw, input, allOpen, all, validGroups)) add(raw, 'MANAGEMENT_POSITION_FLAT_RECONCILED');
     if (row.type === 'ORDER_FILLED' && group.some(item => Array.isArray(item.legs) && item.legs.length)) {
       const protection = protectionObservation(raw, group, input, allOpen, all, validGroups);
       add(raw, protection.type, protection.detail);

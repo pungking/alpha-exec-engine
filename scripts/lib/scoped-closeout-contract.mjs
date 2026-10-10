@@ -119,7 +119,7 @@ export function createScopedCloseoutState(scope) {
   requireContract(scopes.has(scope), 'UNVALIDATED_SCOPE');
   const state = freeze({ scope, phase: 'CREATED', index: 0, counts: Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0])),
     rows: scope.terms.targets.map(t => ({ assetId: t.assetId, phase: 'NOT_ATTEMPTED' })),
-    committed: {}, pendingRecords: [], notificationCount: 0, stickyStop: false, ...SAFETY });
+    committed: {}, pendingRecords: [], notificationCount: 0, notificationKeys: [], stickyStop: false, ...SAFETY });
   states.add(state); return state;
 }
 function reserveRecord(scope, order, at, evidenceSha256) {
@@ -186,6 +186,19 @@ function postSnapshotValid(state, event, o) {
     && time(s.clock.open) <= now && time(s.clock.close) > now, 'POSTCHECK_CLOCK_INVALID');
 }
 
+function notify(state, effects, record) {
+  const types = record?.brokerStatus ? [`ORDER_${record.brokerStatus.toUpperCase()}`] : [];
+  if (record?.submissionPhase === 'FLAT_RECONCILED') types.push('MANAGEMENT_POSITION_FLAT_RECONCILED');
+  if (state.phase === 'STOPPED') types.push('SCOPED_CLOSEOUT_STOPPED');
+  for (const eventType of types) {
+    const eventKey = digest([state.scope.attemptId, record?.exitIdempotencyKey ?? null, eventType, record?.filledQty ?? null]);
+    if (state.notificationKeys.includes(eventKey)) continue;
+    requireContract(state.notificationCount < 21, 'NOTIFICATION_BUDGET_EXCEEDED');
+    state.notificationKeys.push(eventKey); state.notificationCount++;
+    effects.push({ type: 'NOTIFY', eventType, eventKey, modeledOnly: true, evidenceSha256: record ? digest(record) : null });
+  }
+}
+
 // Inert effects only. This module has no broker, credentials, I/O or activation path.
 export function advanceScopedCloseout(previous, event) {
   requireContract(states.has(previous), 'UNVALIDATED_STATE');
@@ -241,6 +254,7 @@ export function advanceScopedCloseout(previous, event) {
       receiptMatches(state, event.receipt); state.rows[state.index] = state.pendingRecords[0];
       requireContract(elapsed - state.outcomeElapsed <= 2000, 'POSTCHECK_START_EXPIRED');
       state.phase = 'POSTCHECK'; effects.push(...reads(state, 'postcheck'));
+      notify(state, effects, state.rows[state.index]);
     } else if (event.type === 'POSTCHECK' && state.phase === 'POSTCHECK') {
       validateReads(state, event.responses);
       const observation = observationFor(state, event.observation);
@@ -258,6 +272,7 @@ export function advanceScopedCloseout(previous, event) {
         if (state.index === 5) state.phase = 'COMPLETE';
         else { state.phase = 'REVALIDATING'; effects.push(...reads(state, 'presubmit')); }
       }
+      notify(state, effects, r);
     } else requireContract(false, 'EVENT_INVALID');
   } catch (error) {
     state.phase = 'STOPPED'; state.stickyStop = true;
