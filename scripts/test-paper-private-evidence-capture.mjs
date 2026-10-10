@@ -9,6 +9,7 @@ import { capturePrivateEvidence, inspectCaptureSource, CAPTURE_APPROVAL } from "
 import { buildLiveSummary, buildPublicDashboard } from "./build-performance-dashboard.mjs";
 import { auditPrivateCloseoutEvidence } from "./audit-paper-closeout-private-evidence.mjs";
 import { sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
+import { checkCloseoutApprovalBoundary } from "./test-paper-closeout-approval-boundary.mjs";
 
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "private-capture-test-")));
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -224,6 +225,7 @@ function checkLimitedCloseoutDryRun({ input }) {
 }
 try {
   await run({ reviewOnly: true, inspect: checkLimitedCloseoutDryRun });
+  await run({ reviewOnly: true, inspect: args => { cases += checkCloseoutApprovalBoundary(args); } });
   await run({ reviewOnly: true,
     response: ({ url }) => url.includes("status=open") ? { body: [{ id: "private-child", symbol: "FIXTURE_0",
       side: "sell", status: "new", type: "stop", stop_price: "80" }] } : null,

@@ -296,7 +296,146 @@ function limitedCloseoutDryRun(directory, manifest, reports, audit, scope) {
     termsValidatedRows: 5, allOrNothingTermsValidated: true, scopeSha256: sha256Canonical(scope) };
 }
 
+const boundaryAssert = ok => requireContract(ok, "LIMITED_CLOSEOUT_BOUNDARY_INVALID");
+const BOUNDARY_ASOF = ["account", "position", "orders", "clock", "quote", "state"];
+function boundaryTime(value) {
+  boundaryAssert(typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value));
+  const time = Date.parse(value);
+  boundaryAssert(Number.isFinite(time) && new Date(time).toISOString() === value);
+  return time;
+}
+
+function validateBoundaryFreshness(row, at, expiresAt, limits) {
+  boundaryAssert(at < expiresAt && boundaryTime(row.sessionOpenAt) <= at && at < boundaryTime(row.sessionCloseAt));
+  const received = boundaryTime(row.receivedAt);
+  boundaryAssert(exactFields(row.evidenceAsOf, BOUNDARY_ASOF) && received <= at);
+  for (const key of BOUNDARY_ASOF) {
+    const asOf = boundaryTime(row.evidenceAsOf[key]);
+    boundaryAssert(asOf <= received && withinCap([BigInt(at - asOf), 1000n], limits.maxEvidenceAgeSeconds));
+  }
+}
+
+function validateBoundaryQuote(row, limits) {
+  const source = row.sourceContract;
+  const checks = ["priceIncrementVerified", "assetTradable", "accountTradingAllowed", "limitDaySupported", "openOrdersComplete", "protectiveChildrenComplete"];
+  boundaryAssert(exactFields(source, ["evidenceSha256", "feedSha256", "quoteSizeUnit", ...checks])
+    && hash(source.evidenceSha256) && hash(source.feedSha256) && source.quoteSizeUnit === "SHARES" && checks.every(k => source[k] === true));
+  boundaryAssert(["bid", "ask", "bidSizeShares", "priceTick", "quantityIncrement", "limitPrice", "currentQuantity"].every(k => positive(row[k]))
+    && row.ask >= row.bid && row.bidSizeShares >= row.currentQuantity && row.limitPrice <= row.bid);
+  const [bn, bd] = decimalRatio(row.bid), [an, ad] = decimalRatio(row.ask);
+  const [ln, ld] = decimalRatio(row.limitPrice), [tn, td] = decimalRatio(row.priceTick);
+  boundaryAssert((ln * td) % (ld * tn) === 0n
+    && withinCap([20000n * (an * bd - bn * ad), an * bd + bn * ad], limits.maxSpreadBps)
+    && withinCap([10000n * (bn * ld - ln * bd), bn * ld], limits.maxSlippageBps));
+  const [qn, qd] = decimalRatio(row.currentQuantity);
+  const [incr, scale] = decimalRatio(row.quantityIncrement);
+  boundaryAssert((qn * scale) % (qd * incr) === 0n);
+  const notional = [qn * an, qd * ad];
+  boundaryAssert(withinCap(notional, limits.maxOrderNotional));
+  return notional;
+}
+
+function simulateBoundaryEvents(row, target, scenario, limits, expiresAt, counts, previousEnd, seenOrders) {
+  const reviewedAt = boundaryTime(row.reviewedAt);
+  boundaryAssert(reviewedAt >= previousEnd && Array.isArray(row.events) && row.events.length <= 5);
+  let phase = "START", lastAt = reviewedAt, orderHash = null;
+  const failure = new Set(["UNCERTAIN", "TIMEOUT", "HTTP_FAILURE", "REDIRECT_REJECTED", "REJECTED", "CANCELED", "EXPIRED"]);
+  for (const event of row.events) {
+    boundaryAssert(object(event));
+    const time = boundaryTime(event.at);
+    boundaryAssert(time >= lastAt); lastAt = time;
+    if (event.type === "RESERVED") {
+      boundaryAssert(phase === "START" && exactFields(event, ["type", "at", "termsSha256", "orderLedgerSha256", "orderIdempotencySha256", "durable"])
+        && event.durable === true && ["termsSha256", "orderLedgerSha256", "orderIdempotencySha256"].every(k => event[k] === scenario[k]));
+      phase = "RESERVED";
+    } else if (event.type === "ATTEMPT_RECORDED") {
+      boundaryAssert(phase === "RESERVED" && exactFields(event, ["type", "at", "durable"]) && event.durable === true);
+      validateBoundaryFreshness(row, time, expiresAt, limits);
+      counts.simulatedAttemptRows++; phase = "ATTEMPTED";
+    } else if (["ACCEPTED", "PARTIALLY_FILLED", "FILLED"].includes(event.type)) {
+      boundaryAssert(exactFields(event, ["type", "at", "orderSha256", "filledQuantity"]) && hash(event.orderSha256));
+      if (event.type === "ACCEPTED") {
+        boundaryAssert(phase === "ATTEMPTED" && event.filledQuantity === 0 && !seenOrders.has(event.orderSha256));
+        seenOrders.add(event.orderSha256);
+        orderHash = event.orderSha256; counts.simulatedAcceptedRows++; phase = "ACCEPTED";
+      } else {
+        boundaryAssert(phase === "ACCEPTED" && event.orderSha256 === orderHash && positive(event.filledQuantity));
+        if (event.type === "FILLED") {
+          boundaryAssert(event.filledQuantity === target.quantity); counts.simulatedFilledRows++; phase = "FILLED";
+        } else {
+          boundaryAssert(event.filledQuantity < target.quantity); counts.simulatedPartialFillRows++; phase = "STOP";
+        }
+      }
+    } else if (event.type === "POST_VERIFY") {
+      boundaryAssert(phase === "FILLED" && exactFields(event, ["type", "at", "orderSha256", "positionQuantity", "openOrderCount", "protectiveChildCount"])
+        && event.orderSha256 === orderHash && typeof event.positionQuantity === "number" && Number.isFinite(event.positionQuantity)
+        && event.positionQuantity >= 0 && event.positionQuantity <= target.quantity
+        && ["openOrderCount", "protectiveChildCount"].every(k => Number.isSafeInteger(event[k]) && event[k] >= 0));
+      phase = event.positionQuantity === 0 && event.openOrderCount === 0 && event.protectiveChildCount === 0 ? "FLAT" : "STOP";
+      if (phase === "FLAT") counts.simulatedFlatRows++;
+    } else {
+      const postVerifyFailure = phase === "FILLED" && ["UNCERTAIN", "TIMEOUT", "HTTP_FAILURE", "REDIRECT_REJECTED"].includes(event.type);
+      boundaryAssert(failure.has(event.type) && (["ATTEMPTED", "ACCEPTED"].includes(phase) || postVerifyFailure)
+        && exactFields(event, ["type", "at"]));
+      phase = "STOP";
+    }
+  }
+  return { end: lastAt, stopped: phase !== "FLAT" };
+}
+
+function simulateCloseoutApprovalBoundary(manifest, scope, audit, scenario) {
+  requireContract(scope !== undefined && audit.allOrNothingTermsValidated === true, "LIMITED_CLOSEOUT_BOUNDARY_TERMS_REQUIRED");
+  requireContract(scope.targets.every(t => t.action === "EXIT_FULL" && t.executionSide === "sell"), "LIMITED_CLOSEOUT_BOUNDARY_FULL_EXIT_REQUIRED");
+  boundaryAssert(audit.snapshotBlockingRows === 0
+    && exactFields(scenario, ["schemaVersion", "evidenceBasis", "termsSha256", "accountSha256", "orderLedgerSha256", "orderIdempotencySha256", "orderContract", "approval", "rows"])
+    && scenario.schemaVersion === "paper-limited-closeout-boundary-simulation-v1"
+    && scenario.evidenceBasis === "SYNTHETIC_OFFLINE_SCENARIO" && scenario.termsSha256 === audit.scopeSha256
+    && scenario.accountSha256 === scope.accountSha256
+    && scenario.orderLedgerSha256 === manifest.files[FILES.orderLedger]
+    && scenario.orderIdempotencySha256 === manifest.files[FILES.orderIdempotency]);
+  boundaryAssert(exactFields(scenario.orderContract, ["type", "timeInForce", "extendedHours", "retry", "cancel", "replace"])
+    && scenario.orderContract.type === "limit" && scenario.orderContract.timeInForce === "day"
+    && ["extendedHours", "retry", "cancel", "replace"].every(k => scenario.orderContract[k] === false));
+  const approval = scenario.approval, limits = scope.riskLimits;
+  boundaryAssert(exactFields(approval, ["scope", "termsSha256", "accountSha256", "expiresAt", "originalHistoryAdopted"])
+    && approval.scope === "OFFLINE_CONFORMANCE_ONLY" && approval.originalHistoryAdopted === false
+    && approval.termsSha256 === scenario.termsSha256 && approval.accountSha256 === scenario.accountSha256);
+  const expiresAt = boundaryTime(approval.expiresAt);
+  boundaryAssert(Array.isArray(scenario.rows) && scenario.rows.length === 5);
+  let total = [0n, 1n];
+  // Validate all five before inspecting any hypothetical attempt. These assertions are not broker attestations.
+  for (const [n, row] of scenario.rows.entries()) {
+    boundaryAssert(exactFields(row, ["exitIdempotencyKey", "currentQuantity", "bid", "ask", "bidSizeShares", "priceTick", "quantityIncrement", "limitPrice", "sourceContract",
+      "reviewedAt", "receivedAt", "evidenceAsOf", "sessionOpenAt", "sessionCloseAt", "rthOpen", "identityMatched", "accountMatched",
+      "terminalConflict", "idempotencyConflict", "openOrderCount", "protectiveChildCount", "events"])
+      && row.exitIdempotencyKey === scope.targets[n].exitIdempotencyKey && row.currentQuantity === scope.targets[n].quantity
+      && ["rthOpen", "identityMatched", "accountMatched"].every(k => row[k] === true)
+      && ["terminalConflict", "idempotencyConflict"].every(k => row[k] === false)
+      && row.openOrderCount === 0 && row.protectiveChildCount === 0);
+    validateBoundaryFreshness(row, boundaryTime(row.reviewedAt), expiresAt, limits);
+    const notional = validateBoundaryQuote(row, limits);
+    total = [total[0] * notional[1] + notional[0] * total[1], total[1] * notional[1]];
+    boundaryAssert(withinCap(total, limits.maxTotalNotional));
+  }
+  const counts = { simulatedAttemptRows: 0, simulatedAcceptedRows: 0, simulatedPartialFillRows: 0, simulatedFilledRows: 0, simulatedFlatRows: 0 };
+  const seenOrders = new Set();
+  let previousEnd = -Infinity, stopped = false;
+  for (const [n, row] of scenario.rows.entries()) {
+    if (stopped) { boundaryAssert(Array.isArray(row.events) && row.events.length === 0); continue; }
+    const outcome = simulateBoundaryEvents(row, scope.targets[n], scenario, limits, expiresAt, counts, previousEnd, seenOrders);
+    previousEnd = outcome.end; stopped = outcome.stopped;
+  }
+  return { ...audit, schemaVersion: "paper-limited-closeout-boundary-audit-v1", mode: "OFFLINE_SYNTHETIC_CONFORMANCE_ONLY",
+    status: stopped ? "LIMITED_CLOSEOUT_OFFLINE_STOP_RECONCILIATION_REQUIRED"
+      : "LIMITED_CLOSEOUT_OFFLINE_CONFORMANCE_PASS_EXECUTION_NOT_AUTHORIZED",
+    boundaryScenarioSha256: sha256Canonical(scenario), boundaryHashBasis: "CANONICAL_JSON",
+    ...counts, simulatedRemainingRows: 5 - counts.simulatedFlatRows,
+    approvalAuthenticationVerified: false, atomicReservationVerified: false, brokerTransportVerified: false,
+    verifiedClosedLoopRows: 0, telegramMessagesSent: 0, ...SAFETY };
+}
+
 export function auditPrivateCloseoutEvidence(directory, manifestSha256, options = {}) {
+  requireContract(options.approvalBoundary === undefined || options.limitedControlDryRun === true, "LIMITED_CLOSEOUT_BOUNDARY_MODE_REQUIRED");
   const root = fs.lstatSync(directory);
   requireContract(root.isDirectory() && !root.isSymbolicLink(), "PRIVATE_DIRECTORY_INVALID");
   requireContract((root.mode & 0o077) === 0 && root.uid === process.getuid(), "PRIVATE_INPUT_PERMISSIONS_INVALID");
@@ -340,7 +479,9 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256, options 
       unscopedPositionRows: positions.filter(r => !symbols.has(r.symbol.toUpperCase())).length,
       executionReadinessEvaluated: false, currentStateAuthenticityVerified: false, unknownOrUnclassifiedRows: 0,
       ...preserved, ...SAFETY };
-    return options.limitedControlDryRun === true ? limitedCloseoutDryRun(directory, manifest, reports, audit, options.scope) : audit;
+    if (options.limitedControlDryRun !== true) return audit;
+    const dryRun = limitedCloseoutDryRun(directory, manifest, reports, audit, options.scope);
+    return options.approvalBoundary === undefined ? dryRun : simulateCloseoutApprovalBoundary(manifest, options.scope, dryRun, options.approvalBoundary);
   }
   const replay = buildPaperExitReadiness(reports);
   requireContract(replay.shadowEvaluation.countMatches && replay.shadowEvaluation.unknownOrUnclassifiedRows === 0
@@ -369,9 +510,11 @@ export function auditPrivateCloseoutEvidence(directory, manifestSha256, options 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     const dryRun = process.argv[4] === "--limited-control-dry-run";
-    requireContract(process.argv.length === 4 || (dryRun && [5, 7].includes(process.argv.length)), "PRIVATE_ARGUMENTS_INVALID");
-    const scope = process.argv.length === 7 ? readPrivate(process.argv[5], process.argv[6]) : undefined;
-    console.log(JSON.stringify(auditPrivateCloseoutEvidence(process.argv[2], process.argv[3], { limitedControlDryRun: dryRun, scope })));
+    const boundary = process.argv.length === 10 && process.argv[7] === "--approval-boundary-simulation";
+    requireContract(process.argv.length === 4 || (dryRun && ([5, 7].includes(process.argv.length) || boundary)), "PRIVATE_ARGUMENTS_INVALID");
+    const scope = process.argv.length >= 7 ? readPrivate(process.argv[5], process.argv[6]) : undefined;
+    const approvalBoundary = boundary ? readPrivate(process.argv[8], process.argv[9]) : undefined;
+    console.log(JSON.stringify(auditPrivateCloseoutEvidence(process.argv[2], process.argv[3], { limitedControlDryRun: dryRun, scope, approvalBoundary })));
   } catch (error) {
     // Never forward parser errors, paths, OS errors or private report strings to a public console.
     const status = error instanceof ContractError ? error.message : "PRIVATE_INPUT_UNAVAILABLE";
