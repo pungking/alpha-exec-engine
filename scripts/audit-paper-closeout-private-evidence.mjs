@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildPaperExitReadiness } from "./build-live-readiness-scorecard.mjs";
-import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
+import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical, assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 import { decimalRatio, withinCap } from "./lib/closeout-decimal.mjs";
 
 export const FILES = Object.freeze({
@@ -58,6 +58,7 @@ function uniqueReportRows(rows) {
 }
 
 export function validateTargets(targets, reports) {
+  assertLegacyOrderState(reports.orderLedger, reports.orderIdempotency);
   const ledger = reports.orderLedger.orders;
   const idem = reports.orderIdempotency.orders;
   requireContract(object(ledger) && object(idem) && Array.isArray(reports.orderIdempotency.releases), "PRIVATE_STATE_SCHEMA_INVALID");
@@ -95,6 +96,7 @@ export function validateTargets(targets, reports) {
 }
 
 export function buildExactPrivateReportState({ ledger, idempotency, fillability = {} }, targets) {
+  assertLegacyOrderState(ledger, idempotency);
   if (targets === undefined) return { ledger, idempotency, fillability };
   const { symbols } = validateTargets(targets, { orderLedger: ledger, orderIdempotency: idempotency });
   requireContract(targets.every(t => Object.entries(idempotency.orders)

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 import path from "node:path";
 
 const STATE_DIR = String(process.env.LEDGER_TERMINALIZATION_MIGRATION_PACKAGE_STATE_DIR || process.env.STATE_DIR || "state").trim() || "state";
@@ -160,6 +161,7 @@ function buildReport() {
   const broker = readJson(FILES.brokerEvidence);
   const orderLedger = readJson(FILES.orderLedger);
   const idempotency = readJson(FILES.idempotency);
+  assertLegacyOrderState(orderLedger, idempotency);
   const ownership = readJson(FILES.ownershipDecision);
   const fillBySymbol = indexBySymbol(fill);
   const brokerBySymbol = indexBySymbol(broker);

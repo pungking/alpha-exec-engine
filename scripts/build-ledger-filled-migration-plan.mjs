@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 
 const STATE_DIR = String(process.env.LEDGER_FILLED_MIGRATION_STATE_DIR || "state").trim() || "state";
 const FILES = {
@@ -198,6 +199,7 @@ const main = () => {
   const brokerEvidence = readJson(FILES.brokerEvidence);
   const orderLedger = readJson(FILES.orderLedger);
   const idempotency = readJson(FILES.idempotency);
+  assertLegacyOrderState(orderLedger, idempotency);
   const guardSourceRecovery = readJson(FILES.guardSourceRecovery);
   const evidenceBySymbol = indexRows(brokerEvidence?.rows);
   const guardBySymbol = indexRows(guardSourceRecovery?.rows);

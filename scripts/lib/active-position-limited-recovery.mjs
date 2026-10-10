@@ -2,6 +2,16 @@ import { createHash } from "node:crypto";
 
 export const ACTIVE_POSITION_LIMITED_RECOVERY_MODE = "ACTIVE_POSITION_LIMITED_CONTROL";
 
+// Generic strategy consumers must not silently omit or normalize management history.
+export function assertLegacyOrderState(...states) {
+  for (const state of states) {
+    const rows = [...Object.values(state?.orders || {}), ...(Array.isArray(state?.releases) ? state.releases : [])];
+    if (rows.some(row => row && Object.hasOwn(row, 'recordKind'))) {
+      throw new Error('SCOPED_MANAGEMENT_REQUIRES_SCOPED_CONSUMER');
+    }
+  }
+}
+
 const DISPOSITIONS = new Set([
   "ACTIVE_RECOVERY_LEGACY_IDENTITY_EXACT",
   "ACTIVE_RECOVERY_BROKER_FILL_EXACT",
