@@ -659,3 +659,86 @@ Existing generic limited-control submission blocks remain unchanged. No executio
 workflow imports or invokes this mode. Rollback is reverting this code/doc change;
 retain all historical/private evidence. Tests run in the existing mock-capture
 fixture suite and CI, with no new dependencies or production workflow.
+
+## Limited-control approval-boundary conformance (synthetic only)
+
+Goal: `PAPER_LIMITED_CONTROL_CLOSEOUT_APPROVAL_BOUNDARY_V1`, static/offline scope.
+This extension checks a hypothetical five-row approval/attempt trace. It is NOT an
+approval authenticator, broker adapter, current evidence producer, state reservation
+writer or execution gate. No automatic workflow calls it. A pass cannot unblock
+the generic limited-control submission prohibition.
+
+```sh
+node scripts/audit-paper-closeout-private-evidence.mjs PRIVATE_DIRECTORY MANIFEST_SHA256 --limited-control-dry-run PRIVATE_TERMS_FILE TERMS_BYTES_SHA256 --approval-boundary-simulation PRIVATE_SCENARIO_FILE SCENARIO_BYTES_SHA256
+```
+
+The v2 bundle and all five terms must pass the existing auditor first; snapshot
+blockers reject the simulation. Existing default and dry-run interfaces are
+unchanged. Both added inputs must be owner-only and byte-hash pinned. Public output
+contains fixed statuses, counts, booleans and canonical hashes, not private inputs.
+Malformed input fails closed with a fixed error. The checker writes nothing.
+
+The new local input schema is `paper-limited-closeout-boundary-simulation-v1`, with
+`evidenceBasis=SYNTHETIC_OFFLINE_SCENARIO`. Exact field sets are enforced; the
+executable schema example is the synthetic fixture in
+`scripts/test-paper-closeout-approval-boundary.mjs`. This is a project-owned test
+schema, NOT an Alpaca response schema. In particular, supplied evidence/feed hashes,
+identity booleans, durability flags and completion flags are scenario assumptions,
+not independently verified broker attestations or authorization signatures.
+
+- Root pins: canonical terms hash, preserved account hash and exact ledger and
+  idempotency file hashes. These remain historical input pins, not current-state
+  authenticity. `approval.scope=OFFLINE_CONFORMANCE_ONLY`, matching account/terms
+  and UTC expiry, and `originalHistoryAdopted=false` are mandatory.
+- Order semantics: hypothetical sell LIMIT/DAY only, no extended hours, retry,
+  replacement or cancellation. All five terms must be full exits with distinct
+  new exit keys; their exact original identity records remain unchanged.
+- Rows stay in pinned terms order. Positive signed quantity must exactly match
+  the full-exit terms and the supplied supported quantity increment. Complete
+  open-order/child evidence, tradability, account permission, supported LIMIT/DAY,
+  verified price increment and a pinned feed with size in shares are required
+  assumptions. Any open order, child, terminal or idempotency conflict rejects.
+- Account, position, orders, clock, quote and state each require source time, no
+  later than receipt, no later than review/attempt; no receipt fallback. UTC times
+  must round-trip exactly. All five are checked before trace evaluation, and each
+  attempt is checked again against the expiry, RTH interval and adopted age limit.
+- Quote checks use decimal BigInt fractions: spread is midpoint-normalized bps;
+  a sell limit cannot be below bid less the adopted adverse-price allowance, above
+  bid, or off the supplied tick. Full quantity cannot exceed displayed bid size.
+  This is a bounded single-quote liquidity check, not fill assurance or independent
+  certification of feed coverage. Planned notional uses fresh ASK times quantity,
+  not the lower sell limit, and must fit per-order and aggregate terms caps.
+  Favorable fill proceeds are not capped by this planned-notional comparison.
+
+Trace order is durable `RESERVED` (exact terms/state CAS pins), durable
+`ATTEMPT_RECORDED`, `ACCEPTED`, `FILLED`, then `POST_VERIFY`. Each accepted order
+hash is unique across targets and must match its fill/post-verification events.
+One attempt per identity and at most one outstanding target are permitted. These
+trace assertions do NOT implement or prove cross-store atomicity or crash recovery.
+
+Missing/truncated trace, uncertainty, timeout, HTTP failure, redirect rejection,
+broker rejection, cancellation, expiry or a partial fill stops the entire batch.
+No later target may have events, even if fresh evidence could otherwise pass.
+An accepted order is not a fill; full fill is not a flat-position proof. A residual
+position/open order/child blocks flat confirmation. Flat requires zero residual,
+zero open orders and zero children in the hypothetical post-verification. There
+is no retry, release, follow-up polling, automatic cancellation or reverse trade.
+
+Output statuses are `LIMITED_CLOSEOUT_OFFLINE_CONFORMANCE_PASS_EXECUTION_NOT_AUTHORIZED`
+or `LIMITED_CLOSEOUT_OFFLINE_STOP_RECONCILIATION_REQUIRED`. Event/flat counts are
+explicitly prefixed `simulated`; no notifications are actually sent. Existing
+notification accepted/partial/filled semantics and strict verified-PnL closeout
+event are unchanged and separately regression-tested. Simulated flatness never
+becomes verified strategy PnL or successful real closed-loop evidence.
+
+Every output keeps execution authorization, current broker/state authentication,
+atomic reservation verification and broker transport verification false; actual
+payloads, reservations, requests, mutations, selected candidates and verified
+closed loops remain zero. This finishes static scenario conformance only.
+
+Before real closeout, a separately reviewed scoped implementation must still bind
+actual management authority, current state, account/asset/quote evidence, existing
+storage locks/reservations/terminal writes and safe bounded broker transport. Its
+exact read/write budgets and execution approval must be specified before use. Do
+not collect another aging observation merely to turn this static check green.
+Rollback: revert this additive code/test/documentation change; preserve evidence.
