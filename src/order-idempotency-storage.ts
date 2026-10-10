@@ -1,4 +1,5 @@
 import type { LifecycleActionType } from "../config/policy.js";
+import { validateScopedManagementRecord, type ScopedManagementRecord } from './scoped-management-record.js';
 import { loadValidatedOrderState, saveValidatedOrderState, storageObject as object, storageText as text, storageTimestamp as timestamp } from "./order-state-storage.js";
 
 export type OrderLifecycleStatus =
@@ -80,7 +81,7 @@ export const brokerStatuses = new Set(["planned", "submitted", "accepted", "part
 export const actions = new Set(["ENTRY_NEW", "HOLD_WAIT", "SCALE_UP", "SCALE_DOWN", "EXIT_PARTIAL", "EXIT_FULL"]);
 
 function validRecord(value: unknown, release: boolean): boolean {
-  if (!object(value) || !text(value.symbol) || value.side !== "buy"
+  if (!object(value) || Object.hasOwn(value, 'recordKind') || !text(value.symbol) || value.side !== "buy"
     || !text(value.stage6Hash) || !text(value.stage6File)
     || !nullableTimestamp(value.firstSeenAt) || !nullableTimestamp(value.lastSeenAt)
     || !optionalText(value.clientOrderId) || !optionalText(value.brokerOrderId)
@@ -121,3 +122,19 @@ export async function loadOrderIdempotencyState(file: string): Promise<OrderIdem
 export async function saveOrderIdempotencyState(file: string, state: OrderIdempotencyState): Promise<void> {
   return saveValidatedOrderState(file, state, validateState, fail);
 }
+
+export type ScopedOrderIdempotencyState = Omit<OrderIdempotencyState, 'orders'> & { orders: Record<string, OrderIdempotencyEntry | ScopedManagementRecord> };
+function validateScopedState(value: unknown): asserts value is ScopedOrderIdempotencyState {
+  if (!object(value) || !object(value.orders)) fail('SCHEMA_INVALID');
+  const legacy = Object.fromEntries(Object.entries(value.orders).filter(([key, row]) => {
+    if (object(row) && Object.hasOwn(row, 'recordKind')) {
+      if (!validateScopedManagementRecord(key, row)) fail('SCHEMA_INVALID');
+      return false;
+    }
+    return true;
+  }));
+  if (Object.keys(value.orders).length && !timestamp(value.updatedAt)) fail('SCHEMA_INVALID');
+  validateState({ ...value, orders: legacy });
+}
+export const loadScopedOrderIdempotencyState = (file: string): Promise<ScopedOrderIdempotencyState> => loadValidatedOrderState(file, validateScopedState, fail);
+export const saveScopedOrderIdempotencyState = (file: string, state: ScopedOrderIdempotencyState): Promise<void> => saveValidatedOrderState(file, state, validateScopedState, fail);

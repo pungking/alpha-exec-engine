@@ -2,6 +2,19 @@ import { sha256Canonical } from '../lib/active-position-limited-recovery.mjs';
 
 export const hash = value => sha256Canonical(value);
 export const at = '2026-10-09T15:00:00.000Z';
+export function managementRecord(index = 0) {
+  const { input } = fixture(), t = input.terms.targets[index];
+  return { recordKind: 'SCOPED_MANAGEMENT_EXIT_V1', schemaVersion: 1, attemptId: input.attemptId,
+    managementAuthoritySha256: input.authoritySha256, termsSha256: input.termsSha256,
+    accountSha256: input.accountSha256, originalIdentitySha256: t.originalIdentitySha256,
+    exitIdempotencyKey: t.exitIdempotencyKey, clientOrderId: t.clientOrderId, assetId: t.assetId,
+    side: 'sell', actionType: 'EXIT_FULL', qty: t.qty, limitPrice: '99.9',
+    observedEvidenceSha256: hash('evidence'), requestSha256: null, preWriteHashes: input.preWriteHashes,
+    createdAt: at, updatedAt: at, submissionPhase: 'RESERVED', brokerOrderId: null,
+    brokerStatus: null, filledQty: '0', originalOwnershipVerified: false,
+    realizedPnlVerified: false, historicalEvidenceNormalized: false, brokerSubmitAllowed: false,
+    history: [{ at, phase: 'RESERVED', evidenceSha256: hash('evidence'), brokerStatus: null, filledQty: '0' }] };
+}
 export function fixture() {
   const targets = Array.from({ length: 5 }, (_, i) => ({
     originalIdentitySha256: hash(`synthetic-identity-${i}`), assetId: `fixture-asset-${i}`,
