@@ -51,3 +51,18 @@ export async function initialReceipts(f) {
   await read('quotes', { symbols: f.assets.map(a => a.symbol) });
   return receipts;
 }
+export function invocationFixture() {
+  const f = paperFixture();
+  Object.assign(f.input, { schemaVersion: 2, evidenceMode: 'PAPER_OBSERVED',
+    safeFlags: { readOnly: false, execEnabled: true, liveOrderSubmitEnabled: false, marketGuardMode: 'observe' } });
+  f.input.authority.kind = 'SCOPED_MANAGEMENT_PAPER_ONLY'; f.input.authoritySha256 = hash(f.input.authority);
+  const config = { input: f.input, bindings: f.bindings, directory: '/private/tmp/fixture-scoped-paper-state',
+    sourceFile: { path: '/private/tmp/fixture-source.json', sha256: f.input.sourceSha256 },
+    codeFiles: [{ path: '/private/tmp/fixture-reviewed-code.mjs', sha256: hash('fixture-code-bytes') }],
+    writerExclusion: { basis: 'REVIEWED_ACCOUNT_WIDE_WRITER_EXCLUSION', evidenceSha256: hash('fixture-exclusion'),
+      accountSha256: f.input.accountSha256, session: f.input.authority.session, expiresAt: f.input.authority.expiresAt } };
+  f.input.codeSha256 = hash(config.codeFiles);
+  const approval = { kind: 'DIRECT_SCOPED_OPERATOR_INVOCATION', phrase: 'CONFIRM LIVE EXECUTION',
+    configSha256: hash(config), approvedAt: at, expiresAt: f.input.authority.expiresAt, rollbackPlanSha256: hash('fixture-rollback') };
+  return { ...f, config, approval };
+}

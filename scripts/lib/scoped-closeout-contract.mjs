@@ -1,5 +1,7 @@
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
 import { decimalRatio as ratio, decimalText, withinCap, add, multiply, compare, ceilToTick } from './closeout-decimal.mjs';
+import { assessSourceBindings, isObservedSnapshot } from './scoped-paper-evidence.mjs';
+import path from 'node:path';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, names) => object(v) && Object.keys(v).sort().join(',') === names.split(' ').sort().join(',');
@@ -12,6 +14,9 @@ const time = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{
 const requireContract = (ok, code) => { if (!ok) throw new Error(`SCOPED_CLOSEOUT_${code}`); };
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const scopes = new WeakSet();
+const capabilities = new WeakMap(), observedBindings = new WeakMap();
+const observed = scope => scope.evidenceMode === 'PAPER_OBSERVED';
+const bindingStatus = scope => observed(scope) ? 'PAPER_OBSERVED_VERIFIED' : 'SYNTHETIC_VERIFIED';
 const nyDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
 const sessionMatches = (c, now, session) => [now, c?.open, c?.close, c?.timestamp].every(v =>
   Number.isFinite(time(v)) && nyDate.format(new Date(v)) === session);
@@ -20,14 +25,18 @@ export const SAFETY = Object.freeze({ brokerSubmitAllowed: false, wouldCreateBro
   originalOwnershipVerified: false, realizedPnlVerified: false, historicalEvidenceNormalized: false });
 
 export function validateScopedCloseoutInput(input) {
+  return validateInput(input, false);
+}
+function validateInput(input, real) {
   requireContract(exact(input, 'schemaVersion environment evidenceMode attemptId accountSha256 sourceSha256 codeSha256 terms termsSha256 authority authoritySha256 safeFlags preWriteHashes'), 'INPUT_INVALID');
-  requireContract(input.schemaVersion === 1 && input.environment === 'PAPER' && input.evidenceMode === 'SYNTHETIC', 'MODE_INVALID');
+  requireContract(input.schemaVersion === (real ? 2 : 1) && input.environment === 'PAPER'
+    && input.evidenceMode === (real ? 'PAPER_OBSERVED' : 'SYNTHETIC'), 'MODE_INVALID');
   requireContract(id(input.attemptId) && ['accountSha256', 'sourceSha256', 'codeSha256', 'termsSha256', 'authoritySha256'].every(k => hash(input[k])), 'PIN_INVALID');
   requireContract(exact(input.safeFlags, 'readOnly execEnabled liveOrderSubmitEnabled marketGuardMode')
-    && input.safeFlags.readOnly === true && input.safeFlags.execEnabled === false
+    && input.safeFlags.readOnly === !real && input.safeFlags.execEnabled === real
     && input.safeFlags.liveOrderSubmitEnabled === false && input.safeFlags.marketGuardMode === 'observe', 'SAFE_FLAGS_REQUIRED');
   const a = input.authority, t = input.terms;
-  requireContract(exact(a, 'kind session validFrom expiresAt acceptsRestingDayOrders') && a.kind === 'SYNTHETIC_ONLY'
+  requireContract(exact(a, 'kind session validFrom expiresAt acceptsRestingDayOrders') && a.kind === (real ? 'SCOPED_MANAGEMENT_PAPER_ONLY' : 'SYNTHETIC_ONLY')
     && /^\d{4}-\d\d-\d\d$/.test(a.session) && time(a.expiresAt) > time(a.validFrom)
     && a.acceptsRestingDayOrders === true && digest(a) === input.authoritySha256, 'AUTHORITY_INVALID');
   requireContract(exact(input.preWriteHashes, 'orderLedger orderIdempotency') && Object.values(input.preWriteHashes).every(hash), 'STORE_PIN_INVALID');
@@ -47,28 +56,100 @@ export function validateScopedCloseoutInput(input) {
   const scope = freeze(structuredClone(input)); scopes.add(scope); return scope;
 }
 
+export function validateScopedPaperConfiguration(config) {
+  try {
+    requireContract(exact(config, 'input bindings directory sourceFile codeFiles writerExclusion'), 'CONFIG_INVALID');
+    validateInput(config.input, true);
+    requireContract(typeof config.directory === 'string' && path.isAbsolute(config.directory)
+      && exact(config.sourceFile, 'path sha256') && path.isAbsolute(config.sourceFile.path)
+      && config.sourceFile.sha256 === config.input.sourceSha256, 'SOURCE_PIN_INVALID');
+    requireContract(Array.isArray(config.codeFiles) && config.codeFiles.length > 0
+      && config.codeFiles.every(f => exact(f, 'path sha256') && path.isAbsolute(f.path) && hash(f.sha256))
+      && new Set(config.codeFiles.map(f => f.path)).size === config.codeFiles.length
+      && digest(config.codeFiles) === config.input.codeSha256, 'CODE_PIN_INVALID');
+    const b = config.bindings, w = config.writerExclusion;
+    requireContract(exact(b, 'proof proofSha256 rawAccountIdSha256 rawAccountHashBasis accountHashBasis')
+      && hash(b.proofSha256) && digest(b.proof) === b.proofSha256 && hash(b.rawAccountIdSha256)
+      && b.rawAccountHashBasis === 'RAW_ACCOUNT_ID_UTF8' && b.accountHashBasis === 'CANONICAL_PAPER_ACCOUNT_ID', 'SOURCE_BINDING_INVALID');
+    requireContract(exact(w, 'basis evidenceSha256 accountSha256 session expiresAt')
+      && w.basis === 'REVIEWED_ACCOUNT_WIDE_WRITER_EXCLUSION' && hash(w.evidenceSha256)
+      && w.accountSha256 === config.input.accountSha256 && w.session === config.input.authority.session
+      && time(w.expiresAt) >= time(config.input.authority.expiresAt), 'WRITER_EXCLUSION_INVALID');
+    return freeze({ status: 'PASS', reasons: [], evidenceHashes: [digest(config)] });
+  } catch (error) {
+    return freeze({ status: 'BLOCKED', reasons: [/^SCOPED_CLOSEOUT_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_CLOSEOUT_CONFIG_INVALID'], evidenceHashes: [] });
+  }
+}
+function processGate() {
+  const e = process.env;
+  requireContract(e.ALPHA_ENV === 'PAPER' && e.READ_ONLY === 'false' && e.EXEC_ENABLED === 'true'
+    && e.LIVE_ORDER_SUBMIT_ENABLED === 'false' && e.MARKET_GUARD_MODE === 'observe'
+    && ['FORCE_SEND_ONCE', 'GUARD_EXECUTE_TIGHTEN_STOPS', 'GUARD_EXECUTE_REDUCE_POSITIONS', 'GUARD_EXECUTE_FLATTEN']
+      .every(k => e[k] === undefined || e[k] === 'false'), 'ACTUAL_PROCESS_FLAGS_BLOCKED');
+  requireContract(['ALPACA_BASE_URL', 'ALPACA_API_BASE_URL'].every(k => !e[k] || e[k] === 'https://paper-api.alpaca.markets'), 'ORIGIN_INVALID');
+}
+export function authorizeScopedPaperInvocation({ config, approval, clock }) {
+  const assessment = validateScopedPaperConfiguration(config);
+  requireContract(assessment.status === 'PASS', 'CONFIG_INVALID'); processGate();
+  requireContract(exact(approval, 'kind phrase configSha256 approvedAt expiresAt rollbackPlanSha256')
+    && approval.kind === 'DIRECT_SCOPED_OPERATOR_INVOCATION' && approval.phrase === 'CONFIRM LIVE EXECUTION'
+    && approval.configSha256 === digest(config) && hash(approval.rollbackPlanSha256)
+    && time(approval.approvedAt) <= time(clock.now()) && time(approval.expiresAt) - time(clock.now()) >= 17000
+    && time(approval.expiresAt) <= time(config.input.authority.expiresAt), 'AUTHORITY_INVALID');
+  requireContract(assessSourceBindings(config.bindings, config.input, clock).status === 'PASS', 'SOURCE_BINDING_INVALID');
+  const capability = Object.freeze({});
+  capabilities.set(capability, freeze({ config: structuredClone(config), approval: structuredClone(approval) }));
+  return capability;
+}
+export function assertScopedPaperInvocation(capability, { config, clock }) {
+  const saved = capabilities.get(capability);
+  requireContract(saved && digest(saved.config) === digest(config), 'AUTHORITY_INVALID');
+  processGate();
+  requireContract(time(saved.approval.approvedAt) <= time(clock.now())
+    && time(saved.approval.expiresAt) - time(clock.now()) >= 17000
+    && assessSourceBindings(config.bindings, config.input, clock).status === 'PASS', 'AUTHORITY_EXPIRED');
+  return true;
+}
+export function validateObservedCloseoutInput(input, capability) {
+  const saved = capabilities.get(capability);
+  requireContract(saved && digest(saved.config.input) === digest(input), 'AUTHORITY_INVALID');
+  const scope = validateInput(input, true); observedBindings.set(scope, saved.config.bindings.proofSha256); return scope;
+}
+function snapshotMatches(scope, snapshot) {
+  return snapshot?.evidenceMode === scope.evidenceMode && (!observed(scope)
+    || (isObservedSnapshot(snapshot) && snapshot.sourceBindingsSha256 === observedBindings.get(scope)));
+}
+
 function validateTime(scope, snapshot, clock) {
   const now = time(clock?.now), c = snapshot.clock, a = scope.authority;
   requireContract(Number.isFinite(now) && Number.isFinite(clock.elapsedMs) && clock.elapsedMs >= 0 && clock.elapsedMs <= 283000, 'DEADLINE_INVALID');
   requireContract(now >= time(a.validFrom) && time(a.expiresAt) - now >= 17000, 'AUTHORITY_EXPIRED');
   requireContract(object(c) && c.version === 'v2' && c.isOpen === true && c.timezone === 'America/New_York'
-    && c.clockAlignment === 'SYNTHETIC_VERIFIED' && hash(c.responseSha256) && c.session === a.session
+    && c.clockAlignment === bindingStatus(scope) && hash(c.responseSha256) && c.session === a.session
     && sessionMatches(c, clock.now, a.session)
     && time(c.open) <= now && time(c.close) - now >= 17000, 'MARKET_SESSION_INVALID');
   requireContract(Number.isFinite(time(c.timestamp)) && time(c.timestamp) <= now && now - time(c.timestamp) <= 30000, 'CLOCK_STALE');
   requireContract(exact(snapshot.observations, 'account positions orders assets calendar'), 'OBSERVATIONS_INVALID');
-  for (const o of Object.values(snapshot.observations)) requireContract(exact(o, 'basis requestedAt retrievedAt responseSha256')
+  const intervals = Object.entries(snapshot.observations).flatMap(([key, value]) => {
+    if (observed(scope) && key === 'assets') {
+      requireContract(exact(value, 'basis receipts') && value.basis === 'OBSERVED_GET_SET'
+        && Array.isArray(value.receipts) && value.receipts.length === 5, 'OBSERVATIONS_INVALID');
+      return value.receipts;
+    }
+    return [value];
+  });
+  for (const o of intervals) requireContract(exact(o, 'basis requestedAt retrievedAt responseSha256')
     && o.basis === 'OBSERVED_GET_INTERVAL' && hash(o.responseSha256)
     && time(o.requestedAt) <= time(o.retrievedAt) && time(o.retrievedAt) <= now
     && now - time(o.requestedAt) <= 30000 && time(o.retrievedAt) - time(o.requestedAt) <= 3000, 'OBSERVATION_STALE');
 }
 
-function priceOrder(target, row, now) {
+function priceOrder(scope, target, row, now) {
   requireContract(object(row) && row.assetId === target.assetId && row.originalIdentitySha256 === target.originalIdentitySha256
     && row.qty === target.qty, 'ROW_IDENTITY_INVALID');
   requireContract(['bid', 'ask', 'bidSizeShares', 'tick', 'quantityIncrement'].every(k => positive(row[k])), 'DECIMAL_INVALID');
   requireContract(row.feed === 'sip' && row.currency === 'USD' && row.sizeUnit === 'shares'
-    && row.sourceBinding === 'SYNTHETIC_VERIFIED' && hash(row.quoteResponseSha256)
+    && row.sourceBinding === bindingStatus(scope) && hash(row.quoteResponseSha256)
     && row.tradable === true && row.haltStatus === 'NOT_HALTED' && row.riskStatus === 'PASS' && hash(row.riskEvidenceSha256), 'SOURCE_OR_RISK_INVALID');
   requireContract(time(row.quoteAt) <= now && now - time(row.quoteAt) <= 30000, 'QUOTE_STALE');
   const bid = ratio(row.bid), ask = ratio(row.ask), qty = ratio(row.qty), step = ratio(row.quantityIncrement);
@@ -91,7 +172,7 @@ function priceOrder(target, row, now) {
 export function evaluateCloseoutSnapshot(scope, snapshot, clock, committed = {}) {
   try {
     requireContract(scopes.has(scope), 'UNVALIDATED_SCOPE');
-    requireContract(object(snapshot) && snapshot.evidenceMode === 'SYNTHETIC' && snapshot.complete === true
+    requireContract(object(snapshot) && snapshotMatches(scope, snapshot) && snapshot.complete === true
       && snapshot.accountSha256 === scope.accountSha256 && snapshot.sourceSha256 === scope.sourceSha256, 'SNAPSHOT_INVALID');
     validateTime(scope, snapshot, clock);
     const expected = scope.terms.portfolio.filter(p => !Object.hasOwn(committed, p.assetId));
@@ -101,7 +182,7 @@ export function evaluateCloseoutSnapshot(scope, snapshot, clock, committed = {})
     requireContract(Array.isArray(snapshot.rows) && snapshot.rows.length === 5
       && new Set(snapshot.rows.map(r => r?.assetId)).size === 5, 'ROW_COUNT_INVALID');
     const proposedOrders = scope.terms.targets.filter(t => !Object.hasOwn(committed, t.assetId))
-      .map(t => priceOrder(t, snapshot.rows.find(r => r.assetId === t.assetId), time(clock.now)));
+      .map(t => priceOrder(scope, t, snapshot.rows.find(r => r.assetId === t.assetId), time(clock.now)));
     requireContract(object(committed) && Object.keys(committed).every(k => scope.terms.targets.some(t => t.assetId === k)
       && positive(committed[k])), 'COMMITTED_NOTIONAL_INVALID');
     const total = [...Object.values(committed), ...proposedOrders.map(o => o.plannedNotional)].reduce((a, v) => add(a, ratio(v)), [0n, 1n]);
@@ -179,7 +260,7 @@ function observationFor(state, o) {
 }
 function postSnapshotValid(state, event, o) {
   const s = event.snapshot, now = time(event.clock.now);
-  requireContract(object(s) && s.complete === true && s.evidenceMode === 'SYNTHETIC'
+  requireContract(object(s) && s.complete === true && snapshotMatches(state.scope, s)
     && s.accountSha256 === state.scope.accountSha256 && s.sourceSha256 === state.scope.sourceSha256, 'POSTCHECK_INVALID');
   requireContract(o.brokerStatus === 'filled' && Array.isArray(s.openOrders) && s.openOrders.length === 0, 'POSTCHECK_NOT_FLAT');
   const removed = new Set([...Object.keys(state.committed), state.rows[state.index].assetId]);
@@ -187,7 +268,7 @@ function postSnapshotValid(state, event, o) {
   const sorted = rows => [...rows].sort((a, b) => a.assetId.localeCompare(b.assetId));
   requireContract(Array.isArray(s.portfolio) && digest(sorted(expected)) === digest(sorted(s.portfolio)), 'POSTCHECK_PORTFOLIO_DRIFT');
   requireContract(s.clock?.version === 'v2' && s.clock.isOpen === true && s.clock.session === state.scope.authority.session
-    && s.clock.clockAlignment === 'SYNTHETIC_VERIFIED' && s.clock.timezone === 'America/New_York'
+    && s.clock.clockAlignment === bindingStatus(state.scope) && s.clock.timezone === 'America/New_York'
     && sessionMatches(s.clock, event.clock.now, state.scope.authority.session)
     && time(state.scope.authority.expiresAt) > now
     && time(s.clock.timestamp) <= now && now - time(s.clock.timestamp) <= 30000
@@ -222,7 +303,8 @@ function notify(state, effects, record) {
 // Inert effects only. This module has no broker, credentials, I/O or activation path.
 export function advanceScopedCloseout(previous, event) {
   requireContract(states.has(previous), 'UNVALIDATED_STATE');
-  const state = { ...structuredClone(previous), scope: previous.scope }, effects = [];
+  const state = { ...structuredClone(previous), scope: previous.scope,
+    ...(observed(previous.scope) && previous.snapshot ? { snapshot: previous.snapshot } : {}) }, effects = [];
   if (previous.phase === 'COMPLETE' || previous.phase === 'STOPPED') return { state: previous, effects };
   try {
     requireContract(!consumed.has(previous), 'STATE_REPLAY'); consumed.add(previous);
@@ -240,7 +322,7 @@ export function advanceScopedCloseout(previous, event) {
       validateReads(state, event.responses);
       const result = evaluateCloseoutSnapshot(state.scope, event.snapshot, event.clock, state.committed);
       requireContract(result.status === 'READY_REPORT_ONLY', 'PREFLIGHT_BLOCKED');
-      state.snapshot = structuredClone(event.snapshot);
+      state.snapshot = observed(state.scope) ? event.snapshot : structuredClone(event.snapshot);
       if (state.phase === 'INITIAL_PREFLIGHT') {
         state.rows = result.proposedOrders.map(o => reserveRecord(state.scope, o, event.clock.now, result.evidenceSha256));
         state.pendingRecords = state.rows; state.phase = 'RESERVING';

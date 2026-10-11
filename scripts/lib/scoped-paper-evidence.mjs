@@ -125,6 +125,7 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
   });
   check(new Set(rows.map(r => r.symbol)).size === 5, 'ASSET_IDENTITY_INVALID');
   return seal({ evidenceMode: 'PAPER_OBSERVED', accountSha256: scope.accountSha256, sourceSha256: scope.sourceSha256,
+    sourceBindingsSha256: bindings.proofSha256,
     complete: true, portfolio, openOrders: orders, rows,
     observations: { account: interval(get('account'), now), positions: interval(pr, now), orders: interval(get('orders'), now),
       calendar: interval(get('calendar'), now), assets: { basis: 'OBSERVED_GET_SET', receipts: ar.map(r => interval(r, now)) } },
@@ -154,6 +155,7 @@ export function mapOrderObservation({ scope, record, receipt: r }) {
 
 export function mapPostcheckEvidence({ scope, receipts, bindings, clock, calendar }) {
   const result = { evidenceMode: 'PAPER_OBSERVED', accountSha256: scope.accountSha256, sourceSha256: scope.sourceSha256,
+    sourceBindingsSha256: bindings.proofSha256,
     complete: false, observations: {} };
   // A later read failure must not discard the first lookup's independently verified fill.
   for (const r of receipts) {
