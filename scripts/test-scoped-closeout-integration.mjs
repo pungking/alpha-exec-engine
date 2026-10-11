@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fixture, hash, at } from './fixtures/scoped-closeout.mjs';
+import { fixture, hash, at, bindPostcheckEvidence } from './fixtures/scoped-closeout.mjs';
 import { validateScopedCloseoutInput, createScopedCloseoutState, advanceScopedCloseout, BUDGET } from './lib/scoped-closeout-contract.mjs';
 import { withScopedStores, reserveScopedExits, recordScopedAttempt, recordScopedObservation } from './lib/scoped-closeout-storage.mjs';
 import { buildNotificationSnapshot, deliverNotifications } from './paper-order-notifications.mjs';
@@ -12,7 +12,7 @@ import { buildNotificationSnapshot, deliverNotifications } from './paper-order-n
 let checks = 0;
 const sha = b => createHash('sha256').update(b).digest('hex');
 const transport = group => ({ group, complete: true, status: 200, durationMs: 1, bytes: 10, responseSha256: hash(group) });
-async function scenario({ failurePhase, partial = false, accepted = false, postConflict = false, sendTimeout = false } = {}) {
+async function scenario({ failurePhase, partial = false, accepted = false, postConflict = false, postReadFailure = false, sendTimeout = false } = {}) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-integration-')));
   await fs.chmod(dir, 0o700);
   const f = fixture(), brokerOrders = [], requests = [];
@@ -74,15 +74,21 @@ async function scenario({ failurePhase, partial = false, accepted = false, postC
             if (postConflict) snapshot.openOrders.push({ protective: true });
             brokerOrders.push({ id: `fixture-broker-${state.index}`, client_order_id: row.clientOrderId, asset_id: row.assetId, symbol: `FIX${String.fromCharCode(65 + state.index)}`,
               side: 'sell', type: 'limit', status, qty: row.qty, filled_qty: partial ? '0.5' : row.qty, filled_avg_price: '100', submitted_at: at, updated_at: at, filled_at: at });
-            go({ type: 'POSTCHECK', responses, snapshot, observation: observation(status) }); break;
+            const obs = observation(status); bindPostcheckEvidence(snapshot, responses, obs);
+            if (postReadFailure) responses[1].status = 500;
+            go({ type: 'POSTCHECK', responses, snapshot, observation: obs }); break;
           }
           case 'FINAL_PERSIST': go({ type: 'FINAL_RECORDED', receipt: await recordScopedObservation(ctx, record.exitIdempotencyKey, record) }); break;
           default: assert.fail('Unexpected synthetic phase');
         }
       }
     });
-    const done = !failurePhase && !partial && !postConflict;
+    const done = !failurePhase && !partial && !postConflict && !postReadFailure;
     assert.equal(step.state.phase, done ? 'COMPLETE' : 'STOPPED'); checks++;
+    if (postReadFailure) {
+      const r = (await read('orderLedger')).orders[f.input.terms.targets[0].exitIdempotencyKey];
+      assert.equal(r.brokerStatus, 'filled'); assert.equal(r.filledQty, '2'); assert.equal(r.submissionPhase, 'STOPPED'); checks += 3;
+    }
     for (const [name, original] of Object.entries(initial)) {
       const current = await read(name);
       assert.deepEqual(current.orders.preserved, original.orders.preserved);
@@ -109,5 +115,6 @@ async function scenario({ failurePhase, partial = false, accepted = false, postC
 }
 await scenario(); await scenario({ accepted: true }); await scenario({ sendTimeout: true });
 await scenario({ partial: true }); await scenario({ postConflict: true });
+await scenario({ accepted: true, postReadFailure: true });
 for (const failurePhase of ['ACCOUNT_PREFLIGHT', 'INITIAL_PREFLIGHT', 'RESERVING', 'REVALIDATING', 'ATTEMPT_PERSIST', 'SUBMITTING', 'OBSERVATION_PERSIST', 'POSTCHECK', 'FINAL_PERSIST']) await scenario({ failurePhase });
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-integration', checks, actualBrokerRequests: 0, actualTelegramSends: 0, productionStateWrites: 0 }));

@@ -65,6 +65,11 @@ const managementInput = () => input({ openOrders: [], closedOrders: [{ ...exit, 
 assert.ok(types(buildNotificationSnapshot(managementInput())).includes('MANAGEMENT_POSITION_FLAT_RECONCILED'));
 assert.equal(types(buildNotificationSnapshot(managementInput())).includes('POSITION_CLOSEOUT_RECONCILED'), false);
 for (const change of [
+  v => { for (const state of [v.orderLedger, v.orderIdempotency]) {
+    const r = state.orders[management.exitIdempotencyKey]; r.history = [r.history[0], r.history.at(-1)];
+  } },
+  v => v.positions.push({ asset_id: management.assetId, symbol: 'RENAMED', qty: '1' }),
+  v => v.openOrders.push(order({ asset_id: management.assetId, symbol: 'RENAMED', side: 'sell' })),
   v => v.positions.push({ symbol: exit.symbol, qty: '1' }),
   v => v.openOrders.push(order({ side: 'sell' })),
   v => v.closedOrders[0].asset_id = 'other',

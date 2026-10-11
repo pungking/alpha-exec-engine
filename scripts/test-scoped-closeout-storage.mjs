@@ -69,6 +69,13 @@ try {
     const attempted = await recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details);
     assert.equal(attempted.recordsSha256.length, 64); checks++;
     await assert.rejects(recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
+    let record = (await ledger.loadScopedOrderLedgerState(path.join(directory, 'order-ledger.json'))).orders[records[0].exitIdempotencyKey];
+    for (const [phase, status, qty] of [['OBSERVED', 'partially_filled', '0.5'], ['OBSERVED', 'filled', '2'], ['FLAT_RECONCILED', 'filled', '2']]) {
+      record = { ...record, submissionPhase: phase, brokerStatus: status, filledQty: qty, brokerOrderId: 'fixture-broker',
+        history: [...record.history, { at, phase, evidenceSha256: record.observedEvidenceSha256, brokerStatus: status, filledQty: qty }] };
+      await recordScopedObservation(context, record.exitIdempotencyKey, record);
+    }
+    await assert.rejects(recordScopedAttempt(context, records[1].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_BATCH_STOPPED/); checks++;
   });
   await assert.rejects(withScopedStores(options, () => {}), /SCOPED_STORE_/); checks++;
   assert.deepEqual(await fs.readFile(path.join(directory, '.scoped-closeout-fixture-attempt', 'order-ledger.json')), l); checks++;

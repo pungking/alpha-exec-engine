@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sha256Canonical } from './lib/active-position-limited-recovery.mjs';
 import { decimalRatio, compare } from './lib/closeout-decimal.mjs';
+import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 
 const SCHEMA = 'paper-order-notification-v1';
 const RECEIPT_SCHEMA = 'paper-order-notification-receipts-v1';
@@ -95,18 +96,17 @@ function managementFlatVerified(raw, input, allOpen, all, validGroups) {
   const peers = entries(input.orderIdempotency).filter(([, r]) => r.brokerOrderId === raw.id);
   if (matches.length !== 1 || peers.length !== 1 || matches[0][0] !== peers[0][0]) return false;
   const [key, r] = matches[0];
-  if (sha256Canonical(r) !== sha256Canonical(peers[0][1]) || r.recordKind !== 'SCOPED_MANAGEMENT_EXIT_V1'
-    || r.schemaVersion !== 1 || r.exitIdempotencyKey !== key || r.submissionPhase !== 'FLAT_RECONCILED'
-    || r.side !== 'sell' || raw.side !== 'sell' || r.actionType !== 'EXIT_FULL' || r.brokerStatus !== 'filled'
+  if (!validateScopedManagementRecord(key, r) || sha256Canonical(r) !== sha256Canonical(peers[0][1])
+    || r.submissionPhase !== 'FLAT_RECONCILED' || raw.side !== 'sell'
     || !raw.client_order_id || r.clientOrderId !== raw.client_order_id || !raw.asset_id || r.assetId !== raw.asset_id
     || r.accountSha256 !== sha256Canonical(['PAPER', input.accountId])
-    || !['managementAuthoritySha256', 'termsSha256', 'originalIdentitySha256', 'requestSha256', 'observedEvidenceSha256'].every(k => HASH.test(r[k] || ''))
-    || !['originalOwnershipVerified', 'realizedPnlVerified', 'historicalEvidenceNormalized', 'brokerSubmitAllowed'].every(k => r[k] === false)
-    || ['firstSeenAt', 'lastSeenAt', 'stage6Hash', 'stage6File'].some(k => Object.hasOwn(r, k))
     || !validTime(r.createdAt, r.updatedAt) || !validTime(r.updatedAt, input.observedAt)
-    || !Array.isArray(r.history) || r.history[0]?.phase !== 'RESERVED' || r.history.at(-1)?.phase !== 'FLAT_RECONCILED'
-    || r.history.at(-1)?.at !== r.updatedAt || r.history.at(-1)?.evidenceSha256 !== r.observedEvidenceSha256
     || (input.orderIdempotency.releases || []).some(v => v?.key === key || v?.brokerOrderId === raw.id)) return false;
+  // Missing or contradictory asset identity is not proof of a flat position.
+  if ([...input.positions, ...all].some(v => typeof v?.asset_id !== 'string' || !v.asset_id
+      || ((v.asset_id === r.assetId) !== (v.symbol === raw.symbol)))
+    || input.positions.some(v => v.asset_id === r.assetId && number(v.qty) !== 0)
+    || allOpen.some(v => v.asset_id === r.assetId)) return false;
   try {
     if (compare(decimalRatio(r.qty), decimalRatio(raw.qty)) !== 0
       || compare(decimalRatio(r.filledQty), decimalRatio(raw.filled_qty)) !== 0) return false;

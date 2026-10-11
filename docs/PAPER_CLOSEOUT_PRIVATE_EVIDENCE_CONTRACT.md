@@ -790,6 +790,15 @@ Management flat reconciliation emits a distinct notification. Accepted and fille
 events still do not imply flatness. A flat management position is not verified
 strategy P&L or an OOS sample. Existing delivery receipt reservations prevent
 automatic resend after uncertainty; exactly-once Telegram delivery is not claimed.
+Notification consumers use the same compiled strict record validator as storage;
+run `npm run build` before standalone dashboard/notification scripts. CI builds
+before script consumers, and the existing runtime workflow already does so.
+Management flatness requires immutable asset identity, not a symbol-only lookup.
+Postchecks bind lookup/position/order/clock response hashes to fresh observation
+intervals ordered after submission. A verified lookup fill survives a later read
+failure as stopped/reconciliation-required evidence, never as a flat assertion.
+Durable history retains partial-fill/stop vetoes even after later reconciliation;
+neither persistence nor the controller may resume the remaining targets.
 
 ### Verification and next connection step
 

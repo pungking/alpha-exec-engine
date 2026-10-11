@@ -21,6 +21,8 @@ jobs:
           cache: "npm"
       - name: Install
         run: npm ci
+      - name: Build shared strict validators for script consumers
+        run: npm run build
       - name: Symbol-agnostic runtime guard
         run: npm run ops:safety:symbol-agnostic
       - name: Protection classification report contract

@@ -12,6 +12,9 @@ const time = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{
 const requireContract = (ok, code) => { if (!ok) throw new Error(`SCOPED_CLOSEOUT_${code}`); };
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const scopes = new WeakSet();
+const nyDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+const sessionMatches = (c, now, session) => [now, c?.open, c?.close, c?.timestamp].every(v =>
+  Number.isFinite(time(v)) && nyDate.format(new Date(v)) === session);
 export const BUDGET = Object.freeze({ account: 6, positions: 11, orders: 11, clock: 11, calendar: 1, assets: 10, lookup: 5, quotes: 6, submit: 5 });
 export const SAFETY = Object.freeze({ brokerSubmitAllowed: false, wouldCreateBrokerPayload: false,
   originalOwnershipVerified: false, realizedPnlVerified: false, historicalEvidenceNormalized: false });
@@ -50,6 +53,7 @@ function validateTime(scope, snapshot, clock) {
   requireContract(now >= time(a.validFrom) && time(a.expiresAt) - now >= 17000, 'AUTHORITY_EXPIRED');
   requireContract(object(c) && c.version === 'v2' && c.isOpen === true && c.timezone === 'America/New_York'
     && c.clockAlignment === 'SYNTHETIC_VERIFIED' && hash(c.responseSha256) && c.session === a.session
+    && sessionMatches(c, clock.now, a.session)
     && time(c.open) <= now && time(c.close) - now >= 17000, 'MARKET_SESSION_INVALID');
   requireContract(Number.isFinite(time(c.timestamp)) && time(c.timestamp) <= now && now - time(c.timestamp) <= 30000, 'CLOCK_STALE');
   requireContract(exact(snapshot.observations, 'account positions orders assets calendar'), 'OBSERVATIONS_INVALID');
@@ -184,8 +188,22 @@ function postSnapshotValid(state, event, o) {
   requireContract(Array.isArray(s.portfolio) && digest(sorted(expected)) === digest(sorted(s.portfolio)), 'POSTCHECK_PORTFOLIO_DRIFT');
   requireContract(s.clock?.version === 'v2' && s.clock.isOpen === true && s.clock.session === state.scope.authority.session
     && s.clock.clockAlignment === 'SYNTHETIC_VERIFIED' && s.clock.timezone === 'America/New_York'
+    && sessionMatches(s.clock, event.clock.now, state.scope.authority.session)
+    && time(state.scope.authority.expiresAt) > now
     && time(s.clock.timestamp) <= now && now - time(s.clock.timestamp) <= 30000
     && time(s.clock.open) <= now && time(s.clock.close) > now, 'POSTCHECK_CLOCK_INVALID');
+}
+
+function validatePostRead(state, event, group) {
+  const index = phases.postcheck.indexOf(group), r = event.responses?.[index], o = event.snapshot?.observations?.[group];
+  const lower = index === 0 ? state.outcomeAt : event.snapshot?.observations?.[phases.postcheck[index - 1]]?.retrievedAt;
+  requireContract(r?.group === group && transportValid(r) && exact(o, 'basis requestedAt retrievedAt responseSha256')
+    && o.basis === 'OBSERVED_GET_INTERVAL' && o.responseSha256 === r.responseSha256
+    && time(o.requestedAt) >= time(lower) && time(o.requestedAt) <= time(o.retrievedAt)
+    && time(o.retrievedAt) <= time(event.clock.now) && time(event.clock.now) - time(o.requestedAt) <= 30000
+    && time(o.retrievedAt) - time(o.requestedAt) <= 3000, 'POSTCHECK_PROVENANCE_INVALID');
+  if (group === 'lookup') requireContract(event.observation?.responseSha256 === r.responseSha256, 'LOOKUP_HASH_INVALID');
+  if (group === 'clock') requireContract(event.snapshot?.clock?.responseSha256 === r.responseSha256, 'CLOCK_HASH_INVALID');
 }
 
 function notify(state, effects, record) {
@@ -248,6 +266,7 @@ export function advanceScopedCloseout(previous, event) {
     } else if (event.type === 'SUBMIT_RESULT' && state.phase === 'SUBMITTING') {
       let observation = {}, phase = 'OBSERVED';
       state.outcomeElapsed = elapsed;
+      state.outcomeAt = event.clock.now;
       try {
         requireContract(transportValid(event.response) && elapsed - state.submitElapsed <= 3000, 'SUBMIT_UNCERTAIN');
         observation = observationFor(state, event.observation);
@@ -262,13 +281,22 @@ export function advanceScopedCloseout(previous, event) {
       state.phase = 'POSTCHECK'; effects.push(...reads(state, 'postcheck'));
       notify(state, effects, state.rows[state.index]);
     } else if (event.type === 'POSTCHECK' && state.phase === 'POSTCHECK') {
-      validateReads(state, event.responses);
-      const observation = observationFor(state, event.observation);
-      let phase = state.rows[state.index].submissionPhase === 'STOPPED' ? 'STOPPED' : 'OBSERVED';
-      try { postSnapshotValid(state, event, observation); if (!state.stickyStop) phase = 'FLAT_RECONCILED'; }
+      let observation = {}, lookupVerified = false, phase = 'STOPPED';
+      try {
+        validatePostRead(state, event, 'lookup'); observation = observationFor(state, event.observation); lookupVerified = true;
+      } catch { state.stickyStop = true; }
+      // Preserve a verified fill even if a later portfolio/clock read fails.
+      try {
+        validateReads(state, event.responses);
+        requireContract(exact(event.snapshot?.observations, 'lookup positions orders clock'), 'POSTCHECK_PROVENANCE_INVALID');
+        for (const group of phases.postcheck) validatePostRead(state, event, group);
+        postSnapshotValid(state, event, observation); if (!state.stickyStop) phase = 'FLAT_RECONCILED';
+      }
       catch { state.stickyStop = true; }
       if (phase !== 'FLAT_RECONCILED') state.stickyStop = true;
-      state.pendingRecords = [appendObservation(state.rows[state.index], phase, event.clock.now, digest(event.snapshot ?? {}), observation)];
+      const evidenceHash = phase === 'FLAT_RECONCILED' ? digest(event.snapshot) : lookupVerified
+        ? event.observation.responseSha256 : digest({ status: 'POSTCHECK_UNVERIFIED' });
+      state.pendingRecords = [appendObservation(state.rows[state.index], phase, event.clock.now, evidenceHash, observation)];
       state.phase = 'FINAL_PERSIST'; effects.push({ type: 'RECORD_OBSERVATION', record: state.pendingRecords[0] });
     } else if (event.type === 'FINAL_RECORDED' && state.phase === 'FINAL_PERSIST') {
       receiptMatches(state, event.receipt); const r = state.pendingRecords[0]; state.rows[state.index] = r;

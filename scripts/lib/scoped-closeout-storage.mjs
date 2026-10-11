@@ -100,6 +100,8 @@ export async function reserveScopedExits(context, records) {
 export async function recordScopedAttempt(context, key, requestSha256, { at, limitPrice, evidenceSha256 }) {
   const c = contextOf(context), before = c.ledger.orders[key];
   check(c.keys.length === 5 && c.keys.includes(key) && before?.submissionPhase === 'RESERVED' && pin(requestSha256), 'ATTEMPT_REPLAY');
+  check(c.keys.every(k => c.ledger.orders[k].history.every(e => e.phase !== 'STOPPED'
+    && !['partially_filled', 'canceled', 'rejected', 'expired'].includes(e.brokerStatus))), 'BATCH_STOPPED');
   check(c.keys.slice(0, c.keys.indexOf(key)).every(k => c.ledger.orders[k].submissionPhase === 'FLAT_RECONCILED')
     && c.keys.slice(c.keys.indexOf(key) + 1).every(k => c.ledger.orders[k].submissionPhase === 'RESERVED'), 'ATTEMPT_ORDER_INVALID');
   const record = { ...before, submissionPhase: 'ATTEMPTED', requestSha256, limitPrice, updatedAt: at, observedEvidenceSha256: evidenceSha256,

@@ -2,6 +2,13 @@ import { sha256Canonical } from '../lib/active-position-limited-recovery.mjs';
 
 export const hash = value => sha256Canonical(value);
 export const at = '2026-10-09T15:00:00.000Z';
+export function bindPostcheckEvidence(snapshot, responses, observation) {
+  snapshot.observations = Object.fromEntries(responses.map(r => [r.group, {
+    basis: 'OBSERVED_GET_INTERVAL', requestedAt: at, retrievedAt: at, responseSha256: r.responseSha256,
+  }]));
+  observation.responseSha256 = snapshot.observations.lookup.responseSha256;
+  snapshot.clock.responseSha256 = snapshot.observations.clock.responseSha256;
+}
 export function managementRecord(index = 0) {
   const { input } = fixture(), t = input.terms.targets[index];
   return { recordKind: 'SCOPED_MANAGEMENT_EXIT_V1', schemaVersion: 1, attemptId: input.attemptId,

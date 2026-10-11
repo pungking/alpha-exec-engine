@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fixture, hash } from './fixtures/scoped-closeout.mjs';
+import { fixture, hash, bindPostcheckEvidence } from './fixtures/scoped-closeout.mjs';
 import { validateScopedCloseoutInput, evaluateCloseoutSnapshot, createScopedCloseoutState, advanceScopedCloseout } from './lib/scoped-closeout-contract.mjs';
 import { decimalRatio, withinCap, ceilToTick } from './lib/closeout-decimal.mjs';
 let checks = 0;
@@ -100,6 +100,7 @@ function flow({ submitStatus = 'filled', postStatus = 'filled', responsePatch = 
       case 'POSTCHECK': {
         if (postStatus === 'filled') snapshot.portfolio = snapshot.portfolio.filter(p => p.assetId !== row.assetId);
         const event = { type: 'POSTCHECK', snapshot, responses: responses(effects), observation: obs(postStatus) };
+        bindPostcheckEvidence(snapshot, event.responses, event.observation);
         postPatch(event); go(event); break;
       }
       case 'FINAL_PERSIST': go({ type: 'FINAL_RECORDED', receipt: receipt(state) }); break;
@@ -136,3 +137,38 @@ assert.equal(evaluateCloseoutSnapshot(validateScopedCloseoutInput(fractional.inp
 fractional.snapshot.rows[0].quantityIncrement = '0.01';
 assert.equal(evaluateCloseoutSnapshot(validateScopedCloseoutInput(fractional.input), fractional.snapshot, fractional.clock).status, 'BLOCKED'); checks++;
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-failure-matrix', checks, brokerRequests: 0 }));
+
+// Review regressions: post-read provenance, NY trading date and partial read failure.
+for (const postPatch of [e => delete e.snapshot.observations,
+  e => e.snapshot.observations.positions.requestedAt = '2026-10-08T15:00:00.000Z',
+  e => e.snapshot.observations.orders.retrievedAt = '2026-10-09T15:00:01.000Z',
+  e => e.snapshot.observations.positions.responseSha256 = hash('wrong'),
+  e => e.observation.responseSha256 = hash('wrong'),
+  e => e.snapshot.clock.responseSha256 = hash('wrong'),
+]) {
+  const r = flow({ postPatch }); assert.equal(r.state.phase, 'STOPPED'); assert.equal(r.state.counts.submit, 1); checks += 2;
+}
+blocked(f => { f.input.authority.session = f.snapshot.clock.session = '2026-10-08'; f.input.authoritySha256 = hash(f.input.authority); });
+const fillDespiteReadFailure = flow({ submitStatus: 'accepted', postPatch: e => e.responses[1].status = 500 });
+assert.equal(fillDespiteReadFailure.state.phase, 'STOPPED');
+assert.equal(fillDespiteReadFailure.state.rows[0].brokerStatus, 'filled');
+assert.equal(fillDespiteReadFailure.state.rows[0].filledQty, '2');
+assert.equal(fillDespiteReadFailure.state.rows[0].submissionPhase, 'STOPPED'); checks += 4;
+console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-review-regressions', checks, brokerRequests: 0 }));
+
+for (const [date, start, close, now] of [
+  ['2026-10-09', '13:30', '20:00', '15:00'],
+  ['2026-11-06', '14:30', '21:00', '15:00'],
+  ['2026-11-27', '14:30', '18:00', '17:59'],
+]) {
+  const f = fixture(), iso = hm => `${date}T${hm}:00.000Z`;
+  f.clock.now = iso(now); f.input.authority.session = f.snapshot.clock.session = date;
+  f.input.authority.validFrom = iso(start); f.input.authority.expiresAt = iso(close); f.input.authoritySha256 = hash(f.input.authority);
+  Object.assign(f.snapshot.clock, { open: iso(start), close: iso(close), timestamp: iso(now) });
+  for (const o of Object.values(f.snapshot.observations)) o.requestedAt = o.retrievedAt = iso(now);
+  for (const r of f.snapshot.rows) r.quoteAt = iso(now);
+  assert.equal(evaluateCloseoutSnapshot(validateScopedCloseoutInput(f.input), f.snapshot, f.clock).status, 'READY_REPORT_ONLY'); checks++;
+  f.snapshot.clock.close = new Date(Date.parse(f.clock.now) + 16999).toISOString();
+  assert.equal(evaluateCloseoutSnapshot(validateScopedCloseoutInput(f.input), f.snapshot, f.clock).status, 'BLOCKED'); checks++;
+}
+console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-seasonal-session-fixtures', checks, brokerRequests: 0 }));
