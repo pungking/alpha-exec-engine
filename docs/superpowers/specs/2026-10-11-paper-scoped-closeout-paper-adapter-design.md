@@ -2,9 +2,10 @@
 
 Goal: PAPER_SCOPED_CLOSEOUT_PAPER_ADAPTER_INTEGRATION_V1
 Baseline: c9cf075c46a78331c11479374cb213ac53ee714d
-Status: WRITTEN_SPEC_REVIEW_REQUIRED
-Design direction approved in conversation; this written spec and its subsequent
-implementation plan still require review. This file does not authorize execution.
+Status: ACCEPTED_FOR_IMPLEMENTATION_PLANNING
+The user requested proceeding with the next planned work after withdrawing the
+obsolete missing-input goal. The implementation plan still requires review before
+product edits. Neither design nor plan approval authorizes runtime execution.
 
 ## 1. Intent and completion boundary
 
