@@ -21,6 +21,8 @@ jobs:
           cache: "npm"
       - name: Install
         run: npm ci
+      - name: Build shared strict validators for script consumers
+        run: npm run build
       - name: Symbol-agnostic runtime guard
         run: npm run ops:safety:symbol-agnostic
       - name: Protection classification report contract
@@ -40,6 +42,8 @@ jobs:
         run: npm run ops:test:order-idempotency-storage
       - name: Order-ledger storage fail-closed contract (offline synthetic files only)
         run: npm run ops:test:order-ledger-storage
+      - name: Scoped closeout contract (offline synthetic files and mock transports only)
+        run: npm run ops:test:scoped-closeout-contract
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
       - name: Sidecar public evidence boundary

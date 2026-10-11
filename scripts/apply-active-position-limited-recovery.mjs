@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 import path from "node:path";
 
 const REQUIRED_APPROVAL = "AUTHORIZE PAPER FIVE-ROW ACTIVE LIMITED STATE RECOVERY ONE-SHOT";
@@ -110,6 +111,7 @@ const makeLimitedRecord = (ledger, current, originalIdempotencyEvidenceStatus, e
 });
 
 const buildPlan = ({ audit, orderLedger, idempotency, evidenceSha, recordedAt, ledgerSha, idempotencySha }) => {
+  assertLegacyOrderState(orderLedger, idempotency);
   const auditRows = targetAuditRows(audit);
   if (auditRows.length !== TARGET_ROWS) fail("TARGET_SCOPE_NOT_EXACTLY_FIVE");
   if (!orderLedger?.orders || !idempotency?.orders || !Array.isArray(idempotency?.releases)) {

@@ -742,3 +742,81 @@ storage locks/reservations/terminal writes and safe bounded broker transport. It
 exact read/write budgets and execution approval must be specified before use. Do
 not collect another aging observation merely to turn this static check green.
 Rollback: revert this additive code/test/documentation change; preserve evidence.
+
+## Scoped implementation v1: inert controller and private-store coordinator
+
+`scripts/lib/scoped-closeout-contract.mjs` implements the five-target state machine
+as inert effects, not a broker adapter or executable CLI. The only accepted input
+is `environment=PAPER`, `evidenceMode=SYNTHETIC`, `authority.kind=SYNTHETIC_ONLY`,
+with read-only/disabled execution flags. No runtime workflow imports this module.
+Scope is deep-frozen, exact-field validated and hash-pinned; account validation
+precedes other initial reads. One consumed state cannot be replayed. All five
+reservations precede attempts; each attempt requires durable two-store receipt
+parity before an inert sell LIMIT/DAY proposal. No quantity rounding, tolerance,
+entry, scale-in, retry, pagination, cancellation or replacement is implemented.
+
+The modeled ceiling is GET=61 (trading=55, quotes=6), POST=5, total=66:
+account=6, positions=11, open-orders=11, clock=11, calendar=1, assets=10,
+client-order lookup=5, quote batches=6. Each response must be complete 2xx,
+at most 8 MiB and 3 seconds including body. Attempt lifetime is 300 seconds;
+pre-submit evaluation reserves 17 seconds before authority/session expiry and
+postchecks start within 2 seconds of submission outcome. Evidence age is at most
+30 seconds; spread and adverse floor are each 10 bps using exact decimals. A
+partial, uncertain, resting or failed outcome stops later targets. These are
+synthetic contract assertions, not verified real transport deadlines/entitlements.
+
+### Schema and consumer migration
+
+`SCOPED_MANAGEMENT_EXIT_V1` is an additive discriminated record in both existing
+stores. It contains new exit identity, explicit management-authority/terms/account
+hashes, exact decimal quantity/limit, original identity reference and append-only
+observation history. It never creates original entry timestamps, Stage6 lineage,
+verified ownership or verified strategy P&L. Original records and extensions are
+preserved; there is no historical migration. Legacy store readers and generic
+readiness, audit, migration and P&L consumers deliberately reject this variant,
+rather than treating it as normal strategy state. The private export preserves it.
+No currently deployed state is changed by introducing this schema.
+
+`scoped-closeout-storage.mjs` coordinates the strict scoped readers/writers with
+owner-only backups, pre-write hashes, exclusive attempt directory, directory
+writer fence, existing per-file CAS/fsync and exact post-write receipt parity.
+It does NOT claim cross-file atomic commit: any one-sided/uncertain write stops
+and preserves its lock and backups; it never submits or automatically repairs.
+The local fence cannot exclude a remote broker writer. No active management
+attempt is resumed by this coordinator. Rollback must preserve management records
+and locks; never revert or prune state to make a legacy consumer accept it.
+
+Management flat reconciliation emits a distinct notification. Accepted and filled
+events still do not imply flatness. A flat management position is not verified
+strategy P&L or an OOS sample. Existing delivery receipt reservations prevent
+automatic resend after uncertainty; exactly-once Telegram delivery is not claimed.
+Notification consumers use the same compiled strict record validator as storage;
+run `npm run build` before standalone dashboard/notification scripts. CI builds
+before script consumers, and the existing runtime workflow already does so.
+Management flatness requires immutable asset identity, not a symbol-only lookup.
+Postchecks bind lookup/position/order/clock response hashes to fresh observation
+intervals ordered after submission. A verified lookup fill survives a later read
+failure as stopped/reconciliation-required evidence, never as a flat assertion.
+Durable history retains partial-fill/stop vetoes even after later reconciliation;
+neither persistence nor the controller may resume the remaining targets.
+
+### Verification and next connection step
+
+`npm run ops:test:scoped-closeout-contract` uses real disposable private files,
+pure controller, fake broker outcomes and fake sender. It covers five-target
+completion, phase failures, ambiguous writes, replay, consumer refusal and old
+state preservation. It must run alongside existing storage, P&L, protection,
+private-capture, notification and dry-run safety regressions. No real request,
+production state write, order or Telegram send is part of these tests.
+
+After this PR, the next scope is
+`PAPER_SCOPED_CLOSEOUT_PAPER_ADAPTER_INTEGRATION_V1`, not another historical audit.
+It must bind this controller to existing bounded PAPER transport and establish:
+durable state adoption/all-writer exclusion; exact account/five identities;
+actual quote/feed/size/tick/clock/halt mapping and entitlement; existing risk
+limits or explicitly approved cleanup exceptions; and current-session authority.
+The synthetic-only boundary must not be silently relaxed for that adapter.
+Adapter tests and narrowly scoped runtime approval precede actual invocation.
+Fresh evidence is collected immediately before action, not hours earlier. Code
+and CI do not wait for RTH; actual invocation requires eligible RTH. No execution
+flags, broker calls, workflow activation or strategy-policy changes occur here.

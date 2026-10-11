@@ -4,7 +4,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildPaperExitReadiness } from "./build-live-readiness-scorecard.mjs";
-import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical } from "./lib/active-position-limited-recovery.mjs";
+import { ACTIVE_POSITION_LIMITED_RECOVERY_MODE, sha256Canonical, assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
+import { decimalRatio, withinCap } from "./lib/closeout-decimal.mjs";
 
 export const FILES = Object.freeze({
   preview: "last-dry-exec-preview.json",
@@ -57,6 +58,7 @@ function uniqueReportRows(rows) {
 }
 
 export function validateTargets(targets, reports) {
+  assertLegacyOrderState(reports.orderLedger, reports.orderIdempotency);
   const ledger = reports.orderLedger.orders;
   const idem = reports.orderIdempotency.orders;
   requireContract(object(ledger) && object(idem) && Array.isArray(reports.orderIdempotency.releases), "PRIVATE_STATE_SCHEMA_INVALID");
@@ -94,6 +96,7 @@ export function validateTargets(targets, reports) {
 }
 
 export function buildExactPrivateReportState({ ledger, idempotency, fillability = {} }, targets) {
+  assertLegacyOrderState(ledger, idempotency);
   if (targets === undefined) return { ledger, idempotency, fillability };
   const { symbols } = validateTargets(targets, { orderLedger: ledger, orderIdempotency: idempotency });
   requireContract(targets.every(t => Object.entries(idempotency.orders)
@@ -207,18 +210,6 @@ const exactFields = (value, fields) => object(value)
 const positive = value => typeof value === "number" && Number.isFinite(value) && value > 0;
 const TARGET_FIELDS = ["ledgerKey", "idempotencyKey", "ledgerRecordSha256", "idempotencyRecordSha256"];
 const RISK_FIELDS = ["maxOrderNotional", "maxTotalNotional", "maxSpreadBps", "maxSlippageBps", "maxEvidenceAgeSeconds"];
-
-// Compare decimal JSON-number representations exactly; no rounding or cap tolerance.
-function decimalRatio(value) {
-  const [mantissa, exponent = "0"] = String(value).split("e");
-  const [whole, fraction = ""] = mantissa.split(".");
-  const units = BigInt(whole + fraction), scale = fraction.length - Number(exponent);
-  return scale >= 0 ? [units, 10n ** BigInt(scale)] : [units * 10n ** BigInt(-scale), 1n];
-}
-const withinCap = ([n, d], cap) => {
-  const [cn, cd] = decimalRatio(cap);
-  return n * cd <= cn * d;
-};
 
 function validateLimitedCloseoutTerms(scope, manifest, reports, manifestSha256, accountSha256) {
   requireContract(object(scope), "LIMITED_CLOSEOUT_TERMS_SCHEMA_INVALID");

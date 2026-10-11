@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "node:url";
 import { PROTECTION_LANES } from "./lib/position-protection-classification.mjs";
+import { assertLegacyOrderState } from './lib/active-position-limited-recovery.mjs';
 
 const RUN_AS_CLI = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 const STATE_DIR = RUN_AS_CLI ? process.env.LIVE_READINESS_STATE_DIR || process.env.STATE_DIR || "state" : "state";
@@ -592,6 +593,7 @@ export function buildPaperExitReadiness({
   orderIdempotency,
   orderState,
 }) {
+  assertLegacyOrderState(orderLedger, orderIdempotency);
   const requiredExitActions = [...EXIT_ACTIONS];
   const actionIntent = preview?.actionIntent && typeof preview.actionIntent === "object"
     ? preview.actionIntent

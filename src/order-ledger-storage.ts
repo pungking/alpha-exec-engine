@@ -1,4 +1,5 @@
 import type { LifecycleActionType } from "../config/policy.js";
+import { validateScopedManagementRecord, type ScopedManagementRecord } from './scoped-management-record.js';
 import { actions, brokerStatuses } from "./order-idempotency-storage.js";
 import type { OrderLifecycleStatus } from "./order-idempotency-storage.js";
 import { loadValidatedOrderState, saveValidatedOrderState, storageObject as object, storageText as text, storageTimestamp as timestamp } from "./order-state-storage.js";
@@ -52,7 +53,7 @@ const status = (value: unknown): boolean => typeof value === "string" && brokerS
 const finite = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value);
 
 function validRecord(key: string, row: unknown): boolean {
-  return object(row) && row.idempotencyKey === key
+  return object(row) && !Object.hasOwn(row, 'recordKind') && row.idempotencyKey === key
     && ["symbol", "stage6Hash", "stage6File", "mode", "clientOrderId", "statusReason", "preflightCode"].every((field) => text(row[field]))
     && row.side === "buy" && status(row.status)
     && (row.regimeProfile === "default" || row.regimeProfile === "risk_off")
@@ -81,3 +82,19 @@ export async function loadOrderLedgerState(file: string): Promise<OrderLedgerSta
 export async function saveOrderLedgerState(file: string, state: OrderLedgerState): Promise<void> {
   return saveValidatedOrderState(file, state, validateState, fail);
 }
+
+export type ScopedOrderLedgerState = Omit<OrderLedgerState, 'orders'> & { orders: Record<string, OrderLedgerRecord | ScopedManagementRecord> };
+function validateScopedState(value: unknown): asserts value is ScopedOrderLedgerState {
+  if (!object(value) || !object(value.orders)) fail('SCHEMA_INVALID');
+  const legacy = Object.fromEntries(Object.entries(value.orders).filter(([key, row]) => {
+    if (object(row) && Object.hasOwn(row, 'recordKind')) {
+      if (!validateScopedManagementRecord(key, row)) fail('SCHEMA_INVALID');
+      return false;
+    }
+    return true;
+  }));
+  if (Object.keys(value.orders).length && !timestamp(value.updatedAt)) fail('SCHEMA_INVALID');
+  validateState({ ...value, orders: legacy });
+}
+export const loadScopedOrderLedgerState = (file: string): Promise<ScopedOrderLedgerState> => loadValidatedOrderState(file, validateScopedState, fail);
+export const saveScopedOrderLedgerState = (file: string, state: ScopedOrderLedgerState): Promise<void> => saveValidatedOrderState(file, state, validateScopedState, fail);

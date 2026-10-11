@@ -6,6 +6,7 @@ import { buildNotificationSnapshot, deliverNotifications, formatNotification } f
 import { buildLiveSummary, buildPublicDashboard } from './build-performance-dashboard.mjs';
 import { runNotificationDelivery } from './send-paper-order-notifications.mjs';
 import { createHash } from 'node:crypto';
+import { managementRecord, hash } from './fixtures/scoped-closeout.mjs';
 
 const at = '2026-10-02T15:00:00.000Z';
 const order = (patch = {}) => ({ id: 'synthetic-order', client_order_id: 'synthetic-client', symbol: 'TESTX',
@@ -51,6 +52,35 @@ const pnl = { symbol: exit.symbol, sourceType: 'ALPACA_PAPER_BROKER_FILLS', stat
 const closeoutInput = input({ openOrders: [], closedOrders: [exit], orderLedger: { orders: { exact: { ...stateRow, idempotencyKey: 'exact' } } },
   orderIdempotency: { orders: { exact: stateRow } }, realizedPnl: { rows: [pnl] } });
 assert.ok(types(buildNotificationSnapshot(closeoutInput)).includes('POSITION_CLOSEOUT_RECONCILED'));
+
+const management = managementRecord();
+Object.assign(management, { accountSha256: hash(['PAPER', 'synthetic-account']),
+  brokerOrderId: exit.id, clientOrderId: exit.client_order_id, submissionPhase: 'FLAT_RECONCILED',
+  brokerStatus: 'filled', filledQty: '2', requestSha256: hash('request'), createdAt: at, updatedAt: at,
+  history: ['RESERVED', 'ATTEMPTED', 'OBSERVED', 'FLAT_RECONCILED'].map((phase, i) => ({ at, phase,
+    evidenceSha256: management.observedEvidenceSha256, brokerStatus: i < 2 ? null : 'filled', filledQty: i < 2 ? '0' : '2' })) });
+const managementInput = () => input({ openOrders: [], closedOrders: [{ ...exit, asset_id: management.assetId }],
+  orderLedger: { orders: { [management.exitIdempotencyKey]: structuredClone(management) } },
+  orderIdempotency: { orders: { [management.exitIdempotencyKey]: structuredClone(management) }, releases: [] } });
+assert.ok(types(buildNotificationSnapshot(managementInput())).includes('MANAGEMENT_POSITION_FLAT_RECONCILED'));
+assert.equal(types(buildNotificationSnapshot(managementInput())).includes('POSITION_CLOSEOUT_RECONCILED'), false);
+for (const change of [
+  v => { for (const state of [v.orderLedger, v.orderIdempotency]) {
+    const r = state.orders[management.exitIdempotencyKey]; r.history = [r.history[0], r.history.at(-1)];
+  } },
+  v => v.positions.push({ asset_id: management.assetId, symbol: 'RENAMED', qty: '1' }),
+  v => v.openOrders.push(order({ asset_id: management.assetId, symbol: 'RENAMED', side: 'sell' })),
+  v => v.positions.push({ symbol: exit.symbol, qty: '1' }),
+  v => v.openOrders.push(order({ side: 'sell' })),
+  v => v.closedOrders[0].asset_id = 'other',
+  v => v.orderIdempotency.orders = {},
+  v => v.orderLedger.orders[management.exitIdempotencyKey].realizedPnlVerified = true,
+  v => { for (const state of [v.orderLedger, v.orderIdempotency]) state.orders[management.exitIdempotencyKey].accountSha256 = hash('other'); },
+  v => { for (const state of [v.orderLedger, v.orderIdempotency]) state.orders[management.exitIdempotencyKey].submissionPhase = 'OBSERVED'; },
+]) {
+  const v = managementInput(); change(v);
+  assert.equal(types(buildNotificationSnapshot(v)).includes('MANAGEMENT_POSITION_FLAT_RECONCILED'), false);
+}
 assert.equal(types(buildNotificationSnapshot({ ...closeoutInput, realizedPnl: { rows: [{ ...pnl, direction: 'short' }] } }))
   .includes('POSITION_CLOSEOUT_RECONCILED'), false);
 for (const patch of [{ positions: [{ symbol: exit.symbol, qty: '1' }] }, { openOrders: [order({ id: 'child', side: 'sell' })] },

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 
 const parseDotEnv = (path) => {
   if (!fs.existsSync(path)) return {};
@@ -390,6 +391,7 @@ const main = async () => {
   const performance = readJson(FILES.performance);
   const orderLedger = readJson(FILES.orderLedger);
   const idempotency = readJson(FILES.idempotency);
+  assertLegacyOrderState(orderLedger, idempotency);
   const targetRows = (Array.isArray(fillStateAudit?.rows) ? fillStateAudit.rows : [])
     .filter((row) => row.requiresLedgerTerminalizationReview === true || row.reconciliationDecision === "POSITION_PRESENT_WITH_OPEN_LEDGER_STATE");
   const creds = credentials();

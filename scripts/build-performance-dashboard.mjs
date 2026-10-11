@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { assertLegacyOrderState } from './lib/active-position-limited-recovery.mjs';
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { buildExactPrivateReportState } from "./audit-paper-closeout-private-evidence.mjs";
@@ -437,6 +438,7 @@ const orderStatusClass = (value) => {
 };
 
 const buildOwnedOrderIndex = (orderLedger, orderIdempotency) => {
+  assertLegacyOrderState(orderLedger, orderIdempotency);
   const groups = new Map();
   const add = (source, key, row) => {
     if (!row || typeof row !== "object") return;
@@ -1018,6 +1020,7 @@ export const buildPublicDashboard = ({ generatedAt, simulation, live, realizedPn
 });
 
 const main = async () => {
+  assertLegacyOrderState(readJson(ORDER_LEDGER_PATH), readJson(ORDER_IDEMPOTENCY_PATH));
   fs.mkdirSync(STATE_DIR, { recursive: true });
 
   const loop = readJson(LOOP_PATH) || {};

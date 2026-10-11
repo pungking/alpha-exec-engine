@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { assertLegacyOrderState } from "./lib/active-position-limited-recovery.mjs";
 import { createHash } from "node:crypto";
 
 const STATE_DIR = String(process.env.LEDGER_TERMINALIZATION_PROPOSAL_STATE_DIR || "state").trim() || "state";
@@ -334,6 +335,7 @@ const main = () => {
   const orderState = readJson(FILES.orderState);
   const orderLedger = readJson(FILES.orderLedger);
   const idempotency = readJson(FILES.idempotency);
+  assertLegacyOrderState(orderLedger, idempotency);
   const guardSourceRecovery = readJson(FILES.guardSourceRecovery);
 
   const evidenceBySymbol = indexRows(brokerEvidence?.rows);

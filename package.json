@@ -59,6 +59,7 @@
     "ops:paper-closeout-private-evidence": "node scripts/audit-paper-closeout-private-evidence.mjs",
     "ops:test:order-idempotency-storage": "npm run build && node scripts/test-order-idempotency-storage.mjs",
     "ops:test:order-ledger-storage": "npm run build && node scripts/test-order-ledger-storage.mjs",
+    "ops:test:scoped-closeout-contract": "npm run build && node scripts/test-scoped-closeout-contract.mjs && node scripts/test-scoped-closeout-storage.mjs && node scripts/test-scoped-closeout-consumers.mjs && node scripts/test-scoped-closeout-integration.mjs",
     "ops:test:order-state-consistency": "node scripts/test-order-state-consistency-report.mjs",
     "ops:open-order-reprice-proposal": "node scripts/build-open-order-reprice-proposal.mjs",
     "ops:alpaca:payload-fixtures": "node scripts/validate-alpaca-order-payload-fixtures.mjs",
@@ -111,7 +112,7 @@
     "ops:test:persistent-oco-stop-only": "node scripts/test-persistent-oco-stop-only-classification.mjs",
     "ops:stop-only-oco-conversion-plan": "node scripts/build-stop-only-oco-conversion-plan.mjs",
     "ops:test:stop-only-oco-conversion": "node scripts/test-stop-only-oco-conversion-plan.mjs",
-    "ops:test:paper-order-notifications": "node scripts/test-paper-order-notifications.mjs"
+    "ops:test:paper-order-notifications": "npm run build && node scripts/test-paper-order-notifications.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
