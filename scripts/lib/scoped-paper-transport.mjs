@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BUDGET } from './scoped-closeout-contract.mjs';
+import { decimalRatio, compare } from './closeout-decimal.mjs';
 
 const PAPER = 'https://paper-api.alpaca.markets', DATA = 'https://data.alpaca.markets';
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -92,7 +93,15 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
           const raw = Buffer.concat(chunks); complete = true;
           responseSha256 = createHash('sha256').update(raw).digest('hex');
           let data;
-          try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
+          try {
+            const text = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+            data = JSON.parse(text);
+            // Preserve money semantics: reject numbers JSON.parse would silently round.
+            for (const token of text.matchAll(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)) {
+              if (token[0][0] === '"') continue;
+              check(Number.isFinite(Number(token[0])) && compare(decimalRatio(token[0].toLowerCase()), decimalRatio(String(Number(token[0])))) === 0, 'JSON_INVALID');
+            }
+          }
           catch { throw Error('JSON_INVALID'); }
           return data;
         };
