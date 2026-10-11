@@ -14,6 +14,12 @@ let checks = 0;
 try {
   const r = managementRecord(), key = r.exitIdempotencyKey;
   assert.equal(validateScopedManagementRecord(key, r), true); checks++;
+  for (const dangerous of ['__proto__', 'constructor', 'prototype']) {
+    assert.equal(validateScopedManagementRecord(dangerous, { ...r, exitIdempotencyKey: dangerous }), false); checks++;
+  }
+  const premature = { ...r, submissionPhase: 'ATTEMPTED', requestSha256: hash('request'), brokerOrderId: 'fixture-broker', brokerStatus: 'filled', filledQty: '2',
+    history: [...r.history, { ...r.history[0], phase: 'ATTEMPTED', brokerStatus: 'filled', filledQty: '2' }] };
+  assert.equal(validateScopedManagementRecord(key, premature), false); checks++;
   for (const patch of [{ firstSeenAt: at }, { side: 'buy' }, { stage6Hash: hash('s') },
     { originalOwnershipVerified: true }, { realizedPnlVerified: true }, { historicalEvidenceNormalized: true },
     { brokerSubmitAllowed: true }, { submissionPhase: 'FILLED' }, { filledQty: '3' },
@@ -53,10 +59,13 @@ try {
   const options = { directory, expectedHashes, attemptId: 'fixture-attempt' };
   await withScopedStores(options, async context => {
     const records = Array.from({ length: 5 }, (_, n) => ({ ...managementRecord(n), preWriteHashes: expectedHashes }));
+    const mixed = structuredClone(records); mixed[1].accountSha256 = hash('other');
+    await assert.rejects(reserveScopedExits(context, mixed), /SCOPED_STORE_/); checks++;
     const receipt = await reserveScopedExits(context, records);
     assert.equal(receipt.recordsSha256, hash(records)); checks++;
     await assert.rejects(withScopedStores(options, () => {}), /SCOPED_STORE_/); checks++;
     const requestSha256 = hash('request'), details = { at, limitPrice: '99.9', evidenceSha256: hash('attempt') };
+    await assert.rejects(recordScopedAttempt(context, records[1].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
     const attempted = await recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details);
     assert.equal(attempted.recordsSha256.length, 64); checks++;
     await assert.rejects(recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
@@ -114,3 +123,29 @@ for (const stage of ['backup-write', 'backup-sync', 'backup-rename',
   }
 }
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-storage', checks, productionStateWrites: 0 }));
+
+for (const fault of ['symlink', 'world-readable', 'hash-drift', 'outside-writer']) {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-boundary-'))); await fs.chmod(dir, 0o700);
+  const l = JSON.stringify({ orders: {}, updatedAt: '' }), i = JSON.stringify({ orders: {}, releases: [], updatedAt: '' });
+  const lf = path.join(dir, 'order-ledger.json'), idf = path.join(dir, 'order-idempotency.json');
+  await fs.writeFile(lf, l, { mode: 0o600 }); await fs.writeFile(idf, i, { mode: 0o600 });
+  const expectedHashes = { orderLedger: sha(l), orderIdempotency: sha(i) };
+  const options = { directory: dir, attemptId: 'fixture-boundary', expectedHashes };
+  try {
+    if (fault === 'outside-writer') {
+      const oldState = await ledger.loadOrderLedgerState(lf);
+      let release;
+      const signal = new Promise(resolve => { release = resolve; });
+      // Register outside the coordinator's AsyncLocalStorage ownership context.
+      const outsider = signal.then(() => assert.rejects(ledger.saveOrderLedgerState(lf, oldState), /LOCK_UNAVAILABLE/));
+      await withScopedStores(options, async () => { release(); await outsider; });
+    } else {
+      if (fault === 'symlink') { await fs.rename(lf, `${lf}.original`); await fs.symlink(`${lf}.original`, lf); }
+      if (fault === 'world-readable') await fs.chmod(lf, 0o644);
+      if (fault === 'hash-drift') await fs.writeFile(lf, `${l} `);
+      await assert.rejects(withScopedStores(options, () => assert.fail('untrusted state admitted')), /SCOPED_STORE_/);
+    }
+    assert.equal(await fs.readFile(lf, 'utf8'), fault === 'hash-drift' ? `${l} ` : l); checks += 2;
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+}
+console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-private-boundaries', checks, productionStateWrites: 0 }));

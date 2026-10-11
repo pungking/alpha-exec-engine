@@ -40,6 +40,8 @@ jobs:
         run: npm run ops:test:order-idempotency-storage
       - name: Order-ledger storage fail-closed contract (offline synthetic files only)
         run: npm run ops:test:order-ledger-storage
+      - name: Scoped closeout contract (offline synthetic files and mock transports only)
+        run: npm run ops:test:scoped-closeout-contract
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
       - name: Sidecar public evidence boundary

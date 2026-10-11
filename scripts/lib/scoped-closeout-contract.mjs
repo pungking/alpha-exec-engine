@@ -4,7 +4,8 @@ import { decimalRatio as ratio, decimalText, withinCap, add, multiply, compare, 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const exact = (v, names) => object(v) && Object.keys(v).sort().join(',') === names.split(' ').sort().join(',');
 const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
-const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v);
+const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v)
+  && !['__proto__', 'constructor', 'prototype'].includes(v);
 const positive = v => typeof v === 'string' && /^(?:0|[1-9]\d{0,15})(?:\.\d{1,9})?$/.test(v) && ratio(v)[0] > 0n;
 const time = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v)
   && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v ? Date.parse(v) : NaN;
@@ -111,7 +112,8 @@ export function evaluateCloseoutSnapshot(scope, snapshot, clock, committed = {})
 
 const states = new WeakSet(), consumed = new WeakSet();
 const phases = {
-  initial: ['account', 'positions', 'orders', 'clock', 'calendar', 'assets', 'assets', 'assets', 'assets', 'assets', 'quotes'],
+  account: ['account'],
+  initial: ['positions', 'orders', 'clock', 'calendar', 'assets', 'assets', 'assets', 'assets', 'assets', 'quotes'],
   presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'],
   postcheck: ['lookup', 'positions', 'orders', 'clock'],
 };
@@ -211,6 +213,10 @@ export function advanceScopedCloseout(previous, event) {
       && now >= (state.lastNow ?? now), 'CLOCK_OR_ATTEMPT_EXPIRED');
     state.lastNow = now; state.lastElapsed = elapsed;
     if (event.type === 'INITIALIZE' && state.phase === 'CREATED') {
+      state.phase = 'ACCOUNT_PREFLIGHT'; effects.push(...reads(state, 'account'));
+    } else if (event.type === 'ACCOUNT_READY' && state.phase === 'ACCOUNT_PREFLIGHT') {
+      validateReads(state, event.responses);
+      requireContract(event.accountSha256 === state.scope.accountSha256, 'ACCOUNT_MISMATCH');
       state.phase = 'INITIAL_PREFLIGHT'; effects.push(...reads(state, 'initial'));
     } else if (event.type === 'PREFLIGHT' && ['INITIAL_PREFLIGHT', 'REVALIDATING'].includes(state.phase)) {
       validateReads(state, event.responses);

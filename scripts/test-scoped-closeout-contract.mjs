@@ -52,8 +52,15 @@ console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-closeout-contract', 
 
 const base = fixture();
 const start = createScopedCloseoutState(validateScopedCloseoutInput(base.input));
-const initialized = advanceScopedCloseout(start, { type: 'INITIALIZE', clock: base.clock });
-assert.equal(initialized.effects.filter(e => e.type === 'READ').length, 11);
+const accountFirst = advanceScopedCloseout(start, { type: 'INITIALIZE', clock: base.clock });
+assert.deepEqual(accountFirst.effects.map(e => e.group), ['account']);
+assert.equal(advanceScopedCloseout(accountFirst.state, { type: 'ACCOUNT_READY', clock: base.clock,
+  accountSha256: hash('wrong'), responses: [{ group: 'account', complete: true, status: 200, durationMs: 1, bytes: 10, responseSha256: hash('account') }] }).state.phase, 'STOPPED');
+const nextStart = createScopedCloseoutState(validateScopedCloseoutInput(base.input));
+const accountOk = advanceScopedCloseout(nextStart, { type: 'INITIALIZE', clock: base.clock });
+const initialized = advanceScopedCloseout(accountOk.state, { type: 'ACCOUNT_READY', clock: base.clock,
+  accountSha256: base.input.accountSha256, responses: [{ group: 'account', complete: true, status: 200, durationMs: 1, bytes: 10, responseSha256: hash('account') }] });
+assert.equal(initialized.effects.filter(e => e.type === 'READ').length, 10);
 assert.equal(advanceScopedCloseout(start, { type: 'INITIALIZE', clock: base.clock }).state.phase, 'STOPPED');
 const responses = effects => effects.filter(e => e.type === 'READ').map(e => ({ group: e.group, complete: true, status: 200, durationMs: 2, bytes: 10, responseSha256: hash(e) }));
 let step = advanceScopedCloseout(initialized.state, { type: 'PREFLIGHT', snapshot: base.snapshot, clock: base.clock, responses: responses(initialized.effects) });
@@ -83,6 +90,7 @@ function flow({ submitStatus = 'filled', postStatus = 'filled', responsePatch = 
       brokerOrderId: `broker-fixture-${state.index}`, brokerStatus: status,
       filledQty: status === 'filled' ? '2' : ['partially_filled', 'canceled'].includes(status) ? '0.5' : '0' });
     switch (state.phase) {
+      case 'ACCOUNT_PREFLIGHT': go({ type: 'ACCOUNT_READY', accountSha256: f.input.accountSha256, responses: responses(effects) }); break;
       case 'INITIAL_PREFLIGHT': case 'REVALIDATING': go({ type: 'PREFLIGHT', snapshot, responses: responses(effects) }); break;
       case 'RESERVING': go({ type: 'RESERVED', receipt: receipt(state) }); break;
       case 'ATTEMPT_PERSIST': go({ type: persistenceFailure ? 'FAILURE' : 'ATTEMPT_RECORDED', receipt: receipt(state) }); break;

@@ -18,7 +18,8 @@ export type ScopedManagementRecord = {
 const fields = 'recordKind schemaVersion attemptId managementAuthoritySha256 termsSha256 accountSha256 originalIdentitySha256 exitIdempotencyKey clientOrderId assetId side actionType qty limitPrice observedEvidenceSha256 requestSha256 preWriteHashes createdAt updatedAt submissionPhase brokerOrderId brokerStatus filledQty originalOwnershipVerified realizedPnlVerified historicalEvidenceNormalized brokerSubmitAllowed history';
 const exact = (v: Record<string, unknown>, keys: string): boolean => Object.keys(v).sort().join(',') === keys.split(' ').sort().join(',');
 const hash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
-const id = (v: unknown): v is string => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v);
+const id = (v: unknown): v is string => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v)
+  && !['__proto__', 'constructor', 'prototype'].includes(v);
 const decimal = (v: unknown): v is string => typeof v === 'string' && /^(?:0|[1-9]\d{0,15})(?:\.\d{1,9})?$/.test(v);
 const units = (v: string): bigint => { const [w, f = ''] = v.split('.'); return BigInt(w + f.padEnd(9, '0')); };
 const statuses = new Set<unknown>([null, 'accepted', 'partially_filled', 'filled', 'canceled', 'rejected', 'expired']);
@@ -49,6 +50,8 @@ export function validateScopedManagementRecord(key: string, value: unknown): val
     if (e.brokerStatus === 'partially_filled' && (units(e.filledQty) === 0n || units(e.filledQty) >= units(value.qty))) return false;
     if ([null, 'accepted', 'rejected'].includes(e.brokerStatus as null | string) && units(e.filledQty) !== 0n) return false;
     if (e.phase === 'FLAT_RECONCILED' && e.brokerStatus !== 'filled') return false;
+    if (e.phase === 'ATTEMPTED' && e.brokerStatus !== null) return false;
+    if (e.phase === 'OBSERVED' && e.brokerStatus === null) return false;
     previous = e;
   }
   const last = previous!;

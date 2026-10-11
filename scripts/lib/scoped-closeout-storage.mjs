@@ -66,8 +66,8 @@ export async function withScopedStores({ directory, expectedHashes, attemptId },
 async function commit(c, records) {
   check(!c.pending, 'CONCURRENT_WRITE'); c.pending = true;
   try {
-    check(canonical(await readHashes(c.directory)) === canonical(c.hashes), 'HASH_DRIFT');
     const snapshot = records.map(r => structuredClone(r));
+    check(canonical(await readHashes(c.directory)) === canonical(c.hashes), 'HASH_DRIFT');
     for (const record of snapshot) {
       check(validateScopedManagementRecord(record.exitIdempotencyKey, record), 'RECORD_INVALID');
       c.idem.orders[record.exitIdempotencyKey] = structuredClone(record);
@@ -87,6 +87,8 @@ async function commit(c, records) {
 export async function reserveScopedExits(context, records) {
   const c = contextOf(context);
   check(!c.keys.length && Array.isArray(records) && records.length === 5, 'FIVE_RESERVATIONS_REQUIRED');
+  records = structuredClone(records);
+  check(['accountSha256', 'managementAuthoritySha256', 'termsSha256'].every(k => new Set(records.map(r => r?.[k])).size === 1), 'SCOPE_MISMATCH');
   const used = [...Object.keys(c.ledger.orders), ...Object.keys(c.idem.orders), ...c.idem.releases.map(r => r.key)];
   for (const field of ['exitIdempotencyKey', 'clientOrderId', 'originalIdentitySha256', 'assetId']) check(new Set(records.map(r => r?.[field])).size === 5, 'IDENTITY_DUPLICATE');
   check(records.every(r => validateScopedManagementRecord(r.exitIdempotencyKey, r) && r.submissionPhase === 'RESERVED'
@@ -98,6 +100,8 @@ export async function reserveScopedExits(context, records) {
 export async function recordScopedAttempt(context, key, requestSha256, { at, limitPrice, evidenceSha256 }) {
   const c = contextOf(context), before = c.ledger.orders[key];
   check(c.keys.length === 5 && c.keys.includes(key) && before?.submissionPhase === 'RESERVED' && pin(requestSha256), 'ATTEMPT_REPLAY');
+  check(c.keys.slice(0, c.keys.indexOf(key)).every(k => c.ledger.orders[k].submissionPhase === 'FLAT_RECONCILED')
+    && c.keys.slice(c.keys.indexOf(key) + 1).every(k => c.ledger.orders[k].submissionPhase === 'RESERVED'), 'ATTEMPT_ORDER_INVALID');
   const record = { ...before, submissionPhase: 'ATTEMPTED', requestSha256, limitPrice, updatedAt: at, observedEvidenceSha256: evidenceSha256,
     history: [...before.history, { at, phase: 'ATTEMPTED', evidenceSha256, brokerStatus: null, filledQty: '0' }] };
   return commit(c, [record]);
