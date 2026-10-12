@@ -7,6 +7,8 @@ import { buildLiveSummary, buildPublicDashboard } from './build-performance-dash
 import { runNotificationDelivery } from './send-paper-order-notifications.mjs';
 import { createHash } from 'node:crypto';
 import { managementRecord, hash } from './fixtures/scoped-closeout.mjs';
+import { fixture as scopedFixture } from './fixtures/scoped-closeout.mjs';
+import * as notificationModule from './paper-order-notifications.mjs';
 
 const at = '2026-10-02T15:00:00.000Z';
 const order = (patch = {}) => ({ id: 'synthetic-order', client_order_id: 'synthetic-client', symbol: 'TESTX',
@@ -225,3 +227,33 @@ try {
   assert.equal(telegramCalls, 2);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
 console.log('paper-order-notifications: PASS (synthetic snapshots/mock sender only; brokerRequests=0; actualSends=0)');
+
+assert.equal(typeof notificationModule.buildScopedNotificationSnapshot, 'function');
+const scopedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scoped-notification-fixture-'));
+try {
+  const scope = scopedFixture().input, record = managementRecord();
+  const args = { scope, records: [], storeReceipt: null, observations: { symbols: [{ assetId: record.assetId, symbol: 'TESTX' }] },
+    sourceRunId: '123', headSha: 'a'.repeat(40), observedAt: record.createdAt };
+  const receiptPath = path.join(scopedRoot, 'receipt.json'); let sends = 0;
+  const send = async message => { sends++; assert.ok(message.includes('제한관리 범위')); assert.ok(!message.includes('기존 주기 수집')); return { ok: true }; };
+  const snapshot = () => notificationModule.buildScopedNotificationSnapshot(args);
+  assert.equal((await deliverNotifications({ snapshot: snapshot(), receiptPath, send })).status, 'BASELINE_RECORDED');
+  const observedAt = record.createdAt;
+  record.requestSha256 = hash('fixture-intent'); record.brokerOrderId = 'fixture-order-private';
+  record.brokerStatus = 'accepted'; record.submissionPhase = 'OBSERVED';
+  record.history.push(...['ATTEMPTED', 'OBSERVED'].map(phase => ({ at: observedAt, phase,
+    evidenceSha256: record.observedEvidenceSha256, brokerStatus: phase === 'OBSERVED' ? 'accepted' : null, filledQty: '0' })));
+  args.records = [record]; args.storeReceipt = { recordsSha256: hash(args.records), storeHashes: { orderLedger: hash('l'), orderIdempotency: hash('i') } };
+  assert.deepEqual(types(snapshot()), ['ORDER_ACCEPTED']);
+  assert.equal((await deliverNotifications({ snapshot: snapshot(), receiptPath, send })).status, 'DELIVERED');
+  assert.equal((await deliverNotifications({ snapshot: snapshot(), receiptPath, send })).status, 'NO_CHANGE');
+  args.observations.stoppedReason = 'SCOPED_ADAPTER_FAILED';
+  const stopped = snapshot(); assert.ok(types(stopped).includes('SCOPED_CLOSEOUT_STOPPED'));
+  assert.equal(stopped.events.find(e => e.type === 'SCOPED_CLOSEOUT_STOPPED').symbol, undefined);
+  assert.equal((await deliverNotifications({ snapshot: stopped, receiptPath, send: async () => { sends++; throw Error('fixture-private'); } })).status, 'DELIVERY_UNCERTAIN');
+  assert.equal((await deliverNotifications({ snapshot: stopped, receiptPath, send })).status, 'NO_CHANGE');
+  assert.equal(sends, 2);
+  assert.ok(!JSON.stringify(stopped).includes('fixture-order-private'));
+  args.storeReceipt.recordsSha256 = hash('mismatch'); assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE');
+} finally { fs.rmSync(scopedRoot, { recursive: true, force: true }); }
+console.log('scoped notifications: PASS (durable scope, first delivery, stop, dedup, redaction)');

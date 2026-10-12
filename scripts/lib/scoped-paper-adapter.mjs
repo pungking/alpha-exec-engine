@@ -10,10 +10,12 @@ import { authorizeScopedPaperInvocation, assertScopedPaperInvocation, validateOb
 import { withScopedStores, reserveScopedExits, recordScopedAttempt, recordScopedObservation, verifyScopedStoreReceipt } from './scoped-closeout-storage.mjs';
 import { isScopedPaperTransport } from './scoped-paper-transport.mjs';
 import { mapAccountEvidence, mapPreflightEvidence, mapOrderObservation, mapPostcheckEvidence } from './scoped-paper-evidence.mjs';
+import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
   './scoped-closeout-storage.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
+  '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',
 ].map(p => fileURLToPath(new URL(p, import.meta.url))).sort());
@@ -70,8 +72,20 @@ async function persistWire(config, state, body, receipt) {
 }
 
 export async function runScopedPaperCloseout({ config, approval, transport, clock, notify }) {
-  let activeTransport, state, step, lastReceipt, stateWriteAttempted = false, reason = null;
-  const cache = new Map(), notificationEvents = [];
+  let activeTransport, state, step, lastReceipt, stateWriteAttempted = false, reason = null, notificationSnapshot, receiptPath;
+  let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
+  const cache = new Map(), notificationEvents = new Map();
+  const collectNotifications = records => {
+    if (!receiptPath) return;
+    const snapshot = buildScopedNotificationSnapshot({ scope: state.scope, records, storeReceipt: lastReceipt,
+      observations: { symbols: state.snapshot?.rows ?? [], ...((reason || state.phase === 'STOPPED')
+        ? { stoppedReason: reason ?? state.reason ?? 'SCOPED_ADAPTER_STOPPED' } : {}) },
+      ...config.notifications, observedAt: clock.now() });
+    if (snapshot.status !== 'OBSERVATIONS_READY') { notificationDelivery = { status: 'EVIDENCE_UNAVAILABLE', eventCount: 0 }; return; }
+    for (const e of snapshot.events) notificationEvents.set(e.eventKey, e);
+    check(notificationEvents.size <= 21, 'NOTIFICATION_BUDGET_EXCEEDED');
+    notificationSnapshot = { ...snapshot, events: [...notificationEvents.values()] };
+  };
   try {
     config = structuredClone(config); approval = structuredClone(approval);
     const capability = authorizeScopedPaperInvocation({ config, approval, clock });
@@ -84,6 +98,12 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
     assertScopedPaperInvocation(capability, { config, clock });
     stateWriteAttempted = true;
     await withScopedStores({ directory: config.directory, expectedHashes: scope.preWriteHashes, attemptId: scope.attemptId }, async context => {
+      if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
+        receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
+        collectNotifications([]);
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: notify.send });
+        if (notificationDelivery.status !== 'BASELINE_RECORDED') { receiptPath = null; notificationSnapshot = null; }
+      }
       const beforeSubmit = async body => {
         assertScopedPaperInvocation(capability, { config, clock }); await verifyInputs(config);
         await verifyScopedStoreReceipt(context, lastReceipt);
@@ -102,7 +122,7 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
       for (let n = 0; n < 80 && !['STOPPED', 'COMPLETE'].includes(state.phase); n++) {
         let assetIndex = 0; const responses = [];
         for (const e of step.effects) {
-          if (e.type === 'NOTIFY') { notificationEvents.push(e); continue; }
+          if (e.type === 'NOTIFY') continue;
           if (e.type !== 'READ') continue;
           const input = routeInput(e, state, cache, assetIndex);
           if (e.group === 'assets') assetIndex++;
@@ -130,6 +150,7 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
           }
           case 'OBSERVATION_PERSIST':
             lastReceipt = await recordScopedObservation(context, record.exitIdempotencyKey, record);
+            collectNotifications([record]);
             go({ type: 'OBSERVATION_RECORDED', receipt: lastReceipt }); break;
           case 'POSTCHECK': {
             let observation = null;
@@ -140,15 +161,22 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
           }
           case 'FINAL_PERSIST':
             lastReceipt = await recordScopedObservation(context, record.exitIdempotencyKey, record);
-            go({ type: 'FINAL_RECORDED', receipt: lastReceipt }); break;
+            go({ type: 'FINAL_RECORDED', receipt: lastReceipt }); collectNotifications([record]); break;
           default: throw Error('SCOPED_ADAPTER_PHASE_INVALID');
         }
       }
-      notificationEvents.push(...(step?.effects ?? []).filter(e => e.type === 'NOTIFY'));
+      collectNotifications([]);
       check(state.phase === 'COMPLETE' || state.phase === 'STOPPED', 'ITERATION_BOUND');
     });
   } catch (error) {
     reason = /^SCOPED_(?:CLOSEOUT|STORE|ADAPTER|EVIDENCE)_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_ADAPTER_FAILED';
+  }
+  // Sending follows durable postchecks, so delivery latency cannot delay reconciliation or replay an order.
+  if (receiptPath) {
+    try {
+      collectNotifications([]);
+      notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: notify.send });
+    } catch { notificationDelivery = { status: 'DELIVERY_UNCERTAIN', eventCount: 0 }; }
   }
   const counts = activeTransport?.counts() ?? { ...Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0])), total: 0 };
   const rowStatusCounts = {};
@@ -156,6 +184,6 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
   return Object.freeze({ status: !reason && state?.phase === 'COMPLETE' ? 'COMPLETE' : 'STOPPED',
     reasons: [reason ?? state?.reason].filter(Boolean), requestCounts: counts,
     requestBudgetCompliant: Object.entries(BUDGET).every(([k, v]) => counts[k] <= v) && counts.total <= 66,
-    rowStatusCounts, hashes: { ...(lastReceipt?.storeHashes ?? {}) }, actualBrokerMutationAttempted: counts.submit > 0,
+    rowStatusCounts, hashes: { ...(lastReceipt?.storeHashes ?? {}) }, notificationDelivery, actualBrokerMutationAttempted: counts.submit > 0,
     actualStateWriteAttempted: stateWriteAttempted, originalHistoryNormalized: false, realizedPnlVerified: false });
 }

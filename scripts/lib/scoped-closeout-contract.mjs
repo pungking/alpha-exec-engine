@@ -58,7 +58,10 @@ function validateInput(input, real) {
 
 export function validateScopedPaperConfiguration(config) {
   try {
-    requireContract(exact(config, 'input bindings directory sourceFile codeFiles writerExclusion'), 'CONFIG_INVALID');
+    requireContract(exact(config, `input bindings directory sourceFile codeFiles writerExclusion${config?.notifications === undefined ? '' : ' notifications'}`), 'CONFIG_INVALID');
+    if (config.notifications !== undefined) requireContract(exact(config.notifications, 'destinationSha256 sourceRunId headSha')
+      && hash(config.notifications.destinationSha256) && /^\d+$/.test(config.notifications.sourceRunId)
+      && /^[a-f0-9]{40}$/.test(config.notifications.headSha), 'NOTIFICATION_AUTHORITY_INVALID');
     validateInput(config.input, true);
     requireContract(typeof config.directory === 'string' && path.isAbsolute(config.directory)
       && exact(config.sourceFile, 'path sha256') && path.isAbsolute(config.sourceFile.path)
