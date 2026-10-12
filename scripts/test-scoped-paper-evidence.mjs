@@ -7,6 +7,15 @@ const map = async f => m.mapPreflightEvidence({ scope: f.input, receipts: await 
 let f = paperFixture(), snapshot = await map(f);
 assert.equal(snapshot.evidenceMode, 'PAPER_OBSERVED'); assert.equal(snapshot.rows.length, 5);
 assert.equal(snapshot.rows[0].bidSizeShares, '200'); assert.equal(snapshot.rows[0].bid, '100');
+assert.equal(snapshot.rows[0].bidSizeShares, String(f.bodies.quotes.quotes.FIX0.bs), 'current SIP sizes are already shares');
+for (const [unit, multiplier] of [['round_lots', '100'], ['round_lots', '1'], ['shares', '100']]) {
+  const bad = paperFixture();
+  Object.assign(bad.bindings.proof.assets[0], { quoteSizeUnit: unit, sharesPerUnit: multiplier });
+  bad.bindings.proofSha256 = hash(bad.bindings.proof);
+  assert.ok(m.assessSourceBindings(bad.bindings, bad.input, bad.clock).reasons.includes('QUOTE_SIZE_CONTRACT_UNVERIFIED'),
+    'current SIP rejects obsolete lot interpretation even with a matching proof hash');
+  await assert.rejects(() => map(bad), /SOURCE_BINDING_INVALID/);
+}
 assert.equal(snapshot.clock.open, '2026-10-09T13:30:00.000Z');
 assert.equal(m.isObservedSnapshot(snapshot), true); assert.equal(m.isObservedSnapshot(structuredClone(snapshot)), false);
 assert.equal(m.assessSourceBindings({}, f.input, f.clock).status, 'BLOCKED');

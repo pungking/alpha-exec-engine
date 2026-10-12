@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { decimalRatio, decimalText, compare, multiply } from './closeout-decimal.mjs';
+import { decimalRatio, decimalText, compare } from './closeout-decimal.mjs';
 import { isScopedPaperReceipt } from './scoped-paper-transport.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -44,8 +44,8 @@ export function assessSourceBindings(bindings, scope, clock) {
     check(Array.isArray(p.assets) && p.assets.length === 5 && new Set(p.assets.map(a => a.assetId)).size === 5
       && p.assets.every(a => scope.terms.targets.some(t => t.assetId === a.assetId)), 'SOURCE_ASSET_BINDING_INVALID');
     for (const a of p.assets) {
-      if (!['shares', 'round_lots'].includes(a.quoteSizeUnit) || !hash(a.sizeEvidenceSha256)
-        || (a.quoteSizeUnit === 'shares' && a.sharesPerUnit !== '1') || !/^[1-9]\d{0,5}$/.test(a.sharesPerUnit ?? '')) reasons.push('QUOTE_SIZE_CONTRACT_UNVERIFIED');
+      // Current CTA/UTP quote sizes are shares since 2025-11-03, not legacy round lots.
+      if (a.quoteSizeUnit !== 'shares' || a.sharesPerUnit !== '1' || !hash(a.sizeEvidenceSha256)) reasons.push('QUOTE_SIZE_CONTRACT_UNVERIFIED');
       if (!hash(a.incrementEvidenceSha256) || !a.quantityIncrement) reasons.push('ASSET_INCREMENT_UNVERIFIED');
       if (a.halt?.status !== 'NOT_HALTED' || !hash(a.halt?.evidenceSha256) || !fresh(a.halt?.observedAt, clock.now())) reasons.push('HALT_EVIDENCE_UNAVAILABLE');
       if (a.risk?.status !== 'PASS' || a.risk?.termsSha256 !== scope.termsSha256 || !hash(a.risk?.evidenceSha256)
@@ -117,7 +117,7 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
     const b = bindings.proof.assets.find(r => r.assetId === t.assetId), q = quotes[a.symbol];
     check(object(q), 'QUOTE_IDENTITY_INVALID');
     return { originalIdentitySha256: t.originalIdentitySha256, assetId: t.assetId, symbol: a.symbol, qty: t.qty,
-      bid: decimal(q.bp), ask: decimal(q.ap), bidSizeShares: decimalText(multiply(decimalRatio(decimal(q.bs)), decimalRatio(b.sharesPerUnit))),
+      bid: decimal(q.bp), ask: decimal(q.ap), bidSizeShares: decimal(q.bs),
       quoteAt: projected(q.t, qr.retrievedAt), quoteResponseSha256: qr.responseSha256, feed: 'sip', currency: 'USD', sizeUnit: 'shares',
       sourceBinding: 'PAPER_OBSERVED_VERIFIED', tick: compare(decimalRatio(decimal(q.bp)), [1n, 1n]) >= 0 ? '0.01' : '0.0001',
       quantityIncrement: decimal(b.quantityIncrement), fractionable: a.fractionable, tradable: a.tradable,

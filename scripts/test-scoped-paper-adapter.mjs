@@ -62,6 +62,10 @@ if (!process.argv.includes('--fixture-child')) {
     try {
       f.config.directory = directory;
       if (mode === 'futureAuthority') { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); }
+      if (mode === 'obsoleteQuoteUnits') {
+        Object.assign(f.bindings.proof.assets[0], { quoteSizeUnit: 'round_lots', sharesPerUnit: '100' });
+        f.bindings.proofSha256 = hash(f.bindings.proof);
+      }
       if (['equivalentQty', 'quantityDrift'].includes(mode)) {
         for (const t of [...f.input.terms.targets, ...f.input.terms.portfolio]) t.qty = '2.0';
         f.input.termsSha256 = hash(f.input.terms);
@@ -135,7 +139,7 @@ if (!process.argv.includes('--fixture-child')) {
       assert.equal(sends, ['notifySuccess', 'notifyFailure', 'notifyHang'].includes(mode) ? 1 : 0);
       if (mode === 'notifySuccess') assert.equal(result.notificationDelivery.status, 'DELIVERED');
       if (mode === 'notifyHang') { assert.equal(sendSignal?.aborted, true); assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN'); }
-      if (mode === 'futureAuthority') { assert.equal(result.actualStateWriteAttempted, false); assert.equal(result.requestCounts.total, 0); assert.ok(!(await fs.readdir(directory)).some(n => n.startsWith('.scoped-closeout'))); }
+      if (['futureAuthority', 'obsoleteQuoteUnits'].includes(mode)) { assert.equal(result.actualStateWriteAttempted, false); assert.equal(result.requestCounts.total, 0); assert.ok(!(await fs.readdir(directory)).some(n => n.startsWith('.scoped-closeout'))); }
       if (mode === 'notifyFailure') assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN');
       assert.ok(gets <= 61); assert.equal(result.requestCounts.submit, posts); assert.equal(result.requestCounts.total, gets + posts);
       assert.equal(result.originalHistoryNormalized, false); assert.equal(result.realizedPnlVerified, false);
@@ -162,6 +166,6 @@ if (!process.argv.includes('--fixture-child')) {
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }
   for (const mode of ['success', 'partial', 'rejected', 'submitTimeout', 'postReadFailure', 'accountMismatch', 'openOrder',
-    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang']) await scenario(mode);
+    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang', 'obsoleteQuoteUnits']) await scenario(mode);
   console.log('scoped PAPER runner: PASS (REST-shaped fake transport, durable private stores, failure/replay matrix)');
 }

@@ -15,7 +15,7 @@ export function paperFixture() {
     feed: 'sip', currency: 'USD', feedEntitlementEvidenceSha256: hash('fixture-sip-entitlement'),
     clockAlignmentEvidenceSha256: hash('fixture-clock-alignment'),
     calendar: { open: '2026-10-09T13:30:00.000Z', close: '2026-10-09T20:00:00.000Z' },
-    assets: assets.map(a => ({ assetId: a.id, quoteSizeUnit: 'round_lots', sharesPerUnit: '100',
+    assets: assets.map(a => ({ assetId: a.id, quoteSizeUnit: 'shares', sharesPerUnit: '1',
       sizeEvidenceSha256: hash(['fixture-size', a.id]), quantityIncrement: '0.000000001',
       incrementEvidenceSha256: hash(['fixture-increment', a.id]),
       halt: { status: 'NOT_HALTED', observedAt: at, evidenceSha256: hash(['fixture-halt', a.id]) },
@@ -26,7 +26,7 @@ export function paperFixture() {
     account: { id: accountId, status: 'ACTIVE', currency: 'USD', trading_blocked: false, account_blocked: false, trade_suspended_by_user: false },
     positions, orders: [], clock: { timestamp: at, is_open: true, next_open: '2026-10-12T13:30:00Z', next_close: '2026-10-09T20:00:00Z' },
     calendar: [{ date: '2026-10-09', open: '09:30', close: '16:00' }], assets,
-    quotes: { quotes: Object.fromEntries(assets.map(a => [a.symbol, { t: at, bp: 100, ap: 100.01, bs: 2, as: 3, bx: 'V', ax: 'V', c: [], z: 'C' }])) },
+    quotes: { quotes: Object.fromEntries(assets.map(a => [a.symbol, { t: at, bp: 100, ap: 100.01, bs: 200, as: 300, bx: 'V', ax: 'V', c: [], z: 'C' }])) },
   };
   const calls = [];
   const fetchImpl = async (url, options) => {
