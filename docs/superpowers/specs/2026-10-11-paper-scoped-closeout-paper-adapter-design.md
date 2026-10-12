@@ -2,10 +2,9 @@
 
 Goal: PAPER_SCOPED_CLOSEOUT_PAPER_ADAPTER_INTEGRATION_V1
 Baseline: c9cf075c46a78331c11479374cb213ac53ee714d
-Status: ACCEPTED_FOR_IMPLEMENTATION_PLANNING
+Status: IMPLEMENTED_PENDING_FINAL_VERIFICATION
 The user requested proceeding with the next planned work after withdrawing the
-obsolete missing-input goal. The implementation plan still requires review before
-product edits. Neither design nor plan approval authorizes runtime execution.
+obsolete missing-input goal. The user approved the Native implementation plan on 2026-10-12. Neither design nor plan approval authorizes runtime execution.
 
 ## 1. Intent and completion boundary
 
@@ -315,3 +314,33 @@ Required final status must distinguish SPEC_READY, ADAPTER_STATIC_INTEGRATED,
 RUNTIME_PREREQUISITES_UNVERIFIED and PAPER_RUNTIME_VERIFIED. Never collapse these
 into an unqualified complete or live-ready label. No runtime activation or actual
 order approval phrase is supplied by this document.
+
+## 9. Implemented compatibility and runtime composition
+
+Synthetic v1/controller behavior and both original state schemas are retained.
+Observed v2 uses the same controller with branded in-process authorization and
+mapped receipts; it cannot deserialize an approval capability from an artifact.
+`runScopedPaperCloseout` is the callable integration. `main([], dependencies)` is
+configuration-only; explicit `--execute` also needs the direct approved caller's
+config/approval/clock/credential-loading transport factory. The standalone command
+has no implicit credentials, configuration loader, scheduled hook or activation.
+
+All imported decision/store/adapter code bytes are pinned by the reviewed file
+manifest. The private source capsule (`scoped-paper-source-v1`) binds account,
+terms, pre-write hashes and five exact identities; it does not recreate historical
+entry timestamps or claim original sidecar-state authenticity. The existing store
+fence/backup precedes observations, with no original-store mutation before reserve.
+Failed attempt directories remain exclusive, including failed preflights.
+
+Optional notification provenance and destination hash are included in the approved
+configuration hash. A matching explicit sender is required. Its empty receipt is
+baselined before the first submit; bounded scoped events are delivered after durable
+postchecks, never as complete account history or strategy PnL. SourceRunId refers
+to pinned source provenance, not a fabricated scheduled run. Default is no send.
+
+Deployment still requires reviewed SIP entitlement, REST size/increment proof,
+current halt/risk/time evidence, an approved private durable state baseline and
+account-wide writer exclusion. No such current operational proof is created by
+these offline fixtures. Code rollback is a merge revert, not restoration of old
+ledgers after a possible broker action. No automatic PAPER or LIVE activation is
+part of this integration.

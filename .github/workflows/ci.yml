@@ -44,6 +44,10 @@ jobs:
         run: npm run ops:test:order-ledger-storage
       - name: Scoped closeout contract (offline synthetic files and mock transports only)
         run: npm run ops:test:scoped-closeout-contract
+      - name: Scoped PAPER adapter (network denied, disposable fixture stores only)
+        env:
+          NODE_OPTIONS: --require=./scripts/fixtures/scoped-paper-offline.cjs
+        run: npm run ops:test:scoped-paper-adapter
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
       - name: Sidecar public evidence boundary
