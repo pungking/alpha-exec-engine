@@ -53,6 +53,7 @@ export async function withScopedStores({ directory, expectedHashes, attemptId },
       const ledger = await loadScopedOrderLedgerState(path.join(directory, files.orderLedger));
       const idem = await loadScopedOrderIdempotencyState(path.join(directory, files.orderIdempotency));
       check([...Object.values(ledger.orders), ...Object.values(idem.orders)].every(r => !r.recordKind), 'EXISTING_MANAGEMENT_ATTEMPT');
+      check(!(await fs.readdir(directory)).some(name => name.startsWith('.scoped-closeout-')), 'EXISTING_MANAGEMENT_ATTEMPT');
       await backup(directory, attemptId, expectedHashes);
       const context = Object.freeze({});
       const c = { directory, attemptId, expectedHashes: structuredClone(expectedHashes), hashes: await readHashes(directory),
@@ -62,6 +63,12 @@ export async function withScopedStores({ directory, expectedHashes, attemptId },
       finally { c.closed = true; }
     });
   } catch (error) { throw new Error(/^SCOPED_STORE_[A-Z_]+$/.test(error.message) ? error.message : 'SCOPED_STORE_FAILED'); }
+}
+export async function verifyScopedStoreReceipt(context, receipt) {
+  const c = contextOf(context);
+  check(!c.pending && receipt && canonical(receipt.storeHashes) === canonical(c.hashes)
+    && canonical(await readHashes(c.directory)) === canonical(c.hashes), 'HASH_DRIFT');
+  return true;
 }
 async function commit(c, records) {
   check(!c.pending, 'CONCURRENT_WRITE'); c.pending = true;

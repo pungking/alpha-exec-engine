@@ -23,7 +23,8 @@ const TEXT = Object.freeze({
   PROTECTION_CHILDREN_TERMINAL_OBSERVED: '보호 주문 종료 및 잔여 포지션 없음 관측 (청산 정합 판정과 별개)',
   PROTECTION_REVIEW_REQUIRED: '연결된 보호 주문 증거 불완전: 확인 필요',
   POSITION_CLOSEOUT_RECONCILED: '청산 완료: 체결/잔여 포지션/종결 정합 확인',
-  MANAGEMENT_POSITION_FLAT_RECONCILED: '제한관리 정리: 전량 체결/잔여 없음 확인 (원래 전략 귀속 및 실현손익 미검증)'
+  MANAGEMENT_POSITION_FLAT_RECONCILED: '제한관리 정리: 전량 체결/잔여 없음 확인 (원래 전략 귀속 및 실현손익 미검증)',
+  SCOPED_CLOSEOUT_STOPPED: '제한관리 정리 중단: 추가 주문 없음, 미해결 상태 확인 필요'
 });
 const number = value => value === null || value === undefined || String(value).trim() === '' ? NaN : Number(value);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -178,10 +179,50 @@ export function buildNotificationSnapshot(input) {
   return result;
 }
 
-export function formatNotification(events) {
-  const rows = events.slice(0, 16).map(event => `${event.symbol} [${event.side}]: ${TEXT[event.type]}`);
+export function buildScopedNotificationSnapshot({ scope, records, storeReceipt, observations, sourceRunId, headSha, observedAt }) {
+  const result = { schemaVersion: SCHEMA, status: 'EVIDENCE_UNAVAILABLE', observationBasis: 'BOUNDED_SCOPED_CLOSEOUT',
+    sourceRunId, headSha, observedAt, accountSha256: scope?.accountSha256, events: [], excludedRows: 0,
+    rawResponseStored: false, executionAuthorized: false };
+  if (!HASH.test(scope?.accountSha256) || !HASH.test(scope?.termsSha256) || !/^\d+$/.test(sourceRunId)
+    || !/^[a-f0-9]{40}$/.test(headSha) || !validTime(observedAt, observedAt) || !Array.isArray(records) || records.length > 5
+    || !Array.isArray(scope?.terms?.targets) || scope.terms.targets.length !== 5
+    || (records.length && (storeReceipt?.recordsSha256 !== sha256Canonical(records)
+      || !HASH.test(storeReceipt?.storeHashes?.orderLedger) || !HASH.test(storeReceipt?.storeHashes?.orderIdempotency)))) return result;
+  const events = new Map();
+  for (const r of records) {
+    const t = scope.terms.targets.find(t => t.exitIdempotencyKey === r?.exitIdempotencyKey);
+    const symbols = (observations?.symbols ?? []).filter(s => s.assetId === r?.assetId);
+    if (!validateScopedManagementRecord(r?.exitIdempotencyKey, r) || !t || symbols.length !== 1 || !SYMBOL.test(symbols[0].symbol)
+      || r.attemptId !== scope.attemptId || r.accountSha256 !== scope.accountSha256 || r.termsSha256 !== scope.termsSha256
+      || r.managementAuthoritySha256 !== scope.authoritySha256 || r.originalIdentitySha256 !== t.originalIdentitySha256
+      || r.assetId !== t.assetId || r.clientOrderId !== t.clientOrderId || r.qty !== t.qty
+      || !validTime(r.updatedAt, observedAt)) return result;
+    for (const h of r.history) {
+      const types = h.brokerStatus ? [`ORDER_${h.brokerStatus.toUpperCase()}`] : [];
+      if (h.phase === 'FLAT_RECONCILED') types.push('MANAGEMENT_POSITION_FLAT_RECONCILED');
+      for (const type of types) {
+        if (!Object.hasOwn(TEXT, type)) return result;
+        const eventKey = sha256Canonical([scope.attemptId, r.exitIdempotencyKey, type, h.filledQty]);
+        events.set(eventKey, { eventKey, type, symbol: symbols[0].symbol, side: 'sell' });
+      }
+    }
+  }
+  if (observations?.stoppedReason !== undefined) {
+    if (!/^SCOPED_(?:CLOSEOUT|STORE|ADAPTER|EVIDENCE)_[A-Z_]+$/.test(observations.stoppedReason)) return result;
+    const scopeSha256 = sha256Canonical([scope.attemptId, scope.accountSha256, scope.termsSha256]);
+    const eventKey = sha256Canonical([scopeSha256, 'SCOPED_CLOSEOUT_STOPPED']);
+    events.set(eventKey, { eventKey, type: 'SCOPED_CLOSEOUT_STOPPED', scopeSha256, reason: observations.stoppedReason });
+  }
+  if (events.size > 21) return result;
+  return { ...result, status: 'OBSERVATIONS_READY', events: [...events.values()].sort((a, b) => a.eventKey.localeCompare(b.eventKey)) };
+}
+
+export function formatNotification(events, observationBasis) {
+  const scoped = observationBasis === 'BOUNDED_SCOPED_CLOSEOUT';
+  const rows = events.slice(0, 16).map(event => event.type === 'SCOPED_CLOSEOUT_STOPPED'
+    ? `${TEXT[event.type]} (${event.reason})` : `${event.symbol} [${event.side}]: ${TEXT[event.type]}`);
   if (events.length > 16) rows.push(`추가 상태 변화 ${events.length - 16}건 (동일 관측 묶음)`);
-  return ['[PAPER] Broker 상태 변화', ...rows, '기존 주기 수집 결과이며 실시간 스트림이 아닙니다.',
+  return ['[PAPER] Broker 상태 변화', ...rows, scoped ? '승인된 제한관리 범위의 단일 관측이며 계좌 전체 이력이 아닙니다.' : '기존 주기 수집 결과이며 실시간 스트림이 아닙니다.',
     '계좌 관측 알림입니다. 자동 전략 주문 귀속은 별도 검증 대상입니다.',
     '추천/모의 체결을 실제 체결로 표시하지 않습니다. 이 알림은 주문을 실행하지 않습니다.'].join('\n');
 }
@@ -189,7 +230,10 @@ export function formatNotification(events) {
 function validSnapshot(snapshot) {
   return snapshot?.schemaVersion === SCHEMA && snapshot.status === 'OBSERVATIONS_READY' && HASH.test(snapshot.accountSha256)
     && Array.isArray(snapshot.events) && snapshot.events.length <= 12000
-    && snapshot.events.every(e => object(e) && HASH.test(e.eventKey) && Object.hasOwn(TEXT, e.type) && SYMBOL.test(e.symbol) && ['buy', 'sell'].includes(e.side))
+    && snapshot.events.every(e => object(e) && HASH.test(e.eventKey) && Object.hasOwn(TEXT, e.type)
+      && (e.type === 'SCOPED_CLOSEOUT_STOPPED' ? snapshot.observationBasis === 'BOUNDED_SCOPED_CLOSEOUT'
+        && HASH.test(e.scopeSha256) && /^SCOPED_(?:CLOSEOUT|STORE|ADAPTER|EVIDENCE)_[A-Z_]+$/.test(e.reason) && e.symbol === undefined && e.side === undefined
+        : SYMBOL.test(e.symbol) && ['buy', 'sell'].includes(e.side)))
     && new Set(snapshot.events.map(e => e.eventKey)).size === snapshot.events.length;
 }
 
@@ -257,7 +301,7 @@ export async function deliverNotifications({ snapshot, receiptPath, send }) {
     if (!validReceipt(next)) return safe('RECEIPT_CAPACITY_REACHED');
     atomicReceipt(receiptPath, next);
     try {
-      const response = await send(formatNotification(events));
+      const response = await send(formatNotification(events, snapshot.observationBasis));
       next.lastDelivery = response?.ok === true ? 'DELIVERED' : 'UNCERTAIN';
     } catch { next.lastDelivery = 'UNCERTAIN'; }
     attempt.status = next.lastDelivery;
