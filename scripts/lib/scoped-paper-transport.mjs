@@ -10,6 +10,8 @@ const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v);
 const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v);
 const decimal = v => typeof v === 'string' && /^(0|[1-9]\d{0,15})(\.\d{1,9})?$/.test(v) && Number(v) > 0;
 const receipts = new WeakSet();
+const transports = new WeakMap();
+export const isScopedPaperTransport = (value, gate) => transports.has(value) && transports.get(value) === gate;
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 export const isScopedPaperReceipt = value => receipts.has(value);
 const seal = value => { freeze(value); receipts.add(value); return value; };
@@ -50,8 +52,8 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
   check(exact(credentials, 'key secret') && [credentials.key, credentials.secret].every(v => typeof v === 'string' && v.trim()), 'CREDENTIALS_MISSING');
   const headers = Object.freeze({ 'APCA-API-KEY-ID': credentials.key, 'APCA-API-SECRET-KEY': credentials.secret });
   const counts = Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0]));
-  const start = clock.monotonicMs(); let stopped = false, active = null;
-  return Object.freeze({
+  const start = clock.monotonicMs(); let stopped = false, reconcileOnly = false, active = null;
+  const transport = Object.freeze({
     counts: () => Object.freeze({ ...counts, total: Object.values(counts).reduce((a, b) => a + b, 0) }),
     async request(input) {
       let timer, reader, complete = false, responseSha256 = null, bytes = 0, status = null, requestedAt = null, retrievedAt = null, durationMs = 0;
@@ -61,6 +63,7 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         if (active) { active.abort(); check(false, 'CONCURRENT_REQUEST'); }
         const request = structuredClone(input), target = route(request);
         ({ group, phase } = request);
+        check(!reconcileOnly || phase === 'postcheck', 'TRANSPORT_STOPPED');
         check(counts[group] < BUDGET[group], 'REQUEST_BUDGET_EXCEEDED');
         const before = clock.monotonicMs(); requestedAt = clock.now();
         check(Number.isFinite(before) && Number.isFinite(start) && before >= start && before - start < deadlineMs
@@ -111,7 +114,9 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
           && Date.parse(retrievedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null });
       } catch (error) {
-        stopped = true; abort?.abort();
+        if (phase === 'submit' && counts.submit > 0 && !stopped) reconcileOnly = true;
+        else stopped = true;
+        abort?.abort();
         const codes = ['ROUTE_INVALID', 'ORDER_INVALID', 'REQUEST_BUDGET_EXCEEDED', 'CLOCK_INVALID', 'ATTEMPT_EXPIRED',
           'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data: null,
@@ -124,4 +129,5 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
       }
     },
   });
+  transports.set(transport, beforeSubmit); return transport;
 }
