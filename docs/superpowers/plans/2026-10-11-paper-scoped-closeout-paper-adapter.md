@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-11-paper-scoped-closeout-paper-adapter-design.md`
 
-**Status:** IMPLEMENTED_PENDING_FINAL_VERIFICATION. Native implementation approved by the user on 2026-10-12; runtime execution is not authorized.
+**Status:** STATIC_VERIFIED_RUNTIME_NOT_AUTHORIZED. Native implementation approved by the user on 2026-10-12. Integration/CI completion is recorded in the associated PR, not inferred from static verification.
 
 ## Global Constraints
 
@@ -273,7 +273,7 @@ in the spec; no runtime workflows or environment variables.
 - [x] **3. Run** `npm run typecheck`, `npm run build`, `npm audit --audit-level=high`
   and `git diff --check`. Audit may use the package advisory service, not a broker
   or paid provider. No dependency upgrades are included to fix unrelated findings.
-- [ ] **4. Obtain one fresh independent whole-branch review**, fix reproducible
+- [x] **4. Obtain one fresh independent whole-branch review**, fix reproducible
   defects with red/green tests and repeat affected/full checks as appropriate.
 - [ ] **5. Commit/non-force push and create a main PR**, attach it to this chat,
   document safety/schema/compatibility/rollback, and merge only after relevant CI

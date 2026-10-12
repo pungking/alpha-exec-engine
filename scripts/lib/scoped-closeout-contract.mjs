@@ -97,7 +97,8 @@ export function authorizeScopedPaperInvocation({ config, approval, clock }) {
   requireContract(exact(approval, 'kind phrase configSha256 approvedAt expiresAt rollbackPlanSha256')
     && approval.kind === 'DIRECT_SCOPED_OPERATOR_INVOCATION' && approval.phrase === 'CONFIRM LIVE EXECUTION'
     && approval.configSha256 === digest(config) && hash(approval.rollbackPlanSha256)
-    && time(approval.approvedAt) <= time(clock.now()) && time(approval.expiresAt) - time(clock.now()) >= 17000
+    && time(approval.approvedAt) <= time(clock.now()) && time(config.input.authority.validFrom) <= time(clock.now())
+    && time(approval.expiresAt) - time(clock.now()) >= 17000
     && time(approval.expiresAt) <= time(config.input.authority.expiresAt), 'AUTHORITY_INVALID');
   requireContract(assessSourceBindings(config.bindings, config.input, clock).status === 'PASS', 'SOURCE_BINDING_INVALID');
   const capability = Object.freeze({});
@@ -108,7 +109,7 @@ export function assertScopedPaperInvocation(capability, { config, clock }) {
   const saved = capabilities.get(capability);
   requireContract(saved && digest(saved.config) === digest(config), 'AUTHORITY_INVALID');
   processGate();
-  requireContract(time(saved.approval.approvedAt) <= time(clock.now())
+  requireContract(time(saved.approval.approvedAt) <= time(clock.now()) && time(config.input.authority.validFrom) <= time(clock.now())
     && time(saved.approval.expiresAt) - time(clock.now()) >= 17000
     && assessSourceBindings(config.bindings, config.input, clock).status === 'PASS', 'AUTHORITY_EXPIRED');
   return true;
@@ -179,7 +180,7 @@ export function evaluateCloseoutSnapshot(scope, snapshot, clock, committed = {})
       && snapshot.accountSha256 === scope.accountSha256 && snapshot.sourceSha256 === scope.sourceSha256, 'SNAPSHOT_INVALID');
     validateTime(scope, snapshot, clock);
     const expected = scope.terms.portfolio.filter(p => !Object.hasOwn(committed, p.assetId));
-    const canonicalPortfolio = rows => [...rows].sort((a, b) => a.assetId.localeCompare(b.assetId));
+    const canonicalPortfolio = rows => rows.map(r => ({ ...r, qty: decimalText(ratio(r.qty)) })).sort((a, b) => a.assetId.localeCompare(b.assetId));
     requireContract(Array.isArray(snapshot.portfolio) && digest(canonicalPortfolio(snapshot.portfolio)) === digest(canonicalPortfolio(expected)), 'PORTFOLIO_DRIFT');
     requireContract(Array.isArray(snapshot.openOrders) && snapshot.openOrders.length === 0, 'OPEN_ORDER_CONFLICT');
     requireContract(Array.isArray(snapshot.rows) && snapshot.rows.length === 5
@@ -268,7 +269,7 @@ function postSnapshotValid(state, event, o) {
   requireContract(o.brokerStatus === 'filled' && Array.isArray(s.openOrders) && s.openOrders.length === 0, 'POSTCHECK_NOT_FLAT');
   const removed = new Set([...Object.keys(state.committed), state.rows[state.index].assetId]);
   const expected = state.scope.terms.portfolio.filter(p => !removed.has(p.assetId));
-  const sorted = rows => [...rows].sort((a, b) => a.assetId.localeCompare(b.assetId));
+  const sorted = rows => rows.map(r => ({ ...r, qty: decimalText(ratio(r.qty)) })).sort((a, b) => a.assetId.localeCompare(b.assetId));
   requireContract(Array.isArray(s.portfolio) && digest(sorted(expected)) === digest(sorted(s.portfolio)), 'POSTCHECK_PORTFOLIO_DRIFT');
   requireContract(s.clock?.version === 'v2' && s.clock.isOpen === true && s.clock.session === state.scope.authority.session
     && s.clock.clockAlignment === bindingStatus(state.scope) && s.clock.timezone === 'America/New_York'

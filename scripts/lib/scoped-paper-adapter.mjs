@@ -70,9 +70,22 @@ async function persistWire(config, state, body, receipt) {
   await fs.link(temp, dest); await fs.unlink(temp);
   const d = await fs.open(dir, 'r'); try { await d.sync(); } finally { await d.close(); }
 }
+async function boundedNotificationSend(send, message, clock, startedAt) {
+  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, 300000 - elapsed);
+  check(Number.isFinite(elapsed) && elapsed >= 0 && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
+  const controller = new AbortController(); let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => send(message, { signal: controller.signal })),
+      new Promise((_, reject) => { timer = setTimeout(() => {
+        controller.abort(); reject(Error('SCOPED_ADAPTER_NOTIFICATION_DEADLINE_EXPIRED'));
+      }, remaining); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 
 export async function runScopedPaperCloseout({ config, approval, transport, clock, notify }) {
-  let activeTransport, state, step, lastReceipt, stateWriteAttempted = false, reason = null, notificationSnapshot, receiptPath;
+  let activeTransport, state, step, lastReceipt, stateWriteAttempted = false, reason = null, notificationSnapshot, receiptPath, sendNotification;
   let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
   const cache = new Map(), notificationEvents = new Map();
   const collectNotifications = records => {
@@ -99,9 +112,10 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
     stateWriteAttempted = true;
     await withScopedStores({ directory: config.directory, expectedHashes: scope.preWriteHashes, attemptId: scope.attemptId }, async context => {
       if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
+        sendNotification = message => boundedNotificationSend(notify.send, message, clock, start);
         receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
         collectNotifications([]);
-        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: notify.send });
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
         if (notificationDelivery.status !== 'BASELINE_RECORDED') { receiptPath = null; notificationSnapshot = null; }
       }
       const beforeSubmit = async body => {
@@ -175,7 +189,7 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
   if (receiptPath) {
     try {
       collectNotifications([]);
-      notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: notify.send });
+      notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
     } catch { notificationDelivery = { status: 'DELIVERY_UNCERTAIN', eventCount: 0 }; }
   }
   const counts = activeTransport?.counts() ?? { ...Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0])), total: 0 };

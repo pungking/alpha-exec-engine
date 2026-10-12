@@ -103,7 +103,7 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
   mapAccountEvidence({ scope, receipt: get('account'), bindings, clock });
   const pr = get('positions'), portfolio = positions(pr), orders = noOrders(get('orders'));
   const expected = scope.terms.portfolio.filter(p => !Object.hasOwn(committed, p.assetId));
-  const sorted = rows => [...rows].sort((a, b) => a.assetId.localeCompare(b.assetId));
+  const sorted = rows => rows.map(r => ({ ...r, qty: decimal(r.qty) })).sort((a, b) => a.assetId.localeCompare(b.assetId));
   check(digest(sorted(portfolio)) === digest(sorted(expected)), 'PORTFOLIO_DRIFT');
   const ar = receipts.filter(r => r.group === 'assets');
   check(ar.length === 5 && new Set(ar.map(r => r.data?.id)).size === 5, 'ASSET_COUNT_INVALID');

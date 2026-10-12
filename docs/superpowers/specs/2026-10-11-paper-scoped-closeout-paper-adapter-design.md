@@ -2,7 +2,7 @@
 
 Goal: PAPER_SCOPED_CLOSEOUT_PAPER_ADAPTER_INTEGRATION_V1
 Baseline: c9cf075c46a78331c11479374cb213ac53ee714d
-Status: IMPLEMENTED_PENDING_FINAL_VERIFICATION
+Status: STATIC_VERIFIED_RUNTIME_NOT_AUTHORIZED
 The user requested proceeding with the next planned work after withdrawing the
 obsolete missing-input goal. The user approved the Native implementation plan on 2026-10-12. Neither design nor plan approval authorizes runtime execution.
 
@@ -150,6 +150,9 @@ Provider timestamp precision must not hide a future timestamp by truncating it.
 Validate full source precision and preserve its hash before any documented
 millisecond projection for compatibility. Invalid precision/clock alignment blocks.
 Preserve exact decimal quantities; no floating-point truncation to fit the terms.
+Portfolio comparisons canonicalize decimal text (for example, 2.0 equals 2)
+without changing the approved terms or their original hash. Authority must already
+be within its validFrom/expiresAt window before any store or transport access.
 
 Current verified public documentation does not establish every required binding.
 These are explicit runtime blockers, not fields a mapper may fabricate:
@@ -254,6 +257,12 @@ maximum event allowance is 21, actual sending still separately scoped. A send
 failure never repeats an order or falsely reports successful delivery. Public output
 contains only allowlisted counts/statuses/hash bases/SHA-256 values.
 
+Notification delivery has a three-second deadline clipped to the remaining attempt
+budget. The sender receives an AbortSignal and must honor it to release resources.
+A non-cooperative sender cannot hold the runner open; timeout preserves uncertain
+delivery and does not retry or undo broker outcomes. Cancellation is not proof
+that a remote message was never delivered.
+
 ## 7. Implementation reach and verification
 
 Allowed reach after written-spec and plan approval:
@@ -344,3 +353,35 @@ account-wide writer exclusion. No such current operational proof is created by
 these offline fixtures. Code rollback is a merge revert, not restoration of old
 ledgers after a possible broker action. No automatic PAPER or LIVE activation is
 part of this integration.
+
+## 10. Offline verification and review disposition
+
+The plan's 21-command regression sequence passed after review fixes with the
+network-denial preload active. The advisory-only npm audit reported zero
+vulnerabilities; git diff --check passed. The independent whole-branch reviewer
+reported three Important findings, no Critical or Minor findings. Each Important
+finding reproduced RED before its fix and then passed GREEN:
+- Authority validFrom: reject before any request, attempt directory or state write.
+- Decimal portfolio parity: accept equivalent quantity text without changing terms
+  hashes; reject a real one-quantum position mismatch.
+- Stalled notification: bounded cancellation and uncertain delivery, no replay.
+
+Implementation rulings (failure cost is explicit):
+- Require a submit callback; missing/miswired gates block rather than submit.
+- Keep per-asset observation intervals; each retains the three-second deadline.
+- Reject JSON precision loss; unsupported numeric representations stop the attempt.
+- Preserve failed preflight fences/backups; recovery requires an explicit action.
+- Allow postchecks after failed submit only; uncertainty stops later targets.
+- Reuse the existing crash matrix; two store writes remain non-atomic/fail-closed.
+- Pin notification route/provenance; an unapproved sender cannot deliver messages.
+- Send after durable postchecks; notifications are bounded, not streaming.
+- Require direct CLI capability injection; artifacts/environment are not authority.
+- AbortSignal cannot prove non-delivery; a non-cooperative sender may finish late.
+- Account/source/risk/time prerequisites remain unverified; missing proof blocks.
+- A local fence cannot exclude remote/manual writers or prove production storage
+  durability; runtime needs approved operational exclusion and durable state.
+- Actual fills/delivery/history/PnL are not certified by synthetic fixtures.
+- Static adapter integration does not grant runtime approval or trading readiness.
+
+No deferred Minor findings. Associated PR/CI and the final integration report carry
+merge evidence. Runtime proof is deliberately not claimed by this static record.

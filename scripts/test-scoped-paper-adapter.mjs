@@ -34,6 +34,7 @@ if (!process.argv.includes('--fixture-child')) {
   assert.equal(controller.evaluateCloseoutSnapshot(scope, structuredClone(snapshot), { now: f.clock.now(), elapsedMs: 0 }).status, 'BLOCKED');
   assert.throws(() => controller.validateScopedCloseoutInput(f.input), /MODE_INVALID/);
   for (const mutate of [
+    f => { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); f.approval.configSha256 = hash(f.config); },
     f => { f.approval.phrase = 'old approval'; }, f => { f.approval.configSha256 = hash('changed'); },
     f => { f.approval.expiresAt = '2026-10-09T14:00:00.000Z'; },
     f => { f.config.writerExclusion = {}; },
@@ -53,13 +54,21 @@ if (!process.argv.includes('--fixture-child')) {
   const sha = b => createHash('sha256').update(b).digest('hex');
   async function scenario(mode = 'success') {
     const f = invocationFixture();
-    const wantsNotify = ['notifySuccess', 'notifyFailure', 'notifyNoAuthority'].includes(mode);
-    let sends = 0;
+    const wantsNotify = ['notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang'].includes(mode);
+    let sends = 0, sendSignal;
     const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paper-adapter-fixture-')));
     await fs.chmod(directory, 0o700); let posts = 0, gets = 0; const orders = [];
     const read = async name => JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'));
     try {
       f.config.directory = directory;
+      if (mode === 'futureAuthority') { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); }
+      if (['equivalentQty', 'quantityDrift'].includes(mode)) {
+        for (const t of [...f.input.terms.targets, ...f.input.terms.portfolio]) t.qty = '2.0';
+        f.input.termsSha256 = hash(f.input.terms);
+        for (const a of f.bindings.proof.assets) a.risk.termsSha256 = f.input.termsSha256;
+        f.bindings.proofSha256 = hash(f.bindings.proof);
+        if (mode === 'quantityDrift') f.bodies.positions[0].qty = '2.000000001';
+      }
       for (const [key, name, value] of [['orderLedger', 'order-ledger.json', { orders: {}, updatedAt: '', preservedExtension: 'unchanged' }],
         ['orderIdempotency', 'order-idempotency.json', { orders: {}, releases: [], updatedAt: '', preservedExtension: 'unchanged' }]]) {
         const bytes = JSON.stringify(value); await fs.writeFile(path.join(directory, name), bytes, { mode: 0o600 });
@@ -115,14 +124,18 @@ if (!process.argv.includes('--fixture-child')) {
         return f.fetchImpl(url, init);
       };
       const transport = options => mode === 'forgedTransport' ? { request: async () => { throw Error('must-not-call'); }, counts: () => ({}) } : createScopedPaperTransport({ ...options, credentials: { key: 'fixture-key', secret: 'fixture-secret' }, fetchImpl: fakeFetch });
-      const notify = wantsNotify ? { destinationSha256: hash('private-route'), send: async message => { sends++; assert.ok(message.includes('제한관리 범위')); if (mode === 'notifyFailure') throw Error('fixture-private'); return { ok: true }; } } : undefined;
-      const result = await adapter.runScopedPaperCloseout({ config: f.config, approval: f.approval, transport, clock, notify });
+      let timeout, rejectDeadline; const stalled = new Promise((_, reject) => { rejectDeadline = reject; });
+      const notify = wantsNotify ? { destinationSha256: hash('private-route'), send: async (message, { signal } = {}) => { sends++; sendSignal = signal; if (mode === 'notifyHang') { timeout = setTimeout(() => rejectDeadline(Error('runner notification deadline missing')), 4000); return new Promise(() => {}); } assert.ok(message.includes('제한관리 범위')); if (mode === 'notifyFailure') throw Error('fixture-private'); return { ok: true }; } } : undefined;
+      const result = await Promise.race([adapter.runScopedPaperCloseout({ config: f.config, approval: f.approval, transport, clock, notify }),
+        stalled]).finally(() => clearTimeout(timeout));
       process.env.READ_ONLY = 'false';
-      const success = ['success', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority'].includes(mode);
+      const success = ['success', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang', 'equivalentQty'].includes(mode);
       assert.equal(result.status, success ? 'COMPLETE' : 'STOPPED', JSON.stringify({ mode, result }));
       assert.equal(posts, success ? 5 : ['partial', 'rejected', 'submitTimeout', 'postReadFailure', 'lookup404'].includes(mode) ? 1 : 0);
-      assert.equal(sends, ['notifySuccess', 'notifyFailure'].includes(mode) ? 1 : 0);
+      assert.equal(sends, ['notifySuccess', 'notifyFailure', 'notifyHang'].includes(mode) ? 1 : 0);
       if (mode === 'notifySuccess') assert.equal(result.notificationDelivery.status, 'DELIVERED');
+      if (mode === 'notifyHang') { assert.equal(sendSignal?.aborted, true); assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN'); }
+      if (mode === 'futureAuthority') { assert.equal(result.actualStateWriteAttempted, false); assert.equal(result.requestCounts.total, 0); assert.ok(!(await fs.readdir(directory)).some(n => n.startsWith('.scoped-closeout'))); }
       if (mode === 'notifyFailure') assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN');
       assert.ok(gets <= 61); assert.equal(result.requestCounts.submit, posts); assert.equal(result.requestCounts.total, gets + posts);
       assert.equal(result.originalHistoryNormalized, false); assert.equal(result.realizedPnlVerified, false);
@@ -149,6 +162,6 @@ if (!process.argv.includes('--fixture-child')) {
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }
   for (const mode of ['success', 'partial', 'rejected', 'submitTimeout', 'postReadFailure', 'accountMismatch', 'openOrder',
-    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority']) await scenario(mode);
+    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang']) await scenario(mode);
   console.log('scoped PAPER runner: PASS (REST-shaped fake transport, durable private stores, failure/replay matrix)');
 }
