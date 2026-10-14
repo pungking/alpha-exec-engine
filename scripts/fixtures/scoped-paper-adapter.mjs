@@ -48,8 +48,17 @@ export async function initialReceipts(f) {
   for (const group of ['positions', 'orders', 'clock']) await read(group);
   await read('calendar', { session: '2026-10-09' });
   for (const asset of f.assets) await read('assets', { assetId: asset.id });
-  await read('quotes', { symbols: f.assets.map(a => a.symbol) });
+  await read('quotes', { symbols: f.assets.map(a => a.symbol), ...(f.bindings.proof.feed === 'sip' ? {} : { feed: f.bindings.proof.feed }) });
   return receipts;
+}
+// Synthetic reviewed units only; this fixture does not establish a real account's feed contract.
+export function useIexProof(f, unit = 'round_lots', sharesPerUnit = '100') {
+  Object.assign(f.bindings.proof, { feed: 'iex', quoteCoverage: 'IEX_SINGLE_EXCHANGE', acceptsNonNbboPaperEvidence: true,
+    feedEntitlementEvidenceSha256: hash('fixture-iex-entitlement') });
+  for (const a of f.bindings.proof.assets) Object.assign(a, { quoteSizeFeed: 'iex', quoteSizeBasis: 'ALPACA_REST_LATEST_QUOTES',
+    quoteSizeUnit: unit, sharesPerUnit, sizeEvidenceSha256: hash(['fixture-iex-size', a.assetId, unit, sharesPerUnit]) });
+  f.bindings.proofSha256 = hash(f.bindings.proof);
+  return f;
 }
 export function invocationFixture() {
   const f = paperFixture();

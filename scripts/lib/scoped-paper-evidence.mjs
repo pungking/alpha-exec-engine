@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { decimalRatio, decimalText, compare } from './closeout-decimal.mjs';
+import { decimalRatio, decimalText, compare, multiply } from './closeout-decimal.mjs';
 import { isScopedPaperReceipt } from './scoped-paper-transport.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -39,13 +39,19 @@ export function assessSourceBindings(bindings, scope, clock) {
     check(object(p) && p.basis === 'REVIEWED_SCOPED_SOURCE_EVIDENCE' && digest(p) === bindings.proofSha256
       && p.accountSha256 === scope.accountSha256 && p.session === scope.authority.session
       && ns(p.validFrom) <= ns(clock.now()) && ns(p.expiresAt) >= ns(clock.now()), 'SOURCE_BINDING_INVALID');
-    if (p.feed !== 'sip' || p.currency !== 'USD' || !hash(p.feedEntitlementEvidenceSha256)) reasons.push('FEED_ENTITLEMENT_UNVERIFIED');
+    const iex = p.feed === 'iex';
+    if (!['sip', 'iex'].includes(p.feed) || p.currency !== 'USD' || !hash(p.feedEntitlementEvidenceSha256)
+      || (iex && (scope.environment !== 'PAPER' || p.quoteCoverage !== 'IEX_SINGLE_EXCHANGE'
+        || p.acceptsNonNbboPaperEvidence !== true))) reasons.push('FEED_ENTITLEMENT_UNVERIFIED');
     if (!hash(p.clockAlignmentEvidenceSha256)) reasons.push('CLOCK_ALIGNMENT_UNVERIFIED');
     check(Array.isArray(p.assets) && p.assets.length === 5 && new Set(p.assets.map(a => a.assetId)).size === 5
       && p.assets.every(a => scope.terms.targets.some(t => t.assetId === a.assetId)), 'SOURCE_ASSET_BINDING_INVALID');
     for (const a of p.assets) {
-      // Current CTA/UTP quote sizes are shares since 2025-11-03, not legacy round lots.
-      if (a.quoteSizeUnit !== 'shares' || a.sharesPerUnit !== '1' || !hash(a.sizeEvidenceSha256)) reasons.push('QUOTE_SIZE_CONTRACT_UNVERIFIED');
+      // CTA/UTP's shares change does not establish IEX units; require a feed-specific reviewed basis.
+      const shares = a.quoteSizeUnit === 'shares' && a.sharesPerUnit === '1';
+      const lots = iex && a.quoteSizeUnit === 'round_lots' && typeof a.sharesPerUnit === 'string' && /^[1-9]\d{0,15}$/.test(a.sharesPerUnit);
+      if ((!shares && !lots) || !hash(a.sizeEvidenceSha256)
+        || (iex && (a.quoteSizeFeed !== 'iex' || a.quoteSizeBasis !== 'ALPACA_REST_LATEST_QUOTES'))) reasons.push('QUOTE_SIZE_CONTRACT_UNVERIFIED');
       if (!hash(a.incrementEvidenceSha256) || !a.quantityIncrement) reasons.push('ASSET_INCREMENT_UNVERIFIED');
       if (a.halt?.status !== 'NOT_HALTED' || !hash(a.halt?.evidenceSha256) || !fresh(a.halt?.observedAt, clock.now())) reasons.push('HALT_EVIDENCE_UNAVAILABLE');
       if (a.risk?.status !== 'PASS' || a.risk?.termsSha256 !== scope.termsSha256 || !hash(a.risk?.evidenceSha256)
@@ -109,6 +115,7 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
   check(ar.length === 5 && new Set(ar.map(r => r.data?.id)).size === 5, 'ASSET_COUNT_INVALID');
   ar.forEach(r => interval(r, now));
   const qr = get('quotes'), quotes = qr.data?.quotes;
+  check(qr.feed === bindings.proof.feed, 'QUOTE_FEED_MISMATCH');
   check(object(quotes) && Object.keys(quotes).length === 5, 'QUOTES_INVALID');
   const rows = scope.terms.targets.map(t => {
     const a = ar.find(r => r.data?.id === t.assetId)?.data, p = pr.data.find(r => r.asset_id === t.assetId);
@@ -116,9 +123,12 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
       && typeof a.fractionable === 'boolean' && (!p || p.symbol === a.symbol), 'ASSET_IDENTITY_INVALID');
     const b = bindings.proof.assets.find(r => r.assetId === t.assetId), q = quotes[a.symbol];
     check(object(q), 'QUOTE_IDENTITY_INVALID');
+    if (qr.feed === 'iex') check(q.bx === 'V' && q.ax === 'V' && /^[1-9]\d{0,15}$/.test(String(q.bs)), 'IEX_QUOTE_CONTRACT_INVALID');
     return { originalIdentitySha256: t.originalIdentitySha256, assetId: t.assetId, symbol: a.symbol, qty: t.qty,
-      bid: decimal(q.bp), ask: decimal(q.ap), bidSizeShares: decimal(q.bs),
-      quoteAt: projected(q.t, qr.retrievedAt), quoteResponseSha256: qr.responseSha256, feed: 'sip', currency: 'USD', sizeUnit: 'shares',
+      bid: decimal(q.bp), ask: decimal(q.ap), bidSizeShares: decimalText(multiply(decimalRatio(decimal(q.bs)), decimalRatio(b.sharesPerUnit))),
+      quoteAt: projected(q.t, qr.retrievedAt), quoteResponseSha256: qr.responseSha256, feed: qr.feed, currency: 'USD', sizeUnit: 'shares',
+      ...(qr.feed === 'iex' ? { quoteCoverage: 'IEX_SINGLE_EXCHANGE', quoteSizeUnit: b.quoteSizeUnit,
+        sharesPerUnit: b.sharesPerUnit, sizeEvidenceSha256: b.sizeEvidenceSha256 } : {}),
       sourceBinding: 'PAPER_OBSERVED_VERIFIED', tick: compare(decimalRatio(decimal(q.bp)), [1n, 1n]) >= 0 ? '0.01' : '0.0001',
       quantityIncrement: decimal(b.quantityIncrement), fractionable: a.fractionable, tradable: a.tradable,
       haltStatus: b.halt.status, riskStatus: b.risk.status, riskEvidenceSha256: b.risk.evidenceSha256 };

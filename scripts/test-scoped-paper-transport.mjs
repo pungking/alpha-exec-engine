@@ -88,4 +88,23 @@ for (const [group, routeInput, ending] of [
   const t = make(async url => { assert.equal(url, (group === 'quotes' ? 'https://data.alpaca.markets' : 'https://paper-api.alpaca.markets') + ending); return new Response('{}'); });
   assert.equal((await t.request({ group, phase: group === 'lookup' ? 'postcheck' : 'initial', routeInput })).complete, true);
 }
-console.log('scoped PAPER transport: PASS (bounds, allowlist, sticky failure, submit gate, redaction)');
+for (const feed of ['sip', 'iex']) {
+  const t = make(async url => {
+    assert.equal(new URL(url).searchParams.get('feed'), feed);
+    return new Response('{}');
+  });
+  const r = await t.request({ group: 'quotes', phase: 'initial', routeInput: { symbols: ['FIXTURE'], feed } });
+  assert.equal(r.complete, true, 'explicit reviewed quote feed must reach the exact endpoint');
+  assert.equal(r.feed, feed, 'sealed receipt must carry the request feed, not infer it from response values');
+}
+for (const feed of ['delayed_sip', 'toss', '', null, 'IEX', 'iex&feed=sip']) {
+  const t = make(() => { assert.fail('invalid feed must not reach network'); });
+  assert.equal((await t.request({ group: 'quotes', phase: 'initial', routeInput: { symbols: ['FIXTURE'], feed } })).error, 'ROUTE_INVALID');
+  assert.equal(t.counts().total, 0);
+}
+let quoteCalls = 0;
+const deniedIex = make(async url => { quoteCalls++; assert.equal(new URL(url).searchParams.get('feed'), 'iex'); return new Response('{}', { status: 403 }); });
+await deniedIex.request({ group: 'quotes', phase: 'initial', routeInput: { symbols: ['FIXTURE'], feed: 'iex' } });
+await deniedIex.request({ group: 'quotes', phase: 'initial', routeInput: { symbols: ['FIXTURE'], feed: 'sip' } });
+assert.equal(quoteCalls, 1, 'failed IEX must not retry or fall back to SIP');
+console.log('scoped PAPER transport: PASS (bounds, explicit feed, no fallback, sticky failure, submit gate, redaction)');

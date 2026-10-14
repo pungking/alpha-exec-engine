@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { paperFixture, initialReceipts, hash, at } from './fixtures/scoped-paper-adapter.mjs';
+import { paperFixture, initialReceipts, useIexProof, hash, at } from './fixtures/scoped-paper-adapter.mjs';
 import { createScopedPaperTransport } from './lib/scoped-paper-transport.mjs';
 const m = await import('./lib/scoped-paper-evidence.mjs').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') return {}; throw e; });
 assert.equal(typeof m.mapPreflightEvidence, 'function', 'observed mapper must exist');
@@ -83,4 +83,47 @@ const ps = m.mapPostcheckEvidence({ scope: f.input, receipts: [lookup, ...post.f
 assert.equal(ps.complete, true);
 const broken = m.mapPostcheckEvidence({ scope: f.input, receipts: [lookup], bindings: f.bindings, clock: f.clock, calendar: f.bodies.calendar });
 assert.equal(broken.complete, false); assert.equal(broken.observations.lookup.responseSha256, lookup.responseSha256);
-console.log('scoped PAPER evidence: PASS (exact identity, precision, source/time, no synthetic promotion)');
+for (const [unit, multiplier, expected] of [['round_lots', '100', '20000'], ['round_lots', '1', '200'], ['shares', '1', '200']]) {
+  const iex = useIexProof(paperFixture(), unit, multiplier);
+  const first = await map(iex), second = await map(iex);
+  assert.equal(first.rows[0].bidSizeShares, expected, 'only the reviewed asset-specific unit may determine liquidity');
+  assert.equal(first.rows[0].feed, 'iex'); assert.equal(first.rows[0].quoteCoverage, 'IEX_SINGLE_EXCHANGE');
+  assert.deepEqual(first, second);
+  assert.ok(iex.calls.filter(c => c.url.includes('/quotes/')).every(c => new URL(c.url).searchParams.get('feed') === 'iex'));
+}
+for (const [mutate, reason] of [
+  [f => { delete f.bindings.proof.acceptsNonNbboPaperEvidence; }, 'FEED_ENTITLEMENT_UNVERIFIED'],
+  [f => { f.bindings.proof.quoteCoverage = 'NBBO'; }, 'FEED_ENTITLEMENT_UNVERIFIED'],
+  [f => { f.input.environment = 'LIVE'; }, 'FEED_ENTITLEMENT_UNVERIFIED'],
+  [f => { delete f.bindings.proof.feedEntitlementEvidenceSha256; }, 'FEED_ENTITLEMENT_UNVERIFIED'],
+  [f => { delete f.bindings.proof.assets[0].sharesPerUnit; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { f.bindings.proof.assets[0].sharesPerUnit = '0.01'; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { f.bindings.proof.assets[0].quoteSizeFeed = 'sip'; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { f.bindings.proof.assets[0].quoteSizeBasis = 'CTA_UTP_NOTICE'; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { delete f.bindings.proof.assets[0].sizeEvidenceSha256; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { f.bindings.proof.assets[0].quoteSizeUnit = 'shares'; }, 'QUOTE_SIZE_CONTRACT_UNVERIFIED'],
+  [f => { f.bindings.proof.assets[0].halt.status = 'UNKNOWN'; }, 'HALT_EVIDENCE_UNAVAILABLE'],
+  [f => { f.bindings.proof.assets[0].halt.observedAt = '2026-10-09T14:59:29Z'; }, 'HALT_EVIDENCE_UNAVAILABLE'],
+  [f => { f.bindings.proof.assets[0].risk.status = 'UNKNOWN'; }, 'RISK_EVIDENCE_INCOMPLETE'],
+  [f => { delete f.bindings.proof.clockAlignmentEvidenceSha256; }, 'CLOCK_ALIGNMENT_UNVERIFIED'],
+]) {
+  const iex = useIexProof(paperFixture()); mutate(iex); iex.bindings.proofSha256 = hash(iex.bindings.proof);
+  assert.ok(m.assessSourceBindings(iex.bindings, iex.input, iex.clock).reasons.includes(reason));
+  await assert.rejects(() => map(iex), /SOURCE_BINDING_INVALID/);
+}
+for (const mutate of [
+  f => { f.bodies.quotes.quotes.FIX0.bx = 'Q'; }, f => { delete f.bodies.quotes.quotes.FIX0.ax; },
+  f => { f.bodies.quotes.quotes.FIX0.bs = 0.5; }, f => { f.bodies.quotes.quotes.FIX0.t = null; },
+  f => { f.bodies.quotes.quotes.FIX0.t = '2026-10-09T14:59:29Z'; },
+  f => { f.bodies.quotes.quotes.FIX0.t = '2026-10-09T15:00:00.000000001Z'; },
+]) { const iex = useIexProof(paperFixture()); mutate(iex); await assert.rejects(() => map(iex), /SCOPED_EVIDENCE_/); }
+for (const feed of ['sip', 'iex']) {
+  const bound = feed === 'iex' ? useIexProof(paperFixture()) : paperFixture();
+  const wrong = feed === 'iex' ? paperFixture() : useIexProof(paperFixture());
+  assert.throws(() => m.mapPreflightEvidence({ scope: bound.input, bindings: bound.bindings, clock: bound.clock,
+    receipts: [] }), /RECEIPT/);
+  const mismatched = await initialReceipts(wrong);
+  assert.throws(() => m.mapPreflightEvidence({ scope: bound.input, bindings: bound.bindings, clock: bound.clock,
+    receipts: mismatched }), /QUOTE_FEED_MISMATCH/, 'identical response data must not mask a different requested feed');
+}
+console.log('scoped PAPER evidence: PASS (feed-bound units, exact identity, precision, source/time, no synthetic promotion)');

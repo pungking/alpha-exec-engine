@@ -117,11 +117,12 @@ export function assertScopedPaperInvocation(capability, { config, clock }) {
 export function validateObservedCloseoutInput(input, capability) {
   const saved = capabilities.get(capability);
   requireContract(saved && digest(saved.config.input) === digest(input), 'AUTHORITY_INVALID');
-  const scope = validateInput(input, true); observedBindings.set(scope, saved.config.bindings.proofSha256); return scope;
+  const scope = validateInput(input, true);
+  observedBindings.set(scope, { sha256: saved.config.bindings.proofSha256, feed: saved.config.bindings.proof.feed }); return scope;
 }
 function snapshotMatches(scope, snapshot) {
   return snapshot?.evidenceMode === scope.evidenceMode && (!observed(scope)
-    || (isObservedSnapshot(snapshot) && snapshot.sourceBindingsSha256 === observedBindings.get(scope)));
+    || (isObservedSnapshot(snapshot) && snapshot.sourceBindingsSha256 === observedBindings.get(scope)?.sha256));
 }
 
 function validateTime(scope, snapshot, clock) {
@@ -152,7 +153,8 @@ function priceOrder(scope, target, row, now) {
   requireContract(object(row) && row.assetId === target.assetId && row.originalIdentitySha256 === target.originalIdentitySha256
     && row.qty === target.qty, 'ROW_IDENTITY_INVALID');
   requireContract(['bid', 'ask', 'bidSizeShares', 'tick', 'quantityIncrement'].every(k => positive(row[k])), 'DECIMAL_INVALID');
-  requireContract(row.feed === 'sip' && row.currency === 'USD' && row.sizeUnit === 'shares'
+  requireContract(row.feed === (observed(scope) ? observedBindings.get(scope)?.feed : 'sip')
+    && (row.feed !== 'iex' || row.quoteCoverage === 'IEX_SINGLE_EXCHANGE') && row.currency === 'USD' && row.sizeUnit === 'shares'
     && row.sourceBinding === bindingStatus(scope) && hash(row.quoteResponseSha256)
     && row.tradable === true && row.haltStatus === 'NOT_HALTED' && row.riskStatus === 'PASS' && hash(row.riskEvidenceSha256), 'SOURCE_OR_RISK_INVALID');
   requireContract(time(row.quoteAt) <= now && now - time(row.quoteAt) <= 30000, 'QUOTE_STALE');
