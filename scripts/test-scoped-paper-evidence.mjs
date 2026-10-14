@@ -91,6 +91,19 @@ for (const [unit, multiplier, expected] of [['round_lots', '100', '20000'], ['ro
   assert.deepEqual(first, second);
   assert.ok(iex.calls.filter(c => c.url.includes('/quotes/')).every(c => new URL(c.url).searchParams.get('feed') === 'iex'));
 }
+const mixed = useIexProof(paperFixture());
+const reviewedUnits = [['shares', '1'], ['round_lots', '1'], ['round_lots', '10'], ['round_lots', '100'], ['round_lots', '1000']];
+mixed.bindings.proof.assets.forEach((a, i) => {
+  [a.quoteSizeUnit, a.sharesPerUnit] = reviewedUnits[i];
+  a.sizeEvidenceSha256 = hash(['fixture-mixed-size', a.assetId, ...reviewedUnits[i]]);
+});
+mixed.bindings.proof.assets.reverse();
+mixed.bindings.proofSha256 = hash(mixed.bindings.proof);
+const mixedSnapshot = await map(mixed);
+assert.deepEqual(mixedSnapshot.rows.map(r => [r.assetId, r.bidSizeShares, r.quoteSizeUnit, r.sharesPerUnit]),
+  mixed.input.terms.targets.map((t, i) => [t.assetId, ['200', '200', '2000', '20000', '200000'][i], ...reviewedUnits[i]]),
+  'each exact asset uses its own reviewed units regardless of proof ordering');
+assert.deepEqual(mixedSnapshot, await map(mixed));
 for (const [mutate, reason] of [
   [f => { delete f.bindings.proof.acceptsNonNbboPaperEvidence; }, 'FEED_ENTITLEMENT_UNVERIFIED'],
   [f => { f.bindings.proof.quoteCoverage = 'NBBO'; }, 'FEED_ENTITLEMENT_UNVERIFIED'],

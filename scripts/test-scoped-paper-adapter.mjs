@@ -41,6 +41,23 @@ if (!process.argv.includes('--fixture-child')) {
   const changedFeed = useIexProof(invocationFixture());
   assert.throws(() => adapter.authorizeScopedPaperInvocation({ config: changedFeed.config, approval: changedFeed.approval,
     clock: changedFeed.clock }), /AUTHORITY_INVALID/, 'an old SIP approval cannot authorize a newly hashed IEX proof');
+  const observedIex = [];
+  for (const multiplier of ['1', '100']) {
+    const iex = useIexProof(invocationFixture(), 'round_lots', multiplier);
+    iex.approval.configSha256 = hash(iex.config);
+    const capability = adapter.authorizeScopedPaperInvocation({ config: iex.config, approval: iex.approval, clock: iex.clock });
+    const scope = controller.validateObservedCloseoutInput(iex.input, capability);
+    const snapshot = mapPreflightEvidence({ scope, receipts: await initialReceipts(iex), bindings: iex.bindings, clock: iex.clock });
+    observedIex.push({ scope, snapshot, clock: { now: iex.clock.now(), elapsedMs: 0 } });
+  }
+  assert.notEqual(observedIex[0].snapshot.sourceBindingsSha256, observedIex[1].snapshot.sourceBindingsSha256);
+  for (const [i, current] of observedIex.entries()) {
+    assert.equal(controller.evaluateCloseoutSnapshot(current.scope, current.snapshot, current.clock).status, 'READY_REPORT_ONLY');
+    const crossProof = controller.evaluateCloseoutSnapshot(current.scope, observedIex[1 - i].snapshot, current.clock);
+    assert.equal(crossProof.status, 'BLOCKED');
+    assert.ok(crossProof.reasons.includes('SCOPED_CLOSEOUT_SNAPSHOT_INVALID'),
+      'a genuine observed snapshot from another same-feed proof cannot cross its approved scope');
+  }
   for (const mutate of [
     f => { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); f.approval.configSha256 = hash(f.config); },
     f => { f.approval.phrase = 'old approval'; }, f => { f.approval.configSha256 = hash('changed'); },
