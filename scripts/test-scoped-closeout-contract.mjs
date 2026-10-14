@@ -20,6 +20,7 @@ for (const change of [
   f => f.input.authority.allowBuy = true, f => f.input.safeFlags.execEnabled = true,
   f => f.input.safeFlags.readOnly = false, f => f.input.environment = 'LIVE',
   f => f.input.evidenceMode = 'RUNTIME', f => f.snapshot.accountSha256 = hash('other'),
+  f => { f.snapshot.rows[0].feed = 'iex'; f.snapshot.rows[0].quoteCoverage = 'IEX_SINGLE_EXCHANGE'; },
   f => f.snapshot.sourceSha256 = hash('other'), f => f.snapshot.portfolio[0].qty = '3',
   f => f.snapshot.rows[0].originalIdentitySha256 = hash('other'), f => f.snapshot.rows[0].qty = '1',
   f => f.snapshot.openOrders.push({ legs: [{}] }), f => f.snapshot.complete = false,

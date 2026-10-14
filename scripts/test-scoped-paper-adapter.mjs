@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createScopedPaperTransport } from './lib/scoped-paper-transport.mjs';
-import { invocationFixture, initialReceipts, hash } from './fixtures/scoped-paper-adapter.mjs';
+import { invocationFixture, initialReceipts, useIexProof, hash } from './fixtures/scoped-paper-adapter.mjs';
 import { mapPreflightEvidence } from './lib/scoped-paper-evidence.mjs';
 import * as controller from './lib/scoped-closeout-contract.mjs';
 const adapter = await import('./lib/scoped-paper-adapter.mjs').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') return {}; throw e; });
@@ -18,6 +18,11 @@ assert.equal((await cli.main([], forbidden)).status, 'CONFIGURATION_REQUIRED');
 assert.equal((await cli.main(['--validate'], { ...{ config: invocationFixture().config }, ...{} })).status, 'PASS');
 assert.equal((await cli.main(['--execute'], {})).status, 'STOPPED');
 if (!process.argv.includes('--fixture-child')) {
+  const iex = useIexProof(invocationFixture()); iex.approval.configSha256 = hash(iex.config);
+  const blocked = await adapter.runScopedPaperCloseout({ config: iex.config, approval: iex.approval, clock: iex.clock,
+    transport: () => { assert.fail('safe flags must block before transport creation'); } });
+  assert.equal(blocked.requestCounts.total, 0); assert.equal(blocked.actualStateWriteAttempted, false);
+  assert.ok(blocked.reasons.includes('SCOPED_CLOSEOUT_ACTUAL_PROCESS_FLAGS_BLOCKED'));
   const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--fixture-child'], { encoding: 'utf8',
     env: { PATH: process.env.PATH, NODE_OPTIONS: process.env.NODE_OPTIONS ?? '', ALPHA_ENV: 'PAPER', READ_ONLY: 'false',
       EXEC_ENABLED: 'true', LIVE_ORDER_SUBMIT_ENABLED: 'false', MARKET_GUARD_MODE: 'observe' } });
@@ -33,6 +38,26 @@ if (!process.argv.includes('--fixture-child')) {
   assert.equal(controller.evaluateCloseoutSnapshot(scope, snapshot, { now: f.clock.now(), elapsedMs: 0 }).status, 'READY_REPORT_ONLY');
   assert.equal(controller.evaluateCloseoutSnapshot(scope, structuredClone(snapshot), { now: f.clock.now(), elapsedMs: 0 }).status, 'BLOCKED');
   assert.throws(() => controller.validateScopedCloseoutInput(f.input), /MODE_INVALID/);
+  const changedFeed = useIexProof(invocationFixture());
+  assert.throws(() => adapter.authorizeScopedPaperInvocation({ config: changedFeed.config, approval: changedFeed.approval,
+    clock: changedFeed.clock }), /AUTHORITY_INVALID/, 'an old SIP approval cannot authorize a newly hashed IEX proof');
+  const observedIex = [];
+  for (const multiplier of ['1', '100']) {
+    const iex = useIexProof(invocationFixture(), 'round_lots', multiplier);
+    iex.approval.configSha256 = hash(iex.config);
+    const capability = adapter.authorizeScopedPaperInvocation({ config: iex.config, approval: iex.approval, clock: iex.clock });
+    const scope = controller.validateObservedCloseoutInput(iex.input, capability);
+    const snapshot = mapPreflightEvidence({ scope, receipts: await initialReceipts(iex), bindings: iex.bindings, clock: iex.clock });
+    observedIex.push({ scope, snapshot, clock: { now: iex.clock.now(), elapsedMs: 0 } });
+  }
+  assert.notEqual(observedIex[0].snapshot.sourceBindingsSha256, observedIex[1].snapshot.sourceBindingsSha256);
+  for (const [i, current] of observedIex.entries()) {
+    assert.equal(controller.evaluateCloseoutSnapshot(current.scope, current.snapshot, current.clock).status, 'READY_REPORT_ONLY');
+    const crossProof = controller.evaluateCloseoutSnapshot(current.scope, observedIex[1 - i].snapshot, current.clock);
+    assert.equal(crossProof.status, 'BLOCKED');
+    assert.ok(crossProof.reasons.includes('SCOPED_CLOSEOUT_SNAPSHOT_INVALID'),
+      'a genuine observed snapshot from another same-feed proof cannot cross its approved scope');
+  }
   for (const mutate of [
     f => { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); f.approval.configSha256 = hash(f.config); },
     f => { f.approval.phrase = 'old approval'; }, f => { f.approval.configSha256 = hash('changed'); },
@@ -61,6 +86,16 @@ if (!process.argv.includes('--fixture-child')) {
     const read = async name => JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'));
     try {
       f.config.directory = directory;
+      if (mode.startsWith('iex')) {
+        useIexProof(f, 'round_lots', '1');
+        if (mode === 'iexMissingUnits') delete f.bindings.proof.assets[0].sharesPerUnit;
+        if (mode === 'iexUnknownHalt') f.bindings.proof.assets[0].halt.status = 'UNKNOWN';
+        if (mode === 'iexMissingRisk') f.bindings.proof.assets[0].risk.status = 'UNKNOWN';
+        if (mode === 'iexWideSpread') f.bodies.quotes.quotes.FIX0.ap = 101;
+        if (mode === 'iexLowLiquidity') f.bodies.quotes.quotes.FIX0.bs = 1;
+        if (mode === 'iexOpenOrder') f.bodies.orders = [{ id: 'fixture-open-child', asset_id: f.assets[0].id }];
+        f.bindings.proofSha256 = hash(f.bindings.proof);
+      }
       if (mode === 'futureAuthority') { f.input.authority.validFrom = '2026-10-09T15:00:10.000Z'; f.input.authoritySha256 = hash(f.input.authority); }
       if (mode === 'obsoleteQuoteUnits') {
         Object.assign(f.bindings.proof.assets[0], { quoteSizeUnit: 'round_lots', sharesPerUnit: '100' });
@@ -117,6 +152,7 @@ if (!process.argv.includes('--fixture-child')) {
           return new Response(JSON.stringify(result));
         }
         gets++;
+        if (url.includes('/quotes/latest')) assert.equal(new URL(url).searchParams.get('feed'), mode.startsWith('iex') ? 'iex' : 'sip');
         if (mode === 'lookup404' && url.includes('orders:by_client_order_id')) return new Response('{}', { status: 404 });
         if (mode === 'mutateCaller' && gets === 1) f.config.input.sourceSha256 = hash('caller-mutated');
         if (mode === 'sourceDrift' && gets === 17) await fs.appendFile(f.config.sourceFile.path, ' ');
@@ -133,13 +169,13 @@ if (!process.argv.includes('--fixture-child')) {
       const result = await Promise.race([adapter.runScopedPaperCloseout({ config: f.config, approval: f.approval, transport, clock, notify }),
         stalled]).finally(() => clearTimeout(timeout));
       process.env.READ_ONLY = 'false';
-      const success = ['success', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang', 'equivalentQty'].includes(mode);
+      const success = ['success', 'iexSuccess', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang', 'equivalentQty'].includes(mode);
       assert.equal(result.status, success ? 'COMPLETE' : 'STOPPED', JSON.stringify({ mode, result }));
       assert.equal(posts, success ? 5 : ['partial', 'rejected', 'submitTimeout', 'postReadFailure', 'lookup404'].includes(mode) ? 1 : 0);
       assert.equal(sends, ['notifySuccess', 'notifyFailure', 'notifyHang'].includes(mode) ? 1 : 0);
       if (mode === 'notifySuccess') assert.equal(result.notificationDelivery.status, 'DELIVERED');
       if (mode === 'notifyHang') { assert.equal(sendSignal?.aborted, true); assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN'); }
-      if (['futureAuthority', 'obsoleteQuoteUnits'].includes(mode)) { assert.equal(result.actualStateWriteAttempted, false); assert.equal(result.requestCounts.total, 0); assert.ok(!(await fs.readdir(directory)).some(n => n.startsWith('.scoped-closeout'))); }
+      if (['futureAuthority', 'obsoleteQuoteUnits', 'iexMissingUnits', 'iexUnknownHalt', 'iexMissingRisk'].includes(mode)) { assert.equal(result.actualStateWriteAttempted, false); assert.equal(result.requestCounts.total, 0); assert.ok(!(await fs.readdir(directory)).some(n => n.startsWith('.scoped-closeout'))); }
       if (mode === 'notifyFailure') assert.equal(result.notificationDelivery.status, 'DELIVERY_UNCERTAIN');
       assert.ok(gets <= 61); assert.equal(result.requestCounts.submit, posts); assert.equal(result.requestCounts.total, gets + posts);
       assert.equal(result.originalHistoryNormalized, false); assert.equal(result.realizedPnlVerified, false);
@@ -166,6 +202,7 @@ if (!process.argv.includes('--fixture-child')) {
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }
   for (const mode of ['success', 'partial', 'rejected', 'submitTimeout', 'postReadFailure', 'accountMismatch', 'openOrder',
-    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang', 'obsoleteQuoteUnits']) await scenario(mode);
+    'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang', 'obsoleteQuoteUnits',
+    'iexSuccess', 'iexMissingUnits', 'iexUnknownHalt', 'iexMissingRisk', 'iexWideSpread', 'iexLowLiquidity', 'iexOpenOrder']) await scenario(mode);
   console.log('scoped PAPER runner: PASS (REST-shaped fake transport, durable private stores, failure/replay matrix)');
 }

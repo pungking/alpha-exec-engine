@@ -45,11 +45,11 @@ function updateCache(cache, receipts) {
     cache.set(key, r);
   }
 }
-function routeInput(effect, state, cache, assetIndex) {
+function routeInput(effect, state, cache, assetIndex, feed) {
   if (effect.group === 'assets') return { assetId: state.scope.terms.targets[effect.phase === 'initial' ? assetIndex : state.index].assetId };
   if (effect.group === 'calendar') return { session: state.scope.authority.session };
   if (effect.group === 'lookup') return { clientOrderId: state.rows[state.index].clientOrderId };
-  if (effect.group === 'quotes') return { symbols: state.scope.terms.targets.map(t => cache.get(`assets:${t.assetId}`)?.data?.symbol) };
+  if (effect.group === 'quotes') return { symbols: state.scope.terms.targets.map(t => cache.get(`assets:${t.assetId}`)?.data?.symbol), feed };
   return {};
 }
 function wireOrder(state) {
@@ -138,7 +138,7 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
         for (const e of step.effects) {
           if (e.type === 'NOTIFY') continue;
           if (e.type !== 'READ') continue;
-          const input = routeInput(e, state, cache, assetIndex);
+          const input = routeInput(e, state, cache, assetIndex, config.bindings.proof.feed);
           if (e.group === 'assets') assetIndex++;
           const response = await activeTransport.request({ group: e.group, phase: e.phase, routeInput: input });
           responses.push(response); updateCache(cache, [response]);

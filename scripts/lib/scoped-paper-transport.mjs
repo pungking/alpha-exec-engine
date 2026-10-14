@@ -22,7 +22,7 @@ function route(request) {
   const { group, phase, routeInput: r, body } = request;
   check(exact(request, body === undefined ? 'group phase routeInput' : 'group phase routeInput body')
     && Object.hasOwn(phases, phase) && phases[phase].includes(group), 'ROUTE_INVALID');
-  let endpoint;
+  let endpoint, feed;
   if (['account', 'positions', 'clock', 'orders', 'submit'].includes(group)) {
     check(exact(r, ''), 'ROUTE_INVALID');
     endpoint = group === 'orders' ? '/v2/orders?status=open&limit=500&nested=true' : `/v2/${group === 'submit' ? 'orders' : group}`;
@@ -35,15 +35,17 @@ function route(request) {
     endpoint = group === 'assets' ? `/v2/assets/${encodeURIComponent(r.assetId)}`
       : `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(r.clientOrderId)}`;
   } else {
-    check(group === 'quotes' && exact(r, 'symbols') && Array.isArray(r.symbols) && r.symbols.length > 0
+    check(group === 'quotes' && (exact(r, 'symbols') || exact(r, 'symbols feed')) && Array.isArray(r.symbols) && r.symbols.length > 0
       && r.symbols.length <= 5 && r.symbols.every(symbol) && new Set(r.symbols).size === r.symbols.length, 'ROUTE_INVALID');
-    endpoint = `/v2/stocks/quotes/latest?symbols=${encodeURIComponent(r.symbols.join(','))}&feed=sip&currency=USD`;
+    feed = Object.hasOwn(r, 'feed') ? r.feed : 'sip';
+    check(['sip', 'iex'].includes(feed), 'ROUTE_INVALID');
+    endpoint = `/v2/stocks/quotes/latest?symbols=${encodeURIComponent(r.symbols.join(','))}&feed=${feed}&currency=USD`;
   }
   if (group === 'submit') check(exact(body, 'symbol qty side type time_in_force limit_price client_order_id extended_hours')
     && symbol(body.symbol) && decimal(body.qty) && decimal(body.limit_price) && id(body.client_order_id) && body.client_order_id.length <= 48
     && body.side === 'sell' && body.type === 'limit' && body.time_in_force === 'day' && body.extended_hours === false, 'ORDER_INVALID');
   else check(body === undefined, 'ROUTE_INVALID');
-  return { url: (group === 'quotes' ? DATA : PAPER) + endpoint, method: group === 'submit' ? 'POST' : 'GET' };
+  return { url: (group === 'quotes' ? DATA : PAPER) + endpoint, method: group === 'submit' ? 'POST' : 'GET', feed };
 }
 
 export function createScopedPaperTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubmit }) {
@@ -112,7 +114,8 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         retrievedAt = clock.now(); durationMs = clock.monotonicMs() - before;
         check(!abort.signal.aborted && durationMs >= 0 && durationMs <= 3000
           && Date.parse(retrievedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
-        return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null });
+        return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null,
+          ...(group === 'quotes' ? { feed: target.feed } : {}) });
       } catch (error) {
         if (phase === 'submit' && counts.submit > 0 && !stopped) reconcileOnly = true;
         else stopped = true;
