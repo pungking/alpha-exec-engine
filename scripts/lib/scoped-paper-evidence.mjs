@@ -25,6 +25,7 @@ function ns(value) {
   return BigInt(Date.parse(`${m[1]}${m[3]}`)) * 1000000n + BigInt((m[2] ?? '').padEnd(9, '0'));
 }
 const fresh = (v, now) => { try { const age = ns(now) - ns(v); return age >= 0n && age <= 30000000000n; } catch { return false; } };
+export { ns as evidenceTimestampNs, fresh as evidenceTimestampFresh };
 const projected = (v, now) => { check(fresh(v, now), 'TIMESTAMP_STALE_OR_FUTURE'); return new Date(Number(ns(v) / 1000000n)).toISOString(); };
 function decimal(value, zero = false) {
   check((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'string', 'DECIMAL_INVALID');

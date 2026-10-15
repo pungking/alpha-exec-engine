@@ -60,6 +60,7 @@
     "ops:test:order-idempotency-storage": "npm run build && node scripts/test-order-idempotency-storage.mjs",
     "ops:test:order-ledger-storage": "npm run build && node scripts/test-order-ledger-storage.mjs",
     "ops:test:scoped-paper-adapter": "npm run build && node scripts/test-scoped-paper-transport.mjs && node scripts/test-scoped-paper-evidence.mjs && node scripts/test-scoped-paper-adapter.mjs",
+    "ops:test:paper-iex-readonly-probe": "node scripts/test-paper-iex-readonly-probe.mjs",
     "ops:test:scoped-closeout-contract": "npm run build && node scripts/test-scoped-closeout-contract.mjs && node scripts/test-scoped-closeout-storage.mjs && node scripts/test-scoped-closeout-consumers.mjs && node scripts/test-scoped-closeout-integration.mjs",
     "ops:test:order-state-consistency": "node scripts/test-order-state-consistency-report.mjs",
     "ops:open-order-reprice-proposal": "node scripts/build-open-order-reprice-proposal.mjs",
