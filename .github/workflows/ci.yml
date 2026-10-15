@@ -48,6 +48,8 @@ jobs:
         env:
           NODE_OPTIONS: --require=./scripts/fixtures/scoped-paper-offline.cjs
         run: npm run ops:test:scoped-paper-adapter
+      - name: PAPER IEX read-only probe (network denied, synthetic inputs only)
+        run: NODE_OPTIONS="--require=$PWD/scripts/fixtures/scoped-paper-offline.cjs" npm run ops:test:paper-iex-readonly-probe
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
       - name: Sidecar public evidence boundary
