@@ -59,7 +59,8 @@ IDs, portfolio, source ownership and state authenticity are not certified or rep
 Use the existing five-row private source, never symbols guessed from a report. Input directories
 and files must be owner-only, with no symlinks. All source files remain byte-identical.
 Output parent must already exist owner-only; the new attempt directory is exclusive.
-`attempt.json` is atomically persisted and fsynced before the first request. Existing attempts
+The attempt directory's parent is fsynced before dispatch; `attempt.json` and its directory are
+also atomically persisted and fsynced before the first request. Existing attempts
 (including a crashed/failed attempt) are never overwritten or retried. `result.json` contains
 counts, statuses and hashes only. No account value, symbol, quote price/size/timestamp, credential,
 or raw response is persisted or printed. Response bytes exist in memory only.
@@ -84,7 +85,9 @@ Total <=3. All other endpoints/feeds: zero. No submit callback is installed. No 
 portfolio collection, retry, pagination, redirect, SIP fallback, calendar call or market-data provider change.
 Existing transport limits remain: 3 seconds/request, 8 MiB/response, 5 minutes/attempt.
 Existing 30-second nanosecond-precision freshness rule is reused, without compensation or tolerance.
-Closed/invalid/stale/future clock stops before quotes; clock is checked again after quotes.
+Closed/invalid/stale/future clock stops before quotes; open/close transition ordering must agree
+with `is_open`. Clock is checked against receipt time and again after quotes. Quote timestamps
+must pass both receipt-time and current-time freshness; processing delay is not future tolerance.
 Missing/extra quote, wrong exchange, invalid/crossed price or invalid size fails the observation.
 Positive integer size is a shape check only, never unit normalization or liquidity certification.
 

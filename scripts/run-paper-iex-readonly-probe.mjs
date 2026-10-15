@@ -85,9 +85,9 @@ function preflight(config, approval, env) {
   check(config.reviewedCodeSha256 === reviewedCodeSha256(), 'REVIEWED_CODE_MISMATCH');
   const scope = sourceScope(config);
   check(typeof config.outputDirectory === 'string' && path.isAbsolute(config.outputDirectory), 'DIRECTORY_INVALID');
-  const output = path.resolve(config.outputDirectory);
+  const output = path.resolve(config.outputDirectory), source = path.resolve(config.sourceDirectory);
   privateDirectory(path.dirname(output));
-  check(output !== config.sourceDirectory && !output.startsWith(`${config.sourceDirectory}${path.sep}`), 'DIRECTORY_INVALID');
+  check(output !== source && !output.startsWith(`${source}${path.sep}`), 'DIRECTORY_INVALID');
   try { fs.lstatSync(output); throw new ProbeError('ATTEMPT_EXISTS'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const credentials = { key: env.ALPACA_KEY_ID, secret: env.ALPACA_SECRET_KEY };
   check(Object.values(credentials).every(v => typeof v === 'string' && v.trim()), 'CREDENTIALS_MISSING');
@@ -101,14 +101,16 @@ function checkAccount(data, scope) {
 function checkClock(data, at) {
   let valid = false;
   try { valid = object(data) && typeof data.is_open === 'boolean' && fresh(data.timestamp, at)
-    && ns(data.next_open) > ns(at) && ns(data.next_close) > ns(at); } catch { /* Invalid time is classified below. */ }
+    && ns(data.next_open) > ns(at) && ns(data.next_close) > ns(at)
+    && (data.is_open ? ns(data.next_close) < ns(data.next_open) : ns(data.next_open) < ns(data.next_close)); }
+  catch { /* Invalid time is classified below. */ }
   check(valid, 'CLOCK_INVALID'); check(data.is_open, 'MARKET_CLOSED');
 }
-function checkQuotes(data, scope, at) {
+function checkQuotes(data, scope, receivedAt, at) {
   const q = data?.quotes;
   check(object(q) && Object.keys(q).sort().join(' ') === scope.symbols.join(' '), 'QUOTES_INVALID');
   for (const value of Object.values(q)) {
-    check(object(value) && fresh(value.t, at) && value.bx === 'V' && value.ax === 'V'
+    check(object(value) && fresh(value.t, receivedAt) && fresh(value.t, at) && value.bx === 'V' && value.ax === 'V'
       && ['bp', 'ap', 'bs', 'as'].every(k => typeof value[k] === 'number' && Number.isFinite(value[k]) && value[k] > 0)
       && value.bp <= value.ap && Number.isSafeInteger(value.bs) && Number.isSafeInteger(value.as), 'QUOTES_INVALID');
   }
@@ -131,6 +133,8 @@ export async function observePaperIex({ config, approval, env = {}, fetchImpl, c
     const checked = preflight(config, approval, env), scope = checked.scope; output = checked.output;
     transport = createScopedPaperTransport({ credentials: checked.credentials, fetchImpl, clock, deadlineMs: 300000 });
     fs.mkdirSync(output, { mode: 0o700 }); created = true;
+    const parent = fs.openSync(path.dirname(output), 'r');
+    try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
     writeExclusive(output, 'attempt.json', { schemaVersion: result.schemaVersion, status: 'ATTEMPT_RESERVED_NO_RETRY',
       sourceManifestSha256: config.sourceManifestSha256, reviewedCodeSha256: config.reviewedCodeSha256,
       maximumRequests: { account: 1, clock: 1, quotes: 1, total: 3 }, ...SAFETY });
@@ -149,9 +153,10 @@ export async function observePaperIex({ config, approval, env = {}, fetchImpl, c
       return r;
     };
     checkAccount((await read('account')).data, scope); result.accountPinMatched = true;
-    const clockData = (await read('clock')).data; checkClock(clockData, clock.now());
+    const clockReceipt = await read('clock'), clockData = clockReceipt.data;
+    checkClock(clockData, clockReceipt.retrievedAt); checkClock(clockData, clock.now());
     const quotes = await read('quotes'); checkClock(clockData, clock.now());
-    result.quoteShapeSha256 = checkQuotes(quotes.data, scope, clock.now()); result.quoteRows = 5;
+    result.quoteShapeSha256 = checkQuotes(quotes.data, scope, quotes.retrievedAt, clock.now()); result.quoteRows = 5;
     result.status = 'OBSERVATION_COMPLETE_UNITS_UNVERIFIED';
   } catch (error) { result.status = safeError(error); }
   result.requestBudgetCompliant = result.requestCounts.total <= 3 && ['account', 'clock', 'quotes'].every(k => result.requestCounts[k] <= 1);

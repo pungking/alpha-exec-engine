@@ -40,13 +40,25 @@ function source(f) {
   return { directory, data, persist };
 }
 async function run({ change = () => {}, tamper = () => {}, response, configChange = {}, envChange = {}, approval = APPROVAL,
-  expected = 'OBSERVATION_COMPLETE_UNITS_UNVERIFIED', requests = 3, inspect = () => {} } = {}) {
+  expected = 'OBSERVATION_COMPLETE_UNITS_UNVERIFIED', requests = 3, inspect = () => {}, configure = () => {}, failParentSync = false } = {}) {
   const f = paperFixture(), s = source(f); change(s.data, f); const pin = s.persist(); tamper(s.directory);
   const before = Object.fromEntries(fs.readdirSync(s.directory).map(n => [n, sha(fs.readFileSync(path.join(s.directory, n)))]));
   const config = { sourceDirectory: s.directory, sourceManifestSha256: pin, outputDirectory: path.join(root, `attempt-${cases++}`),
     reviewedCodeSha256: reviewedCodeSha256(), ...configChange };
+  configure(config, s, f);
   const calls = [];
+  let parentSynced = false;
+  const parent = fs.statSync(path.dirname(config.outputDirectory)), originalSync = fs.fsyncSync;
+  fs.fsyncSync = fd => {
+    const st = fs.fstatSync(fd);
+    if (st.isDirectory() && st.dev === parent.dev && st.ino === parent.ino) {
+      if (failParentSync) throw Error('fixture-parent-sync-failure');
+      parentSynced = true;
+    }
+    return originalSync(fd);
+  };
   const fetchImpl = async (url, options) => {
+    assert.equal(parentSynced, true, 'attempt parent must be durable before network');
     assert.ok(fs.existsSync(path.join(config.outputDirectory, 'attempt.json')));
     assert.equal(options.method, 'GET'); assert.equal(options.redirect, 'error'); assert.ok(options.signal);
     const u = new URL(url), group = u.pathname.endsWith('/quotes/latest') ? 'quotes' : u.pathname.split('/').at(-1);
@@ -55,10 +67,12 @@ async function run({ change = () => {}, tamper = () => {}, response, configChang
     if (group === 'quotes') { assert.equal(u.searchParams.get('feed'), 'iex'); assert.equal(u.searchParams.get('currency'), 'USD');
       assert.deepEqual(u.searchParams.get('symbols').split(','), f.assets.map(a => a.symbol).sort()); }
     calls.push(group);
-    const override = response?.(group, f.bodies[group], calls);
+    const override = response?.(group, f.bodies[group], calls, f);
     return override ?? new Response(JSON.stringify(f.bodies[group]));
   };
-  const result = await observePaperIex({ config, env: { ...env, ...envChange }, approval, fetchImpl, clock: f.clock });
+  let result;
+  try { result = await observePaperIex({ config, env: { ...env, ...envChange }, approval, fetchImpl, clock: f.clock }); }
+  finally { fs.fsyncSync = originalSync; }
   assert.equal(result.status, expected); assert.equal(calls.length, requests); assert.equal(result.requestCounts.total, requests);
   assert.equal(result.requestBudgetCompliant, true); assert.equal(result.executionReadinessEvaluated, false);
   assert.equal(result.quoteSizeUnitsVerified, false); assert.equal(result.currentPortfolioVerified, false);
@@ -89,6 +103,9 @@ try {
     assert.deepEqual(fs.readFileSync(path.join(config.outputDirectory, 'result.json')), saved);
   } });
   const a = await run(), b = await run(); assert.deepEqual(a, b);
+  await run({ failParentSync: true, expected: 'INPUT_IO_OR_INTERNAL_FAILURE', requests: 0 });
+  await run({ configure: (c, s) => { c.sourceDirectory = s.directory + '/'; c.outputDirectory = path.join(s.directory, 'forbidden-output'); },
+    expected: 'DIRECTORY_INVALID', requests: 0 });
   await run({ approval: 'old approval', expected: 'APPROVAL_REQUIRED', requests: 0 });
   await run({ envChange: { ALPACA_KEY_ID: '' }, expected: 'CREDENTIALS_MISSING', requests: 0 });
   for (const [key, value] of Object.entries({ ALPHA_ENV: 'LIVE', READ_ONLY: 'false', EXEC_ENABLED: 'true', ALPACA_BASE_URL: 'https://api.alpaca.markets', GUARD_EXECUTE_FLATTEN: 'true' }))
@@ -100,7 +117,16 @@ try {
   await run({ change: d => { delete d['order-idempotency.json'].orders['private-key-4']; }, expected: 'TARGET_COUNT_INVALID', requests: 0 });
   await run({ response: (g, body) => g === 'account' ? new Response(JSON.stringify({ ...body, id: 'wrong-account' })) : undefined,
     expected: 'ACCOUNT_PIN_MISMATCH', requests: 1 });
-  await run({ change: (_, f) => { f.bodies.clock.is_open = false; }, expected: 'MARKET_CLOSED', requests: 2 });
+  await run({ change: (_, f) => { f.bodies.clock.is_open = false; f.bodies.clock.next_close = '2026-10-12T20:00:00Z'; }, expected: 'MARKET_CLOSED', requests: 2 });
+  await run({ change: (_, f) => { f.bodies.clock.next_open = '2026-10-09T16:00:00Z'; }, expected: 'CLOCK_INVALID', requests: 2 });
+  for (const group of ['clock', 'quotes']) await run({ response: (g, body, _, f) => {
+    if (g !== group) return;
+    if (group === 'clock') body.timestamp = '2026-10-09T15:00:00.000000001Z';
+    else body.quotes.FIX0.t = '2026-10-09T15:00:00.000000001Z';
+    let afterReceipt = false;
+    f.clock.now = () => { const at = afterReceipt ? '2026-10-09T15:00:00.001Z' : '2026-10-09T15:00:00.000Z'; afterReceipt = true; return at; };
+    return new Response(JSON.stringify(body));
+  }, expected: group === 'clock' ? 'CLOCK_INVALID' : 'QUOTES_INVALID', requests: group === 'clock' ? 2 : 3 });
   for (const timestamp of ['invalid', '2026-02-30T15:00:00Z', '2026-10-09T14:59:29Z', '2026-10-09T15:00:00.000000001Z'])
     await run({ change: (_, f) => { f.bodies.clock.timestamp = timestamp; }, expected: 'CLOCK_INVALID', requests: 2 });
   for (const mutate of [q => { q.FIX0.t = null; }, q => { q.FIX0.t = '2026-10-09T14:59:29Z'; },
