@@ -2,8 +2,10 @@
 
 Goal: PAPER_SCOPED_CLOSEOUT_OPERATIONAL_BINDING_CLOSURE_V1
 Code baseline: e313185b9744f122bf36c9b5b5abcede90c42252
-Status: DRAFT_FOR_OPERATOR_REVIEW; implementation and runtime are NOT authorized.
+Status: OPERATOR_DESIGN_APPROVED_SOURCE_CONTRACT_UNRESOLVED.
 Design-writing approval: 2026-10-16, existing Mac as the single execution host.
+Written-spec approval: 2026-10-16; official source-contract research only.
+Implementation, broker access, state adoption, orders and activation are NOT authorized.
 
 ## 1. Outcome and boundary
 
@@ -19,11 +21,12 @@ management reference and all unscoped positions remain outside target authority.
 Do not revive the withdrawn historical-input goal or claim missing originals were
 recovered. Normal Stage6 entry/protection/holding/exit automation is separate.
 
-Only this document is authorized now. No runtime code, dependency, daemon,
-credential access, network capture, state adoption, broker action or settings
-change is part of writing it. Subsequent implementation requires written-spec
-review, then a written plan and execution-method approval. Runtime requires a
-separate exact scoped execution approval under AGENTS.md.
+This document and public official-document research are authorized now. No runtime
+code, dependency, daemon, credential access, broker/market-data capture, state
+adoption, broker action or settings change is included. The operator has approved
+the written architecture, not a resolved source contract. Subsequent implementation
+requires source-contract closure, a written plan and execution-method approval.
+Runtime requires a separate exact scoped execution approval under AGENTS.md.
 
 ## 2. Verified starting point
 
@@ -301,3 +304,47 @@ Reviewed 2026-10-16; documentation is not an account runtime proof:
 No source entitlement, host clock, current writer exclusivity, custody adoption or
 order state is certified by this document. These cannot be verified from the
 available information. Do not print private inputs to obtain review approval.
+
+## 11. Official source review outcome
+
+Review date: 2026-10-16. Result: SOURCE_INITIAL_STATE_AND_CONTINUITY_UNVERIFIED.
+This is a bounded documentation review, not proof that the provider lacks these
+capabilities. No authenticated request, stream connection or live RSS fetch ran.
+
+| Source | Established contract | Limitation for this design |
+| --- | --- | --- |
+| [Stock stream](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data) | Status events include tape-specific halt/resume codes and event time; access depends on subscription | No reviewed initial-state snapshot, all-symbol baseline completion or gap-recovery guarantee; IEX quote access does not establish account status-channel entitlement |
+| [Stream protocol](https://docs.alpaca.markets/us/docs/streaming-market-data) | Subscription acknowledgements describe subscribed channels; slow clients can disconnect without a preceding error | An acknowledgement is not a current-status snapshot; the reviewed protocol does not document replay cursor, sequence-gap recovery or status freshness watermark |
+| [Price snapshot](https://docs.alpaca.markets/us/reference/stocksnapshotsingle) | Latest trade/quote and minute/daily/previous bars | No documented current halt-state snapshot in this response description |
+| [Historical status reply](https://forum.alpaca.markets/t/is-it-possible-to-query-for-historical-trade-quote-statuses/15067) | Alpaca's September 2024 reply said historical halt/resume queries were unavailable | Historical statement, not a current capability guarantee; cannot assume a historical backfill path |
+| [Halted-order reply](https://forum.alpaca.markets/t/order-status-during-halt/17962) | Alpaca's October 2025 reply describes accepted orders held pending during a halt | Acceptance is not proof of tradability or execution; do not assume broker rejection eliminates the gap. PAPER parity is not established by this reply |
+| [Nasdaq RSS documentation](https://classic.nasdaqtrader.com/Trader.aspx?id=TradeHaltRSS) | Includes Nasdaq and other exchange listings; refreshed once per minute with no faster querying | Does not establish the existing 30-second current-state requirement; a fresh HTTP retrieval cannot make the underlying source fresh |
+| [Nasdaq query definitions](https://classic.nasdaqtrader.com/snippets/tradehaltaccordion.html) | Default current query is described by halt day; historical/resumption-date queries are separate | Absence in one daily result cannot prove absence of an earlier continuing halt |
+
+Keep bootstrap UNKNOWN. Do not promote subscription success, silence, fresh quotes,
+asset eligibility or a missing RSS row to NOT_HALTED. Quotation resumption remains
+different from trading resumption. An event's timestamp and a proven current
+coverage interval remain separate; connection health alone cannot prove coverage.
+Do not buy SIP or add another provider assuming it solves initialization/replay.
+
+### Single next dependency
+
+Obtain an attributable current Alpaca contract for a Basic/PAPER client covering:
+
+1. Initial state for a target already halted before subscription, including
+   overnight halts and a machine-readable baseline-completion/as-of marker.
+2. Status coverage for CTA and UTP listed targets on IEX versus venue-only status,
+   and whether Basic/PAPER has the required entitlement without an upgrade.
+3. Disconnect/slow-client recovery: sequence/cursor/replay or a documented fresh
+   snapshot alternative, with a bound that can support the approved age limit.
+4. Meaning of no status messages, timestamp basis and stale/partial source detection.
+
+Request documentation/schema references rather than credentials or portfolio
+details. A local support-question draft is prepared but has not been sent. Do not
+repeat account/position/quote captures: they cannot answer this source-contract gap.
+If the provider cannot supply the contract, return one explicit source/policy
+decision to the operator; do not silently relax the guard or start another audit.
+
+Source review is finished; source eligibility is NOT established. Full operational
+binding, an executable implementation plan and the parent goal remain incomplete.
+No wait for a natural RTH run is needed to resolve this documentation dependency.
