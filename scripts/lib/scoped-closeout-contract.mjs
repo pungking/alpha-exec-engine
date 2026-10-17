@@ -1,6 +1,7 @@
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
 import { decimalRatio as ratio, decimalText, withinCap, add, multiply, compare, ceilToTick } from './closeout-decimal.mjs';
 import { assessSourceBindings, isObservedSnapshot } from './scoped-paper-evidence.mjs';
+import { validateOperationalConfiguration } from './scoped-paper-operational.mjs';
 import path from 'node:path';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -56,28 +57,32 @@ function validateInput(input, real) {
   const scope = freeze(structuredClone(input)); scopes.add(scope); return scope;
 }
 
+export function validateScopedPaperAuthorityFields(config) {
+  if (config.notifications !== undefined) requireContract(exact(config.notifications, 'destinationSha256 sourceRunId headSha')
+    && hash(config.notifications.destinationSha256) && /^\d+$/.test(config.notifications.sourceRunId)
+    && /^[a-f0-9]{40}$/.test(config.notifications.headSha), 'NOTIFICATION_AUTHORITY_INVALID');
+  validateInput(config.input, true);
+  requireContract(typeof config.directory === 'string' && path.isAbsolute(config.directory)
+    && exact(config.sourceFile, 'path sha256') && path.isAbsolute(config.sourceFile.path)
+    && config.sourceFile.sha256 === config.input.sourceSha256, 'SOURCE_PIN_INVALID');
+  requireContract(Array.isArray(config.codeFiles) && config.codeFiles.length > 0
+    && config.codeFiles.every(f => exact(f, 'path sha256') && path.isAbsolute(f.path) && hash(f.sha256))
+    && new Set(config.codeFiles.map(f => f.path)).size === config.codeFiles.length
+    && digest(config.codeFiles) === config.input.codeSha256, 'CODE_PIN_INVALID');
+  const w = config.writerExclusion;
+  requireContract(exact(w, 'basis evidenceSha256 accountSha256 session expiresAt')
+    && w.basis === 'REVIEWED_ACCOUNT_WIDE_WRITER_EXCLUSION' && hash(w.evidenceSha256)
+    && w.accountSha256 === config.input.accountSha256 && w.session === config.input.authority.session
+    && time(w.expiresAt) >= time(config.input.authority.expiresAt), 'WRITER_EXCLUSION_INVALID');
+}
 export function validateScopedPaperConfiguration(config) {
   try {
     requireContract(exact(config, `input bindings directory sourceFile codeFiles writerExclusion${config?.notifications === undefined ? '' : ' notifications'}`), 'CONFIG_INVALID');
-    if (config.notifications !== undefined) requireContract(exact(config.notifications, 'destinationSha256 sourceRunId headSha')
-      && hash(config.notifications.destinationSha256) && /^\d+$/.test(config.notifications.sourceRunId)
-      && /^[a-f0-9]{40}$/.test(config.notifications.headSha), 'NOTIFICATION_AUTHORITY_INVALID');
-    validateInput(config.input, true);
-    requireContract(typeof config.directory === 'string' && path.isAbsolute(config.directory)
-      && exact(config.sourceFile, 'path sha256') && path.isAbsolute(config.sourceFile.path)
-      && config.sourceFile.sha256 === config.input.sourceSha256, 'SOURCE_PIN_INVALID');
-    requireContract(Array.isArray(config.codeFiles) && config.codeFiles.length > 0
-      && config.codeFiles.every(f => exact(f, 'path sha256') && path.isAbsolute(f.path) && hash(f.sha256))
-      && new Set(config.codeFiles.map(f => f.path)).size === config.codeFiles.length
-      && digest(config.codeFiles) === config.input.codeSha256, 'CODE_PIN_INVALID');
-    const b = config.bindings, w = config.writerExclusion;
+    validateScopedPaperAuthorityFields(config);
+    const b = config.bindings;
     requireContract(exact(b, 'proof proofSha256 rawAccountIdSha256 rawAccountHashBasis accountHashBasis')
       && hash(b.proofSha256) && digest(b.proof) === b.proofSha256 && hash(b.rawAccountIdSha256)
       && b.rawAccountHashBasis === 'RAW_ACCOUNT_ID_UTF8' && b.accountHashBasis === 'CANONICAL_PAPER_ACCOUNT_ID', 'SOURCE_BINDING_INVALID');
-    requireContract(exact(w, 'basis evidenceSha256 accountSha256 session expiresAt')
-      && w.basis === 'REVIEWED_ACCOUNT_WIDE_WRITER_EXCLUSION' && hash(w.evidenceSha256)
-      && w.accountSha256 === config.input.accountSha256 && w.session === config.input.authority.session
-      && time(w.expiresAt) >= time(config.input.authority.expiresAt), 'WRITER_EXCLUSION_INVALID');
     return freeze({ status: 'PASS', reasons: [], evidenceHashes: [digest(config)] });
   } catch (error) {
     return freeze({ status: 'BLOCKED', reasons: [/^SCOPED_CLOSEOUT_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_CLOSEOUT_CONFIG_INVALID'], evidenceHashes: [] });
@@ -107,6 +112,7 @@ export function authorizeScopedPaperInvocation({ config, approval, clock }) {
 }
 export function assertScopedPaperInvocation(capability, { config, clock }) {
   const saved = capabilities.get(capability);
+  if (saved?.mode === 'OPERATIONAL') return assertOperationalInvocation(capability, { config, clock });
   requireContract(saved && digest(saved.config) === digest(config), 'AUTHORITY_INVALID');
   processGate();
   requireContract(time(saved.approval.approvedAt) <= time(clock.now()) && time(config.input.authority.validFrom) <= time(clock.now())
@@ -117,12 +123,71 @@ export function assertScopedPaperInvocation(capability, { config, clock }) {
 export function validateObservedCloseoutInput(input, capability) {
   const saved = capabilities.get(capability);
   requireContract(saved && digest(saved.config.input) === digest(input), 'AUTHORITY_INVALID');
+  if (saved.mode === 'OPERATIONAL') {
+    saved.scope ??= validateInput(input, true);
+    return saved.scope;
+  }
   const scope = validateInput(input, true);
   observedBindings.set(scope, { sha256: saved.config.bindings.proofSha256, feed: saved.config.bindings.proof.feed }); return scope;
 }
 function snapshotMatches(scope, snapshot) {
+  const binding = observedBindings.get(scope);
   return snapshot?.evidenceMode === scope.evidenceMode && (!observed(scope)
-    || (isObservedSnapshot(snapshot) && snapshot.sourceBindingsSha256 === observedBindings.get(scope)?.sha256));
+    || (isObservedSnapshot(snapshot) && snapshot.sourceBindingsSha256 === binding?.sha256
+      && (!binding?.operational || binding.snapshot === snapshot)));
+}
+
+export function authorizeOperationalInvocation({ config, approval, clock }) {
+  requireContract(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
+  processGate();
+  requireContract(exact(approval, 'kind phrase stableScopeSha256 approvedAt expiresAt rollbackPlanSha256')
+    && approval.kind === 'DIRECT_SCOPED_OPERATIONAL_INVOCATION' && approval.phrase === 'CONFIRM LIVE EXECUTION'
+    && approval.stableScopeSha256 === digest(config) && hash(approval.rollbackPlanSha256)
+    && time(approval.expiresAt) <= time(config.input.authority.expiresAt), 'AUTHORITY_INVALID');
+  const saved = { mode: 'OPERATIONAL', config: freeze(structuredClone(config)), approval: freeze(structuredClone(approval)),
+    start: clock.monotonicMs(), lastElapsed: 0, lastNow: time(clock.now()), generation: 0, scope: null, current: null };
+  checkOperationalTime(saved, clock);
+  const capability = Object.freeze({}); capabilities.set(capability, saved); return capability;
+}
+function checkOperationalTime(saved, clock) {
+  const now = time(clock.now()), elapsed = clock.monotonicMs() - saved.start;
+  requireContract(Number.isFinite(elapsed) && elapsed >= saved.lastElapsed && elapsed <= 283000
+    && now >= saved.lastNow && now >= time(saved.approval.approvedAt)
+    && now >= time(saved.config.input.authority.validFrom)
+    && time(saved.approval.expiresAt) - now >= 17000, 'AUTHORITY_EXPIRED');
+  saved.lastNow = now; saved.lastElapsed = elapsed;
+}
+function operationalCapability(capability, config, clock) {
+  const saved = capabilities.get(capability);
+  requireContract(saved?.mode === 'OPERATIONAL' && (!config || digest(config) === digest(saved.config)), 'AUTHORITY_INVALID');
+  processGate(); checkOperationalTime(saved, clock); return saved;
+}
+export function assertOperationalInvocation(capability, { config, clock }) {
+  const saved = operationalCapability(capability, config, clock);
+  requireContract(saved.current && assessSourceBindings(saved.current, saved.scope, clock).status === 'PASS', 'SOURCE_BINDING_INVALID');
+  return true;
+}
+export function bindOperationalObservation(capability, { scope, observation, clock }) {
+  const saved = operationalCapability(capability, null, clock);
+  requireContract(saved.scope === scope && scopes.has(scope), 'SCOPE_INVALID');
+  // A rejected replacement invalidates the old send proof, rather than silently falling back to it.
+  saved.current = null; observedBindings.delete(scope);
+  requireContract(exact(observation, 'sourceGeneration snapshot bindings') && Number.isSafeInteger(observation.sourceGeneration)
+    && observation.sourceGeneration === saved.generation + 1, 'GENERATION_INVALID');
+  const { snapshot, bindings } = observation, p = bindings?.proof, policy = saved.config.sourcePolicy;
+  requireContract(isObservedSnapshot(snapshot) && snapshot.complete === true && snapshot.accountSha256 === scope.accountSha256
+    && snapshot.sourceSha256 === scope.sourceSha256 && snapshot.sourceBindingsSha256 === bindings?.proofSha256, 'OBSERVATION_INVALID');
+  requireContract(exact(bindings, 'proof proofSha256 rawAccountIdSha256 rawAccountHashBasis accountHashBasis')
+    && digest({ rawAccountIdSha256: bindings.rawAccountIdSha256, rawAccountHashBasis: bindings.rawAccountHashBasis,
+      accountHashBasis: bindings.accountHashBasis }) === digest(saved.config.accountBinding)
+    && p?.stableScopeSha256 === digest(saved.config) && p.sourceGeneration === observation.sourceGeneration
+    && p.sourceContractSha256 === policy.contractFile.sha256 && p.riskPolicySha256 === policy.riskPolicyFile.sha256
+    && p.clockPolicySha256 === policy.clockPolicyFile.sha256 && p.feed === policy.feed && p.currency === policy.currency
+    && (p.feed !== 'iex' || (p.quoteCoverage === policy.quoteCoverage && p.acceptsNonNbboPaperEvidence === true))
+    && assessSourceBindings(bindings, scope, clock).status === 'PASS', 'SOURCE_BINDING_INVALID');
+  saved.current = freeze(structuredClone(bindings)); saved.generation = observation.sourceGeneration;
+  observedBindings.set(scope, { sha256: bindings.proofSha256, feed: p.feed, snapshot, operational: true });
+  return true;
 }
 
 function validateTime(scope, snapshot, clock) {

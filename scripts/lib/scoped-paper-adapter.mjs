@@ -14,7 +14,7 @@ import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
-  './scoped-closeout-storage.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
+  './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
   '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',

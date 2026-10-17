@@ -75,3 +75,21 @@ export function invocationFixture() {
     configSha256: hash(config), approvedAt: at, expiresAt: f.input.authority.expiresAt, rollbackPlanSha256: hash('fixture-rollback') };
   return { ...f, config, approval };
 }
+
+export function operationalFixture() {
+  const f = useIexProof(invocationFixture(), 'shares', '1');
+  const { bindings, ...base } = f.config;
+  const { proof, proofSha256, ...accountBinding } = bindings;
+  const pin = name => ({ path: `/private/tmp/fixture-${name}.json`, sha256: hash(['fixture', name]) });
+  const config = { schemaVersion: 'scoped-paper-operational-invocation-v1', ...base, accountBinding,
+    sourcePolicy: { feed: 'iex', currency: 'USD', quoteCoverage: 'IEX_SINGLE_EXCHANGE', acceptsNonNbboPaperEvidence: true,
+      contractFile: pin('source-contract'), riskPolicyFile: pin('risk-policy'), clockPolicyFile: pin('clock-policy') },
+    custody: { basis: 'REVIEWED_SINGLE_HOST_PAPER_CUSTODY', hostIdSha256: hash('fixture-host'), evidenceFile: pin('custody') },
+    oversight: { validFrom: at, expiresAt: '2026-10-09T15:05:00.000Z', maxCycles: 2, intervalMs: 1000,
+      requestBudget: { account: 1, lookup: 10, positions: 2, orders: 2, clock: 2, total: 17 },
+      handoffDeadline: '2026-10-09T15:05:00.000Z', operatorAttendanceFile: pin('attendance') } };
+  const approval = { kind: 'DIRECT_SCOPED_OPERATIONAL_INVOCATION', phrase: 'CONFIRM LIVE EXECUTION',
+    stableScopeSha256: hash(config), approvedAt: at, expiresAt: config.input.authority.expiresAt,
+    rollbackPlanSha256: hash('fixture-rollback') };
+  return { ...f, config, approval };
+}

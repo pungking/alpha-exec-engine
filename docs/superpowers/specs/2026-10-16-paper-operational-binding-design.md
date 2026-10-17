@@ -2,10 +2,12 @@
 
 Goal: PAPER_SCOPED_CLOSEOUT_OPERATIONAL_BINDING_CLOSURE_V1
 Code baseline: e313185b9744f122bf36c9b5b5abcede90c42252
-Status: OPERATOR_DESIGN_APPROVED_SOURCE_CONTRACT_UNRESOLVED.
+Status: OPERATOR_OFFLINE_IMPLEMENTATION_APPROVED_SOURCE_CONTRACT_UNRESOLVED.
 Design-writing approval: 2026-10-16, existing Mac as the single execution host.
 Written-spec approval: 2026-10-16; official source-contract research only.
-Implementation, broker access, state adoption, orders and activation are NOT authorized.
+Sequencing amendment approved: 2026-10-18, Native implementation/offline tests/PR/CI
+under the revised plan. Broker access, state adoption, orders and activation are
+NOT authorized.
 
 ## 1. Outcome and boundary
 
@@ -21,11 +23,13 @@ management reference and all unscoped positions remain outside target authority.
 Do not revive the withdrawn historical-input goal or claim missing originals were
 recovered. Normal Stage6 entry/protection/holding/exit automation is separate.
 
-This document and public official-document research are authorized now. No runtime
-code, dependency, daemon, credential access, broker/market-data capture, state
-adoption, broker action or settings change is included. The operator has approved
-the written architecture, not a resolved source contract. Subsequent implementation
-requires source-contract closure, a written plan and execution-method approval.
+The original 2026-10-16 approval covered this document and public official-document
+research only. The 2026-10-18 sequencing amendment permits provider-independent
+implementation and offline verification under the reviewed Native plan before
+source-contract closure. The operator has not approved a resolved source contract.
+No dependency, daemon, real credential access, broker/market-data capture, state
+adoption, broker action or settings change is included. Source-dependent mapping
+and full operational readiness still require source-contract closure.
 Runtime requires a separate exact scoped execution approval under AGENTS.md.
 
 ## 2. Verified starting point
@@ -250,7 +254,9 @@ the reviewed implementation plan and later runtime approval. No retry/pagination
 
 Finite sequence:
 
-1. Review this written architecture and resolve the trading-status source contract.
+1. Review this written architecture; retain the unresolved trading-status contract
+   as a source-mapping/readiness gate, not an offline-development prerequisite
+   (sequencing amendment approved 2026-10-18).
 2. Review one implementation plan covering stable authority/current evidence,
    source production, custody/writer preflight, oversight and caller tests together.
 3. Implement on a clean branch with offline fixtures, independent review and CI.
