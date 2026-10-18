@@ -48,6 +48,15 @@ jobs:
         env:
           NODE_OPTIONS: --require=./scripts/fixtures/scoped-paper-offline.cjs
         run: npm run ops:test:scoped-paper-adapter
+      - name: Scoped PAPER operational contracts (network denied, synthetic files only)
+        env:
+          NODE_OPTIONS: --require=./scripts/fixtures/scoped-paper-offline.cjs
+          ALPHA_ENV: PAPER
+          READ_ONLY: "true"
+          EXEC_ENABLED: "false"
+          LIVE_ORDER_SUBMIT_ENABLED: "false"
+          MARKET_GUARD_MODE: observe
+        run: npm run ops:test:scoped-paper-operational
       - name: PAPER IEX read-only probe (network denied, synthetic inputs only)
         run: NODE_OPTIONS="--require=$PWD/scripts/fixtures/scoped-paper-offline.cjs" npm run ops:test:paper-iex-readonly-probe
       - name: Automatic trigger execution safety contract

@@ -92,6 +92,8 @@ Do not change generic entry/protection consumers merely to accept management rec
 - [ ] Verify unknown source rejects before broker credential/transport creation for a new submission attempt; a previously authorized order observer has a separate authority and cannot regain submission privilege.
 - [ ] Run operational, evidence and adapter regression tests; commit: `feat: bind operational evidence with unresolved-source rejection`.
 
+Local-byte substep implemented: `loadOperationalEvidenceFiles` and `verifyOperationalEvidenceFiles` reuse the existing code/source reader for owner-only source-contract, risk, clock, custody and attendance documents. Exact bytes and revalidation pass the offline fixtures; the result explicitly does not establish source readiness. The semantic readiness evaluator and real source producer remain incomplete.
+
 Risk/time/source rules have no permissive defaults. All applicable existing risk dimensions must have verified inputs or a separately approved reduction-only exception; no exception is approved here. Status silence, tradable=true, fresh quotes, clock.is_open, subscription acknowledgment or missing RSS rows never establish NOT_HALTED.
 
 ## Task 3: Custody, writer fence and observation-only store access
@@ -146,7 +148,7 @@ The existing 3-second/8-MiB per-response bounds remain. Observation windows are 
 
 - [ ] Establish and record exact official initialization/current-state, entitlement, coverage and gap-recovery rules, including how the approved 30-second basis is satisfied. A support reply is evidence to evaluate, not executable instructions or sufficient merely because it arrived.
 - [ ] Implement the actual source mapping/producer inside the existing structure only after those facts exist. Add fixtures derived from the documented schema and malformed/unknown/gap cases. Keep broker runtime access unperformed. If contract evidence remains absent, leave this step unchecked and report `SOURCE_INITIAL_STATE_AND_CONTINUITY_UNVERIFIED`, not complete producer.
-- [ ] Wire both new offline tests into package scripts and `.github/workflows/ci.yml` using `scripts/fixtures/scoped-paper-offline.cjs`. No secrets, raw artifacts or private scopes in CI.
+- [x] Wire the new operational/byte-binding/oversight offline tests into package scripts and `.github/workflows/ci.yml` using `scripts/fixtures/scoped-paper-offline.cjs`. No secrets, raw artifacts or private scopes in CI.
 - [ ] Run the full validation matrix below, then one independent whole-branch review using the approved Native method. A usage-limit failure is NOT a completed review. Address concrete findings and rerun affected checks.
 - [ ] Commit, non-force push and create a single execution-repo PR only after implementation approval. Include safety, additive schema/compatibility, source limits, tests and rollback sections; attach the PR. Merge only after required CI passes. No runtime dispatch/rerun.
 - [ ] Confirm reviewed main commit, post-merge CI and clean intended checkout. Preserve old v1/v2 contracts, original data and unresolved runtime gates. No production state migration is part of the merge.
@@ -158,8 +160,7 @@ Run with scrubbed process environment, safe flags, existing network-denial prelo
 ```text
 npm run ops:test:scoped-paper-adapter
 npm run ops:test:scoped-closeout-contract
-node scripts/test-scoped-paper-operational.mjs
-node scripts/test-scoped-paper-oversight.mjs
+npm run ops:test:scoped-paper-operational
 npm run ops:test:order-idempotency-storage
 npm run ops:test:order-ledger-storage
 npm run ops:test:order-state-consistency
@@ -184,7 +185,7 @@ git diff --check
 | --- | --- | --- |
 | Existing component behavior | Fresh network-denied adapter/contract suites | PASS on inspected HEAD; not new operational implementation |
 | Revised sequencing / implementation | Operator requested immediate next-stage work after revised plan request; preserve Native method | APPROVED_OFFLINE_ONLY_2026_10_18 |
-| Full static binding | Tasks 1-6 implemented, fixtures, independent review, PR/CI | NOT_IMPLEMENTED |
+| Full static binding | Tasks 1-6 implemented, fixtures, independent review, PR/CI | PARTIAL: Tasks 1/3/4 locally verified; Tasks 2/5/6 incomplete |
 | Real source validity | Documented current-state/continuity + authentic allowed observation | UNVERIFIED |
 | Operational custody/exclusion | Exact state adoption, current portfolio, single-writer/attendance evidence | NOT_AUTHORIZED_NOT_VERIFIED |
 | PAPER execution | Separate exact session/scope approval plus all current gates | NOT_AUTHORIZED |
