@@ -112,7 +112,7 @@ async function prepared() {
 }
 for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residual', 'canceled', 'unknown-lookup', 'wrong-account',
   'missing-approval', 'records-drift', 'read-failure', 'market-closed', 'expired-submit', 'manual-position-drift',
-  'expired-observation', 'clock-rewind', 'lookup-notfound', 'fill-regression', 'protected-order']) {
+  'expired-observation', 'clock-rewind', 'lookup-notfound', 'fill-regression', 'protected-order', 'early-wakeup']) {
   const p = await prepared();
   try {
     let cycle = 0;
@@ -143,6 +143,7 @@ for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residua
     if (mode === 'expired-observation') p.f.advance(300000);
     if (mode === 'protected-order') p.f.bodies.orders = [{ id: 'unscoped-protection', asset_id: p.records[0].assetId, legs: [{}] }];
     if (mode === 'manual-position-drift') p.f.bodies.positions.push({ asset_id: 'unscoped-asset', symbol: 'OTHER', asset_class: 'us_equity', side: 'long', qty: '1' });
+    if (mode === 'early-wakeup') p.deps.clock.sleep = async () => {};
     if (mode === 'long-window') {
       p.f.config.oversight.intervalMs = 150000;
       const { approval, ...base } = p.authority; approval.authoritySha256 = hash(base);
@@ -159,6 +160,10 @@ for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residua
     assert.ok(p.f.calls.every(c => c.method === 'GET')); assert.ok(p.f.calls.length <= 9);
     assert.equal(result.requestBudgetCompliant, true);
     if (['missing-approval', 'records-drift', 'expired-observation'].includes(mode)) { assert.equal(p.factories(), 0); assert.equal(p.f.calls.length, 0); }
+    else if (mode === 'early-wakeup') {
+      assert.deepEqual(result.reasons, ['SCOPED_ADAPTER_OBSERVATION_WAIT_INVALID']);
+      assert.equal(p.f.calls.length, 5, 'an early wakeup cannot spend the next cycle budget');
+    }
     else if (mode === 'wrong-account') assert.equal(p.f.calls.length, 1, 'bind real account before lookup');
     else if (mode === 'partial-filled' || mode === 'long-window') {
       assert.equal(result.status, 'ATTEMPTED_ORDERS_RECONCILED'); assert.equal(result.flatReconciledRows, 1);

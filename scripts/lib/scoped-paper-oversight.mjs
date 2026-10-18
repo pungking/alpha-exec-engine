@@ -39,7 +39,7 @@ function observationAuthority(authority, records, clock) {
   guard(); return { scope, policy, guard };
 }
 async function waitForObservation(clock, intervalMs, guard) {
-  const remaining = guard(), controller = new AbortController(); let timer;
+  const remaining = guard(), started = clock.monotonicMs(), controller = new AbortController(); let timer;
   try {
     await Promise.race([
       Promise.resolve().then(() => clock.sleep(intervalMs, { signal: controller.signal })),
@@ -48,6 +48,7 @@ async function waitForObservation(clock, intervalMs, guard) {
       }, Math.min(intervalMs + 3000, remaining)); }),
     ]);
     guard();
+    check(clock.monotonicMs() - started >= intervalMs, 'OBSERVATION_WAIT_INVALID');
   } finally { clearTimeout(timer); }
 }
 function observedRecord(before, observation, at) {

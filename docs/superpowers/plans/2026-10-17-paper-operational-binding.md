@@ -213,3 +213,11 @@ One independent draft review completed on 2026-10-17 against commit `d9c078a9bc7
 The requested independent recheck of those corrections stopped at a usage limit. Its agent handle was no longer present when checked on 2026-10-18; no live review is waiting to finish. Correction closure remains independently unverified, not PASS. Do not restart agents to bypass the limit or count the initial review as the recheck. This does not replace Task 6's required whole-branch implementation review.
 
 Fresh baseline checks also passed: `typecheck`, idempotency storage (42 rejection cases), order-ledger storage (51 rejection cases), and notification fixtures including scoped dedup/redaction. They used disposable synthetic files/mock senders, broker requests=0 and production state mutation=0. Existing-component PASS does not check off future implementation tasks or establish provider continuity/custody.
+
+## Offline implementation checkpoint (2026-10-19)
+
+- Tasks 1/3/4 are implemented and locally verified. Observation fixtures cover 210 checks, storage 160 checks and stable authority 105 field mutations. No observation may shorten its signed polling interval or hang indefinitely in its wait callback.
+- Task 2 has the local-byte boundary only: 41 tests for code/source pins, private files, aliases, drift and redaction. Pin verification is not semantic source/custody readiness.
+- Task 5 operational submission/oversight/notification composition is still incomplete. Do not fabricate observation approval from a submit approval or change process flags to make a handoff pass.
+- Task 6 offline test wiring and the full local matrix pass; dependency audit reports zero vulnerabilities. Independent whole-branch review, GitHub CI and merge are not yet complete.
+- Official trading-status initialization/continuous coverage, host-clock/risk evidence and actual custody/exclusion/attendance remain runtime requirements. No API, activation or production state mutation was performed by this development checkpoint.
