@@ -110,7 +110,7 @@ export async function withScopedObservationStores({ directory, expectedHashes, a
         hashes: await readHashes(directory), ledger, idem, keys: records.map(r => r.exitIdempotencyKey),
         observationOnly: true, accountSha256: records[0].accountSha256, accountBinding: null, closed: false, poisoned: false, pending: false };
       contexts.set(context, c);
-      try { const result = await task(context); check(!c.poisoned && !c.pending, 'COMMIT_UNCERTAIN'); return result; }
+      try { const result = await task(context, structuredClone(records)); check(!c.poisoned && !c.pending, 'COMMIT_UNCERTAIN'); return result; }
       finally { c.closed = true; }
     });
   } catch (error) { throw Error(/^SCOPED_STORE_[A-Z_]+$/.test(error.message) ? error.message : 'SCOPED_STORE_FAILED'); }

@@ -12,13 +12,16 @@ const decimal = v => typeof v === 'string' && /^(0|[1-9]\d{0,15})(\.\d{1,9})?$/.
 const receipts = new WeakSet();
 const receiptOwners = new WeakMap();
 const transports = new WeakMap();
+const observationTransports = new WeakMap();
 export const isScopedPaperTransport = (value, gate) => transports.has(value) && transports.get(value) === gate;
+export const isScopedPaperObservationTransport = (value, gate) => observationTransports.has(value) && observationTransports.get(value) === gate;
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 export const isScopedPaperReceipt = value => receipts.has(value);
 export const isScopedPaperReceiptForTransport = (value, transport) => receipts.has(value) && receiptOwners.get(value) === transport;
 const seal = (value, transport) => { freeze(value); receipts.add(value); receiptOwners.set(value, transport); return value; };
 const phases = { account: ['account'], initial: ['positions', 'orders', 'clock', 'calendar', 'assets', 'quotes'],
-  presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'], postcheck: ['lookup', 'positions', 'orders', 'clock'], submit: ['submit'] };
+  presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'], postcheck: ['lookup', 'positions', 'orders', 'clock'], submit: ['submit'],
+  observation: ['lookup', 'positions', 'orders', 'clock'] };
 
 function route(request) {
   const { group, phase, routeInput: r, body } = request;
@@ -50,13 +53,25 @@ function route(request) {
   return { url: (group === 'quotes' ? DATA : PAPER) + endpoint, method: group === 'submit' ? 'POST' : 'GET', feed };
 }
 
-export function createScopedPaperTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubmit }) {
+export function createScopedPaperTransport(options) { return createTransport(options); }
+export function createScopedPaperObservationTransport({ oversight, beforeRead, ...options }) {
+  const n = oversight?.maxCycles, budget = oversight?.requestBudget;
+  const expected = { account: 1, lookup: 5 * n, positions: n, orders: n, clock: n, total: 1 + 8 * n };
+  check(Number.isSafeInteger(n) && n > 0 && Number.isSafeInteger(expected.total) && exact(budget, 'account lookup positions orders clock total')
+    && Object.entries(expected).every(([k, v]) => budget[k] === v) && typeof beforeRead === 'function', 'TRANSPORT_CONFIG_INVALID');
+  const duration = Date.parse(oversight.expiresAt) - Date.parse(options.clock?.now());
+  check(Number.isSafeInteger(duration) && duration > 0 && Date.parse(oversight.validFrom) <= Date.parse(options.clock.now()), 'TRANSPORT_CONFIG_INVALID');
+  return createTransport({ ...options, deadlineMs: duration }, { budget: Object.freeze({ ...budget }), beforeRead,
+    expiresAt: Date.parse(oversight.expiresAt) });
+}
+function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubmit }, observation = null) {
   check(typeof fetchImpl === 'function' && typeof clock?.now === 'function' && typeof clock?.monotonicMs === 'function'
-    && Number.isFinite(deadlineMs) && deadlineMs > 0 && deadlineMs <= 300000, 'TRANSPORT_CONFIG_INVALID');
+    && Number.isFinite(deadlineMs) && deadlineMs > 0 && (observation || deadlineMs <= 300000), 'TRANSPORT_CONFIG_INVALID');
   check(exact(credentials, 'key secret') && [credentials.key, credentials.secret].every(v => typeof v === 'string' && v.trim()), 'CREDENTIALS_MISSING');
   const headers = Object.freeze({ 'APCA-API-KEY-ID': credentials.key, 'APCA-API-SECRET-KEY': credentials.secret });
-  const counts = Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0]));
-  const start = clock.monotonicMs(); let stopped = false, reconcileOnly = false, active = null;
+  const budget = observation?.budget ?? BUDGET;
+  const counts = Object.fromEntries(Object.keys(budget).filter(k => k !== 'total').map(k => [k, 0]));
+  const start = clock.monotonicMs(); let stopped = false, reconcileOnly = false, active = null, last = start;
   const transport = Object.freeze({
     counts: () => Object.freeze({ ...counts, total: Object.values(counts).reduce((a, b) => a + b, 0) }),
     async request(input) {
@@ -67,12 +82,15 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         if (active) { active.abort(); check(false, 'CONCURRENT_REQUEST'); }
         const request = structuredClone(input), target = route(request);
         ({ group, phase } = request);
+        check(observation ? (phase === 'account' || phase === 'observation') && target.method === 'GET' : phase !== 'observation', 'ROUTE_INVALID');
         check(!reconcileOnly || phase === 'postcheck', 'TRANSPORT_STOPPED');
-        check(counts[group] < BUDGET[group], 'REQUEST_BUDGET_EXCEEDED');
+        check(counts[group] < budget[group] && (!observation || Object.values(counts).reduce((a, b) => a + b, 0) < budget.total), 'REQUEST_BUDGET_EXCEEDED');
         const before = clock.monotonicMs(); requestedAt = clock.now();
-        check(Number.isFinite(before) && Number.isFinite(start) && before >= start && before - start < deadlineMs
-          && Number.isFinite(Date.parse(requestedAt)), 'CLOCK_INVALID');
+        check(Number.isFinite(before) && Number.isFinite(start) && before >= last && before - start < deadlineMs
+          && Number.isFinite(Date.parse(requestedAt)) && (!observation || Date.parse(requestedAt) < observation.expiresAt), 'CLOCK_INVALID');
+        last = before;
         abort = new AbortController(); active = abort;
+        if (observation) check(await observation.beforeRead(freeze(request)) === true, 'OBSERVATION_GATE_REQUIRED');
         if (group === 'submit') check(typeof beforeSubmit === 'function' && await beforeSubmit(Object.freeze(request.body)) === true, 'SUBMIT_GATE_REQUIRED');
         check(!stopped && !abort.signal.aborted, 'TRANSPORT_STOPPED');
         const dispatchAt = clock.monotonicMs();
@@ -113,9 +131,10 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
           return data;
         };
         const data = await Promise.race([work(), timeout]);
-        retrievedAt = clock.now(); durationMs = clock.monotonicMs() - before;
-        check(!abort.signal.aborted && durationMs >= 0 && durationMs <= 3000
+        retrievedAt = clock.now(); const completedAt = clock.monotonicMs(); durationMs = completedAt - before;
+        check(!abort.signal.aborted && Number.isFinite(completedAt) && completedAt >= dispatchAt && durationMs <= 3000
           && Date.parse(retrievedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
+        last = completedAt;
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null,
           ...(group === 'quotes' ? { feed: target.feed } : {}) }, transport);
       } catch (error) {
@@ -123,7 +142,7 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         else stopped = true;
         abort?.abort();
         const codes = ['ROUTE_INVALID', 'ORDER_INVALID', 'REQUEST_BUDGET_EXCEEDED', 'CLOCK_INVALID', 'ATTEMPT_EXPIRED',
-          'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
+          'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'OBSERVATION_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data: null,
           error: codes.includes(error?.message) ? error.message : 'TRANSPORT_FAILURE' }, transport);
       } finally {
@@ -134,5 +153,7 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
       }
     },
   });
-  transports.set(transport, beforeSubmit); return transport;
+  if (observation) observationTransports.set(transport, observation.beforeRead);
+  else transports.set(transport, beforeSubmit);
+  return transport;
 }
