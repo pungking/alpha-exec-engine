@@ -22,6 +22,7 @@ export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
 const sha = b => createHash('sha256').update(b).digest('hex');
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
 async function pinnedFile(file, privateOnly) {
+  check(await fs.realpath(file.path) === path.resolve(file.path), 'FILE_INVALID');
   const h = await fs.open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const s = await h.stat();
@@ -30,6 +31,7 @@ async function pinnedFile(file, privateOnly) {
     const bytes = await h.readFile(); check(sha(bytes) === file.sha256, 'FILE_HASH_DRIFT'); return bytes;
   } finally { await h.close(); }
 }
+export { pinnedFile as readScopedPaperFile, verifyInputs as verifyScopedPaperInputs };
 async function verifyInputs(config) {
   check(digest(config.codeFiles.map(f => f.path)) === digest(SCOPED_PAPER_REVIEWED_FILES), 'CODE_MANIFEST_INVALID');
   for (const file of config.codeFiles) await pinnedFile(file, false);
