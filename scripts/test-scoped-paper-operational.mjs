@@ -93,6 +93,7 @@ if (!process.argv.includes('--fixture-child')) {
     v => { v.config.sourcePolicy.contractFile.path = 'relative.json'; },
     v => { v.config.accountBinding.rawAccountHashBasis = 'SYMBOL_ONLY'; },
     v => { v.config.custody.basis = 'CACHE_RESTORED'; },
+    v => { v.config.oversight.handoffDeadline = '2026-10-09T15:06:00.000Z'; },
     v => { v.config.oversight.requestBudget.total = 18; },
     v => { v.config.oversight.maxCycles = Infinity; },
     v => { v.config.oversight.intervalMs = 0; },

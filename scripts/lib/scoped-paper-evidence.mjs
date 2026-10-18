@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
 import { decimalRatio, decimalText, compare, multiply } from './closeout-decimal.mjs';
-import { isScopedPaperReceipt } from './scoped-paper-transport.mjs';
+import { isScopedPaperReceipt, isScopedPaperReceiptForTransport } from './scoped-paper-transport.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -10,6 +10,7 @@ const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_EVIDENCE_${code}`); };
 const freeze = v => { if (object(v) || Array.isArray(v)) { Object.values(v).forEach(freeze); Object.freeze(v); } return v; };
 const snapshots = new WeakSet();
+const observationAccounts = new WeakMap();
 export const isObservedSnapshot = value => snapshots.has(value);
 const seal = v => { freeze(v); snapshots.add(v); return v; };
 const ny = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -72,6 +73,22 @@ function interval(r, now) {
 function receipt(receipts, group, now) {
   const rows = receipts.filter(r => r.group === group); check(rows.length === 1, 'RECEIPT_COUNT_INVALID');
   interval(rows[0], now); return rows[0];
+}
+export function bindScopedObservationAccount({ scope, receipt: r, bindings, transport, clock }) {
+  check(isScopedPaperReceiptForTransport(r, transport), 'ACCOUNT_TRANSPORT_INVALID');
+  interval(r, clock.now());
+  check(scope?.environment === 'PAPER' && r.group === 'account' && id(r.data?.id) && r.data.currency === 'USD'
+    && bindings?.rawAccountHashBasis === 'RAW_ACCOUNT_ID_UTF8' && bindings.accountHashBasis === 'CANONICAL_PAPER_ACCOUNT_ID'
+    && createHash('sha256').update(r.data.id).digest('hex') === bindings.rawAccountIdSha256
+    && digest(['PAPER', r.data.id]) === scope.accountSha256, 'ACCOUNT_IDENTITY_INVALID');
+  // Read-only identity remains usable when trading is blocked; it never grants permission to submit.
+  const binding = Object.freeze({});
+  observationAccounts.set(binding, { transport, accountSha256: scope.accountSha256 });
+  return binding;
+}
+export function isScopedObservationAccount(binding, accountSha256, transport) {
+  const saved = observationAccounts.get(binding);
+  return !!saved && saved.accountSha256 === accountSha256 && (transport === undefined || saved.transport === transport);
 }
 export function mapAccountEvidence({ scope, receipt: r, bindings, clock }) {
   interval(r, clock.now()); const a = r.data;

@@ -40,6 +40,7 @@ export function validateOperationalConfiguration(config) {
     check(exact(c, 'basis hostIdSha256 evidenceFile') && c.basis === 'REVIEWED_SINGLE_HOST_PAPER_CUSTODY'
       && hash(c.hostIdSha256) && pin(c.evidenceFile), 'CUSTODY_POLICY_INVALID');
     validateOversight(config.oversight);
+    check(time(config.writerExclusion.expiresAt) >= time(config.oversight.handoffDeadline), 'WRITER_EXCLUSION_INVALID');
     return Object.freeze({ status: 'PASS', reasons: Object.freeze([]), evidenceHashes: Object.freeze([digest(config)]) });
   } catch (error) {
     const reason = /^SCOPED_CLOSEOUT_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_CLOSEOUT_CONFIG_INVALID';

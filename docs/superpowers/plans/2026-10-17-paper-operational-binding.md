@@ -73,11 +73,11 @@ Do not change generic entry/protection consumers merely to accept management rec
 
 **Schema:** `scoped-paper-operational-invocation-v1`. Stable fields explicitly contain the existing exact targets/portfolio, account hash bases, terms, input/code pins, directory/pre-write hashes, session/expiry, source/risk/time rules, writer/custody references, oversight limits and notification destination hash. Observation content is a separate named object, not arbitrary excluded hash fields. Approval binds the stable hash; each observation binds it and its own hash. Legacy synthetic v1 and observed v2 remain separate and unchanged.
 
-- [ ] Write tests: refresh verified observation without changing stable hash; mutate every stable field and reject; old v2 approval/serialized capability/forged PASS rejected; previous observation invalid after generation change.
-- [ ] Run `node scripts/test-scoped-paper-operational.mjs`; require the new cases to fail before production changes.
-- [ ] Implement the three interfaces using existing canonical hash/WeakMap patterns. Revalidate actual flags, authority, source generation and time at pre-send. Do not call the legacy authorizer with a freshly fabricated config approval.
-- [ ] Run the new test plus `npm run ops:test:scoped-closeout-contract` and `npm run ops:test:scoped-paper-adapter` under network denial; require PASS.
-- [ ] Commit only these changes: `feat: separate scoped PAPER authority from current evidence`.
+- [x] Write tests: refresh verified observation without changing stable hash; mutate every stable field and reject; old v2 approval/serialized capability/forged PASS rejected; previous observation invalid after generation change.
+- [x] Run `node scripts/test-scoped-paper-operational.mjs`; require the new cases to fail before production changes.
+- [x] Implement the three interfaces using existing canonical hash/WeakMap patterns. Revalidate actual flags, authority, source generation and time at pre-send. Do not call the legacy authorizer with a freshly fabricated config approval.
+- [x] Run the new test plus `npm run ops:test:scoped-closeout-contract` and `npm run ops:test:scoped-paper-adapter` under network denial; require PASS.
+- [x] Commit only these changes: `feat: separate scoped PAPER authority from current evidence`.
 
 ## Task 2: Real-evidence boundary with explicit unresolved source gate
 
@@ -100,13 +100,13 @@ Risk/time/source rules have no permissive defaults. All applicable existing risk
 
 **Interfaces:** `withScopedObservationStores({ directory, attemptId, authoritySha256, expectedHashes }, task)` returns an opaque observation-only context. That context is rejected by `reserveScopedExits` and `recordScopedAttempt`; it may only append valid observed state via `recordScopedObservation`.
 
-- [ ] Add failing tests: identical valid paired records reopen for separately authorized observation; mismatched pair/hash/authority, symlink, stale fence, wrong account, externally active writer and expired exclusion reject; repeated observation authority with unchanged stores rejects before network; no implicit state adoption or replay.
-- [ ] Run storage test and verify red.
-- [ ] Reuse owner-only reads, exact schema, lock, compare-and-swap, backup and parity checks. Preserve initial backups and existing attempt directory. Observation authority must cover the current hashes, exact prior attempt and all management identities, not the old pre-write hashes masquerading as current state.
-- [ ] Before credential/network access, atomically claim the canonical observation-authority hash once in the existing attempt directory using an owner-only exclusive-create receipt, file/directory sync and readback. Preserve the claim after success, failure or crash; an existing claim rejects invocation even if store hashes never changed. Restart requires fresh exact observation authority, never automatic renewal or claim deletion. This is an attempt receipt, not a new ledger or a reset of submission authority. Do not write order records until Task 4 verifies the active transport's account.
-- [ ] Preserve STOPPED as a no-submit state even when later broker evidence is filled. Record independently verified fill under the same sticky state; report terminal/position reconciliation from exact observation evidence without marking the controller resubmittable or P&L verified.
-- [ ] Deduplicate unchanged broker state before appending history. Preserve the 16-entry limit; on capacity exhaustion or torn write, stop observation writes and issue unresolved handoff. No truncation, automatic repair, fence deletion or stale-backup restore.
-- [ ] Exercise injected failure before/after each existing backup/write/sync/rename boundary, including two-store parity; run storage/consumer regressions; commit: `feat: allow scoped observation without submission replay`.
+- [x] Add failing tests: identical valid paired records reopen for separately authorized observation; mismatched pair/hash/authority, symlink, stale fence, wrong account, externally active writer and expired exclusion reject; repeated observation authority with unchanged stores rejects before network; no implicit state adoption or replay.
+- [x] Run storage test and verify red.
+- [x] Reuse owner-only reads, exact schema, lock, compare-and-swap, backup and parity checks. Preserve initial backups and existing attempt directory. Observation authority must cover the current hashes, exact prior attempt and all management identities, not the old pre-write hashes masquerading as current state.
+- [x] Before credential/network access, atomically claim the canonical observation-authority hash once in the existing attempt directory using an owner-only exclusive-create receipt, file/directory sync and readback. Preserve the claim after success, failure or crash; an existing claim rejects invocation even if store hashes never changed. Restart requires fresh exact observation authority, never automatic renewal or claim deletion. This is an attempt receipt, not a new ledger or a reset of submission authority. Do not write order records until Task 4 verifies the active transport's account.
+- [x] Preserve STOPPED as a no-submit state even when later broker evidence is filled. Record independently verified fill under the same sticky state; report terminal/position reconciliation from exact observation evidence without marking the controller resubmittable or P&L verified.
+- [x] Deduplicate unchanged broker state before appending history. Preserve the 16-entry limit; on capacity exhaustion or torn write, stop observation writes and issue unresolved handoff. No truncation, automatic repair, fence deletion or stale-backup restore.
+- [x] Exercise injected failure before/after each existing backup/write/sync/rename boundary, including two-store parity; run storage/consumer regressions; commit: `feat: allow scoped observation without submission replay`.
 
 Actual production directory adoption and account-wide writer exclusion remain separate operator-authorized operations. A local lock or zero open orders is not proof of remote/manual writer exclusion. If the operator cannot enforce that exclusion, submission stays blocked.
 

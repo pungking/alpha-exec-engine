@@ -10,11 +10,13 @@ const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v);
 const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v);
 const decimal = v => typeof v === 'string' && /^(0|[1-9]\d{0,15})(\.\d{1,9})?$/.test(v) && Number(v) > 0;
 const receipts = new WeakSet();
+const receiptOwners = new WeakMap();
 const transports = new WeakMap();
 export const isScopedPaperTransport = (value, gate) => transports.has(value) && transports.get(value) === gate;
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 export const isScopedPaperReceipt = value => receipts.has(value);
-const seal = value => { freeze(value); receipts.add(value); return value; };
+export const isScopedPaperReceiptForTransport = (value, transport) => receipts.has(value) && receiptOwners.get(value) === transport;
+const seal = (value, transport) => { freeze(value); receipts.add(value); receiptOwners.set(value, transport); return value; };
 const phases = { account: ['account'], initial: ['positions', 'orders', 'clock', 'calendar', 'assets', 'quotes'],
   presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'], postcheck: ['lookup', 'positions', 'orders', 'clock'], submit: ['submit'] };
 
@@ -115,7 +117,7 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         check(!abort.signal.aborted && durationMs >= 0 && durationMs <= 3000
           && Date.parse(retrievedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null,
-          ...(group === 'quotes' ? { feed: target.feed } : {}) });
+          ...(group === 'quotes' ? { feed: target.feed } : {}) }, transport);
       } catch (error) {
         if (phase === 'submit' && counts.submit > 0 && !stopped) reconcileOnly = true;
         else stopped = true;
@@ -123,7 +125,7 @@ export function createScopedPaperTransport({ credentials, fetchImpl, clock, dead
         const codes = ['ROUTE_INVALID', 'ORDER_INVALID', 'REQUEST_BUDGET_EXCEEDED', 'CLOCK_INVALID', 'ATTEMPT_EXPIRED',
           'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data: null,
-          error: codes.includes(error?.message) ? error.message : 'TRANSPORT_FAILURE' });
+          error: codes.includes(error?.message) ? error.message : 'TRANSPORT_FAILURE' }, transport);
       } finally {
         clearTimeout(timer);
         // Cancellation is best effort after the receipt is sealed; it cannot authorize another call.

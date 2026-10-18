@@ -7,6 +7,7 @@ import { loadScopedOrderLedgerState, saveScopedOrderLedgerState } from '../../di
 import { loadScopedOrderIdempotencyState, saveScopedOrderIdempotencyState } from '../../dist/src/order-idempotency-storage.js';
 import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import { sha256Canonical as canonical } from './active-position-limited-recovery.mjs';
+import { isScopedObservationAccount } from './scoped-paper-evidence.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const contexts = new WeakMap();
@@ -41,13 +42,16 @@ async function backup(directory, attemptId, expectedHashes) {
 function contextOf(context) {
   const c = contexts.get(context); check(c && !c.closed && !c.poisoned, 'CONTEXT_INVALID'); return c;
 }
+async function validateStoreLocation({ directory, expectedHashes, attemptId }) {
+  check(typeof directory === 'string' && path.isAbsolute(directory) && await fs.realpath(directory) === path.resolve(directory), 'DIRECTORY_INVALID');
+  const s = await fs.lstat(directory);
+  check(s.isDirectory() && s.uid === process.getuid() && (s.mode & 0o077) === 0, 'DIRECTORY_INVALID');
+  check(/^[a-zA-Z0-9_-]{1,96}$/.test(attemptId) && expectedHashes && Object.keys(expectedHashes).sort().join(',') === 'orderIdempotency,orderLedger'
+    && Object.values(expectedHashes).every(pin), 'PIN_INVALID');
+}
 export async function withScopedStores({ directory, expectedHashes, attemptId }, task) {
   try {
-    check(typeof directory === 'string' && path.isAbsolute(directory) && await fs.realpath(directory) === path.resolve(directory), 'DIRECTORY_INVALID');
-    const s = await fs.lstat(directory);
-    check(s.isDirectory() && s.uid === process.getuid() && (s.mode & 0o077) === 0, 'DIRECTORY_INVALID');
-    check(/^[a-zA-Z0-9_-]{1,96}$/.test(attemptId) && expectedHashes && Object.keys(expectedHashes).sort().join(',') === 'orderIdempotency,orderLedger'
-      && Object.values(expectedHashes).every(pin), 'PIN_INVALID');
+    await validateStoreLocation({ directory, expectedHashes, attemptId });
     return await withOrderStateDirectoryLock(directory, async () => {
       check(canonical(await readHashes(directory)) === canonical(expectedHashes), 'HASH_DRIFT');
       const ledger = await loadScopedOrderLedgerState(path.join(directory, files.orderLedger));
@@ -63,6 +67,53 @@ export async function withScopedStores({ directory, expectedHashes, attemptId },
       finally { c.closed = true; }
     });
   } catch (error) { throw new Error(/^SCOPED_STORE_[A-Z_]+$/.test(error.message) ? error.message : 'SCOPED_STORE_FAILED'); }
+}
+
+async function claimObservation(directory, attemptId, authoritySha256, expectedHashes, records) {
+  const dir = path.join(directory, `.scoped-closeout-${attemptId}`), s = await fs.lstat(dir);
+  check(s.isDirectory() && !s.isSymbolicLink() && s.uid === process.getuid() && (s.mode & 0o077) === 0
+    && await fs.realpath(dir) === dir, 'ATTEMPT_DIRECTORY_INVALID');
+  for (const [key, file] of Object.entries(files))
+    check(hash(await privateBytes(path.join(dir, file))) === records[0].preWriteHashes[key], 'BACKUP_HASH_DRIFT');
+  const dest = path.join(dir, `observation-${authoritySha256}.json`), temp = `${dest}.tmp`;
+  try {
+    await fs.lstat(dest); check(false, 'OBSERVATION_AUTHORITY_USED');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const bytes = Buffer.from(JSON.stringify({ schemaVersion: 'scoped-observation-claim-v1', attemptId, authoritySha256,
+    preObservationHashes: expectedHashes, recordsSha256: canonical(records) }));
+  let handle;
+  try { handle = await fs.open(temp, 'wx', 0o600); }
+  catch (error) { if (error.code === 'EEXIST') throw Error('SCOPED_STORE_OBSERVATION_AUTHORITY_USED'); throw error; }
+  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  check((await privateBytes(temp)).equals(bytes), 'CLAIM_VERIFY_FAILED');
+  await fs.link(temp, dest); await fs.unlink(temp); await syncDirectory(dir);
+  check((await privateBytes(dest)).equals(bytes), 'CLAIM_VERIFY_FAILED');
+}
+export async function withScopedObservationStores({ directory, expectedHashes, attemptId, authoritySha256 }, task) {
+  try {
+    await validateStoreLocation({ directory, expectedHashes, attemptId }); check(pin(authoritySha256), 'PIN_INVALID');
+    return await withOrderStateDirectoryLock(directory, async () => {
+      check(canonical(await readHashes(directory)) === canonical(expectedHashes), 'HASH_DRIFT');
+      const ledger = await loadScopedOrderLedgerState(path.join(directory, files.orderLedger));
+      const idem = await loadScopedOrderIdempotencyState(path.join(directory, files.orderIdempotency));
+      const records = Object.values(ledger.orders).filter(r => r.recordKind);
+      const other = Object.values(idem.orders).filter(r => r.recordKind);
+      check(records.length === 5 && other.length === 5 && records.every(r => r.attemptId === attemptId
+        && canonical(r) === canonical(idem.orders[r.exitIdempotencyKey]) && !idem.releases.some(x => x.key === r.exitIdempotencyKey)), 'OBSERVATION_SCOPE_INVALID');
+      for (const key of ['accountSha256', 'managementAuthoritySha256', 'termsSha256', 'preWriteHashes'])
+        check(new Set(records.map(r => canonical(r[key]))).size === 1, 'OBSERVATION_SCOPE_INVALID');
+      for (const key of ['exitIdempotencyKey', 'clientOrderId', 'originalIdentitySha256', 'assetId'])
+        check(new Set(records.map(r => r[key])).size === 5, 'IDENTITY_DUPLICATE');
+      check(records.some(r => r.submissionPhase !== 'RESERVED'), 'NO_ATTEMPTED_IDENTITY');
+      await claimObservation(directory, attemptId, authoritySha256, expectedHashes, records);
+      const context = Object.freeze({}), c = { directory, attemptId, expectedHashes: structuredClone(expectedHashes),
+        hashes: await readHashes(directory), ledger, idem, keys: records.map(r => r.exitIdempotencyKey),
+        observationOnly: true, accountSha256: records[0].accountSha256, accountBinding: null, closed: false, poisoned: false, pending: false };
+      contexts.set(context, c);
+      try { const result = await task(context); check(!c.poisoned && !c.pending, 'COMMIT_UNCERTAIN'); return result; }
+      finally { c.closed = true; }
+    });
+  } catch (error) { throw Error(/^SCOPED_STORE_[A-Z_]+$/.test(error.message) ? error.message : 'SCOPED_STORE_FAILED'); }
 }
 export async function verifyScopedStoreReceipt(context, receipt) {
   const c = contextOf(context);
@@ -93,6 +144,7 @@ async function commit(c, records) {
 }
 export async function reserveScopedExits(context, records) {
   const c = contextOf(context);
+  check(!c.observationOnly, 'OBSERVATION_ONLY');
   check(!c.keys.length && Array.isArray(records) && records.length === 5, 'FIVE_RESERVATIONS_REQUIRED');
   records = structuredClone(records);
   check(['accountSha256', 'managementAuthoritySha256', 'termsSha256'].every(k => new Set(records.map(r => r?.[k])).size === 1), 'SCOPE_MISMATCH');
@@ -106,6 +158,7 @@ export async function reserveScopedExits(context, records) {
 }
 export async function recordScopedAttempt(context, key, requestSha256, { at, limitPrice, evidenceSha256 }) {
   const c = contextOf(context), before = c.ledger.orders[key];
+  check(!c.observationOnly, 'OBSERVATION_ONLY');
   check(c.keys.length === 5 && c.keys.includes(key) && before?.submissionPhase === 'RESERVED' && pin(requestSha256), 'ATTEMPT_REPLAY');
   check(c.keys.every(k => c.ledger.orders[k].history.every(e => e.phase !== 'STOPPED'
     && !['partially_filled', 'canceled', 'rejected', 'expired'].includes(e.brokerStatus))), 'BATCH_STOPPED');
@@ -115,9 +168,18 @@ export async function recordScopedAttempt(context, key, requestSha256, { at, lim
     history: [...before.history, { at, phase: 'ATTEMPTED', evidenceSha256, brokerStatus: null, filledQty: '0' }] };
   return commit(c, [record]);
 }
-export async function recordScopedObservation(context, key, record) {
+export async function recordScopedObservation(context, key, record, accountBinding) {
   const c = contextOf(context), before = c.ledger.orders[key];
+  if (c.observationOnly) {
+    check(isScopedObservationAccount(accountBinding, c.accountSha256)
+      && (!c.accountBinding || c.accountBinding === accountBinding), 'ACCOUNT_BINDING_REQUIRED');
+    c.accountBinding = accountBinding;
+  }
   check(c.keys.includes(key) && before && record && before.submissionPhase !== 'RESERVED', 'OBSERVATION_INVALID');
+  if (c.observationOnly && canonical(before) === canonical(record)) {
+    check(canonical(await readHashes(c.directory)) === canonical(c.hashes), 'HASH_DRIFT');
+    return Object.freeze({ recordsSha256: canonical([before]), storeHashes: Object.freeze({ ...c.hashes }), unchanged: true });
+  }
   const mutable = new Set(['submissionPhase', 'brokerOrderId', 'brokerStatus', 'filledQty', 'updatedAt', 'observedEvidenceSha256', 'history']);
   check(Object.keys(before).every(k => mutable.has(k) || canonical(before[k]) === canonical(record[k]))
     && record.history.length === before.history.length + 1 && canonical(record.history.slice(0, -1)) === canonical(before.history)
