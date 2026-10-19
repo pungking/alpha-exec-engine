@@ -137,13 +137,17 @@ function snapshotMatches(scope, snapshot) {
       && (!binding?.operational || binding.snapshot === snapshot)));
 }
 
-export function authorizeOperationalInvocation({ config, approval, clock }) {
-  requireContract(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
-  processGate();
+export function validateOperationalApprovalFields(config, approval) {
   requireContract(exact(approval, 'kind phrase stableScopeSha256 approvedAt expiresAt rollbackPlanSha256')
     && approval.kind === 'DIRECT_SCOPED_OPERATIONAL_INVOCATION' && approval.phrase === 'CONFIRM LIVE EXECUTION'
     && approval.stableScopeSha256 === digest(config) && hash(approval.rollbackPlanSha256)
+    && time(approval.approvedAt) < time(approval.expiresAt)
     && time(approval.expiresAt) <= time(config.input.authority.expiresAt), 'AUTHORITY_INVALID');
+}
+export function authorizeOperationalInvocation({ config, approval, clock }) {
+  requireContract(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
+  processGate();
+  validateOperationalApprovalFields(config, approval);
   const saved = { mode: 'OPERATIONAL', config: freeze(structuredClone(config)), approval: freeze(structuredClone(approval)),
     start: clock.monotonicMs(), lastElapsed: 0, lastNow: time(clock.now()), generation: 0, scope: null, current: null };
   checkOperationalTime(saved, clock);

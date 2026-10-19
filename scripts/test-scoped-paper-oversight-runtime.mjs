@@ -8,6 +8,7 @@ import { managementRecord } from './fixtures/scoped-closeout.mjs';
 import * as transportModule from './lib/scoped-paper-transport.mjs';
 import * as evidence from './lib/scoped-paper-evidence.mjs';
 import * as stores from './lib/scoped-closeout-storage.mjs';
+import { buildScopedNotificationSnapshot } from './paper-order-notifications.mjs';
 
 assert.equal(typeof transportModule.createScopedPaperObservationTransport, 'function', 'observation-only bounded transport must exist');
 assert.equal(typeof evidence.mapOversightObservation, 'function', 'fresh query must not fabricate a fresh order event');
@@ -18,7 +19,7 @@ const hashes = async directory => Object.fromEntries(await Promise.all([['orderL
   .map(async ([key, file]) => [key, sha(await fs.readFile(path.join(directory, file)))])));
 const read = async directory => JSON.parse(await fs.readFile(path.join(directory, 'order-ledger.json'), 'utf8'));
 const order = (f, r, status = 'accepted', filled = '0') => ({ id: 'fixture-observed-order', client_order_id: r.clientOrderId,
-  asset_id: r.assetId, symbol: f.assets[0].symbol, side: 'sell', type: 'limit', time_in_force: 'day', extended_hours: false,
+  asset_id: r.assetId, symbol: f.assets.find(a => a.id === r.assetId).symbol, side: 'sell', type: 'limit', time_in_force: 'day', extended_hours: false,
   qty: r.qty, limit_price: r.limitPrice, filled_qty: filled, filled_avg_price: filled === '0' ? null : '100',
   created_at: at, updated_at: at, filled_at: filled === '0' ? null : at, status, legs: [] });
 let checks = 0;
@@ -84,7 +85,7 @@ responseClock.advance(-50);
 assert.equal((await responseTransport.request({ group: 'clock', phase: 'observation', routeInput: {} })).error, 'CLOCK_INVALID');
 assert.equal(responseClock.calls.length, 1, 'response completion is also a monotonic watermark'); checks += 2;
 
-async function prepared() {
+async function prepared(attempted = 1) {
   const f = fixture(), directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-oversight-runtime-')));
   await fs.chmod(directory, 0o700);
   for (const file of ['order-ledger.json', 'order-idempotency.json']) await fs.writeFile(path.join(directory, file),
@@ -95,10 +96,16 @@ async function prepared() {
     const rows = f.input.terms.targets.map((_, i) => ({ ...managementRecord(i), accountSha256: f.input.accountSha256,
       managementAuthoritySha256: f.input.authoritySha256, preWriteHashes }));
     await stores.reserveScopedExits(ctx, rows);
-    await stores.recordScopedAttempt(ctx, rows[0].exitIdempotencyKey, hash('request'), { at, limitPrice: '99.9', evidenceSha256: hash('attempt') });
-    const old = (await read(directory)).orders[rows[0].exitIdempotencyKey];
-    await stores.recordScopedObservation(ctx, old.exitIdempotencyKey, { ...old, submissionPhase: 'STOPPED', history: [...old.history,
-      { at, phase: 'STOPPED', evidenceSha256: old.observedEvidenceSha256, brokerStatus: null, filledQty: '0' }] });
+    for (const [index, row] of rows.slice(0, attempted).entries()) {
+      await stores.recordScopedAttempt(ctx, row.exitIdempotencyKey, hash('request'), { at, limitPrice: '99.9', evidenceSha256: hash('attempt') });
+      let old = (await read(directory)).orders[row.exitIdempotencyKey];
+      for (const phase of index < attempted - 1 ? ['OBSERVED', 'FLAT_RECONCILED'] : ['STOPPED']) {
+        const brokerStatus = phase === 'STOPPED' ? null : 'filled', filledQty = brokerStatus ? '2' : '0';
+        old = { ...old, submissionPhase: phase, brokerStatus, filledQty, brokerOrderId: brokerStatus ? `fixture-order-${row.assetId}` : null,
+          history: [...old.history, { at, phase, evidenceSha256: old.observedEvidenceSha256, brokerStatus, filledQty }] };
+        await stores.recordScopedObservation(ctx, row.exitIdempotencyKey, old);
+      }
+    }
   });
   const records = Object.values((await read(directory)).orders);
   const authority = { config: f.config, expectedHashes: await hashes(directory), recordsSha256: hash(records) };
@@ -110,6 +117,33 @@ async function prepared() {
     observationTransport: ({ beforeRead }) => { factories++; return f.transport(beforeRead); } };
   return { f, directory, authority, records, deps, factories: () => factories };
 }
+const proofCase = await prepared();
+try {
+  const { f, records } = proofCase, transport = f.transport();
+  const get = group => transport.request({ group, phase: group === 'account' ? 'account' : 'observation', routeInput: {} });
+  const binding = evidence.bindScopedObservationAccount({ scope: f.input, receipt: await get('account'),
+    bindings: f.config.accountBinding, transport, clock: f.clock });
+  const row = { ...records[0], brokerOrderId: 'fixture-observed-order', brokerStatus: 'filled', filledQty: '2', observedEvidenceSha256: hash('filled'),
+    history: [...records[0].history, { at, phase: 'STOPPED', evidenceSha256: hash('filled'), brokerStatus: 'filled', filledQty: '2' }] };
+  records[0] = row; f.bodies.positions = f.bodies.positions.slice(1);
+  const receipts = [];
+  for (const group of ['positions', 'orders', 'clock']) receipts.push(await get(group));
+  const portfolio = evidence.mapOversightPortfolio({ scope: f.input, records, receipts, accountBinding: binding, transport, clock: f.clock });
+  const args = { scope: f.input, records: [row], storeReceipt: { recordsSha256: hash([row]), storeHashes: await hashes(proofCase.directory) },
+    observations: { symbols: [{ assetId: row.assetId, symbol: 'FIX0' }], portfolio },
+    sourceRunId: '123', headSha: 'a'.repeat(40), observedAt: f.clock.now() };
+  const snapshot = () => buildScopedNotificationSnapshot(args);
+  assert.ok(snapshot().events.some(e => e.type === 'MANAGEMENT_POSITION_FLAT_RECONCILED'));
+  assert.equal(row.submissionPhase, 'STOPPED'); assert.equal(row.realizedPnlVerified, false);
+  args.observations.portfolio = structuredClone(portfolio);
+  assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE', 'caller-created flatness cannot become verified notification');
+  args.observations.portfolio = portfolio; args.scope = { ...f.input, attemptId: 'different-attempt' };
+  assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE'); args.scope = f.input;
+  args.records = [{ ...row, filledQty: '1' }]; args.storeReceipt.recordsSha256 = hash(args.records);
+  assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE'); args.records = [row]; args.storeReceipt.recordsSha256 = hash([row]);
+  f.advance(31000); args.observedAt = f.clock.now();
+  assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE'); checks += 7;
+} finally { await fs.rm(proofCase.directory, { recursive: true, force: true }); }
 for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residual', 'canceled', 'unknown-lookup', 'wrong-account',
   'missing-approval', 'records-drift', 'read-failure', 'market-closed', 'expired-submit', 'manual-position-drift',
   'expired-observation', 'clock-rewind', 'lookup-notfound', 'fill-regression', 'protected-order', 'early-wakeup']) {
@@ -192,4 +226,86 @@ try {
   assert.deepEqual(result.reasons, ['SCOPED_ADAPTER_OBSERVATION_WAIT_EXPIRED']);
   assert.equal(sleepSignal?.aborted, true); assert.equal(stalled.f.calls.length, 5); checks += 4;
 } finally { clearTimeout(watchdog); await fs.rm(stalled.directory, { recursive: true, force: true }); }
+for (const mode of ['accepted', 'partial-filled', 'filled-residual', 'canceled', 'read-failure',
+  'wrong-destination', 'sender-failure', 'sender-hang', 'receipt-invalid', 'many-events']) {
+  const p = await prepared(mode === 'many-events' ? 5 : 1); let sends = 0, sendSignal, cycle = 0; const messages = [];
+  try {
+    p.f.config.notifications = { destinationSha256: hash('fixture-destination'), sourceRunId: '123', headSha: 'a'.repeat(40) };
+    if (mode === 'many-events') {
+      Object.assign(p.f.config.oversight, { maxCycles: 13, expiresAt: '2026-10-09T15:10:00.000Z', handoffDeadline: '2026-10-09T15:10:00.000Z',
+        requestBudget: { account: 1, lookup: 65, positions: 13, orders: 13, clock: 13, total: 105 } });
+      p.f.config.writerExclusion.expiresAt = p.f.config.oversight.handoffDeadline;
+      p.f.bodies.positions = p.f.bodies.positions.slice(4);
+    }
+    const { approval, ...basis } = p.authority; approval.authoritySha256 = hash(basis);
+    p.deps.notify = { destinationSha256: mode === 'wrong-destination' ? hash('different') : hash('fixture-destination'),
+      send: async (message, { signal }) => {
+        sends++; messages.push(message); sendSignal = signal;
+        assert.ok(!message.includes('fixture-observed-order') && !message.includes('fixture-paper-account'));
+        if (mode === 'sender-failure') throw Error('fixture-private-error');
+        if (mode === 'sender-hang') return new Promise(() => {});
+        return { ok: true };
+      } };
+    if (mode === 'receipt-invalid') await fs.writeFile(path.join(p.directory, `.scoped-closeout-${p.f.input.attemptId}`, 'notifications.json'),
+      'fixture-invalid', { mode: 0o600 });
+    const baseFetch = p.f.fetchImpl;
+    p.f.fetchImpl = async (url, options) => {
+      if (url.includes('orders:by_client_order_id')) {
+        cycle++;
+        if (mode === 'read-failure') { p.f.calls.push({ method: options.method }); throw Error('fixture-private-error'); }
+        if (mode === 'partial-filled') {
+          p.f.bodies.lookup = order(p.f, p.records[0], cycle === 1 ? 'partially_filled' : 'filled', cycle === 1 ? '1' : '2');
+          p.f.bodies.lookup.updated_at = p.f.clock.now(); p.f.bodies.lookup.filled_at = p.f.clock.now();
+          p.f.bodies.positions = p.f.bodies.positions.filter(x => x.asset_id !== p.records[0].assetId);
+          if (cycle === 1) p.f.bodies.positions.unshift({ asset_id: p.records[0].assetId, symbol: 'FIX0', asset_class: 'us_equity', side: 'long', qty: '1' });
+        }
+        if (mode === 'filled-residual') p.f.bodies.lookup = order(p.f, p.records[0], 'filled', '2');
+        if (mode === 'canceled') p.f.bodies.lookup.status = 'canceled';
+        if (mode === 'many-events') {
+          const n = Math.ceil(cycle / 5), id = new URL(url).searchParams.get('client_order_id');
+          const row = p.records.find(r => r.clientOrderId === id), done = row.submissionPhase === 'FLAT_RECONCILED', filled = done ? '2' : (n / 10).toFixed(1);
+          p.f.bodies.lookup = { ...order(p.f, row, done ? 'filled' : 'partially_filled', filled), id: `fixture-order-${row.assetId}` };
+          p.f.bodies.lookup.updated_at = p.f.clock.now(); p.f.bodies.lookup.filled_at = p.f.clock.now();
+          p.f.bodies.positions.forEach(position => { position.qty = (2 - n / 10).toFixed(1); });
+        }
+      }
+      return baseFetch(url, options);
+    };
+    const result = await oversight.runScopedPaperOversight(p.deps);
+    assert.ok(result.notificationDelivery, 'oversight must report notification outcome separately');
+    assert.equal(result.actualBrokerMutationAttempted, false); assert.equal(result.realizedPnlVerified, false);
+    assert.ok(p.f.calls.every(c => c.method === 'GET')); assert.ok(p.f.calls.length <= (mode === 'many-events' ? 105 : 9));
+    if (mode === 'wrong-destination' || mode === 'receipt-invalid') {
+      assert.equal(sends, 0); assert.equal(result.status, 'UNRESOLVED_HANDOFF');
+      assert.equal(result.notificationDelivery.status, mode === 'wrong-destination' ? 'NOT_AUTHORIZED' : 'RECEIPT_INVALID');
+    } else {
+      assert.equal(sends, 1);
+      assert.equal(result.notificationDelivery.status, mode.startsWith('sender-') ? 'DELIVERY_UNCERTAIN' : 'DELIVERED');
+      if (mode === 'sender-hang') assert.equal(sendSignal.aborted, true);
+      if (mode === 'partial-filled') {
+        assert.equal(result.status, 'ATTEMPTED_ORDERS_RECONCILED');
+        for (const text of ['부분 체결 관측', '전량 체결 관측', '잔여 없음 확인']) assert.ok(messages[0].includes(text));
+        assert.ok(!messages[0].includes('감시 종료: 미해결'));
+      } else {
+        assert.ok(messages[0].includes('감시 종료: 미해결'));
+        if (mode !== 'many-events') assert.ok(!messages[0].includes('잔여 없음 확인'));
+        if (mode === 'canceled') assert.ok(messages[0].includes('주문 종결 후 잔여 노출'));
+        if (mode === 'many-events') assert.equal(result.notificationDelivery.eventCount, 22);
+      }
+    }
+    if (mode === 'accepted' || mode === 'sender-failure') {
+      const before = p.f.calls.length, beforeSends = sends;
+      p.deps.records = Object.values((await read(p.directory)).orders);
+      p.authority.expectedHashes = await hashes(p.directory); p.authority.recordsSha256 = hash(p.deps.records);
+      const { approval, ...basis } = p.authority; approval.authoritySha256 = hash(basis);
+      const resumed = await oversight.runScopedPaperOversight(p.deps);
+      assert.equal(resumed.notificationDelivery.status, 'NO_CHANGE', 'a distinct authorized observation does not resend prior events');
+      assert.equal(sends, beforeSends); assert.equal(p.f.calls.length, before + 9); checks += 3;
+    }
+    const beforeReplay = p.f.calls.length, beforeSends = sends;
+    await oversight.runScopedPaperOversight(p.deps);
+    assert.equal(p.f.calls.length, beforeReplay); assert.equal(sends, beforeSends);
+    assert.ok(!JSON.stringify(result).includes('fixture-private-error')); checks += 13;
+  } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+}
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-paper-oversight-runtime', checks, actualBrokerRequests: 0, productionStateWrites: 0 }));

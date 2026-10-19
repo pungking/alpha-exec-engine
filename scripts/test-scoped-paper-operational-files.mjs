@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { operationalFixture, hash } from './fixtures/scoped-paper-adapter.mjs';
 import { SCOPED_PAPER_REVIEWED_FILES } from './lib/scoped-paper-adapter.mjs';
 import * as operational from './lib/scoped-paper-operational.mjs';
+import { main } from './run-scoped-paper-closeout.mjs';
 
 assert.equal(typeof operational.loadOperationalEvidenceFiles, 'function', 'load and pin actual bytes, not caller PASS labels');
 assert.equal(typeof operational.verifyOperationalEvidenceFiles, 'function');
@@ -64,6 +65,48 @@ try {
   finally { fs.open = originalOpen; }
   assert.equal(opened, 0); checks += 2;
 } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+
+const invocation = await fixture();
+try {
+  const approval = operationalFixture().approval;
+  approval.stableScopeSha256 = hash(invocation.config);
+  const configPin = await invocation.write('invocation', invocation.config), approvalPin = await invocation.write('approval', approval);
+  const args = ['--validate-operational', configPin.path, configPin.sha256, approvalPin.path, approvalPin.sha256];
+  const forbidden = { get transport() { assert.fail('local validation must not inspect credentials/transport'); },
+    get observationTransport() { assert.fail('local validation must not create an observer'); },
+    get notify() { assert.fail('local validation must not inspect sender'); } };
+  const before = await fs.readdir(invocation.directory);
+  const valid = await main(args, forbidden);
+  assert.equal(valid.status, 'PINNED_INPUTS_VERIFIED_NOT_READY');
+  assert.equal(valid.executionAuthorized, false); assert.equal(valid.sourceReadinessProven, false);
+  assert.equal(valid.actualBrokerMutationAttempted, false); assert.equal(valid.actualStateWriteAttempted, false);
+  assert.deepEqual(await fs.readdir(invocation.directory), before);
+  assert.equal((await main(['--validate'], { config: invocation.config })).status, 'PASS'); checks += 7;
+  for (const change of [a => { a.kind = 'DIRECT_SCOPED_OPERATOR_INVOCATION'; }, a => { a.stableScopeSha256 = hash('other-config'); },
+    a => { a.approvedAt = 'invalid'; }, a => { a.expiresAt = '2026-10-09T15:00:00.000Z'; }]) {
+    const bad = structuredClone(approval); change(bad); const ref = await invocation.write('approval', bad);
+    const result = await main([...args.slice(0, 3), ref.path, ref.sha256], forbidden);
+    assert.equal(result.status, 'BLOCKED'); assert.deepEqual(result.reasons, ['SCOPED_CLOSEOUT_AUTHORITY_INVALID']); checks += 2;
+  }
+  await invocation.write('approval', approval);
+  await fs.appendFile(configPin.path, ' ');
+  assert.equal((await main(args, forbidden)).status, 'BLOCKED');
+  await invocation.write('invocation', invocation.config);
+  await fs.appendFile(invocation.config.custody.evidenceFile.path, ' ');
+  assert.equal((await main(args, forbidden)).status, 'BLOCKED'); checks += 2;
+  const originalOpen = fs.open; let opened = 0;
+  fs.open = async (...values) => { opened++; return originalOpen(...values); };
+  try {
+    assert.equal((await main([], forbidden)).status, 'CONFIGURATION_REQUIRED');
+    for (const bad of [args.slice(0, 4), [...args, 'extra'], [args[0], 'relative-file', ...args.slice(2)],
+      [args[0], args[1], 'not-a-sha', ...args.slice(3)]]) assert.ok(['ARGUMENTS_INVALID', 'BLOCKED'].includes((await main(bad, forbidden)).status));
+  } finally { fs.open = originalOpen; }
+  assert.equal(opened, 0); checks += 6;
+  assert.ok(!JSON.stringify(valid).includes(invocation.directory)); checks++;
+  await assert.rejects(() => operational.loadOperationalInvocationFiles({
+    configFile: { path: path.join(invocation.directory, 'missing-private-config.json'), sha256: hash('missing') }, approvalFile: approvalPin,
+  }), error => /^SCOPED_(CLOSEOUT|ADAPTER)_[A-Z_]+$/.test(error.message) && !error.message.includes(invocation.directory)); checks++;
+} finally { await fs.rm(invocation.directory, { recursive: true, force: true }); }
 
 for (const mode of ['missing', 'symlink', 'parent-symlink', 'hardlink', 'public', 'non-json', 'array']) {
   const p = await fixture();

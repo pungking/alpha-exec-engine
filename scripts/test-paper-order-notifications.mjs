@@ -257,3 +257,6 @@ try {
   args.storeReceipt.recordsSha256 = hash('mismatch'); assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE');
 } finally { fs.rmSync(scopedRoot, { recursive: true, force: true }); }
 console.log('scoped notifications: PASS (durable scope, first delivery, stop, dedup, redaction)');
+const crowded = Array.from({ length: 20 }, (_, i) => ({ type: 'ORDER_ACCEPTED', symbol: `FIX${i}`, side: 'sell' }));
+crowded.push({ type: 'SCOPED_OVERSIGHT_UNRESOLVED', reason: 'SCOPED_ADAPTER_OBSERVATION_BUDGET_EXHAUSTED' });
+assert.ok(formatNotification(crowded, 'BOUNDED_SCOPED_CLOSEOUT').includes('감시 종료: 미해결'), 'handoff must not be hidden by display truncation');

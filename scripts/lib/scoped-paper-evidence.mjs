@@ -196,7 +196,7 @@ export function mapOversightObservation({ scope, record, receipt: r, accountBind
   if (previous) check(mapped.brokerOrderId === previous.brokerOrderId && o.created_at === previous.eventTimestamps.createdAt
     && ns(o.updated_at) >= ns(previous.eventTimestamps.updatedAt)
     && (previous.eventTimestamps.filledAt === null || (o.filled_at !== null && ns(o.filled_at) >= ns(previous.eventTimestamps.filledAt))), 'ORDER_TIMESTAMP_REGRESSION');
-  return freeze({ ...mapped, queryInterval, eventTimestamps: { createdAt: o.created_at, updatedAt: o.updated_at,
+  return freeze({ ...mapped, symbol: o.symbol, queryInterval, eventTimestamps: { createdAt: o.created_at, updatedAt: o.updated_at,
     filledAt: mapped.filledQty === '0' ? null : o.filled_at } });
 }
 export function mapOversightPortfolio({ scope, records, receipts, accountBinding, transport, clock }) {
@@ -218,7 +218,11 @@ export function mapOversightPortfolio({ scope, records, receipts, accountBinding
     && ['new', 'accepted', 'partially_filled'].includes(o.status) && (!o.legs || (Array.isArray(o.legs) && o.legs.length === 0))));
   const flatKeys = portfolioMatches && !openOrderConflict ? records.filter(r => r.brokerStatus === 'filled'
     && !current.some(p => p.assetId === r.assetId) && !or.data.some(o => o.asset_id === r.assetId)).map(r => r.exitIdempotencyKey) : [];
-  return freeze({ portfolioMatches, openOrderConflict, flatKeys, marketOpen: cr.data.is_open,
+  const residualKeys = portfolioMatches && !openOrderConflict ? records.filter(r => ['canceled', 'rejected', 'expired'].includes(r.brokerStatus)
+    && current.some(p => p.assetId === r.assetId)).map(r => r.exitIdempotencyKey) : [];
+  return seal({ kind: 'SCOPED_OVERSIGHT_PORTFOLIO', scopeSha256: digest([scope.attemptId, scope.accountSha256, scope.termsSha256]),
+    recordHashes: Object.fromEntries(records.map(r => [r.exitIdempotencyKey, digest(r)])), observedAt: now,
+    portfolioMatches, openOrderConflict, flatKeys, residualKeys, marketOpen: cr.data.is_open,
     evidenceSha256: digest(receipts.map(r => interval(r, now))) });
 }
 

@@ -1,8 +1,11 @@
+import path from 'node:path';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
 import { validateOperationalConfiguration } from './scoped-paper-operational.mjs';
 import { isScopedPaperObservationTransport } from './scoped-paper-transport.mjs';
 import { bindScopedObservationAccount, isScopedObservationAccount, mapOversightObservation, mapOversightPortfolio } from './scoped-paper-evidence.mjs';
 import { withScopedObservationStores, recordScopedObservation } from './scoped-closeout-storage.mjs';
+import { boundedNotificationSend } from './scoped-paper-adapter.mjs';
+import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
 
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
 const failureCode = error => /^SCOPED_(?:ADAPTER|STORE|EVIDENCE|CLOSEOUT)_[A-Z_]+$/.test(error?.message)
@@ -60,9 +63,25 @@ function observedRecord(before, observation, at) {
       { at, phase: 'STOPPED', evidenceSha256, brokerStatus: observation.brokerStatus, filledQty: observation.filledQty }] };
 }
 
-export async function runScopedPaperOversight({ authority, records, observationTransport, clock }) {
+export async function runScopedPaperOversight({ authority, records, observationTransport, clock, notify }) {
   let transport, reason = null, receipt, cycles = 0, flatReconciledRows = 0, observedRows = 0, attemptedRows = 0, complete = false;
-  let stateWriteAttempted = false;
+  let stateWriteAttempted = false, receiptPath, sendNotification, notificationSnapshot;
+  let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
+  const notificationEvents = new Map();
+  const collectNotifications = (rows = [], observations = {}) => {
+    if (!receiptPath) return;
+    const snapshot = buildScopedNotificationSnapshot({ scope: authority.config.input, records: rows, storeReceipt: receipt,
+      observations, ...authority.config.notifications, observedAt: clock.now() });
+    if (snapshot.status !== 'OBSERVATIONS_READY') {
+      notificationDelivery = { status: 'EVIDENCE_UNAVAILABLE', eventCount: 0 }; receiptPath = null; return;
+    }
+    for (const event of snapshot.events) notificationEvents.set(event.eventKey, event);
+    // Five records, each with at most 16 history events plus reconciliation, and one handoff.
+    if (notificationEvents.size > 5 * (16 + 1) + 1) {
+      notificationDelivery = { status: 'EVIDENCE_UNAVAILABLE', eventCount: 0 }; receiptPath = null; return;
+    }
+    notificationSnapshot = { ...snapshot, events: [...notificationEvents.values()] };
+  };
   try {
     authority = structuredClone(authority); records = structuredClone(records);
     const { scope, policy, guard } = observationAuthority(authority, records, clock), config = authority.config;
@@ -74,6 +93,19 @@ export async function runScopedPaperOversight({ authority, records, observationT
       attemptId: scope.attemptId, authoritySha256: authority.approval.authoritySha256 }, async (context, stored) => {
       try {
       check(digest(stored) === authority.recordsSha256, 'OBSERVATION_SCOPE_INVALID');
+      if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
+        const started = clock.monotonicMs(), startNow = time(clock.now()), send = notify.send;
+        sendNotification = message => {
+          const now = time(clock.now()), remaining = time(policy.handoffDeadline) - now;
+          check(now >= startNow && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
+          return boundedNotificationSend(send, message, clock, started,
+            Math.min(time(policy.handoffDeadline) - startNow, clock.monotonicMs() - started + remaining));
+        };
+        receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
+        collectNotifications();
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+        if (!['BASELINE_RECORDED', 'NO_CHANGE'].includes(notificationDelivery.status)) receiptPath = null;
+      }
       let accountBinding;
       const beforeRead = request => { guard(); return request.group === 'account'
         ? !accountBinding : isScopedObservationAccount(accountBinding, scope.accountSha256, transport); };
@@ -95,12 +127,18 @@ export async function runScopedPaperOversight({ authority, records, observationT
           const next = observedRecord(before, observed, clock.now());
           receipt = await recordScopedObservation(context, before.exitIdempotencyKey, next, accountBinding);
           records[index] = next; previous.set(before.exitIdempotencyKey, observed);
+          collectNotifications([next], { symbols: [observed] });
         }
         observedRows = previous.size;
         const responses = [];
         for (const group of ['positions', 'orders', 'clock']) responses.push(await read(group));
         const snapshot = mapOversightPortfolio({ scope, records, receipts: responses, accountBinding, transport, clock });
         cycles++; flatReconciledRows = snapshot.flatKeys.length;
+        if (receiptPath) for (const index of indices) {
+          const row = records[index];
+          receipt = await recordScopedObservation(context, row.exitIdempotencyKey, row, accountBinding);
+          collectNotifications([row], { symbols: [previous.get(row.exitIdempotencyKey)], portfolio: snapshot });
+        }
         if (!snapshot.portfolioMatches || snapshot.openOrderConflict) { reason = 'SCOPED_ADAPTER_OBSERVATION_PORTFOLIO_CONFLICT'; break; }
         if (flatReconciledRows === attemptedRows) { complete = true; break; }
         if (!snapshot.marketOpen) { reason = 'SCOPED_ADAPTER_OBSERVATION_MARKET_CLOSED'; break; }
@@ -115,11 +153,18 @@ export async function runScopedPaperOversight({ authority, records, observationT
   } catch (error) {
     reason ??= failureCode(error);
   }
+  // Delivery follows durable observations; its failure cannot reopen orders or discard verified fills.
+  if (receiptPath) {
+    try {
+      collectNotifications([], reason ? { handoffReason: reason } : {});
+      if (receiptPath) notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+    } catch { notificationDelivery = { status: 'DELIVERY_UNCERTAIN', eventCount: 0 }; }
+  }
   const counts = transport?.counts() ?? { account: 0, lookup: 0, positions: 0, orders: 0, clock: 0, total: 0 };
   const budget = authority?.config?.oversight?.requestBudget;
   return Object.freeze({ status: complete && !reason ? 'ATTEMPTED_ORDERS_RECONCILED' : 'UNRESOLVED_HANDOFF', reasons: reason ? [reason] : [],
     requestCounts: counts, requestBudgetCompliant: counts.total === 0 || (budget && Object.entries(counts).every(([k, v]) => v <= budget[k])),
     cycles, attemptedRows, observedRows, flatReconciledRows, reservedUnsubmittedRows: 5 - attemptedRows,
-    storeHashes: receipt?.storeHashes ?? {}, actualBrokerMutationAttempted: false, actualStateWriteAttempted: stateWriteAttempted,
+    storeHashes: receipt?.storeHashes ?? {}, notificationDelivery, actualBrokerMutationAttempted: false, actualStateWriteAttempted: stateWriteAttempted,
     brokerSubmitAllowed: false, originalHistoryNormalized: false, realizedPnlVerified: false });
 }

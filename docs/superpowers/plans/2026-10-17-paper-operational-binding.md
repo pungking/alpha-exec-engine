@@ -139,8 +139,20 @@ The existing 3-second/8-MiB per-response bounds remain. Observation windows are 
 - [ ] Run operational/adapter tests; require red.
 - [ ] Load fixed PAPER credentials only in a separately authorized runtime caller after config/authority/local evidence gates. Do not source .env implicitly. No host/feed/account auto-selection. Update `SCOPED_PAPER_REVIEWED_FILES` for every newly reachable runtime module and validator.
 - [ ] Use the existing controller/store/transport once for submission and Task 4 for oversight. Any nonterminal/uncertain action permanently stops later targets for that invocation. Stopping submission does not cancel orders; observer expiry or error must surface remaining uncertainty.
-- [ ] Reuse `buildScopedNotificationSnapshot`/`deliverNotifications`: accepted, partial, terminal-with-residual, filled-and-reconciled and unresolved handoff remain distinct. Deduplicate by existing receipts; notification failure cannot resubmit or erase state. Mark actual send unverified unless confirmed.
+- [x] Reuse `buildScopedNotificationSnapshot`/`deliverNotifications`: accepted, partial, terminal-with-residual, filled-and-reconciled and unresolved handoff remain distinct. Deduplicate by existing receipts; notification failure cannot resubmit or erase state. Mark actual send unverified unless confirmed.
 - [ ] Verify unattended mode without independent supervision rejects before first order; do not claim a Mac power-loss test proves a real remote alert. Run integration/notification/dispatch-safety regressions; commit: `feat: compose default-inert PAPER operational caller`.
+
+Provider-independent caller/notification checkpoint (2026-10-19): observation results now reuse the existing attempt's notification receipt. A fresh, sealed, same-scope/record portfolio result is required for observed flatness or terminal residual exposure; STOPPED history and unverified ownership/P&L remain unchanged. Delivery is bounded by the signed handoff deadline and a three-second send bound. Ambiguous delivery reserves the events without automatic resend, including on a separately authorized observer restart. Unresolved alerts appear before truncated event details. Capacity covers the existing five-record/16-history limit, rather than the shorter submit-only notification budget. Actual delivery is not tested.
+
+The existing CLI additionally accepts the local-only form:
+
+```text
+node scripts/run-scoped-paper-closeout.mjs --validate-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
+```
+
+It verifies owner-only config/approval bytes, the operational approval's structural hash binding, and pinned input/code documents without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition, semantic source/custody/writer/attendance checks and submit-to-observer authority handoff remain incomplete. This is not Task 5 completion.
+
+Compatibility: the new observation aggregate's `notificationDelivery` and the scoped residual/handoff event types are additive. Notification envelope/receipt and management-record schemas remain unchanged; old receipts remain deduplication inputs. Referenced runtime code now includes oversight; changed code bytes require newly reviewed pins/authority, never an automatic update to an old private approval. No private file or historical state migration is part of this change.
 
 ## Task 6: Source closure, full regression and reviewed integration
 

@@ -14,7 +14,7 @@ import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
-  './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
+  './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './scoped-paper-oversight.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
   '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',
@@ -72,8 +72,8 @@ async function persistWire(config, state, body, receipt) {
   await fs.link(temp, dest); await fs.unlink(temp);
   const d = await fs.open(dir, 'r'); try { await d.sync(); } finally { await d.close(); }
 }
-async function boundedNotificationSend(send, message, clock, startedAt) {
-  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, 300000 - elapsed);
+export async function boundedNotificationSend(send, message, clock, startedAt, deadlineMs = 300000) {
+  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, deadlineMs - elapsed);
   check(Number.isFinite(elapsed) && elapsed >= 0 && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
   const controller = new AbortController(); let timer;
   try {

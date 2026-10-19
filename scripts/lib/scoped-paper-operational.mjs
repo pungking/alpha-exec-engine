@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { validateScopedPaperAuthorityFields } from './scoped-closeout-contract.mjs';
+import { validateScopedPaperAuthorityFields, validateOperationalApprovalFields } from './scoped-closeout-contract.mjs';
 import { readScopedPaperFile, verifyScopedPaperInputs } from './scoped-paper-adapter.mjs';
 import { parseStrictJsonText } from '../../dist/src/json-utils.js';
 
@@ -86,4 +86,20 @@ export async function verifyOperationalEvidenceFiles({ config, files }) {
   check(fileBindings.has(files) && fileBindings.get(files) === digest(config), 'FILES_UNBOUND');
   await loadOperationalEvidenceFiles({ config });
   return true;
+}
+
+// Local file validation cannot grant an in-process execution capability or establish source truth.
+export async function loadOperationalInvocationFiles({ configFile, approvalFile }) {
+  try {
+    check(pin(configFile) && pin(approvalFile) && path.resolve(configFile.path) !== path.resolve(approvalFile.path), 'FILE_PINS_INVALID');
+    const read = async file => parseStrictJsonText(new TextDecoder('utf-8', { fatal: true }).decode(await readScopedPaperFile(file, true)), 'SCOPED_CLOSEOUT_DOCUMENT_INVALID');
+    const config = await read(configFile), approval = await read(approvalFile);
+    check(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
+    validateOperationalApprovalFields(config, approval);
+    const files = await loadOperationalEvidenceFiles({ config });
+    return freeze({ config, approval, files });
+  } catch (error) {
+    throw Error(/^SCOPED_(?:ADAPTER|CLOSEOUT)_[A-Z_]+$/.test(error?.message)
+      ? error.message : 'SCOPED_CLOSEOUT_INPUT_FILE_INVALID');
+  }
 }
