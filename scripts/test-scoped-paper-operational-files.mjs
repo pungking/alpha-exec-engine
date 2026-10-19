@@ -3,13 +3,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { operationalFixture, hash } from './fixtures/scoped-paper-adapter.mjs';
+import { operationalFixture, operationalControlDocuments, hash } from './fixtures/scoped-paper-adapter.mjs';
 import { SCOPED_PAPER_REVIEWED_FILES } from './lib/scoped-paper-adapter.mjs';
 import * as operational from './lib/scoped-paper-operational.mjs';
 import { main } from './run-scoped-paper-closeout.mjs';
 
 assert.equal(typeof operational.loadOperationalEvidenceFiles, 'function', 'load and pin actual bytes, not caller PASS labels');
 assert.equal(typeof operational.verifyOperationalEvidenceFiles, 'function');
+assert.equal(typeof operational.assessOperationalControlEvidence, 'function', 'pinned labels are not custody, writer or attendance attestations');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 let checks = 0;
 async function fixture() {
@@ -66,13 +67,113 @@ try {
   assert.equal(opened, 0); checks += 2;
 } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
 
-const invocation = await fixture();
+// These are synthetic operator attestations, not observed account/source/host facts.
+async function controlsFixture() {
+  const f = await fixture(), { config } = f, { clock } = operationalFixture();
+  const { custody, attendance } = operationalControlDocuments(config);
+  Object.assign(f, { clock, custody, attendance });
+  f.save = async () => {
+    config.writerExclusion.evidenceSha256 = hash(f.custody.writerExclusion ?? 'absent-writer');
+    config.custody.evidenceFile = await f.write('custody', f.custody);
+    config.oversight.operatorAttendanceFile = await f.write('attendance', f.attendance);
+    return operational.loadOperationalEvidenceFiles({ config });
+  };
+  return f;
+}
+const controls = await controlsFixture();
 try {
+  const files = await controls.save(), input = { config: controls.config, files, clock: controls.clock };
+  const before = await fs.readdir(controls.directory), result = await operational.assessOperationalControlEvidence(input);
+  assert.equal(result.status, 'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS');
+  assert.deepEqual(result.reasons, []);
+  for (const key of ['executionAuthorized', 'sourceReadinessProven', 'currentStateVerified',
+    'hostIdentityIndependentlyVerified', 'writerExclusionIndependentlyVerified', 'physicalAttendanceVerified']) assert.equal(result[key], false);
+  assert.deepEqual(result, await operational.assessOperationalControlEvidence(input));
+  assert.deepEqual(await fs.readdir(controls.directory), before); checks += 10;
+  const serialized = JSON.stringify(result);
+  for (const secret of [controls.config.directory, 'fixture-operator', 'WRITE_DISABLED', 'OPERATOR_NONINTERFERENCE']) assert.ok(!serialized.includes(secret));
+  assert.ok(Object.isFrozen(result) && Object.isFrozen(result.reasons)); checks += 5;
+  const copied = await operational.assessOperationalControlEvidence({ ...input, files: structuredClone(files) });
+  assert.deepEqual(copied.reasons, ['SCOPED_CLOSEOUT_FILES_UNBOUND']); checks++;
+  for (const now of ['not-a-time', controls.config.oversight.handoffDeadline,
+    new Date(Date.parse(controls.config.input.authority.validFrom) - 1).toISOString()]) {
+    const assessed = await operational.assessOperationalControlEvidence({ ...input, clock: { now: () => now } });
+    assert.equal(assessed.status, 'BLOCKED'); assert.equal(assessed.executionAuthorized, false); checks += 2;
+  }
+  const wrongWriter = structuredClone(controls.config); wrongWriter.writerExclusion.evidenceSha256 = hash('unrelated-control');
+  assert.deepEqual((await operational.assessOperationalControlEvidence({ config: wrongWriter,
+    files: await operational.loadOperationalEvidenceFiles({ config: wrongWriter }), clock: controls.clock })).reasons,
+  ['SCOPED_CLOSEOUT_WRITER_ATTESTATION_INVALID']); checks++;
+  await fs.appendFile(controls.config.oversight.operatorAttendanceFile.path, ' ');
+  assert.deepEqual((await operational.assessOperationalControlEvidence(input)).reasons, ['SCOPED_ADAPTER_FILE_HASH_DRIFT']); checks++;
+} finally { await fs.rm(controls.directory, { recursive: true, force: true }); }
+
+const renewed = await controlsFixture();
+try {
+  for (const document of [renewed.custody.writerExclusion, renewed.attendance])
+    document.attestedAt = document.validFrom = renewed.config.oversight.validFrom;
+  const input = { config: renewed.config, files: await renewed.save(), clock: renewed.clock };
+  assert.equal((await operational.assessOperationalControlEvidence(input)).status, 'BLOCKED');
+  assert.equal((await operational.assessOperationalControlEvidence({ ...input, purpose: 'OBSERVATION' })).status,
+    'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS', 'new observation attestation cannot be backdated to the original submit window');
+  assert.deepEqual((await operational.assessOperationalControlEvidence({ ...input, purpose: 'UNKNOWN' })).reasons,
+    ['SCOPED_CLOSEOUT_CONTROL_PURPOSE_INVALID']); checks += 3;
+} finally { await fs.rm(renewed.directory, { recursive: true, force: true }); }
+
+const controlMutations = [
+  ['CUSTODY', f => { f.custody = { status: 'PASS' }; }],
+  ['CUSTODY', f => { f.custody.accountSha256 = hash('wrong-account'); }],
+  ['CUSTODY', f => { f.custody.hostIdSha256 = hash('wrong-host'); }],
+  ['CUSTODY', f => { f.custody.directory += '/different'; }],
+  ['CUSTODY', f => { f.custody.preWriteHashes = { ...f.custody.preWriteHashes, orderLedger: hash('different-store') }; }],
+  ['CUSTODY', f => { f.custody.termsSha256 = hash('different-targets'); }],
+  ['CUSTODY', f => { f.custody.sourceSha256 = hash('different-source'); }],
+  ['CUSTODY', f => { f.custody.recordedAt = '2026-10-09T15:00:00.001Z'; }],
+  ['CUSTODY', f => { delete f.custody.adoptionApprovalSha256; }],
+  ['CUSTODY', f => { f.custody.historicalEvidenceNormalized = true; }],
+  ['WRITER', f => { f.custody.writerExclusion.controls = {}; }],
+  ['WRITER', f => { f.custody.writerExclusion.accountSha256 = hash('different-account'); }],
+  ['WRITER', f => { f.custody.writerExclusion.hostIdSha256 = hash('different-host'); }],
+  ['WRITER', f => { f.custody.writerExclusion.session = '2026-10-08'; }],
+  ['WRITER', f => { f.custody.writerExclusion.attestedAt = '2026-10-09T15:00:01.000Z'; }],
+  ['WRITER', f => { f.custody.writerExclusion.expiresAt = '2026-10-09T15:04:59.000Z'; }],
+  ['WRITER', f => { f.custody.writerExclusion.validFrom = '2026-10-09T15:00:01.000Z'; }],
+  ['WRITER', f => { delete f.custody.writerExclusion.procedureSha256; }],
+  ...['githubActions', 'otherHosts', 'otherProcesses', 'manualTrading'].flatMap(lane => [
+    ['WRITER', f => { f.custody.writerExclusion.controls[lane].status = 'UNKNOWN'; }],
+    ['WRITER', f => { delete f.custody.writerExclusion.controls[lane].evidenceSha256; }],
+  ]),
+  ['ATTENDANCE', f => { f.attendance = { status: 'PASS' }; }],
+  ['ATTENDANCE', f => { f.attendance.basis = 'UNATTENDED_LOCAL_HEARTBEAT'; }],
+  ['ATTENDANCE', f => { f.attendance.accountSha256 = hash('different-account'); }],
+  ['ATTENDANCE', f => { f.attendance.hostIdSha256 = hash('different-host'); }],
+  ['ATTENDANCE', f => { f.attendance.session = '2026-10-08'; }],
+  ['ATTENDANCE', f => { f.attendance.attestedAt = '2026-10-09T15:00:00.001Z'; }],
+  ['ATTENDANCE', f => { f.attendance.expiresAt = '2026-10-09T15:04:59.000Z'; }],
+  ['ATTENDANCE', f => { f.attendance.validFrom = '2026-10-09T15:00:00.001Z'; }],
+  ['ATTENDANCE', f => { delete f.attendance.operatorSha256; }],
+  ['ATTENDANCE', f => { delete f.attendance.handoffProcedureSha256; }],
+  ['ATTENDANCE', f => { f.attendance.brokerInterfaceAttended = false; }],
+  ['ATTENDANCE', f => { f.attendance.hostLossOrdersMayRemainAcknowledged = false; }],
+];
+for (const [kind, mutate] of controlMutations) {
+  const f = await controlsFixture();
+  try {
+    mutate(f);
+    const files = await f.save();
+    const result = await operational.assessOperationalControlEvidence({ config: f.config, files, clock: f.clock });
+    assert.equal(result.status, 'BLOCKED'); assert.ok(result.reasons.includes(`SCOPED_CLOSEOUT_${kind}_ATTESTATION_INVALID`)); checks += 2;
+  } finally { await fs.rm(f.directory, { recursive: true, force: true }); }
+}
+
+const invocation = await controlsFixture();
+try {
+  await invocation.save();
   const approval = operationalFixture().approval;
   approval.stableScopeSha256 = hash(invocation.config);
   const configPin = await invocation.write('invocation', invocation.config), approvalPin = await invocation.write('approval', approval);
   const args = ['--validate-operational', configPin.path, configPin.sha256, approvalPin.path, approvalPin.sha256];
-  const forbidden = { get transport() { assert.fail('local validation must not inspect credentials/transport'); },
+  const forbidden = { clock: invocation.clock, get transport() { assert.fail('local validation must not inspect credentials/transport'); },
     get observationTransport() { assert.fail('local validation must not create an observer'); },
     get notify() { assert.fail('local validation must not inspect sender'); } };
   const before = await fs.readdir(invocation.directory);
@@ -80,6 +181,7 @@ try {
   assert.equal(valid.status, 'PINNED_INPUTS_VERIFIED_NOT_READY');
   assert.equal(valid.executionAuthorized, false); assert.equal(valid.sourceReadinessProven, false);
   assert.equal(valid.actualBrokerMutationAttempted, false); assert.equal(valid.actualStateWriteAttempted, false);
+  assert.equal(valid.controlEvidence?.status, 'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS'); checks++;
   assert.deepEqual(await fs.readdir(invocation.directory), before);
   assert.equal((await main(['--validate'], { config: invocation.config })).status, 'PASS'); checks += 7;
   for (const change of [a => { a.kind = 'DIRECT_SCOPED_OPERATOR_INVOCATION'; }, a => { a.stableScopeSha256 = hash('other-config'); },
@@ -107,6 +209,18 @@ try {
     configFile: { path: path.join(invocation.directory, 'missing-private-config.json'), sha256: hash('missing') }, approvalFile: approvalPin,
   }), error => /^SCOPED_(CLOSEOUT|ADAPTER)_[A-Z_]+$/.test(error.message) && !error.message.includes(invocation.directory)); checks++;
 } finally { await fs.rm(invocation.directory, { recursive: true, force: true }); }
+
+const labels = await fixture();
+try {
+  const approval = operationalFixture().approval; approval.stableScopeSha256 = hash(labels.config);
+  const configPin = await labels.write('invocation', labels.config), approvalPin = await labels.write('approval', approval);
+  const result = await main(['--validate-operational', configPin.path, configPin.sha256, approvalPin.path, approvalPin.sha256],
+    { clock: operationalFixture().clock, get transport() { assert.fail('unattested controls must not load credentials'); } });
+  assert.equal(result.status, 'BLOCKED');
+  assert.deepEqual(result.reasons, ['SCOPED_CLOSEOUT_CUSTODY_ATTESTATION_INVALID',
+    'SCOPED_CLOSEOUT_WRITER_ATTESTATION_INVALID', 'SCOPED_CLOSEOUT_ATTENDANCE_ATTESTATION_INVALID']);
+  assert.equal(result.actualStateWriteAttempted, false); checks += 3;
+} finally { await fs.rm(labels.directory, { recursive: true, force: true }); }
 
 for (const mode of ['missing', 'symlink', 'parent-symlink', 'hardlink', 'public', 'non-json', 'array']) {
   const p = await fixture();

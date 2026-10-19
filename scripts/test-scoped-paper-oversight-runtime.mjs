@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { operationalFixture, hash, at } from './fixtures/scoped-paper-adapter.mjs';
+import { operationalFixture, pinOperationalFixtureFiles, hash, at } from './fixtures/scoped-paper-adapter.mjs';
 import { managementRecord } from './fixtures/scoped-closeout.mjs';
 import * as transportModule from './lib/scoped-paper-transport.mjs';
 import * as evidence from './lib/scoped-paper-evidence.mjs';
@@ -92,6 +92,8 @@ async function prepared(attempted = 1) {
     JSON.stringify({ orders: {}, ...(file.includes('idempotency') ? { releases: [] } : {}), updatedAt: '' }), { mode: 0o600 });
   const preWriteHashes = await hashes(directory);
   Object.assign(f.input, { preWriteHashes }); f.config.directory = directory;
+  const controlDirectory = path.join(directory, 'fixture-controls'); await fs.mkdir(controlDirectory, { mode: 0o700 });
+  await pinOperationalFixtureFiles(f.config, controlDirectory);
   await stores.withScopedStores({ directory, expectedHashes: preWriteHashes, attemptId: f.input.attemptId }, async ctx => {
     const rows = f.input.terms.targets.map((_, i) => ({ ...managementRecord(i), accountSha256: f.input.accountSha256,
       managementAuthoritySha256: f.input.authoritySha256, preWriteHashes }));
@@ -115,7 +117,40 @@ async function prepared(attempted = 1) {
   let factories = 0;
   const deps = { authority, records, clock: { ...f.clock, sleep: async n => { f.advance(n); f.bodies.clock.timestamp = f.clock.now(); } },
     observationTransport: ({ beforeRead }) => { factories++; return f.transport(beforeRead); } };
-  return { f, directory, authority, records, deps, factories: () => factories };
+  return { f, directory, controlDirectory, authority, records, deps, factories: () => factories };
+}
+for (const mode of ['missing', 'drift', 'unattended']) {
+  const p = await prepared();
+  try {
+    const before = await hashes(p.directory), ref = p.f.config.oversight.operatorAttendanceFile;
+    if (mode === 'missing') await fs.unlink(ref.path);
+    if (mode === 'drift') await fs.appendFile(ref.path, ' ');
+    if (mode === 'unattended') {
+      const document = JSON.parse(await fs.readFile(ref.path, 'utf8')); document.brokerInterfaceAttended = false;
+      const bytes = JSON.stringify(document); await fs.writeFile(ref.path, bytes); ref.sha256 = sha(bytes);
+      const { approval, ...basis } = p.authority; approval.authoritySha256 = hash(basis);
+    }
+    const result = await oversight.runScopedPaperOversight(p.deps);
+    assert.equal(result.actualStateWriteAttempted, false, 'reject missing/drifted/unattended controls before observation claim');
+    assert.equal(p.factories(), 0); assert.equal(p.f.calls.length, 0);
+    assert.deepEqual(await hashes(p.directory), before); checks += 4;
+  } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+}
+for (const mode of ['source', 'custody', 'attendance']) {
+  const p = await prepared();
+  try {
+    const ref = mode === 'source' ? p.f.config.sourceFile : mode === 'custody'
+      ? p.f.config.custody.evidenceFile : p.f.config.oversight.operatorAttendanceFile;
+    const original = p.f.fetchImpl;
+    p.f.fetchImpl = async (...args) => {
+      const response = await original(...args); await fs.appendFile(ref.path, ' '); return response;
+    };
+    const before = await hashes(p.directory), result = await oversight.runScopedPaperOversight(p.deps);
+    assert.deepEqual(result.reasons, ['SCOPED_ADAPTER_FILE_HASH_DRIFT']);
+    assert.equal(p.f.calls.length, 1, 'revoked controls cannot authorize the next GET');
+    assert.equal(p.factories(), 1); assert.equal(result.actualBrokerMutationAttempted, false);
+    assert.deepEqual(await hashes(p.directory), before); checks += 5;
+  } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
 }
 const proofCase = await prepared();
 try {
@@ -187,6 +222,15 @@ for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residua
       p.f.bodies.clock.timestamp = p.f.clock.now();
       Object.assign(p.f.config.oversight, { validFrom: p.f.clock.now(), expiresAt: '2026-10-09T15:15:00.000Z', handoffDeadline: '2026-10-09T15:15:00.000Z' });
       p.f.config.writerExclusion.expiresAt = p.f.config.oversight.handoffDeadline;
+      await pinOperationalFixtureFiles(p.f.config, p.controlDirectory);
+      const custodyRef = p.f.config.custody.evidenceFile, attendanceRef = p.f.config.oversight.operatorAttendanceFile;
+      const custody = JSON.parse(await fs.readFile(custodyRef.path, 'utf8'));
+      const attendance = JSON.parse(await fs.readFile(attendanceRef.path, 'utf8'));
+      for (const document of [custody.writerExclusion, attendance]) document.attestedAt = document.validFrom = p.f.clock.now();
+      p.f.config.writerExclusion.evidenceSha256 = hash(custody.writerExclusion);
+      for (const [ref, document] of [[custodyRef, custody], [attendanceRef, attendance]]) {
+        const bytes = JSON.stringify(document); await fs.writeFile(ref.path, bytes); ref.sha256 = sha(bytes);
+      }
       const { approval, ...base } = p.authority; approval.authoritySha256 = hash(base); approval.approvedAt = p.f.clock.now();
     }
     const result = await oversight.runScopedPaperOversight(p.deps);
@@ -205,6 +249,7 @@ for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residua
       assert.equal(current.submissionPhase, 'STOPPED'); assert.equal(current.filledQty, '2');
     } else assert.equal(result.status, 'UNRESOLVED_HANDOFF', mode);
     if (mode === 'accepted' || mode === 'expired-submit') {
+      assert.equal(p.f.calls.length, 9, 'separate observation approval covers both cycles without renewing submission'); checks++;
       const current = (await read(p.directory)).orders[p.records[0].exitIdempotencyKey];
       assert.equal(current.history.length, 4, 'unchanged poll does not append history');
       const beforeCalls = p.f.calls.length;
@@ -235,6 +280,7 @@ for (const mode of ['accepted', 'partial-filled', 'filled-residual', 'canceled',
       Object.assign(p.f.config.oversight, { maxCycles: 13, expiresAt: '2026-10-09T15:10:00.000Z', handoffDeadline: '2026-10-09T15:10:00.000Z',
         requestBudget: { account: 1, lookup: 65, positions: 13, orders: 13, clock: 13, total: 105 } });
       p.f.config.writerExclusion.expiresAt = p.f.config.oversight.handoffDeadline;
+      await pinOperationalFixtureFiles(p.f.config, p.controlDirectory);
       p.f.bodies.positions = p.f.bodies.positions.slice(4);
     }
     const { approval, ...basis } = p.authority; approval.authoritySha256 = hash(basis);

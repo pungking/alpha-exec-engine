@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { validateOperationalConfiguration } from './scoped-paper-operational.mjs';
+import { validateOperationalConfiguration, loadOperationalEvidenceFiles, assessOperationalControlEvidence } from './scoped-paper-operational.mjs';
 import { isScopedPaperObservationTransport } from './scoped-paper-transport.mjs';
 import { bindScopedObservationAccount, isScopedObservationAccount, mapOversightObservation, mapOversightPortfolio } from './scoped-paper-evidence.mjs';
 import { withScopedObservationStores, recordScopedObservation } from './scoped-closeout-storage.mjs';
@@ -88,6 +88,13 @@ export async function runScopedPaperOversight({ authority, records, observationT
     const indices = records.map((r, i) => r.submissionPhase !== 'RESERVED' ? i : -1).filter(i => i >= 0);
     attemptedRows = indices.length;
     check(attemptedRows > 0 && typeof observationTransport === 'function' && typeof clock.sleep === 'function', 'OBSERVATION_CONFIG_INVALID');
+    const files = await loadOperationalEvidenceFiles({ config });
+    const controls = async () => {
+      const result = await assessOperationalControlEvidence({ config, files, clock, purpose: 'OBSERVATION' });
+      if (result.status === 'BLOCKED') throw Error(result.reasons[0]);
+      guard();
+    };
+    await controls();
     stateWriteAttempted = true;
     await withScopedObservationStores({ directory: config.directory, expectedHashes: authority.expectedHashes,
       attemptId: scope.attemptId, authoritySha256: authority.approval.authoritySha256 }, async (context, stored) => {
@@ -109,10 +116,11 @@ export async function runScopedPaperOversight({ authority, records, observationT
       let accountBinding;
       const beforeRead = request => { guard(); return request.group === 'account'
         ? !accountBinding : isScopedObservationAccount(accountBinding, scope.accountSha256, transport); };
+      await controls();
       transport = observationTransport({ beforeRead, clock, oversight: policy });
       check(isScopedPaperObservationTransport(transport, beforeRead), 'OBSERVATION_TRANSPORT_INVALID');
       const read = async (group, routeInput = {}) => {
-        guard();
+        await controls();
         const r = await transport.request({ group, phase: group === 'account' ? 'account' : 'observation', routeInput });
         check(!r.error && r.complete, 'OBSERVATION_READ_FAILED'); guard(); return r;
       };

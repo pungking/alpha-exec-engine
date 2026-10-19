@@ -92,7 +92,7 @@ Do not change generic entry/protection consumers merely to accept management rec
 - [ ] Verify unknown source rejects before broker credential/transport creation for a new submission attempt; a previously authorized order observer has a separate authority and cannot regain submission privilege.
 - [ ] Run operational, evidence and adapter regression tests; commit: `feat: bind operational evidence with unresolved-source rejection`.
 
-Local-byte substep implemented: `loadOperationalEvidenceFiles` and `verifyOperationalEvidenceFiles` reuse the existing code/source reader for owner-only source-contract, risk, clock, custody and attendance documents. Exact bytes and revalidation pass the offline fixtures; the result explicitly does not establish source readiness. The semantic readiness evaluator and real source producer remain incomplete.
+Local-byte substep implemented: `loadOperationalEvidenceFiles` and `verifyOperationalEvidenceFiles` reuse the existing code/source reader for owner-only source-contract, risk, clock, custody and attendance documents. Exact bytes and revalidation pass the offline fixtures; the result explicitly does not establish source readiness. Operator-control attestation validation is described below. The source readiness evaluator and real source producer remain incomplete.
 
 Risk/time/source rules have no permissive defaults. All applicable existing risk dimensions must have verified inputs or a separately approved reduction-only exception; no exception is approved here. Status silence, tradable=true, fresh quotes, clock.is_open, subscription acknowledgment or missing RSS rows never establish NOT_HALTED.
 
@@ -150,9 +150,54 @@ The existing CLI additionally accepts the local-only form:
 node scripts/run-scoped-paper-closeout.mjs --validate-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
 ```
 
-It verifies owner-only config/approval bytes, the operational approval's structural hash binding, and pinned input/code documents without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition, semantic source/custody/writer/attendance checks and submit-to-observer authority handoff remain incomplete. This is not Task 5 completion.
+It verifies owner-only config/approval bytes, the operational approval's structural hash binding, pinned input/code documents and the operator-control attestations below without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition, authentic source/host/custody verification and submit-to-observer authority handoff remain incomplete. This is not Task 5 completion.
 
 Compatibility: the new observation aggregate's `notificationDelivery` and the scoped residual/handoff event types are additive. Notification envelope/receipt and management-record schemas remain unchanged; old receipts remain deduplication inputs. Referenced runtime code now includes oversight; changed code bytes require newly reviewed pins/authority, never an automatic update to an old private approval. No private file or historical state migration is part of this change.
+
+### Operator-control evidence contract (2026-10-19)
+
+The existing custody and attendance file pins now have exact, versioned contents.
+They are operator declarations, not a new ledger or independent telemetry. No
+production declaration is created by the implementation or fixtures.
+
+- Custody: `scoped-paper-custody-attestation-v1`, basis
+  `OPERATOR_ATTESTED_SINGLE_HOST`, exact account/host/directory, original pre-write
+  hashes, terms/source hashes, recorded time, adoption-approval hash,
+  `historicalEvidenceNormalized=false`, and the writer declaration.
+- Writer: `scoped-paper-writer-attestation-v1`, exact account/host/session,
+  attested/valid-from/expiry times and procedure hash. Its canonical hash must
+  match `writerExclusion.evidenceSha256`; its expiry must match that pinned policy.
+  Exactly four controls are required: GitHub Actions, other hosts and other
+  processes each declare `WRITE_DISABLED`; manual trading declares
+  `OPERATOR_NONINTERFERENCE`. Every control includes an evidence hash. A local
+  lock, unknown/omitted lane or empty broker order list cannot substitute for it.
+- Attendance: `scoped-paper-attendance-attestation-v1`, basis
+  `NAMED_OPERATOR_BROKER_INTERFACE`, operator/account/host/session hashes/binding,
+  attested/valid-from/expiry times, handoff-procedure hash, attended broker
+  interface and acknowledgment that orders can survive host loss. Unattended
+  local-heartbeat claims are rejected. No independent supervisor is activated.
+
+For submission, writer/attendance validity must cover submission, observation and
+handoff, not only the current wall-clock instant. A separately approved read-only
+observer checks its own observation/handoff window; renewing observation must not
+require backdating an attestation or renew the expired submit authority.
+Malformed/future/revoked/mismatched evidence
+blocks. Wall time here only bounds attestation validity; it does not prove market
+opening or host synchronization. `assessOperationalControlEvidence` re-reads the
+pinned bytes and returns `OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS` only when all
+three declarations bind correctly. It explicitly leaves current state, physical
+attendance, host identity, external-writer exclusion and source readiness
+independently unverified, with execution authorization false.
+
+The local validation CLI now reports `BLOCKED` for absent/invalid declarations.
+The observation-only runner checks them before the durable observation claim and
+credential/transport creation, then revalidates pinned inputs/code/control bytes
+before each bounded GET. It does not require a new halt/quote proof to observe an
+already authorized attempt, and cannot regain submission authority. Legacy
+submission and management-state schemas are unchanged. This tightens only the
+new operational/observation interfaces; old private approval pins must never be
+rewritten to satisfy it. Actual custody adoption, writer controls and attendance
+remain separate operator actions, not inferred from passing fixtures.
 
 ## Task 6: Source closure, full regression and reviewed integration
 

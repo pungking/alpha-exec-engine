@@ -88,6 +88,61 @@ export async function verifyOperationalEvidenceFiles({ config, files }) {
   return true;
 }
 
+function controlWindow(document, config, now, start) {
+  return time(document?.attestedAt) <= time(document?.validFrom) && time(document?.attestedAt) <= now
+    && time(document?.validFrom) <= start && time(document?.validFrom) <= now
+    && now < time(document?.expiresAt) && time(document?.expiresAt) >= time(config.oversight.handoffDeadline);
+}
+function custodyAttested(c, config, now) {
+  return exact(c, 'schemaVersion basis accountSha256 hostIdSha256 directory preWriteHashes termsSha256 sourceSha256 recordedAt adoptionApprovalSha256 historicalEvidenceNormalized writerExclusion')
+    && c.schemaVersion === 'scoped-paper-custody-attestation-v1' && c.basis === 'OPERATOR_ATTESTED_SINGLE_HOST'
+    && c.accountSha256 === config.input.accountSha256 && c.hostIdSha256 === config.custody.hostIdSha256
+    && c.directory === config.directory && path.resolve(c.directory) === c.directory
+    && digest(c.preWriteHashes) === digest(config.input.preWriteHashes)
+    && c.termsSha256 === config.input.termsSha256 && c.sourceSha256 === config.input.sourceSha256
+    && time(c.recordedAt) <= now && time(c.recordedAt) <= time(config.input.authority.validFrom)
+    && hash(c.adoptionApprovalSha256) && c.historicalEvidenceNormalized === false;
+}
+function writerAttested(w, config, now, start) {
+  return exact(w, 'schemaVersion accountSha256 hostIdSha256 session validFrom expiresAt attestedAt procedureSha256 controls')
+    && w.schemaVersion === 'scoped-paper-writer-attestation-v1' && digest(w) === config.writerExclusion.evidenceSha256
+    && w.accountSha256 === config.input.accountSha256 && w.hostIdSha256 === config.custody.hostIdSha256
+    && w.session === config.input.authority.session && w.expiresAt === config.writerExclusion.expiresAt
+    && controlWindow(w, config, now, start) && hash(w.procedureSha256)
+    && exact(w.controls, 'githubActions otherHosts otherProcesses manualTrading')
+    && Object.entries(w.controls).every(([lane, c]) => exact(c, 'status evidenceSha256') && hash(c.evidenceSha256)
+      && c.status === (lane === 'manualTrading' ? 'OPERATOR_NONINTERFERENCE' : 'WRITE_DISABLED'));
+}
+function attendanceAttested(a, config, now, start) {
+  return exact(a, 'schemaVersion basis operatorSha256 accountSha256 hostIdSha256 session validFrom expiresAt attestedAt handoffProcedureSha256 brokerInterfaceAttended hostLossOrdersMayRemainAcknowledged')
+    && a.schemaVersion === 'scoped-paper-attendance-attestation-v1' && a.basis === 'NAMED_OPERATOR_BROKER_INTERFACE'
+    && hash(a.operatorSha256) && a.accountSha256 === config.input.accountSha256 && a.hostIdSha256 === config.custody.hostIdSha256
+    && a.session === config.input.authority.session && controlWindow(a, config, now, start) && hash(a.handoffProcedureSha256)
+    && a.brokerInterfaceAttended === true && a.hostLossOrdersMayRemainAcknowledged === true;
+}
+
+// Pinned operator attestations are necessary controls, not independent observation of their truth.
+export async function assessOperationalControlEvidence({ config, files, clock, purpose = 'SUBMISSION' }) {
+  const reasons = [];
+  try {
+    check(['SUBMISSION', 'OBSERVATION'].includes(purpose), 'CONTROL_PURPOSE_INVALID');
+    config = structuredClone(config);
+    await verifyOperationalEvidenceFiles({ config, files });
+    const now = time(clock.now()); check(Number.isFinite(now), 'CONTROL_TIME_INVALID');
+    const start = purpose === 'OBSERVATION' ? time(config.oversight.validFrom)
+      : Math.min(time(config.input.authority.validFrom), time(config.oversight.validFrom));
+    const { custody, operatorAttendance } = files.documents;
+    if (!custodyAttested(custody, config, now)) reasons.push('SCOPED_CLOSEOUT_CUSTODY_ATTESTATION_INVALID');
+    if (!writerAttested(custody?.writerExclusion, config, now, start)) reasons.push('SCOPED_CLOSEOUT_WRITER_ATTESTATION_INVALID');
+    if (!attendanceAttested(operatorAttendance, config, now, start)) reasons.push('SCOPED_CLOSEOUT_ATTENDANCE_ATTESTATION_INVALID');
+  } catch (error) {
+    reasons.push(/^SCOPED_(?:ADAPTER|CLOSEOUT)_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_CLOSEOUT_CONTROL_EVIDENCE_INVALID');
+  }
+  return freeze({ status: reasons.length ? 'BLOCKED' : 'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS', reasons,
+    executionAuthorized: false, sourceReadinessProven: false, currentStateVerified: false,
+    hostIdentityIndependentlyVerified: false, writerExclusionIndependentlyVerified: false, physicalAttendanceVerified: false });
+}
+
 // Local file validation cannot grant an in-process execution capability or establish source truth.
 export async function loadOperationalInvocationFiles({ configFile, approvalFile }) {
   try {
