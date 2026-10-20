@@ -150,7 +150,7 @@ The existing CLI additionally accepts the local-only form:
 node scripts/run-scoped-paper-closeout.mjs --validate-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
 ```
 
-It verifies owner-only config/approval bytes, the operational approval's structural hash binding, pinned input/code documents and the operator-control attestations below without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition, authentic source/host/custody verification and submit-to-observer authority handoff remain incomplete. This is not Task 5 completion.
+It verifies owner-only config/approval bytes, the operational approval's structural hash binding, pinned input/code documents and the operator-control attestations below without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition and authentic source/host/custody verification remain incomplete. The submit-to-observer authority boundary was subsequently implemented as described below; it is not the complete caller. This is not Task 5 completion.
 
 Compatibility: the new observation aggregate's `notificationDelivery` and the scoped residual/handoff event types are additive. Notification envelope/receipt and management-record schemas remain unchanged; old receipts remain deduplication inputs. Referenced runtime code now includes oversight; changed code bytes require newly reviewed pins/authority, never an automatic update to an old private approval. No private file or historical state migration is part of this change.
 
@@ -305,3 +305,24 @@ Fresh baseline checks also passed: `typecheck`, idempotency storage (42 rejectio
 - Task 5 operational submission/oversight/notification composition is still incomplete. Do not fabricate observation approval from a submit approval or change process flags to make a handoff pass.
 - Task 6 offline test wiring and the full local matrix pass; dependency audit reports zero vulnerabilities. Independent whole-branch review, GitHub CI and merge are not yet complete.
 - Official trading-status initialization/continuous coverage, host-clock/risk evidence and actual custody/exclusion/attendance remain runtime requirements. No API, activation or production state mutation was performed by this development checkpoint.
+
+## Verification and integration checkpoint (2026-10-20)
+
+- At `dc27c3d78ea122b9081908b6e7ed80ecb4e955fd`, the network-denied matrix
+  completed with all 17 npm commands and `git diff --check` passing. This includes
+  105 authority mutations, 173 file/control checks, 160 observation-store checks
+  and 572 observation-runtime checks. The unchanged lockfile's dependency audit
+  reports zero vulnerabilities. These are synthetic/static results only.
+- The fresh-context whole-branch implementation reviewer terminated with a usage
+  limit error, without returning findings. Independent review remains
+  `NOT_COMPLETED_USAGE_LIMIT`; neither the earlier draft review nor self-review
+  substitutes for it. No new reviewer is started to bypass the limit.
+- Preserve this unfinished implementation in a Draft PR and run the normal
+  offline PR CI. Draft publication is not review completion, permission to merge,
+  source-contract closure or operational readiness.
+- Tasks 2, 5 and 6 remain incomplete. Finish documented source/risk/time evidence
+  production and the actual caller composition before claiming full static
+  binding. Do not turn a rejection-only path or operator declarations into proof
+  of current provider/state truth.
+- No broker call, workflow dispatch/rerun, actual notification, state adoption,
+  execution activation, Stage6/OOS change or production-state mutation occurred.
