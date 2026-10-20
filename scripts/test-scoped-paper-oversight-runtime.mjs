@@ -8,6 +8,7 @@ import { managementRecord } from './fixtures/scoped-closeout.mjs';
 import * as transportModule from './lib/scoped-paper-transport.mjs';
 import * as evidence from './lib/scoped-paper-evidence.mjs';
 import * as stores from './lib/scoped-closeout-storage.mjs';
+import * as contract from './lib/scoped-closeout-contract.mjs';
 import { buildScopedNotificationSnapshot } from './paper-order-notifications.mjs';
 
 assert.equal(typeof transportModule.createScopedPaperObservationTransport, 'function', 'observation-only bounded transport must exist');
@@ -325,7 +326,7 @@ for (const mode of ['accepted', 'partial-filled', 'filled-residual', 'canceled',
       assert.equal(sends, 0); assert.equal(result.status, 'UNRESOLVED_HANDOFF');
       assert.equal(result.notificationDelivery.status, mode === 'wrong-destination' ? 'NOT_AUTHORIZED' : 'RECEIPT_INVALID');
     } else {
-      assert.equal(sends, 1);
+      assert.equal(sends, 1, JSON.stringify({ mode, reasons: result.reasons, notification: result.notificationDelivery.status }));
       assert.equal(result.notificationDelivery.status, mode.startsWith('sender-') ? 'DELIVERY_UNCERTAIN' : 'DELIVERED');
       if (mode === 'sender-hang') assert.equal(sendSignal.aborted, true);
       if (mode === 'partial-filled') {
@@ -353,5 +354,81 @@ for (const mode of ['accepted', 'partial-filled', 'filled-residual', 'canceled',
     assert.equal(p.f.calls.length, beforeReplay); assert.equal(sends, beforeSends);
     assert.ok(!JSON.stringify(result).includes('fixture-private-error')); checks += 13;
   } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+}
+assert.equal(typeof contract.handoffOperationalObservation, 'function', 'signed oversight must not fabricate a second human approval');
+for (const mode of ['accepted', 'cloned', 'records-drift', 'hash-drift', 'expired-submit', 'expired-observer', 'unsafe-flags',
+  'safe-flags', 'flags-drift', 'same-approval-restart']) {
+  const p = await prepared(), originalFlags = { READ_ONLY: process.env.READ_ONLY, EXEC_ENABLED: process.env.EXEC_ENABLED,
+    ALPHA_ENV: process.env.ALPHA_ENV };
+  try {
+    // Synthetic transport/store fixture only: the runtime never changes process flags.
+    process.env.READ_ONLY = 'false'; process.env.EXEC_ENABLED = 'true';
+    const { config } = p.f;
+    config.oversight.expiresAt = config.oversight.handoffDeadline = '2026-10-09T15:07:00.000Z';
+    config.writerExclusion.expiresAt = config.oversight.handoffDeadline;
+    await pinOperationalFixtureFiles(config, p.controlDirectory);
+    const approval = { ...p.f.approval, stableScopeSha256: hash(config) };
+    const capability = contract.authorizeOperationalInvocation({ config, approval, clock: p.f.clock });
+    const scope = contract.validateObservedCloseoutInput(config.input, capability);
+    if (mode === 'expired-submit') p.f.advance(240000);
+    if (mode === 'expired-observer') p.f.advance(360000);
+    p.f.bodies.clock.timestamp = p.f.clock.now();
+    const args = { config, records: p.records, expectedHashes: p.authority.expectedHashes, clock: p.f.clock };
+    assert.throws(() => contract.handoffOperationalObservation(structuredClone(capability), args), /AUTHORITY/);
+    assert.throws(() => contract.handoffOperationalObservation(capability, { ...args, records: [] }), /SCOPE/);
+    assert.throws(() => contract.handoffOperationalObservation(capability, { ...args, config: { ...config, directory: '/other' } }), /AUTHORITY/);
+    assert.throws(() => contract.handoffOperationalObservation(capability, { ...args, expectedHashes: config }), /SCOPE/);
+    const wrongRecords = structuredClone(p.records); wrongRecords[0].accountSha256 = hash('other');
+    assert.throws(() => contract.handoffOperationalObservation(capability, { ...args, records: wrongRecords }), /SCOPE/); checks += 3;
+    if (mode === 'expired-observer') {
+      assert.throws(() => contract.handoffOperationalObservation(capability, args), /EXPIRED/);
+      assert.equal(p.f.calls.length, 0); checks += 4; continue;
+    }
+    const observer = contract.handoffOperationalObservation(capability, args);
+    assert.deepEqual(Object.keys(observer), []);
+    assert.throws(() => contract.assertOperationalInvocation(capability, { config, clock: p.f.clock }), /RETIRED/);
+    assert.throws(() => contract.bindOperationalObservation(capability, { scope, observation: {}, clock: p.f.clock }), /RETIRED/);
+    assert.throws(() => contract.handoffOperationalObservation(capability, args), /RETIRED/);
+    assert.throws(() => contract.validateObservedCloseoutInput(config.input, observer), /AUTHORITY/);
+    assert.equal(hash(config), approval.stableScopeSha256);
+    const deps = { ...p.deps, authority: mode === 'cloned' ? structuredClone(observer) : observer };
+    if (mode === 'records-drift') deps.records = p.records.map(r => ({ ...r, updatedAt: '2026-10-09T15:00:01.000Z' }));
+    if (mode === 'hash-drift') await fs.appendFile(path.join(p.directory, 'order-ledger.json'), ' ');
+    if (mode === 'unsafe-flags') process.env.ALPHA_ENV = 'LIVE';
+    if (mode === 'safe-flags') { process.env.READ_ONLY = 'true'; process.env.EXEC_ENABLED = 'false'; }
+    if (mode === 'flags-drift') {
+      deps.observationTransport = ({ beforeRead }) => p.f.transport(beforeRead, async (...args) => {
+        const response = await p.f.fetchImpl(...args); process.env.ALPHA_ENV = 'LIVE'; return response;
+      });
+    }
+    const result = await oversight.runScopedPaperOversight(deps);
+    const readsAllowed = ['accepted', 'expired-submit', 'safe-flags', 'same-approval-restart'].includes(mode);
+    assert.equal(p.f.calls.length, readsAllowed ? 9 : mode === 'flags-drift' ? 1 : 0,
+      JSON.stringify({ mode, reasons: result.reasons }));
+    assert.equal(result.actualBrokerMutationAttempted, false);
+    assert.equal(result.brokerSubmitAllowed, false);
+    assert.equal(process.env.READ_ONLY, mode === 'safe-flags' ? 'true' : 'false');
+    assert.equal(process.env.EXEC_ENABLED, mode === 'safe-flags' ? 'false' : 'true');
+    if (mode === 'same-approval-restart') {
+      const records = Object.values((await read(p.directory)).orders);
+      assert.notEqual(hash(records), hash(p.records), 'a real observed record transition must not renew the signed read budget');
+      const again = contract.authorizeOperationalInvocation({ config, approval, clock: p.f.clock });
+      const next = contract.handoffOperationalObservation(again, { ...args, records, expectedHashes: await hashes(p.directory) });
+      const before = p.f.calls.length;
+      const repeated = await oversight.runScopedPaperOversight({ ...deps, authority: next, records });
+      assert.equal(p.f.calls.length, before); assert.equal(repeated.status, 'UNRESOLVED_HANDOFF'); checks += 3;
+    }
+    const before = p.f.calls.length;
+    const replay = await oversight.runScopedPaperOversight(deps);
+    assert.equal(p.f.calls.length, before); assert.equal(replay.actualStateWriteAttempted, false);
+    assert.ok(!JSON.stringify(result).includes('fixture-observed-order'));
+    assert.ok(!JSON.stringify(result).includes('FIX0'));
+    checks += 17;
+  } finally {
+    for (const [key, value] of Object.entries(originalFlags)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await fs.rm(p.directory, { recursive: true, force: true });
+  }
 }
 console.log(JSON.stringify({ status: 'PASS', suite: 'scoped-paper-oversight-runtime', checks, actualBrokerRequests: 0, productionStateWrites: 0 }));

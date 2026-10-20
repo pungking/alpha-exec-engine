@@ -154,6 +154,33 @@ It verifies owner-only config/approval bytes, the operational approval's structu
 
 Compatibility: the new observation aggregate's `notificationDelivery` and the scoped residual/handoff event types are additive. Notification envelope/receipt and management-record schemas remain unchanged; old receipts remain deduplication inputs. Referenced runtime code now includes oversight; changed code bytes require newly reviewed pins/authority, never an automatic update to an old private approval. No private file or historical state migration is part of this change.
 
+### Submission-to-observation authority boundary (2026-10-20)
+
+`handoffOperationalObservation` irreversibly retires an existing operational
+capability and returns an opaque, single-use observation capability. Its authority
+is the original operator-approved stable configuration's finite oversight policy,
+not a fabricated `DIRECT_SCOPED_OBSERVATION_INVOCATION` approval. It binds the exact
+five resulting management records and their paired store hashes; the existing
+observation-store boundary verifies those current bytes before credentials/GETs.
+The durable claim hash is fixed to the original stable configuration and approval.
+Changed records or store hashes cannot renew that original observation budget.
+
+The original submission window may have expired, but the original observation
+window and monotonic deadline must still be valid. The handoff cannot extend them.
+Both original submission assertions and source-observation rebinding reject the
+retired capability. Serialized/cloned observer capabilities are unusable. Process
+flags are never rewritten: the bound observer may run under the original explicit
+PAPER invocation flags or a stricter read-only pair; LIVE, mixed flags and other
+unsafe settings reject, including drift between reads. Its transport remains
+GET-only and cannot submit, cancel, replace or mint new authority.
+
+The existing separately approved read-only observer remains supported and requires
+its original read-only process flags. Restarting after a crash still requires
+separate authority; there is no capability persistence or automatic approval.
+This closes the handoff boundary only. The real source producer and full
+`runOperationalPaperCloseout` caller composition remain incomplete, and no
+operational route is enabled by these fixtures.
+
 ### Operator-control evidence contract (2026-10-19)
 
 The existing custody and attendance file pins now have exact, versioned contents.

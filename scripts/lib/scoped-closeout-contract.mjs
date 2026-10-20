@@ -2,6 +2,7 @@ import { sha256Canonical as digest } from './active-position-limited-recovery.mj
 import { decimalRatio as ratio, decimalText, withinCap, add, multiply, compare, ceilToTick } from './closeout-decimal.mjs';
 import { assessSourceBindings, isObservedSnapshot } from './scoped-paper-evidence.mjs';
 import { validateOperationalConfiguration } from './scoped-paper-operational.mjs';
+import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import path from 'node:path';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -16,6 +17,7 @@ const requireContract = (ok, code) => { if (!ok) throw new Error(`SCOPED_CLOSEOU
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const scopes = new WeakSet();
 const capabilities = new WeakMap(), observedBindings = new WeakMap();
+const observationHandoffs = new WeakMap();
 const observed = scope => scope.evidenceMode === 'PAPER_OBSERVED';
 const bindingStatus = scope => observed(scope) ? 'PAPER_OBSERVED_VERIFIED' : 'SYNTHETIC_VERIFIED';
 const nyDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -88,9 +90,11 @@ export function validateScopedPaperConfiguration(config) {
     return freeze({ status: 'BLOCKED', reasons: [/^SCOPED_CLOSEOUT_[A-Z_]+$/.test(error?.message) ? error.message : 'SCOPED_CLOSEOUT_CONFIG_INVALID'], evidenceHashes: [] });
   }
 }
-function processGate() {
+function processGate(observationOnly = false) {
   const e = process.env;
-  requireContract(e.ALPHA_ENV === 'PAPER' && e.READ_ONLY === 'false' && e.EXEC_ENABLED === 'true'
+  const scoped = e.READ_ONLY === 'false' && e.EXEC_ENABLED === 'true';
+  const readOnly = observationOnly && e.READ_ONLY === 'true' && e.EXEC_ENABLED === 'false';
+  requireContract(e.ALPHA_ENV === 'PAPER' && (scoped || readOnly)
     && e.LIVE_ORDER_SUBMIT_ENABLED === 'false' && e.MARKET_GUARD_MODE === 'observe'
     && ['FORCE_SEND_ONCE', 'GUARD_EXECUTE_TIGHTEN_STOPS', 'GUARD_EXECUTE_REDUCE_POSITIONS', 'GUARD_EXECUTE_FLATTEN']
       .every(k => e[k] === undefined || e[k] === 'false'), 'ACTUAL_PROCESS_FLAGS_BLOCKED');
@@ -122,7 +126,7 @@ export function assertScopedPaperInvocation(capability, { config, clock }) {
 }
 export function validateObservedCloseoutInput(input, capability) {
   const saved = capabilities.get(capability);
-  requireContract(saved && digest(saved.config.input) === digest(input), 'AUTHORITY_INVALID');
+  requireContract(saved && !saved.retired && digest(saved.config.input) === digest(input), 'AUTHORITY_INVALID');
   if (saved.mode === 'OPERATIONAL') {
     saved.scope ??= validateInput(input, true);
     return saved.scope;
@@ -149,7 +153,7 @@ export function authorizeOperationalInvocation({ config, approval, clock }) {
   processGate();
   validateOperationalApprovalFields(config, approval);
   const saved = { mode: 'OPERATIONAL', config: freeze(structuredClone(config)), approval: freeze(structuredClone(approval)),
-    start: clock.monotonicMs(), lastElapsed: 0, lastNow: time(clock.now()), generation: 0, scope: null, current: null };
+    start: clock.monotonicMs(), startNow: time(clock.now()), lastElapsed: 0, lastNow: time(clock.now()), generation: 0, scope: null, current: null };
   checkOperationalTime(saved, clock);
   const capability = Object.freeze({}); capabilities.set(capability, saved); return capability;
 }
@@ -164,8 +168,56 @@ function checkOperationalTime(saved, clock) {
 function operationalCapability(capability, config, clock) {
   const saved = capabilities.get(capability);
   requireContract(saved?.mode === 'OPERATIONAL' && (!config || digest(config) === digest(saved.config)), 'AUTHORITY_INVALID');
+  requireContract(!saved.retired, 'SUBMISSION_RETIRED');
   processGate(); checkOperationalTime(saved, clock); return saved;
 }
+function checkHandoffTime(saved, clock) {
+  processGate(true);
+  const now = time(clock.now()), elapsed = clock.monotonicMs() - saved.start, p = saved.config.oversight;
+  requireContract(Number.isFinite(elapsed) && elapsed >= saved.lastElapsed && now >= saved.lastNow
+    && now >= time(p.validFrom) && now < time(p.expiresAt)
+    && elapsed < time(p.expiresAt) - saved.startNow, 'OBSERVATION_WINDOW_EXPIRED');
+  saved.lastNow = now; saved.lastElapsed = elapsed;
+  return Math.min(time(p.expiresAt) - now, time(p.expiresAt) - saved.startNow - elapsed);
+}
+
+// Retiring a signed submit capability can only narrow it to its already-approved oversight scope.
+export function handoffOperationalObservation(capability, { config, records, expectedHashes, clock }) {
+  const saved = capabilities.get(capability);
+  requireContract(saved?.mode === 'OPERATIONAL' && digest(config) === digest(saved.config), 'AUTHORITY_INVALID');
+  requireContract(!saved.retired, 'SUBMISSION_RETIRED');
+  const scope = saved.config.input;
+  requireContract(exact(expectedHashes, 'orderLedger orderIdempotency') && Object.values(expectedHashes).every(hash)
+    && Array.isArray(records) && records.length === 5 && records.some(r => r.submissionPhase !== 'RESERVED')
+    && new Set(records.map(r => r.exitIdempotencyKey)).size === 5
+    && records.every(r => validateScopedManagementRecord(r.exitIdempotencyKey, r)
+      && r.accountSha256 === scope.accountSha256 && r.attemptId === scope.attemptId
+      && r.managementAuthoritySha256 === scope.authoritySha256 && r.termsSha256 === scope.termsSha256
+      && digest(r.preWriteHashes) === digest(scope.preWriteHashes)
+      && scope.terms.targets.some(t => ['assetId', 'clientOrderId', 'originalIdentitySha256', 'exitIdempotencyKey', 'qty']
+        .every(k => r[k] === t[k]))), 'OBSERVATION_SCOPE_INVALID');
+  checkHandoffTime(saved, clock);
+  // The durable claim stays fixed even if observed records/hashes change; those cannot renew the budget.
+  const basis = { kind: 'BOUND_OPERATIONAL_OVERSIGHT', stableScopeSha256: digest(saved.config),
+    originalApprovalSha256: digest(saved.approval) };
+  const binding = freeze({ config: saved.config, expectedHashes: structuredClone(expectedHashes),
+    recordsSha256: digest(records), authoritySha256: digest(basis) });
+  saved.retired = true; saved.current = null; observedBindings.delete(saved.scope);
+  const handoff = Object.freeze({});
+  observationHandoffs.set(handoff, { saved, binding, used: false });
+  return handoff;
+}
+
+export function takeOperationalObservationAuthority(handoff, records, clock) {
+  const entry = observationHandoffs.get(handoff);
+  if (!entry) return null;
+  requireContract(!entry.used, 'OBSERVATION_AUTHORITY_CONSUMED');
+  entry.used = true;
+  requireContract(digest(records) === entry.binding.recordsSha256, 'OBSERVATION_SCOPE_INVALID');
+  checkHandoffTime(entry.saved, clock);
+  return Object.freeze({ binding: entry.binding, assertActive: () => checkHandoffTime(entry.saved, clock) });
+}
+
 export function assertOperationalInvocation(capability, { config, clock }) {
   const saved = operationalCapability(capability, config, clock);
   requireContract(saved.current && assessSourceBindings(saved.current, saved.scope, clock).status === 'PASS', 'SOURCE_BINDING_INVALID');
