@@ -144,9 +144,11 @@ try {
     env: { ...process.env, NODE_OPTIONS: `--require=${path.resolve('scripts/fixtures/scoped-paper-offline.cjs')}` } });
   assert.equal(child.status, 0); assert.equal(JSON.parse(child.stdout).status, 'NOT_RUN'); assert.equal(child.stderr, '');
   // A newly imported runtime module must be added to the reviewed byte hash, not silently omitted.
+  assert.equal(new Set(CODE_FILES).size, CODE_FILES.length);
   for (const file of CODE_FILES) {
     for (const match of fs.readFileSync(file, 'utf8').matchAll(/from\s+['"](\.[^'"]+)['"]/g))
-      assert.ok(CODE_FILES.includes(path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1]))));
+      assert.ok(CODE_FILES.includes(path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1]))),
+        `Reviewed code inventory is missing a dependency of ${file}`);
   }
   console.log(`PAPER IEX read-only probe: PASS (${cases} offline cases; no real network/state/orders)`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

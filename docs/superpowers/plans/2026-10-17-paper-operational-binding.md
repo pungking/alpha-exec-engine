@@ -326,3 +326,10 @@ Fresh baseline checks also passed: `typecheck`, idempotency storage (42 rejectio
   of current provider/state truth.
 - No broker call, workflow dispatch/rerun, actual notification, state adoption,
   execution activation, Stage6/OOS change or production-state mutation occurred.
+- Initial Draft PR CI exposed a downstream code-inventory omission: the existing
+  IEX read-only probe did not pin nine newly reachable dependencies of the shared
+  contract. The unchanged transitive-import test reproduced the failure locally.
+  Add those exact files to its reviewed hash inventory and build its compiled
+  validators before the test; all 44 offline probe cases then pass. No probe was
+  executed against Alpaca. Old code hashes/approvals are not repinned or reused:
+  any future invocation must receive a separately reviewed current code hash.
