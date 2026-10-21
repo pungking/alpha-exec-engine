@@ -7,7 +7,7 @@ import { loadScopedOrderLedgerState, saveScopedOrderLedgerState } from '../../di
 import { loadScopedOrderIdempotencyState, saveScopedOrderIdempotencyState } from '../../dist/src/order-idempotency-storage.js';
 import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import { sha256Canonical as canonical } from './active-position-limited-recovery.mjs';
-import { isScopedObservationAccount } from './scoped-paper-evidence.mjs';
+import { isScopedObservationAccount, evidenceTimestampNs } from './scoped-paper-evidence.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const contexts = new WeakMap();
@@ -180,7 +180,11 @@ export async function recordScopedObservation(context, key, record, accountBindi
     check(canonical(await readHashes(c.directory)) === canonical(c.hashes), 'HASH_DRIFT');
     return Object.freeze({ recordsSha256: canonical([before]), storeHashes: Object.freeze({ ...c.hashes }), unchanged: true });
   }
-  const mutable = new Set(['submissionPhase', 'brokerOrderId', 'brokerStatus', 'filledQty', 'updatedAt', 'observedEvidenceSha256', 'history']);
+  const prior = before.brokerEventTimestamps, next = record.brokerEventTimestamps;
+  check(!prior || (next && next.createdAt === prior.createdAt && evidenceTimestampNs(next.updatedAt) >= evidenceTimestampNs(prior.updatedAt)
+    && (prior.filledAt === null || (next.filledAt !== null && evidenceTimestampNs(next.filledAt) >= evidenceTimestampNs(prior.filledAt)))), 'OBSERVATION_TIMESTAMP_REGRESSION');
+  check(before.schemaVersion === record.schemaVersion || (before.schemaVersion === 1 && record.schemaVersion === 2 && next), 'OBSERVATION_VERSION_INVALID');
+  const mutable = new Set(['recordKind', 'schemaVersion', 'brokerEventTimestamps', 'submissionPhase', 'brokerOrderId', 'brokerStatus', 'filledQty', 'updatedAt', 'observedEvidenceSha256', 'history']);
   check(Object.keys(before).every(k => mutable.has(k) || canonical(before[k]) === canonical(record[k]))
     && record.history.length === before.history.length + 1 && canonical(record.history.slice(0, -1)) === canonical(before.history)
     && (before.brokerOrderId === null || record.brokerOrderId === before.brokerOrderId), 'OBSERVATION_LINEAGE_INVALID');

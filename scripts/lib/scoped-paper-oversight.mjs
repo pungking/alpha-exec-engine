@@ -49,8 +49,10 @@ function observationAuthority(authority, records, clock) {
   };
   guard(); return { scope, policy, guard, authority };
 }
-async function waitForObservation(clock, intervalMs, guard) {
+async function waitForObservation(clock, intervalMs, guard, cycleReadCount) {
   const remaining = guard(), started = clock.monotonicMs(), controller = new AbortController(); let timer;
+  // Leave a bounded wait overrun, a complete read cycle, and the existing three-second send allowance.
+  check(remaining > intervalMs + (cycleReadCount + 2) * 3000, 'OBSERVATION_HANDOFF_TIME_RESERVED');
   try {
     await Promise.race([
       Promise.resolve().then(() => clock.sleep(intervalMs, { signal: controller.signal })),
@@ -63,10 +65,12 @@ async function waitForObservation(clock, intervalMs, guard) {
   } finally { clearTimeout(timer); }
 }
 function observedRecord(before, observation, at) {
-  if (before.brokerOrderId === observation.brokerOrderId && before.brokerStatus === observation.brokerStatus && before.filledQty === observation.filledQty) return before;
+  if (before.brokerOrderId === observation.brokerOrderId && before.brokerStatus === observation.brokerStatus && before.filledQty === observation.filledQty
+    && digest(before.brokerEventTimestamps ?? null) === digest(observation.eventTimestamps)) return before;
   check(before.submissionPhase !== 'FLAT_RECONCILED', 'TERMINAL_RECORD_CONFLICT');
   const evidenceSha256 = digest(observation);
-  return { ...before, submissionPhase: 'STOPPED', brokerOrderId: observation.brokerOrderId, brokerStatus: observation.brokerStatus,
+  return { ...before, recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, brokerEventTimestamps: observation.eventTimestamps,
+    submissionPhase: 'STOPPED', brokerOrderId: observation.brokerOrderId, brokerStatus: observation.brokerStatus,
     filledQty: observation.filledQty, updatedAt: at, observedEvidenceSha256: evidenceSha256, history: [...before.history,
       { at, phase: 'STOPPED', evidenceSha256, brokerStatus: observation.brokerStatus, filledQty: observation.filledQty }] };
 }
@@ -74,7 +78,7 @@ function observedRecord(before, observation, at) {
 export async function runScopedPaperOversight({ authority, records, observationTransport, clock, notify }) {
   let transport, reason = null, receipt, cycles = 0, flatReconciledRows = 0, observedRows = 0, attemptedRows = 0, complete = false;
   let config;
-  let stateWriteAttempted = false, receiptPath, sendNotification, notificationSnapshot;
+  let stateWriteAttempted = false, receiptPath, sendNotification, notificationSnapshot, notificationReady;
   let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
   const notificationEvents = new Map();
   const collectNotifications = (rows = [], observations = {}) => {
@@ -112,19 +116,21 @@ export async function runScopedPaperOversight({ authority, records, observationT
       check(digest(stored) === authority.recordsSha256, 'OBSERVATION_SCOPE_INVALID');
       if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
         const started = clock.monotonicMs(), startNow = time(clock.now()), send = notify.send;
-        sendNotification = message => {
+        notificationReady = () => {
           const now = time(clock.now()), remaining = time(policy.handoffDeadline) - now;
           check(now >= startNow && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
-          return boundedNotificationSend(send, message, clock, started,
-            Math.min(time(policy.handoffDeadline) - startNow, clock.monotonicMs() - started + remaining));
+          const elapsed = clock.monotonicMs() - started, deadline = Math.min(time(policy.handoffDeadline) - startNow, elapsed + remaining);
+          check(Number.isFinite(elapsed) && elapsed >= 0 && deadline > elapsed, 'NOTIFICATION_DEADLINE_EXPIRED');
+          return deadline;
         };
+        sendNotification = message => boundedNotificationSend(send, message, clock, started, notificationReady());
         receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
         collectNotifications();
         notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
         if (!['BASELINE_RECORDED', 'NO_CHANGE'].includes(notificationDelivery.status)) receiptPath = null;
       }
       let accountBinding;
-      const beforeRead = request => { guard(); return request.group === 'account'
+      const beforeRead = request => { check(guard() > 6000, 'OBSERVATION_HANDOFF_TIME_RESERVED'); return request.group === 'account'
         ? !accountBinding : isScopedObservationAccount(accountBinding, scope.accountSha256, transport); };
       await controls();
       transport = observationTransport({ beforeRead, clock, oversight: policy });
@@ -137,7 +143,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
       accountBinding = bindScopedObservationAccount({ scope, receipt: await read('account'), bindings: config.accountBinding, transport, clock });
       const previous = new Map();
       for (let cycle = 0; cycle < policy.maxCycles; cycle++) {
-        if (cycle) await waitForObservation(clock, policy.intervalMs, guard);
+        if (cycle) await waitForObservation(clock, policy.intervalMs, guard, indices.length + 3);
         for (const index of indices) {
           const before = records[index], observed = mapOversightObservation({ scope, record: before,
             receipt: await read('lookup', { clientOrderId: before.clientOrderId }), accountBinding, transport, clock,
@@ -173,10 +179,14 @@ export async function runScopedPaperOversight({ authority, records, observationT
   }
   // Delivery follows durable observations; its failure cannot reopen orders or discard verified fills.
   if (receiptPath) {
+    let deliveryAttempted = false;
     try {
       collectNotifications([], reason ? { handoffReason: reason } : {});
-      if (receiptPath) notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
-    } catch { notificationDelivery = { status: 'DELIVERY_UNCERTAIN', eventCount: 0 }; }
+      if (receiptPath) {
+        notificationReady(); deliveryAttempted = true;
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+      }
+    } catch { notificationDelivery = { status: deliveryAttempted ? 'DELIVERY_UNCERTAIN' : 'DELIVERY_NOT_ATTEMPTED', eventCount: 0 }; }
   }
   const counts = transport?.counts() ?? { account: 0, lookup: 0, positions: 0, orders: 0, clock: 0, total: 0 };
   const budget = config?.oversight?.requestBudget;

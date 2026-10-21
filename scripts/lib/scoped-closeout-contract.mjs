@@ -383,7 +383,8 @@ function observationFor(state, o) {
   requireContract((o.brokerStatus !== 'filled' || full) && (o.brokerStatus !== 'partially_filled' || (any && !full))
     && (!['accepted', 'rejected'].includes(o.brokerStatus) || !any)
     && (!['filled', 'canceled', 'rejected', 'expired'].includes(r.brokerStatus) || o.brokerStatus === r.brokerStatus), 'FILL_CONFLICT');
-  return { brokerOrderId: o.brokerOrderId, brokerStatus: o.brokerStatus, filledQty: o.filledQty };
+  return { brokerOrderId: o.brokerOrderId, brokerStatus: o.brokerStatus, filledQty: o.filledQty,
+    ...(o.eventTimestamps ? { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, brokerEventTimestamps: o.eventTimestamps } : {}) };
 }
 function postSnapshotValid(state, event, o) {
   const s = event.snapshot, now = time(event.clock.now);

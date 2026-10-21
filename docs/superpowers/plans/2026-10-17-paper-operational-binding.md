@@ -233,7 +233,7 @@ remain separate operator actions, not inferred from passing fixtures.
 - [ ] Establish and record exact official initialization/current-state, entitlement, coverage and gap-recovery rules, including how the approved 30-second basis is satisfied. A support reply is evidence to evaluate, not executable instructions or sufficient merely because it arrived.
 - [ ] Implement the actual source mapping/producer inside the existing structure only after those facts exist. Add fixtures derived from the documented schema and malformed/unknown/gap cases. Keep broker runtime access unperformed. If contract evidence remains absent, leave this step unchecked and report `SOURCE_INITIAL_STATE_AND_CONTINUITY_UNVERIFIED`, not complete producer.
 - [x] Wire the new operational/byte-binding/oversight offline tests into package scripts and `.github/workflows/ci.yml` using `scripts/fixtures/scoped-paper-offline.cjs`. No secrets, raw artifacts or private scopes in CI.
-- [ ] Run the full validation matrix below, then one independent whole-branch review using the approved Native method. A usage-limit failure is NOT a completed review. Address concrete findings and rerun affected checks.
+- [x] Run the full validation matrix below, then one independent whole-branch review using the approved Native method. A usage-limit failure is NOT a completed review. Address concrete findings and rerun affected checks. Review completed and both findings reproduced/fixed on 2026-10-21; the follow-up matrix passed. This does not check off source/caller completion.
 - [ ] Commit, non-force push and create a single execution-repo PR only after implementation approval. Include safety, additive schema/compatibility, source limits, tests and rollback sections; attach the PR. Merge only after required CI passes. No runtime dispatch/rerun.
 - [ ] Confirm reviewed main commit, post-merge CI and clean intended checkout. Preserve old v1/v2 contracts, original data and unresolved runtime gates. No production state migration is part of the merge.
 
@@ -333,3 +333,71 @@ Fresh baseline checks also passed: `typecheck`, idempotency storage (42 rejectio
   validators before the test; all 44 offline probe cases then pass. No probe was
   executed against Alpaca. Old code hashes/approvals are not repinned or reused:
   any future invocation must receive a separately reviewed current code hash.
+
+## Independent review corrections (2026-10-21)
+
+The same whole-branch implementation reviewer resumed after the usage-limit
+reset and completed its review of `e313185..00b4247`. The earlier limit result is
+preserved above, but is no longer the current review status. Two P2 findings
+were reproduced with failing offline fixtures; no new reviewer or runtime probe
+was started. This review does not establish the unresolved provider contract or
+complete Tasks 2/5/6.
+
+- Observation now leaves time for the bounded notification send instead of
+  starting a polling interval/read that cannot fit inside its original window.
+  A late-start fixture with equal observation/handoff deadlines sends the
+  unresolved handoff before expiry, without another read cycle. An already
+  expired delivery is rejected before its event keys are reserved; a send that
+  actually starts remains uncertain on failure and is not automatically retried.
+- Order observations retain exact broker event timestamps in the existing
+  paired stores. A separately authorized restart rejects a regressing broker
+  event, including nanosecond regression. Local receipt/recording time is not
+  substituted for the prior broker event. Sticky STOPPED, the history ceiling,
+  terminal reconciliation and false ownership/P&L verification are unchanged.
+
+### Management record compatibility and migration
+
+This changes the management-record schema, not Stage6, the store envelope or
+the legacy invocation schemas. New observed management records use
+`SCOPED_MANAGEMENT_EXIT_V2`, `schemaVersion=2`, and required
+`brokerEventTimestamps={createdAt,updatedAt,filledAt}`. These are the exact
+validated broker order-event times, separately from the existing local
+`createdAt`/`updatedAt`. Zero-filled observations retain `filledAt=null`.
+
+Both scoped store readers validate V1 and V2 records; generic entry/protection
+consumers still reject management records. A V1 reservation/attempt with no
+prior broker observation may advance to V2 when a genuinely verified observation
+arrives. An already observed V1 record without its prior event basis cannot
+establish restart continuity: it is blocked with
+`ORDER_TIMESTAMP_CONTINUITY_UNAVAILABLE`, not silently backfilled or normalized.
+Existing V2 timestamps cannot be removed, regressed or downgraded to V1.
+
+No existing private/runtime state is migrated during development. Future
+authorized writes retain the existing paired-store hash checks, backups,
+single-writer fence and append-only history. Tests cover V1 read compatibility,
+V1-to-V2 observation, malformed/missing times, downgrade rejection, unchanged
+bytes on rejection, generic consumer rejection and cross-invocation continuity.
+
+Rollback is code-only before any authorized V2 persistence. Once V2 records
+exist, an older reader must fail closed; do not roll back into it for continued
+operation, strip the event fields or restore old state. Keep a V2-capable reader
+and preserve the evidence pending an explicitly reviewed recovery. No dependency,
+ledger, execution flag, approval extension or source-policy relaxation is added.
+
+### Post-correction verification
+
+All 18 offline npm commands (the 17-command matrix plus the existing IEX probe
+fixture), `git diff --check`, and the final paired-storage fixture passed after
+the corrections. The final storage fixture includes 129 cumulative checks;
+oversight runtime 584, scoped integration 783, operational file/control 173,
+observation-store 160, authority mutations 105 and IEX probe 44. Counts within a
+suite are cumulative, not additive totals. Every broker/Telegram transport used
+synthetic responses and network denial; production state writes remained zero.
+The package-registry-only audit reports zero vulnerabilities with unchanged
+lockfile SHA-256
+`3a21fe3876d4c8d5091f16f910a2e67a194eeda3f052f8ba7cd61b3c36f7f0f4`.
+
+The independent reviewer inspected the pre-correction branch; closure of its two
+findings is backed by red/green regressions and the follow-up matrix, not a claim
+of a second independent review. PR #57 remains Draft. Passing these tests cannot
+complete the actual source/risk/time producer, final caller or operational proof.

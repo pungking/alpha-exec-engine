@@ -182,14 +182,19 @@ function orderObservation({ scope, record, receipt: r }, oversight = false) {
     if (!oversight) projected(o.filled_at, r.retrievedAt);
     check(ns(o.filled_at) >= ns(o.created_at) && ns(o.filled_at) <= ns(o.updated_at), 'ORDER_TIMESTAMP_INVALID');
   }
+  const prior = record.brokerEventTimestamps;
+  if (prior) check(o.created_at === prior.createdAt && ns(o.updated_at) >= ns(prior.updatedAt)
+    && (prior.filledAt === null || ns(o.filled_at) >= ns(prior.filledAt)), 'ORDER_TIMESTAMP_REGRESSION');
   return freeze({ accountSha256: scope.accountSha256, assetId: o.asset_id, clientOrderId: o.client_order_id,
-    brokerOrderId: o.id, brokerStatus: status, filledQty: filled, responseSha256: r.responseSha256 });
+    brokerOrderId: o.id, brokerStatus: status, filledQty: filled, responseSha256: r.responseSha256,
+    eventTimestamps: { createdAt: o.created_at, updatedAt: o.updated_at, filledAt: filled === '0' ? null : o.filled_at } });
 }
 export function mapOrderObservation(input) { return orderObservation(input); }
 export function mapOversightObservation({ scope, record, receipt: r, accountBinding, transport, clock, previous }) {
   check(isScopedObservationAccount(accountBinding, scope.accountSha256, transport), 'ACCOUNT_TRANSPORT_INVALID');
   check(isScopedPaperReceiptForTransport(r, transport) && r.group === 'lookup' && r.phase === 'observation', 'ORDER_TRANSPORT_INVALID');
   const queryInterval = interval(r, clock.now()), mapped = orderObservation({ scope, record, receipt: r }, true), o = r.data;
+  check(!record.brokerStatus || record.brokerEventTimestamps || previous, 'ORDER_TIMESTAMP_CONTINUITY_UNAVAILABLE');
   check(compare(decimalRatio(mapped.filledQty), decimalRatio(record.filledQty)) >= 0, 'ORDER_FILL_REGRESSION');
   if (record.brokerStatus && ['filled', 'canceled', 'rejected', 'expired'].includes(record.brokerStatus))
     check(mapped.brokerStatus === record.brokerStatus, 'ORDER_STATUS_REGRESSION');

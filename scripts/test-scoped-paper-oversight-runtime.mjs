@@ -58,6 +58,15 @@ f.bodies.lookup = order(f, f.record); f.bodies.lookup.updated_at = '2026-10-09T1
 const advanced = map(await lookup(), first);
 f.bodies.lookup.updated_at = at;
 const regressed = await lookup(); assert.throws(() => map(regressed, advanced), /TIMESTAMP/); checks++;
+const persisted = { ...f.record, brokerOrderId: first.brokerOrderId, brokerStatus: first.brokerStatus,
+  brokerEventTimestamps: { ...advanced.eventTimestamps, updatedAt: '2026-10-09T15:00:30.000000001Z' } };
+f.bodies.lookup.updated_at = '2026-10-09T15:00:30.000000000Z';
+const nanoRegression = await lookup();
+assert.throws(() => evidence.mapOversightObservation({ scope: f.input, record: persisted, receipt: nanoRegression,
+  accountBinding: account, transport: t, clock: f.clock }), /ORDER_TIMESTAMP_REGRESSION/);
+const { brokerEventTimestamps: omitted, ...legacyObserved } = persisted;
+assert.throws(() => evidence.mapOversightObservation({ scope: f.input, record: legacyObserved, receipt: old,
+  accountBinding: account, transport: t, clock: f.clock }), /ORDER_TIMESTAMP_CONTINUITY_UNAVAILABLE/); checks += 2;
 
 for (const request of [{ group: 'submit', phase: 'submit', routeInput: {}, body: { symbol: 'FIX0', qty: '1', side: 'sell', type: 'limit',
   time_in_force: 'day', limit_price: '100', client_order_id: 'fixture-attempt', extended_hours: false } },
@@ -105,6 +114,8 @@ async function prepared(attempted = 1) {
       for (const phase of index < attempted - 1 ? ['OBSERVED', 'FLAT_RECONCILED'] : ['STOPPED']) {
         const brokerStatus = phase === 'STOPPED' ? null : 'filled', filledQty = brokerStatus ? '2' : '0';
         old = { ...old, submissionPhase: phase, brokerStatus, filledQty, brokerOrderId: brokerStatus ? `fixture-order-${row.assetId}` : null,
+          ...(brokerStatus ? { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2,
+            brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at } } : {}),
           history: [...old.history, { at, phase, evidenceSha256: old.observedEvidenceSha256, brokerStatus, filledQty }] };
         await stores.recordScopedObservation(ctx, row.exitIdempotencyKey, old);
       }
@@ -260,6 +271,56 @@ for (const mode of ['accepted', 'partial-filled', 'long-window', 'filled-residua
     assert.ok(!JSON.stringify(result).includes('fixture-asset')); assert.ok(!JSON.stringify(result).includes('fixture-secret')); checks += 9;
   } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
 }
+const restarted = await prepared();
+try {
+  restarted.f.bodies.lookup.updated_at = '2026-10-09T15:00:30.000000001Z';
+  const initial = await oversight.runScopedPaperOversight(restarted.deps);
+  assert.equal(initial.status, 'UNRESOLVED_HANDOFF');
+  restarted.deps.records = Object.values((await read(restarted.directory)).orders);
+  restarted.authority.expectedHashes = await hashes(restarted.directory);
+  restarted.authority.recordsSha256 = hash(restarted.deps.records);
+  const { approval, ...basis } = restarted.authority; approval.authoritySha256 = hash(basis);
+  const before = restarted.f.calls.length, saved = await hashes(restarted.directory), originalFetch = restarted.f.fetchImpl;
+  let lookups = 0;
+  restarted.f.fetchImpl = async (url, options) => {
+    if (url.includes('orders:by_client_order_id')) {
+      lookups++;
+      const full = lookups > 1;
+      restarted.f.bodies.lookup = order(restarted.f, restarted.deps.records[0], full ? 'filled' : 'partially_filled', full ? '2' : '1');
+      restarted.f.bodies.lookup.updated_at = restarted.f.bodies.lookup.filled_at = full ? '2026-10-09T15:00:25Z' : '2026-10-09T15:00:20Z';
+      restarted.f.bodies.positions = restarted.f.bodies.positions.filter(p => p.asset_id !== restarted.records[0].assetId);
+      if (!full) restarted.f.bodies.positions.unshift({ asset_id: restarted.records[0].assetId, symbol: 'FIX0', asset_class: 'us_equity', side: 'long', qty: '1' });
+    }
+    return originalFetch(url, options);
+  };
+  const result = await oversight.runScopedPaperOversight(restarted.deps);
+  assert.deepEqual(result.reasons, ['SCOPED_EVIDENCE_ORDER_TIMESTAMP_REGRESSION'], 'restart must retain the previous broker event boundary');
+  assert.equal(restarted.f.calls.length, before + 2, 'stop after account and regressing lookup');
+  assert.deepEqual(await hashes(restarted.directory), saved, 'no regressing event is persisted');
+  assert.equal(result.flatReconciledRows, 0); checks += 5;
+} finally { await fs.rm(restarted.directory, { recursive: true, force: true }); }
+
+const late = await prepared();
+try {
+  late.f.config.oversight.intervalMs = 150000;
+  late.f.config.notifications = { destinationSha256: hash('late-fixture'), sourceRunId: '123', headSha: 'a'.repeat(40) };
+  const { approval, ...basis } = late.authority; approval.authoritySha256 = hash(basis);
+  late.f.advance(180000); late.f.bodies.clock.timestamp = late.f.clock.now();
+  let sends = 0, waits = 0;
+  late.deps.notify = { destinationSha256: hash('late-fixture'), send: async message => {
+    sends++; assert.ok(message.includes('감시 종료: 미해결'));
+    assert.ok(Date.parse(late.f.clock.now()) < Date.parse(late.f.config.oversight.handoffDeadline));
+    return { ok: true };
+  } };
+  late.deps.clock.sleep = async n => { waits++; late.f.advance(n); };
+  const result = await oversight.runScopedPaperOversight(late.deps);
+  assert.equal(sends, 1, 'late-start observer must leave time to send its unresolved handoff');
+  assert.equal(waits, 0, 'do not begin a polling interval that cannot fit');
+  assert.equal(late.f.calls.length, 5, 'no second cycle GETs');
+  assert.equal(result.notificationDelivery.status, 'DELIVERED');
+  assert.equal(result.status, 'UNRESOLVED_HANDOFF'); checks += 5;
+} finally { await fs.rm(late.directory, { recursive: true, force: true }); }
+
 const stalled = await prepared(); let watchdog, sleepSignal;
 try {
   stalled.f.config.oversight.intervalMs = 1;
@@ -312,7 +373,7 @@ for (const mode of ['accepted', 'partial-filled', 'filled-residual', 'canceled',
           const n = Math.ceil(cycle / 5), id = new URL(url).searchParams.get('client_order_id');
           const row = p.records.find(r => r.clientOrderId === id), done = row.submissionPhase === 'FLAT_RECONCILED', filled = done ? '2' : (n / 10).toFixed(1);
           p.f.bodies.lookup = { ...order(p.f, row, done ? 'filled' : 'partially_filled', filled), id: `fixture-order-${row.assetId}` };
-          p.f.bodies.lookup.updated_at = p.f.clock.now(); p.f.bodies.lookup.filled_at = p.f.clock.now();
+          p.f.bodies.lookup.updated_at = done ? at : p.f.clock.now(); p.f.bodies.lookup.filled_at = done ? at : p.f.clock.now();
           p.f.bodies.positions.forEach(position => { position.qty = (2 - n / 10).toFixed(1); });
         }
       }
