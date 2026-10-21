@@ -14,7 +14,7 @@ import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
-  './scoped-closeout-storage.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
+  './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './scoped-paper-oversight.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
   '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',
@@ -22,6 +22,7 @@ export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
 const sha = b => createHash('sha256').update(b).digest('hex');
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
 async function pinnedFile(file, privateOnly) {
+  check(await fs.realpath(file.path) === path.resolve(file.path), 'FILE_INVALID');
   const h = await fs.open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const s = await h.stat();
@@ -30,6 +31,7 @@ async function pinnedFile(file, privateOnly) {
     const bytes = await h.readFile(); check(sha(bytes) === file.sha256, 'FILE_HASH_DRIFT'); return bytes;
   } finally { await h.close(); }
 }
+export { pinnedFile as readScopedPaperFile, verifyInputs as verifyScopedPaperInputs };
 async function verifyInputs(config) {
   check(digest(config.codeFiles.map(f => f.path)) === digest(SCOPED_PAPER_REVIEWED_FILES), 'CODE_MANIFEST_INVALID');
   for (const file of config.codeFiles) await pinnedFile(file, false);
@@ -70,8 +72,8 @@ async function persistWire(config, state, body, receipt) {
   await fs.link(temp, dest); await fs.unlink(temp);
   const d = await fs.open(dir, 'r'); try { await d.sync(); } finally { await d.close(); }
 }
-async function boundedNotificationSend(send, message, clock, startedAt) {
-  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, 300000 - elapsed);
+export async function boundedNotificationSend(send, message, clock, startedAt, deadlineMs = 300000) {
+  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, deadlineMs - elapsed);
   check(Number.isFinite(elapsed) && elapsed >= 0 && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
   const controller = new AbortController(); let timer;
   try {

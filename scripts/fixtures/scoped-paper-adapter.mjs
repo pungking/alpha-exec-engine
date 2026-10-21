@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { fixture, at, hash } from './scoped-closeout.mjs';
 import { createScopedPaperTransport } from '../lib/scoped-paper-transport.mjs';
+import { SCOPED_PAPER_REVIEWED_FILES } from '../lib/scoped-paper-adapter.mjs';
 export { at, hash };
 export function paperFixture() {
   const { input } = fixture();
@@ -74,4 +77,61 @@ export function invocationFixture() {
   const approval = { kind: 'DIRECT_SCOPED_OPERATOR_INVOCATION', phrase: 'CONFIRM LIVE EXECUTION',
     configSha256: hash(config), approvedAt: at, expiresAt: f.input.authority.expiresAt, rollbackPlanSha256: hash('fixture-rollback') };
   return { ...f, config, approval };
+}
+
+export function operationalFixture() {
+  const f = useIexProof(invocationFixture(), 'shares', '1');
+  const { bindings, ...base } = f.config;
+  const { proof, proofSha256, ...accountBinding } = bindings;
+  const pin = name => ({ path: `/private/tmp/fixture-${name}.json`, sha256: hash(['fixture', name]) });
+  const config = { schemaVersion: 'scoped-paper-operational-invocation-v1', ...base, accountBinding,
+    sourcePolicy: { feed: 'iex', currency: 'USD', quoteCoverage: 'IEX_SINGLE_EXCHANGE', acceptsNonNbboPaperEvidence: true,
+      contractFile: pin('source-contract'), riskPolicyFile: pin('risk-policy'), clockPolicyFile: pin('clock-policy') },
+    custody: { basis: 'REVIEWED_SINGLE_HOST_PAPER_CUSTODY', hostIdSha256: hash('fixture-host'), evidenceFile: pin('custody') },
+    oversight: { validFrom: at, expiresAt: '2026-10-09T15:05:00.000Z', maxCycles: 2, intervalMs: 1000,
+      requestBudget: { account: 1, lookup: 10, positions: 2, orders: 2, clock: 2, total: 17 },
+      handoffDeadline: '2026-10-09T15:05:00.000Z', operatorAttendanceFile: pin('attendance') } };
+  const approval = { kind: 'DIRECT_SCOPED_OPERATIONAL_INVOCATION', phrase: 'CONFIRM LIVE EXECUTION',
+    stableScopeSha256: hash(config), approvedAt: at, expiresAt: config.input.authority.expiresAt,
+    rollbackPlanSha256: hash('fixture-rollback') };
+  return { ...f, config, approval };
+}
+
+// Synthetic control declarations never prove current broker, host or source facts.
+export function operationalControlDocuments(config) {
+  const start = config.input.authority.validFrom, end = config.oversight.handoffDeadline;
+  const writer = { schemaVersion: 'scoped-paper-writer-attestation-v1', accountSha256: config.input.accountSha256,
+    hostIdSha256: config.custody.hostIdSha256, session: config.input.authority.session,
+    validFrom: start, expiresAt: end, attestedAt: start, procedureSha256: hash('fixture-writer-procedure'),
+    controls: Object.fromEntries(['githubActions', 'otherHosts', 'otherProcesses', 'manualTrading'].map(lane =>
+      [lane, { status: lane === 'manualTrading' ? 'OPERATOR_NONINTERFERENCE' : 'WRITE_DISABLED', evidenceSha256: hash(['fixture', lane]) }])) };
+  const custody = { schemaVersion: 'scoped-paper-custody-attestation-v1', basis: 'OPERATOR_ATTESTED_SINGLE_HOST',
+    accountSha256: config.input.accountSha256, hostIdSha256: config.custody.hostIdSha256, directory: config.directory,
+    preWriteHashes: config.input.preWriteHashes, termsSha256: config.input.termsSha256, sourceSha256: config.input.sourceSha256,
+    recordedAt: start, adoptionApprovalSha256: hash('fixture-custody-approval'), historicalEvidenceNormalized: false, writerExclusion: writer };
+  const attendance = { schemaVersion: 'scoped-paper-attendance-attestation-v1', basis: 'NAMED_OPERATOR_BROKER_INTERFACE',
+    operatorSha256: hash('fixture-operator'), accountSha256: config.input.accountSha256,
+    hostIdSha256: config.custody.hostIdSha256, session: config.input.authority.session,
+    validFrom: start, expiresAt: end, attestedAt: start, handoffProcedureSha256: hash('fixture-handoff-procedure'),
+    brokerInterfaceAttended: true, hostLossOrdersMayRemainAcknowledged: true };
+  return { custody, attendance };
+}
+
+export async function pinOperationalFixtureFiles(config, directory) {
+  const write = async (name, value) => {
+    const file = path.join(directory, `${name}.json`), bytes = Buffer.from(JSON.stringify(value));
+    await fs.writeFile(file, bytes, { mode: 0o600 });
+    return { path: file, sha256: createHash('sha256').update(bytes).digest('hex') };
+  };
+  config.sourceFile = await write('source', { schemaVersion: 'scoped-paper-source-v1', accountSha256: config.input.accountSha256,
+    termsSha256: config.input.termsSha256, preWriteHashes: config.input.preWriteHashes, targets: config.input.terms.targets });
+  config.input.sourceSha256 = config.sourceFile.sha256;
+  config.codeFiles = await Promise.all(SCOPED_PAPER_REVIEWED_FILES.map(async file =>
+    ({ path: file, sha256: createHash('sha256').update(await fs.readFile(file)).digest('hex') })));
+  config.input.codeSha256 = hash(config.codeFiles);
+  for (const name of ['contractFile', 'riskPolicyFile', 'clockPolicyFile']) config.sourcePolicy[name] = await write(name, { status: 'UNKNOWN' });
+  const { custody, attendance } = operationalControlDocuments(config);
+  config.writerExclusion.evidenceSha256 = hash(custody.writerExclusion);
+  config.custody.evidenceFile = await write('custody', custody);
+  config.oversight.operatorAttendanceFile = await write('attendance', attendance);
 }

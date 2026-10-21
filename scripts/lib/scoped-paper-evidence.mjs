@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { decimalRatio, decimalText, compare, multiply } from './closeout-decimal.mjs';
-import { isScopedPaperReceipt } from './scoped-paper-transport.mjs';
+import { decimalRatio, decimalText, compare, multiply, add } from './closeout-decimal.mjs';
+import { isScopedPaperReceipt, isScopedPaperReceiptForTransport } from './scoped-paper-transport.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
@@ -10,6 +10,7 @@ const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_EVIDENCE_${code}`); };
 const freeze = v => { if (object(v) || Array.isArray(v)) { Object.values(v).forEach(freeze); Object.freeze(v); } return v; };
 const snapshots = new WeakSet();
+const observationAccounts = new WeakMap();
 export const isObservedSnapshot = value => snapshots.has(value);
 const seal = v => { freeze(v); snapshots.add(v); return v; };
 const ny = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -72,6 +73,22 @@ function interval(r, now) {
 function receipt(receipts, group, now) {
   const rows = receipts.filter(r => r.group === group); check(rows.length === 1, 'RECEIPT_COUNT_INVALID');
   interval(rows[0], now); return rows[0];
+}
+export function bindScopedObservationAccount({ scope, receipt: r, bindings, transport, clock }) {
+  check(isScopedPaperReceiptForTransport(r, transport), 'ACCOUNT_TRANSPORT_INVALID');
+  interval(r, clock.now());
+  check(scope?.environment === 'PAPER' && r.group === 'account' && id(r.data?.id) && r.data.currency === 'USD'
+    && bindings?.rawAccountHashBasis === 'RAW_ACCOUNT_ID_UTF8' && bindings.accountHashBasis === 'CANONICAL_PAPER_ACCOUNT_ID'
+    && createHash('sha256').update(r.data.id).digest('hex') === bindings.rawAccountIdSha256
+    && digest(['PAPER', r.data.id]) === scope.accountSha256, 'ACCOUNT_IDENTITY_INVALID');
+  // Read-only identity remains usable when trading is blocked; it never grants permission to submit.
+  const binding = Object.freeze({});
+  observationAccounts.set(binding, { transport, accountSha256: scope.accountSha256 });
+  return binding;
+}
+export function isScopedObservationAccount(binding, accountSha256, transport) {
+  const saved = observationAccounts.get(binding);
+  return !!saved && saved.accountSha256 === accountSha256 && (transport === undefined || saved.transport === transport);
 }
 export function mapAccountEvidence({ scope, receipt: r, bindings, clock }) {
   interval(r, clock.now()); const a = r.data;
@@ -143,7 +160,7 @@ export function mapPreflightEvidence({ scope, receipts, bindings, clock, committ
     clock: clockEvidence(get('clock'), get('calendar').data, scope, bindings, now) });
 }
 
-export function mapOrderObservation({ scope, record, receipt: r }) {
+function orderObservation({ scope, record, receipt: r }, oversight = false) {
   interval(r, r.retrievedAt); const o = r.data;
   check(['lookup', 'submit'].includes(r.group) && id(o?.id) && o.client_order_id === record.clientOrderId
     && o.asset_id === record.assetId && (!record.brokerOrderId || o.id === record.brokerOrderId)
@@ -151,17 +168,67 @@ export function mapOrderObservation({ scope, record, receipt: r }) {
     && o.side === 'sell' && o.type === 'limit' && o.time_in_force === 'day' && o.extended_hours === false
     && decimal(o.qty) === decimal(record.qty) && decimal(o.limit_price) === decimal(record.limitPrice)
     && (!o.legs || (Array.isArray(o.legs) && o.legs.length === 0)), 'ORDER_LINEAGE_INVALID');
-  projected(o.updated_at, r.retrievedAt);
-  check(ns(o.created_at) >= ns(record.createdAt) && ns(o.created_at) <= ns(o.updated_at), 'ORDER_TIMESTAMP_INVALID');
+  if (!oversight) projected(o.updated_at, r.retrievedAt);
+  check(ns(o.created_at) >= ns(record.createdAt) && ns(o.created_at) <= ns(o.updated_at)
+    && ns(o.updated_at) <= ns(r.retrievedAt), 'ORDER_TIMESTAMP_INVALID');
   const status = ['new', 'accepted'].includes(o.status) ? 'accepted' : o.status;
   check(['accepted', 'partially_filled', 'filled', 'canceled', 'rejected', 'expired'].includes(status), 'ORDER_STATUS_INVALID');
   const filled = decimal(o.filled_qty, true), full = compare(decimalRatio(filled), decimalRatio(record.qty));
   check(full <= 0 && (status !== 'filled' || full === 0)
     && (status !== 'partially_filled' || (filled !== '0' && full < 0))
     && (!['accepted', 'rejected'].includes(status) || filled === '0'), 'ORDER_FILL_INVALID');
-  if (filled !== '0') { decimal(o.filled_avg_price); projected(o.filled_at, r.retrievedAt); }
+  if (filled !== '0') {
+    decimal(o.filled_avg_price);
+    if (!oversight) projected(o.filled_at, r.retrievedAt);
+    check(ns(o.filled_at) >= ns(o.created_at) && ns(o.filled_at) <= ns(o.updated_at), 'ORDER_TIMESTAMP_INVALID');
+  }
+  const prior = record.brokerEventTimestamps;
+  if (prior) check(o.created_at === prior.createdAt && ns(o.updated_at) >= ns(prior.updatedAt)
+    && (prior.filledAt === null || ns(o.filled_at) >= ns(prior.filledAt)), 'ORDER_TIMESTAMP_REGRESSION');
   return freeze({ accountSha256: scope.accountSha256, assetId: o.asset_id, clientOrderId: o.client_order_id,
-    brokerOrderId: o.id, brokerStatus: status, filledQty: filled, responseSha256: r.responseSha256 });
+    brokerOrderId: o.id, brokerStatus: status, filledQty: filled, responseSha256: r.responseSha256,
+    eventTimestamps: { createdAt: o.created_at, updatedAt: o.updated_at, filledAt: filled === '0' ? null : o.filled_at } });
+}
+export function mapOrderObservation(input) { return orderObservation(input); }
+export function mapOversightObservation({ scope, record, receipt: r, accountBinding, transport, clock, previous }) {
+  check(isScopedObservationAccount(accountBinding, scope.accountSha256, transport), 'ACCOUNT_TRANSPORT_INVALID');
+  check(isScopedPaperReceiptForTransport(r, transport) && r.group === 'lookup' && r.phase === 'observation', 'ORDER_TRANSPORT_INVALID');
+  const queryInterval = interval(r, clock.now()), mapped = orderObservation({ scope, record, receipt: r }, true), o = r.data;
+  check(!record.brokerStatus || record.brokerEventTimestamps || previous, 'ORDER_TIMESTAMP_CONTINUITY_UNAVAILABLE');
+  check(compare(decimalRatio(mapped.filledQty), decimalRatio(record.filledQty)) >= 0, 'ORDER_FILL_REGRESSION');
+  if (record.brokerStatus && ['filled', 'canceled', 'rejected', 'expired'].includes(record.brokerStatus))
+    check(mapped.brokerStatus === record.brokerStatus, 'ORDER_STATUS_REGRESSION');
+  if (previous) check(mapped.brokerOrderId === previous.brokerOrderId && o.created_at === previous.eventTimestamps.createdAt
+    && ns(o.updated_at) >= ns(previous.eventTimestamps.updatedAt)
+    && (previous.eventTimestamps.filledAt === null || (o.filled_at !== null && ns(o.filled_at) >= ns(previous.eventTimestamps.filledAt))), 'ORDER_TIMESTAMP_REGRESSION');
+  return freeze({ ...mapped, symbol: o.symbol, queryInterval, eventTimestamps: { createdAt: o.created_at, updatedAt: o.updated_at,
+    filledAt: mapped.filledQty === '0' ? null : o.filled_at } });
+}
+export function mapOversightPortfolio({ scope, records, receipts, accountBinding, transport, clock }) {
+  check(isScopedObservationAccount(accountBinding, scope.accountSha256, transport), 'ACCOUNT_TRANSPORT_INVALID');
+  check(receipts.length === 3 && receipts.every(r => isScopedPaperReceiptForTransport(r, transport) && r.phase === 'observation'), 'RECEIPT_INVALID');
+  const now = clock.now(), pr = receipt(receipts, 'positions', now), or = receipt(receipts, 'orders', now), cr = receipt(receipts, 'clock', now);
+  const current = positions(pr);
+  check(Array.isArray(or.data) && or.data.length < 500 && typeof cr.data?.is_open === 'boolean' && fresh(cr.data.timestamp, now), 'OVERSIGHT_RESPONSE_INVALID');
+  const expected = scope.terms.portfolio.map(p => {
+    const r = records.find(x => x.assetId === p.assetId), qty = decimalRatio(p.qty), filled = decimalRatio(r?.filledQty ?? '0');
+    check(compare(qty, filled) >= 0, 'PORTFOLIO_FILL_CONFLICT');
+    return { assetId: p.assetId, qty: decimalText(add(qty, [-filled[0], filled[1]])) };
+  }).filter(p => p.qty !== '0');
+  const normalized = rows => rows.map(p => ({ assetId: p.assetId, qty: decimal(p.qty) })).sort((a, b) => a.assetId.localeCompare(b.assetId));
+  const portfolioMatches = digest(normalized(current)) === digest(normalized(expected));
+  const openOrderConflict = or.data.some(o => !records.some(r => r.brokerOrderId === o?.id && r.clientOrderId === o.client_order_id
+    && r.assetId === o.asset_id && o.side === 'sell' && o.type === 'limit' && o.time_in_force === 'day' && o.extended_hours === false
+    && decimal(o.qty) === decimal(r.qty) && decimal(o.limit_price) === decimal(r.limitPrice)
+    && ['new', 'accepted', 'partially_filled'].includes(o.status) && (!o.legs || (Array.isArray(o.legs) && o.legs.length === 0))));
+  const flatKeys = portfolioMatches && !openOrderConflict ? records.filter(r => r.brokerStatus === 'filled'
+    && !current.some(p => p.assetId === r.assetId) && !or.data.some(o => o.asset_id === r.assetId)).map(r => r.exitIdempotencyKey) : [];
+  const residualKeys = portfolioMatches && !openOrderConflict ? records.filter(r => ['canceled', 'rejected', 'expired'].includes(r.brokerStatus)
+    && current.some(p => p.assetId === r.assetId)).map(r => r.exitIdempotencyKey) : [];
+  return seal({ kind: 'SCOPED_OVERSIGHT_PORTFOLIO', scopeSha256: digest([scope.attemptId, scope.accountSha256, scope.termsSha256]),
+    recordHashes: Object.fromEntries(records.map(r => [r.exitIdempotencyKey, digest(r)])), observedAt: now,
+    portfolioMatches, openOrderConflict, flatKeys, residualKeys, marketOpen: cr.data.is_open,
+    evidenceSha256: digest(receipts.map(r => interval(r, now))) });
 }
 
 export function mapPostcheckEvidence({ scope, receipts, bindings, clock, calendar }) {

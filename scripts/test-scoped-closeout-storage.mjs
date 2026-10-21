@@ -20,6 +20,20 @@ try {
   const premature = { ...r, submissionPhase: 'ATTEMPTED', requestSha256: hash('request'), brokerOrderId: 'fixture-broker', brokerStatus: 'filled', filledQty: '2',
     history: [...r.history, { ...r.history[0], phase: 'ATTEMPTED', brokerStatus: 'filled', filledQty: '2' }] };
   assert.equal(validateScopedManagementRecord(key, premature), false); checks++;
+  const verified = { ...premature, recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, submissionPhase: 'STOPPED',
+    brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at },
+    history: [r.history[0], { ...r.history[0], phase: 'ATTEMPTED' },
+      { ...r.history[0], phase: 'STOPPED', brokerStatus: 'filled', filledQty: '2' }] };
+  assert.equal(validateScopedManagementRecord(key, verified), true); checks++;
+  for (const patch of [{ schemaVersion: 1 }, { recordKind: 'SCOPED_MANAGEMENT_EXIT_V1' }, { brokerEventTimestamps: null },
+    ...[{ updatedAt: '2026-02-30T00:00:00Z' }, { updatedAt: '2026-10-09T15:00:00.000000001Z' },
+      { filledAt: null }, { filledAt: '2026-10-09T14:59:59Z' }, { createdAt: '2026-10-09T14:59:59Z' },
+      { updatedAt: '2026-10-09T15:00:00.0000000001Z' }, { extra: true }]
+      .map(change => ({ brokerEventTimestamps: { ...verified.brokerEventTimestamps, ...change } }))]) {
+    assert.equal(validateScopedManagementRecord(key, { ...verified, ...patch }), false); checks++;
+  }
+  const missing = { ...verified }; delete missing.brokerEventTimestamps;
+  assert.equal(validateScopedManagementRecord(key, missing), false); checks++;
   for (const patch of [{ firstSeenAt: at }, { side: 'buy' }, { stage6Hash: hash('s') },
     { originalOwnershipVerified: true }, { realizedPnlVerified: true }, { historicalEvidenceNormalized: true },
     { brokerSubmitAllowed: true }, { submissionPhase: 'FILLED' }, { filledQty: '3' },
@@ -38,6 +52,9 @@ try {
     const state = await lib[load](file); state.orders[key] = r; state.updatedAt = at;
     await lib[save](file, state);
     assert.deepEqual((await lib[load](file)).preservedExtension, initial.preservedExtension);
+    await assert.rejects(lib[old](file), /SCHEMA_INVALID/); checks += 2;
+    state.orders[key] = verified; await lib[save](file, state);
+    assert.deepEqual((await lib[load](file)).orders[key], verified);
     await assert.rejects(lib[old](file), /SCHEMA_INVALID/); checks += 2;
     const bytes = await fs.readFile(file);
     state.orders[key].realizedPnlVerified = true;
@@ -71,9 +88,23 @@ try {
     await assert.rejects(recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
     let record = (await ledger.loadScopedOrderLedgerState(path.join(directory, 'order-ledger.json'))).orders[records[0].exitIdempotencyKey];
     for (const [phase, status, qty] of [['OBSERVED', 'partially_filled', '0.5'], ['OBSERVED', 'filled', '2'], ['FLAT_RECONCILED', 'filled', '2']]) {
-      record = { ...record, submissionPhase: phase, brokerStatus: status, filledQty: qty, brokerOrderId: 'fixture-broker',
+      record = { ...record, recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2,
+        brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at },
+        submissionPhase: phase, brokerStatus: status, filledQty: qty, brokerOrderId: 'fixture-broker',
         history: [...record.history, { at, phase, evidenceSha256: record.observedEvidenceSha256, brokerStatus: status, filledQty: qty }] };
       await recordScopedObservation(context, record.exitIdempotencyKey, record);
+      if (status === 'partially_filled') {
+        const bytes = await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f))));
+        const downgraded = { ...record, recordKind: 'SCOPED_MANAGEMENT_EXIT_V1', schemaVersion: 1,
+          history: [...record.history, record.history.at(-1)] };
+        delete downgraded.brokerEventTimestamps;
+        assert.equal(validateScopedManagementRecord(record.exitIdempotencyKey, downgraded), true); checks++;
+        await assert.rejects(recordScopedObservation(context, record.exitIdempotencyKey, downgraded), /OBSERVATION_TIMESTAMP_REGRESSION/); checks++;
+        const removed = { ...record, history: [...record.history, record.history.at(-1)] };
+        delete removed.brokerEventTimestamps;
+        await assert.rejects(recordScopedObservation(context, record.exitIdempotencyKey, removed), /OBSERVATION_TIMESTAMP_REGRESSION/); checks++;
+        assert.deepEqual(await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f)))), bytes); checks++;
+      }
     }
     await assert.rejects(recordScopedAttempt(context, records[1].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_BATCH_STOPPED/); checks++;
   });
