@@ -94,6 +94,13 @@ Do not change generic entry/protection consumers merely to accept management rec
 
 Local-byte substep implemented: `loadOperationalEvidenceFiles` and `verifyOperationalEvidenceFiles` reuse the existing code/source reader for owner-only source-contract, risk, clock, custody and attendance documents. Exact bytes and revalidation pass the offline fixtures; the result explicitly does not establish source readiness. Operator-control attestation validation is described below. The source readiness evaluator and real source producer remain incomplete.
 
+2026-10-21 prerequisite-audit amendment: `assessOperationalReadiness` now checks
+those pinned bytes and control attestations, risk-policy representation and clock
+interval consistency. It is a prerequisite audit, not the missing actual source
+producer or an execution readiness certificate. The supported public status
+contract is insufficient for this design, so the result remains BLOCKED even if
+the independent local checks are valid. Do not check off Task 2 from this result.
+
 Risk/time/source rules have no permissive defaults. All applicable existing risk dimensions must have verified inputs or a separately approved reduction-only exception; no exception is approved here. Status silence, tradable=true, fresh quotes, clock.is_open, subscription acknowledgment or missing RSS rows never establish NOT_HALTED.
 
 ## Task 3: Custody, writer fence and observation-only store access
@@ -277,6 +284,77 @@ git diff --check
 
 Actual order completion additionally requires broker terminal/position reconciliation, never just code/test/merge/accepted-order evidence. This exceptional five-target work does not itself complete normal Stage6 entry/holding/protection automation or Toss LIVE readiness.
 
+## 2026-10-21 finite source decision and prerequisite audit
+
+Decision: `REVIEWED_PUBLIC_SOURCE_CONTRACT_INSUFFICIENT`. Under the unchanged
+approved design, operational submission is not executable. This is a conclusion
+about the reviewed contract, not a claim that Alpaca never provides the needed
+capability. Do not repeat account/position reads, query today's support thread
+again, rerun workflows, or wait for another RTH to solve a documentation gap.
+The existing bounded support monitor is unchanged; only new substantive evidence
+or an explicitly approved design change can reopen the source decision.
+
+Official sources checked on 2026-10-21:
+
+- [Real-time stock data](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data)
+  documents status events and feed-dependent subscriptions. It distinguishes
+  quotation resumption from trading resumption. It does not establish the initial
+  snapshot and gap-recovery guarantees required by this design.
+- [WebSocket stream](https://docs.alpaca.markets/us/docs/streaming-market-data)
+  describes subscription acknowledgments and possible disconnection of slow
+  clients, including without a prior slow-client error. The reviewed page does
+  not define a complete trading-status replay after reconnect.
+- [Historical stock data](https://docs.alpaca.markets/us/docs/historical-stock-data-1)
+  distinguishes IEX single-exchange data from consolidated SIP. A quote feed or a
+  subscription upgrade is not itself initial trading-status evidence.
+
+These findings do not authorize UNKNOWN-to-NOT_HALTED promotion, a new provider,
+status stream, subscription purchase, or a risk exception. A design amendment
+must specify the actual replacement source and its current-state/continuity
+basis, independent host-time provenance, and current inputs for each applicable
+risk dimension. If proposing a PAPER-only relaxation instead, the amendment
+must name that policy change and its residual risk explicitly; none is applied
+or approved here. A separate operator-managed broker closeout remains the
+alternative already described in the spec, not an agent execution permission.
+
+The added local command is:
+
+```text
+node scripts/run-scoped-paper-closeout.mjs --assess-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
+```
+
+It uses only pinned local files. It does not access credentials/transport/sender,
+create state, or execute the adapter. Its three unresolved producer reasons are
+source initialization/continuity, current risk measurements and reference-clock
+provenance. An error from a private input is reduced to a fixed safe code.
+
+The risk document representation is additive `scoped-paper-risk-policy-v1`:
+account and terms hashes, policy source hash, and explicit positive decimal
+limits for position/sector/portfolio exposure, daily loss, drawdown and volatility
+(percent), average daily dollar volume (USD) and earnings distance (integer days).
+There are no default values or exceptions. This validates representation only;
+it neither changes existing configured limits nor proves measurements. Existing
+notional/spread/depth checks remain in the scoped controller. The source hash
+alone does not certify the original policy bytes. Result:
+`POLICY_CONTRACT_VALID_NOT_CURRENT_RISK`.
+
+The clock document representation is additive `scoped-paper-clock-evidence-v1`:
+exact host hash, independent-reference interval basis and reference hash, explicit
+age/uncertainty bounds, and the unmodified local sample/reference interval times.
+The local sample must lie within the reference interval, the interval may not be
+future, and its age/width must fit the declared bounds within the existing
+30-second ceiling. This is neither a sync command nor timestamp compensation.
+Reference authenticity and live monotonic continuity still need the real producer.
+Result: `REFERENCE_INTERVAL_CONSISTENT_NOT_AUTHENTICATED`.
+
+Compatibility: `--validate-operational`, legacy execution and all default flags
+are unchanged. Existing UNKNOWN documents remain readable but are not valid new
+policy/time representations. No private document is migrated. The actual
+`collectOperationalEvidence` and `runOperationalPaperCloseout` composition remain
+incomplete: do not substitute this audit for them or merge the Draft as full
+operational closure. Finish the source decision through new evidence or a
+separately reviewed design, not another identical read-only audit goal.
+
 Rollback before activation: revert the implementation merge without touching private artifacts or stores. After any separately authorized broker action, stop new submissions and preserve oversight/handoff; reverting code is not cancellation or permission to restore historical state.
 
 ## Draft self-review
@@ -401,3 +479,23 @@ The independent reviewer inspected the pre-correction branch; closure of its two
 findings is backed by red/green regressions and the follow-up matrix, not a claim
 of a second independent review. PR #57 remains Draft. Passing these tests cannot
 complete the actual source/risk/time producer, final caller or operational proof.
+
+## Prerequisite-audit verification (2026-10-22)
+
+The local risk/time prerequisite audit and `--assess-operational` route passed
+the existing 17-command offline matrix plus the 44-case IEX probe fixture,
+typecheck/build, dependency audit (zero vulnerabilities), and diff checks.
+The fresh-context reviewer found no verified P0-P3 issue in this patch or its
+integration with the prior branch. Its independent coverage was 11 focused
+offline scripts, no-emit typecheck and diff checks; it did not run the entire
+repository matrix or inspect private runtime evidence. That is review of this
+checkpoint, not completion of the missing producer and caller.
+
+The finite outcome remains `REVIEWED_PUBLIC_SOURCE_CONTRACT_INSUFFICIENT`.
+No repeated account read, RTH wait or fixture rerun can close the undocumented
+initial-state/continuity guarantee. Current-risk and independent-clock provenance
+also need genuine source implementations; document/interval validity alone does
+not supply them. Tasks 2/5/6 and the parent goal remain incomplete. Keep PR #57
+Draft and do not merge it as operational binding. Proceed only with sufficient
+official source-contract evidence or a separately approved design amendment;
+do not silently weaken the current contract to make a passing path.

@@ -3,6 +3,7 @@ import { sha256Canonical as digest } from './active-position-limited-recovery.mj
 import { validateScopedPaperAuthorityFields, validateOperationalApprovalFields } from './scoped-closeout-contract.mjs';
 import { readScopedPaperFile, verifyScopedPaperInputs } from './scoped-paper-adapter.mjs';
 import { parseStrictJsonText } from '../../dist/src/json-utils.js';
+import { decimalRatio, compare } from './closeout-decimal.mjs';
 
 export { authorizeOperationalInvocation, assertOperationalInvocation, bindOperationalObservation } from './scoped-closeout-contract.mjs';
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -141,6 +142,74 @@ export async function assessOperationalControlEvidence({ config, files, clock, p
   return freeze({ status: reasons.length ? 'BLOCKED' : 'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS', reasons,
     executionAuthorized: false, sourceReadinessProven: false, currentStateVerified: false,
     hostIdentityIndependentlyVerified: false, writerExclusionIndependentlyVerified: false, physicalAttendanceVerified: false });
+}
+
+// Local documents establish configured requirements, not measured current risk or an exemption.
+export function assessOperationalRiskPolicy({ config, policy }) {
+  const percentages = ['maxPositionPct', 'maxSectorPct', 'maxPortfolioExposurePct', 'maxDailyLossPct', 'maxDrawdownPct', 'maxVolatilityPct'];
+  const fields = [...percentages, 'minAverageDailyDollarVolumeUsd', 'minEarningsDistanceDays'];
+  try {
+    check(exact(policy, 'schemaVersion accountSha256 termsSha256 policySourceSha256 limits')
+      && policy.schemaVersion === 'scoped-paper-risk-policy-v1' && hash(policy.policySourceSha256)
+      && policy.accountSha256 === config.input.accountSha256 && policy.termsSha256 === config.input.termsSha256
+      && exact(policy.limits, fields.join(' ')), 'RISK_POLICY_INVALID');
+    for (const field of fields) {
+      const v = policy.limits[field];
+      check(typeof v === 'string' && /^(0|[1-9]\d{0,15})(\.\d{1,9})?$/.test(v), 'RISK_POLICY_INVALID');
+      const r = decimalRatio(v);
+      check(compare(r, [0n, 1n]) > 0
+        && (field !== 'minEarningsDistanceDays' || /^[1-9]\d*$/.test(v)), 'RISK_POLICY_INVALID');
+    }
+    return freeze({ status: 'POLICY_CONTRACT_VALID_NOT_CURRENT_RISK', reasons: [], configuredDimensions: fields.length,
+      currentRiskVerified: false, exceptionsApproved: false });
+  } catch {
+    return freeze({ status: 'BLOCKED', reasons: ['SCOPED_CLOSEOUT_RISK_POLICY_INVALID'], configuredDimensions: 0,
+      currentRiskVerified: false, exceptionsApproved: false });
+  }
+}
+
+// Interval arithmetic never compensates payload timestamps or authenticates the reference source.
+export function assessOperationalClockEvidence({ config, document: d, clock }) {
+  try {
+    check(exact(d, 'schemaVersion hostIdSha256 basis referenceEvidenceSha256 policy localSampleAt referenceEarliestAt referenceLatestAt')
+      && d.schemaVersion === 'scoped-paper-clock-evidence-v1' && d.hostIdSha256 === config.custody.hostIdSha256
+      && d.basis === 'INDEPENDENT_REFERENCE_INTERVAL' && hash(d.referenceEvidenceSha256)
+      && exact(d.policy, 'maxAgeMs maxUncertaintyMs')
+      && Number.isSafeInteger(d.policy.maxAgeMs) && d.policy.maxAgeMs > 0 && d.policy.maxAgeMs <= 30000
+      && Number.isSafeInteger(d.policy.maxUncertaintyMs) && d.policy.maxUncertaintyMs >= 0
+      && d.policy.maxUncertaintyMs <= d.policy.maxAgeMs, 'CLOCK_EVIDENCE_INVALID');
+    const now = time(clock.now()), sample = time(d.localSampleAt), low = time(d.referenceEarliestAt), high = time(d.referenceLatestAt);
+    check([now, sample, low, high].every(Number.isFinite) && low <= sample && sample <= high
+      && high <= now && now - low <= d.policy.maxAgeMs && high - low <= d.policy.maxUncertaintyMs,
+    'CLOCK_EVIDENCE_INVALID');
+    return freeze({ status: 'REFERENCE_INTERVAL_CONSISTENT_NOT_AUTHENTICATED', reasons: [],
+      referenceProvenanceVerified: false, hostSynchronizationVerified: false, timestampCompensationApplied: false });
+  } catch {
+    return freeze({ status: 'BLOCKED', reasons: ['SCOPED_CLOSEOUT_CLOCK_EVIDENCE_INVALID'],
+      referenceProvenanceVerified: false, hostSynchronizationVerified: false, timestampCompensationApplied: false });
+  }
+}
+
+// This is a prerequisite audit. There is no reviewed current-state/continuity producer yet.
+export async function assessOperationalReadiness({ config, files, clock }) {
+  let controlEvidence, riskPolicy, clockEvidence;
+  const reasons = [];
+  try {
+    config = structuredClone(config);
+    await verifyOperationalEvidenceFiles({ config, files });
+    controlEvidence = await assessOperationalControlEvidence({ config, files, clock });
+    riskPolicy = assessOperationalRiskPolicy({ config, policy: files.documents.riskPolicy });
+    clockEvidence = assessOperationalClockEvidence({ config, document: files.documents.clockPolicy, clock });
+    reasons.push(...controlEvidence.reasons, ...riskPolicy.reasons, ...clockEvidence.reasons,
+      'SCOPED_CLOSEOUT_SOURCE_INITIAL_STATE_AND_CONTINUITY_UNVERIFIED',
+      'SCOPED_CLOSEOUT_CURRENT_RISK_EVIDENCE_UNVERIFIED', 'SCOPED_CLOSEOUT_CLOCK_REFERENCE_PROVENANCE_UNVERIFIED');
+  } catch (error) {
+    reasons.push(/^SCOPED_(?:CLOSEOUT|ADAPTER)_[A-Z_]+$/.test(error?.message)
+      ? error.message : 'SCOPED_CLOSEOUT_READINESS_INPUT_INVALID');
+  }
+  return freeze({ status: 'BLOCKED', reasons: [...new Set(reasons)], controlEvidence, riskPolicy, clockEvidence,
+    executionAuthorized: false, sourceReadinessProven: false, currentStateVerified: false,
+    wouldCreateBrokerPayload: false, actualBrokerMutationAttempted: false, actualStateWriteAttempted: false });
 }
 
 // Local file validation cannot grant an in-process execution capability or establish source truth.
