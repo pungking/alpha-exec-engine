@@ -3,7 +3,7 @@
 Parent: PAPER_SCOPED_CLOSEOUT_OPERATIONAL_BINDING_CLOSURE_V1
 Design work item: PAPER_ATTENDED_LIFECYCLE_VALIDATION_DESIGN_V1
 Reviewed baseline: 6114afd0136afcffdf8c6f51102471db66692063
-Status: DESIGN_DIRECTION_APPROVED; BUILDER_REVIEW_COMPLETE_ONE_OPERATOR_DECISION_REQUIRED
+Status: DESIGN_DIRECTION_APPROVED; ATTENDANCE_DECISION_RESOLVED; READY_FOR_WRITTEN_REVIEW
 Written-design acceptance: NOT_GRANTED
 Implementation, runtime, state adoption and order authorization: NOT_GRANTED
 
@@ -14,6 +14,12 @@ broker-lifecycle validation design, separate from LIVE and unattended readiness.
 The exact five existing limited-control identities and other risk limits remain.
 External trading-status coverage remains unverified. The approval explicitly
 excludes code safety-gate changes, API calls and orders.
+
+On 2026-10-25 the operator selected the existing time-bounded attestation plus
+direct broker-interface supervision and manual stop. There is no per-order human
+confirmation mechanism, presence polling, biometric check or new attendance
+service. This resolves the builder's single operator-control question, not the
+separate implementation or runtime approval gates.
 
 This document makes that direction implementable for review. It does not change
 an execution policy today. It proposes a narrowly scoped future exception to
@@ -174,17 +180,44 @@ read budget/deadline and single-use claim. Keep response bounds 3 seconds/8 MiB,
 300-second attempt with its existing 17-second send margin, no pagination/retry,
 no POST fallback and no PATCH/DELETE. No new source-network route is introduced.
 
-Attendance must cover the full signed observation/handoff window; no indefinite
-attended flag or automatic approval renewal. On host loss, operator absence,
-expired authority, drift or evidence failure, stop new sends. A resting DAY order
-may remain at the broker after this process stops; no automatic cancellation is
-authorized. The named operator must acknowledge that risk and receive the
-unresolved handoff. Delivery failure remains unconfirmed and cannot resubmit.
+Attendance is an operator-attested commitment covering the full signed
+observation/handoff window, not machine-verified physical presence. Keep
+`physicalAttendanceVerified=false` and the existing pinned attendance document,
+named operator, PAPER account/session, expiry and handoff-procedure hash. An
+unattended configuration, missing/expired attestation or changed bytes blocks.
+There is no automatic renewal. Unreported human absence cannot be detected by
+this contract and remains an explicitly acknowledged residual risk.
 
-Attendance enforcement is the one unresolved operator decision below. The
-existing attestation does not detect physical absence. The requirement above
-must not be claimed implemented, automatically enforceable or independently
-proven until its concrete control model is selected and tested.
+The chosen operator procedure is: remain at the correct PAPER broker interface,
+stop the attempt before leaving or when intervening manually, and check any
+submitted or uncertain order until it is terminal or explicitly handed off.
+Later manual trading is not authorized by this design; it invalidates writer
+exclusion and must not be silently adopted into this scope.
+
+Future caller control semantics (proposed implementation, not existing behavior):
+
+- A manual interrupt (`SIGINT`) irreversibly retires new submission authority
+  for this invocation. Recheck it at every send boundary. Do not create another
+  attempt, resume later targets, cancel/replace an order or release dedup keys.
+  Let an in-progress atomic state operation reach its safe boundary; a force-kill
+  may interrupt paired persistence and must leave that state fail-closed.
+- If no wire attempt occurred, preserve any reservation/attempt receipt and
+  terminate without extra broker reads. If a POST may have reached the broker,
+  preserve ATTEMPTED/uncertain evidence; stopping local work does not prove that
+  the broker rejected or canceled it. Complete only already-authorized bounded
+  observation/handoff if its authority, attendance and time budget remain valid.
+- A second interrupt, `SIGTERM`, process crash or host loss may end observation.
+  Attempt a safe handoff only within remaining authority; do not promise delivery
+  or extend the observation budget. The operator must use the broker interface
+  to determine the outstanding outcome. No automatic cleanup is authorized.
+- Expiry, reported revocation/absence, changed pins, drift or evidence failure
+  stop new sends. The existing code has no manual-interrupt binding yet; its
+  implementation must be tested before claiming this control is available.
+
+A resting DAY order may remain at the broker after this process stops. The
+operator must acknowledge this limitation; an expired or failed notification is
+unconfirmed and never permits resubmission. No software claim of actual human
+presence, reliable host-loss delivery or remote supervision is introduced.
 
 ## 7. Durable purpose and compatibility
 
@@ -252,9 +285,12 @@ existing private receipt and alert deduplication; no actual sends during develop
 7. V3 null-to-exact broker times, persistent scope, timestamp monotonicity,
    paired-store fault injection, V1/V2 compatibility, downgrade rejection and
    generic consumer rejection; no historical migration or verified-P&L promotion.
-8. Observation expiry, host loss/attendance loss, notification failure/duplicate,
-   terminal residual and unscoped-position drift produce an unresolved handoff;
-   no claim of delivery unless confirmed by the mock sender contract.
+8. Manual stop before reservation/before wire/during an uncertain POST/after
+   acceptance permanently prevents new submits; preserve records and only allow
+   bounded authorized observation. Repeated interrupt, expiry, reported absence,
+   notification failure/duplicate, terminal residual and unscoped-position drift
+   leave an explicit unresolved outcome. Host crash cannot promise an emitted
+   alert. No delivery or physical-presence claim without its actual evidence.
 9. Deterministic rerun, exact five-row count reconciliation, private redaction,
    and no source/risk/timestamp invention across the complete mock composition.
 
@@ -280,7 +316,7 @@ The original source-qualified operational goal stays open. Completing this
 limited work proves a useful narrower capability, not completion of every
 prerequisite for automation or of the historical missing-evidence goals.
 
-## 11. Builder review and one remaining operator decision
+## 11. Builder review and resolved operator decision
 
 The first fresh reviewer ended at a usage limit without findings. After the
 reported reset, current app status allowed normal usage; resuming that same
@@ -289,26 +325,31 @@ builder check of draft SHA-256
 `fb887125b3b2d1a2c4db4ddb2054dab437004f30f4f3879d7fc19cfdaabfbabb`.
 The first failure is not counted as a completed review. No runtime tests were run.
 
-One consequential question remains: what establishes and revokes attendance?
+The review's consequential question was: what establishes and revokes attendance?
 The existing control checks a pinned operator attestation and its expiry, and
 truthfully reports `physicalAttendanceVerified=false`. It cannot know that a
 person signed and then left. A configured rejection of unattended invocation is
 not evidence of actual human presence.
 
-- Recommended for operator choice: reuse the named, time-bounded attestation
+- Selected on 2026-10-25: reuse the named, time-bounded attestation
   plus direct supervision at the broker interface and an explicit manual-stop
   procedure. Physical attendance stays operator-attested, not software-verified.
   Code can react only to an observable stop/revocation, expiry or other failure;
   unnoticed absence is an acknowledged residual risk. Stopping the process does
   not cancel an accepted order; the supervising operator retains the handoff.
-- Alternative: require a fresh explicit human confirmation before each possible
+- Not selected: require a fresh explicit human confirmation before each possible
   submit. This is a new interaction to design and test, not a default polling
   monitor or new authorization; it still does not prove continuous physical
   presence. Fresh observation and approval checks must be rerun within their
   existing bounds after any wait, or the attempt aborts without retry.
 
-The operator has been asked to select one. Neither is adopted by this draft.
-Do not implement either control, make a runtime approval request or classify
-the written design as fully accepted before that choice. No other consequential
-question was returned by the independent builder check. Parent-owned path,
-budget and schema-reach checks are separate from that review.
+The direct human answer resolves the choice in favor of existing attestations,
+direct supervision and manual stop. Section 6 now states its truthful limits and
+the proposed stop behavior. No other consequential question was returned by the
+independent builder check. Parent-owned path, budget and schema-reach checks are
+separate from that review; this closure is not a second independent review of
+new implementation, because no implementation occurred.
+
+Hand this updated written design to the operator for review. Do not ask the
+attendance question again. The full written-design acceptance and subsequent
+offline implementation/runtime authorities remain distinct and ungranted.
