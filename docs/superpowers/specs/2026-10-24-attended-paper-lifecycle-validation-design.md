@@ -3,8 +3,8 @@
 Parent: PAPER_SCOPED_CLOSEOUT_OPERATIONAL_BINDING_CLOSURE_V1
 Design work item: PAPER_ATTENDED_LIFECYCLE_VALIDATION_DESIGN_V1
 Reviewed baseline: 6114afd0136afcffdf8c6f51102471db66692063
-Status: DESIGN_DIRECTION_APPROVED; ATTENDANCE_DECISION_RESOLVED; READY_FOR_WRITTEN_REVIEW
-Written-design acceptance: NOT_GRANTED
+Status: WRITTEN_DESIGN_APPROVED; IMPLEMENTATION_PLAN_PREPARATION_AUTHORIZED
+Written-design acceptance: GRANTED_BY_DIRECT_OPERATOR_REPLY_2026_10_25
 Implementation, runtime, state adoption and order authorization: NOT_GRANTED
 
 ## 1. Decision and approval boundary
@@ -20,6 +20,10 @@ direct broker-interface supervision and manual stop. There is no per-order human
 confirmation mechanism, presence polling, biometric check or new attendance
 service. This resolves the builder's single operator-control question, not the
 separate implementation or runtime approval gates.
+
+Later on 2026-10-25 the operator approved this written design and preparation of
+the Native offline implementation plan. That answer does not authorize code
+gate changes, API calls, orders, state adoption or operational activation.
 
 This document makes that direction implementable for review. It does not change
 an execution policy today. It proposes a narrowly scoped future exception to
@@ -350,6 +354,7 @@ independent builder check. Parent-owned path, budget and schema-reach checks are
 separate from that review; this closure is not a second independent review of
 new implementation, because no implementation occurred.
 
-Hand this updated written design to the operator for review. Do not ask the
-attendance question again. The full written-design acceptance and subsequent
-offline implementation/runtime authorities remain distinct and ungranted.
+Written-design review is now accepted by the direct operator answer. Do not ask
+the attendance or written-design questions again. Prepare the Native plan and
+obtain its implementation-scope review; implementation and runtime authorities
+remain distinct and ungranted.
