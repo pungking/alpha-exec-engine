@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
 import { decimalRatio, decimalText, compare, multiply, add } from './closeout-decimal.mjs';
-import { isScopedPaperReceipt, isScopedPaperReceiptForTransport } from './scoped-paper-transport.mjs';
+import { isScopedPaperReceipt, isScopedPaperReceiptForTransport, scopedPaperReceiptTiming } from './scoped-paper-transport.mjs';
+import { verifyAttendedScopeFiles } from './scoped-paper-operational.mjs';
 
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const exact = (v, keys) => object(v) && Object.keys(v).sort().join(' ') === keys.split(' ').sort().join(' ');
 const hash = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const id = v => typeof v === 'string' && /^[a-zA-Z0-9_-]{1,96}$/.test(v);
 const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v);
@@ -11,6 +13,7 @@ const check = (ok, code) => { if (!ok) throw Error(`SCOPED_EVIDENCE_${code}`); }
 const freeze = v => { if (object(v) || Array.isArray(v)) { Object.values(v).forEach(freeze); Object.freeze(v); } return v; };
 const snapshots = new WeakSet();
 const observationAccounts = new WeakMap();
+const attendedClocks = new WeakMap();
 export const isObservedSnapshot = value => snapshots.has(value);
 const seal = v => { freeze(v); snapshots.add(v); return v; };
 const ny = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -69,6 +72,52 @@ function interval(r, now) {
     && fresh(r.requestedAt, now) && ns(r.requestedAt) <= ns(r.retrievedAt) && ns(r.retrievedAt) <= ns(now)
     && ns(r.retrievedAt) - ns(r.requestedAt) <= 3000000000n, 'RECEIPT_INVALID');
   return { basis: 'OBSERVED_GET_INTERVAL', requestedAt: r.requestedAt, retrievedAt: r.retrievedAt, responseSha256: r.responseSha256 };
+}
+
+// TLS-route receipt provenance is not proof of host synchronization or provider UTC accuracy.
+export async function buildAttendedClockEvidence({ scope, files, receipt: r, transport, clock }) {
+  const config = await verifyAttendedScopeFiles({ scope, files }), p = files.documents.clockPolicy;
+  check(exact(p, 'schemaVersion basis hostIdSha256 maxAgeMs maxUncertaintyMs requiresHostSynchronizationProof requiresProviderAccuracySla')
+    && p.schemaVersion === 'attended-paper-clock-policy-v1' && p.basis === 'BROKER_TLS_REMOTE_REFERENCE_INTERVAL'
+    && p.hostIdSha256 === config.custody.hostIdSha256
+    && Number.isSafeInteger(p.maxAgeMs) && p.maxAgeMs > 0 && p.maxAgeMs <= 30000
+    && Number.isSafeInteger(p.maxUncertaintyMs) && p.maxUncertaintyMs >= 0 && p.maxUncertaintyMs <= p.maxAgeMs
+    && p.requiresHostSynchronizationProof === false && p.requiresProviderAccuracySla === false, 'CLOCK_POLICY_UNSUPPORTED');
+  check(isScopedPaperReceiptForTransport(r, transport) && r.group === 'clock'
+    && ['initial', 'presubmit'].includes(r.phase), 'CLOCK_TRANSPORT_UNBOUND');
+  let timing;
+  try { timing = scopedPaperReceiptTiming(r, transport, clock); } catch { check(false, 'CLOCK_TRANSPORT_UNBOUND'); }
+  interval(r, clock.now());
+  check(timing.origin === 'https://paper-api.alpaca.markets' && timing.method === 'GET', 'CLOCK_ORIGIN_INVALID');
+  const low = ns(timing.dispatchedAt), high = ns(r.retrievedAt), remote = ns(r.data?.timestamp);
+  check(low <= remote && remote <= high && high - low <= BigInt(p.maxUncertaintyMs) * 1000000n,
+    'CLOCK_REFERENCE_OUTSIDE_INTERVAL');
+  check(Math.abs(Number(high - low) / 1000000 - (timing.receivedMonotonicMs - timing.sentMonotonicMs)) <= p.maxUncertaintyMs,
+    'CLOCK_INTERVAL_DIVERGENCE');
+  const result = freeze({ status: 'REMOTE_REFERENCE_INTERVAL_BOUND', referenceEvidenceSha256: r.responseSha256,
+    clockPolicySha256: config.sourcePolicy.clockPolicyFile.sha256, referenceProvenanceVerified: true,
+    hostSynchronizationVerified: false, providerClockAccuracyVerified: false, timestampCompensationApplied: false,
+    executionAuthorized: false });
+  attendedClocks.set(result, { scope, files, receipt: r, transport, clock, timing, policy: p, invalid: false,
+    lastMono: timing.receivedMonotonicMs, lastWall: ns(r.retrievedAt) });
+  check(isAttendedClockEvidence(result, { scope, files, transport, clock }), 'CLOCK_CONTINUITY_INVALID');
+  return result;
+}
+
+export function isAttendedClockEvidence(value, { scope, files, transport, clock }) {
+  const s = attendedClocks.get(value);
+  if (!s || s.invalid || s.scope !== scope || s.files !== files || s.transport !== transport || s.clock !== clock) return false;
+  try {
+    scopedPaperReceiptTiming(s.receipt, transport, clock);
+    const wall = ns(clock.now()), mono = clock.monotonicMs();
+    check(Number.isFinite(mono) && mono >= s.lastMono && wall >= s.lastWall, 'CLOCK_CONTINUITY_INVALID');
+    check(wall - ns(s.timing.dispatchedAt) <= BigInt(s.policy.maxAgeMs) * 1000000n
+      && mono - s.timing.sentMonotonicMs <= s.policy.maxAgeMs
+      && Math.abs(Number(wall - ns(s.receipt.retrievedAt)) / 1000000 - (mono - s.timing.receivedMonotonicMs)) <= s.policy.maxUncertaintyMs,
+    'CLOCK_CONTINUITY_INVALID');
+    s.lastMono = mono; s.lastWall = wall;
+    return true;
+  } catch { s.invalid = true; return false; }
 }
 function receipt(receipts, group, now) {
   const rows = receipts.filter(r => r.group === group); check(rows.length === 1, 'RECEIPT_COUNT_INVALID');

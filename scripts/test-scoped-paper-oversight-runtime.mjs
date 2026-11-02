@@ -3,13 +3,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { operationalFixture, pinOperationalFixtureFiles, hash, at } from './fixtures/scoped-paper-adapter.mjs';
-import { managementRecord } from './fixtures/scoped-closeout.mjs';
+import { operationalFixture, attendedFixture, pinOperationalFixtureFiles, hash, at } from './fixtures/scoped-paper-adapter.mjs';
+import { managementRecord, limitedManagementRecord } from './fixtures/scoped-closeout.mjs';
 import * as transportModule from './lib/scoped-paper-transport.mjs';
 import * as evidence from './lib/scoped-paper-evidence.mjs';
 import * as stores from './lib/scoped-closeout-storage.mjs';
 import * as contract from './lib/scoped-closeout-contract.mjs';
 import { buildScopedNotificationSnapshot } from './paper-order-notifications.mjs';
+import { buildAttendedLifecycleSummary } from './lib/scoped-paper-adapter.mjs';
 
 assert.equal(typeof transportModule.createScopedPaperObservationTransport, 'function', 'observation-only bounded transport must exist');
 assert.equal(typeof evidence.mapOversightObservation, 'function', 'fresh query must not fabricate a fresh order event');
@@ -25,8 +26,8 @@ const order = (f, r, status = 'accepted', filled = '0') => ({ id: 'fixture-obser
   created_at: at, updated_at: at, filled_at: filled === '0' ? null : at, status, legs: [] });
 let checks = 0;
 
-function fixture() {
-  const f = operationalFixture(); let ms = 60000;
+function fixture(attended = false) {
+  const f = attended ? attendedFixture() : operationalFixture(); let ms = 60000;
   f.clock = { now: () => new Date(Date.parse(at) + ms).toISOString(), monotonicMs: () => ms };
   f.advance = n => { ms += n; };
   f.record = { ...managementRecord(), accountSha256: f.input.accountSha256, requestSha256: hash('request'), submissionPhase: 'STOPPED' };
@@ -95,8 +96,8 @@ responseClock.advance(-50);
 assert.equal((await responseTransport.request({ group: 'clock', phase: 'observation', routeInput: {} })).error, 'CLOCK_INVALID');
 assert.equal(responseClock.calls.length, 1, 'response completion is also a monotonic watermark'); checks += 2;
 
-async function prepared(attempted = 1) {
-  const f = fixture(), directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-oversight-runtime-')));
+async function prepared(attempted = 1, attended = false) {
+  const f = fixture(attended), directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-oversight-runtime-')));
   await fs.chmod(directory, 0o700);
   for (const file of ['order-ledger.json', 'order-idempotency.json']) await fs.writeFile(path.join(directory, file),
     JSON.stringify({ orders: {}, ...(file.includes('idempotency') ? { releases: [] } : {}), updatedAt: '' }), { mode: 0o600 });
@@ -105,7 +106,7 @@ async function prepared(attempted = 1) {
   const controlDirectory = path.join(directory, 'fixture-controls'); await fs.mkdir(controlDirectory, { mode: 0o700 });
   await pinOperationalFixtureFiles(f.config, controlDirectory);
   await stores.withScopedStores({ directory, expectedHashes: preWriteHashes, attemptId: f.input.attemptId }, async ctx => {
-    const rows = f.input.terms.targets.map((_, i) => ({ ...managementRecord(i), accountSha256: f.input.accountSha256,
+    const rows = f.input.terms.targets.map((_, i) => ({ ...(attended ? limitedManagementRecord(i) : managementRecord(i)), accountSha256: f.input.accountSha256,
       managementAuthoritySha256: f.input.authoritySha256, preWriteHashes }));
     await stores.reserveScopedExits(ctx, rows);
     for (const [index, row] of rows.slice(0, attempted).entries()) {
@@ -114,7 +115,7 @@ async function prepared(attempted = 1) {
       for (const phase of index < attempted - 1 ? ['OBSERVED', 'FLAT_RECONCILED'] : ['STOPPED']) {
         const brokerStatus = phase === 'STOPPED' ? null : 'filled', filledQty = brokerStatus ? '2' : '0';
         old = { ...old, submissionPhase: phase, brokerStatus, filledQty, brokerOrderId: brokerStatus ? `fixture-order-${row.assetId}` : null,
-          ...(brokerStatus ? { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2,
+          ...(brokerStatus ? { recordKind: attended ? 'SCOPED_MANAGEMENT_EXIT_V3' : 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: attended ? 3 : 2,
             brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at } } : {}),
           history: [...old.history, { at, phase, evidenceSha256: old.observedEvidenceSha256, brokerStatus, filledQty }] };
         await stores.recordScopedObservation(ctx, row.exitIdempotencyKey, old);
@@ -130,6 +131,156 @@ async function prepared(attempted = 1) {
   const deps = { authority, records, clock: { ...f.clock, sleep: async n => { f.advance(n); f.bodies.clock.timestamp = f.clock.now(); } },
     observationTransport: ({ beforeRead }) => { factories++; return f.transport(beforeRead); } };
   return { f, directory, controlDirectory, authority, records, deps, factories: () => factories };
+}
+for (const mode of ['accepted', 'filled', 'timestamp-regression', 'purpose-mismatch', 'mixed-purpose', 'notification-handoff', 'notification-read-failure', 'notification-final-clock-failure']) {
+  const p = await prepared(1, true);
+  try {
+    const key = p.records[0].exitIdempotencyKey;
+    const messages = [];
+    if (mode.startsWith('notification-')) {
+      p.f.config.notifications = { destinationSha256: hash('fixture-destination'), sourceRunId: '123', headSha: 'a'.repeat(40) };
+      p.deps.notify = { destinationSha256: p.f.config.notifications.destinationSha256,
+        send: async message => {
+          messages.push(message);
+          if (mode === 'notification-final-clock-failure') p.deps.clock.now = () => { throw Error('fixture-private-clock-error'); };
+          return { ok: true };
+        } };
+      if (mode === 'notification-read-failure') p.f.fetchImpl = async (_url, options) => {
+        p.f.calls.push({ method: options.method }); throw Error('fixture-private-failure');
+      };
+    }
+    if (mode === 'purpose-mismatch') {
+      p.authority.config.schemaVersion = 'scoped-paper-operational-invocation-v1';
+      delete p.authority.config.validationScope;
+      delete p.authority.config.sourcePolicy.validationPolicyFile;
+      delete p.authority.config.sourcePolicy.riskSourceInventoryFile;
+      await pinOperationalFixtureFiles(p.authority.config, p.controlDirectory);
+    }
+    if (mode === 'mixed-purpose') p.records[4] = { ...managementRecord(4), accountSha256: p.f.input.accountSha256 };
+    p.authority.recordsSha256 = hash(p.records);
+    const { approval, ...basis } = p.authority; approval.authoritySha256 = hash(basis);
+    const before = await hashes(p.directory);
+    const result = await oversight.runScopedPaperOversight(p.deps);
+    if (mode.endsWith('mismatch') || mode === 'mixed-purpose') {
+      assert.deepEqual(result.reasons, ['SCOPED_ADAPTER_OBSERVATION_PURPOSE_INVALID']);
+      assert.equal(p.f.calls.length, 0); assert.equal(result.actualStateWriteAttempted, false);
+      assert.deepEqual(await hashes(p.directory), before); checks += 4; continue;
+    }
+    assert.equal(result.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+    assert.equal(result.externalTradingStatus, 'NOT_VERIFIED');
+    assert.ok(result.lifecycleSummary, 'attended observer must partition the entire five-row scope');
+    assert.equal(Object.values(result.lifecycleSummary.counts).reduce((a, b) => a + b, 0), 5);
+    assert.equal(result.lifecycleSummary.counts.NOT_ATTEMPTED, 4);
+    assert.equal(result.lifecycleSummary.counts[mode === 'notification-read-failure' ? 'SUBMISSION_UNCERTAIN' : 'ACCEPTED_OPEN'], 1);
+    assert.equal(result.lifecycleSummary.fullScopeReconciled, false);
+    assert.equal(result.lifecycleSummary.runtimeProof, false);
+    checks += 6;
+    assert.deepEqual(result.reasons, [mode === 'notification-read-failure'
+      ? 'SCOPED_ADAPTER_OBSERVATION_READ_FAILED' : 'SCOPED_ADAPTER_OBSERVATION_BUDGET_EXHAUSTED']);
+    if (mode.startsWith('notification-')) {
+      assert.equal(result.notificationDelivery.status, 'DELIVERED'); assert.equal(messages.length, 1);
+      assert.ok(messages[0].includes('ATTENDED_PAPER_LIFECYCLE_ONLY'), 'empty final handoff must retain the bound limited purpose');
+      assert.ok(messages[0].includes('NOT_VERIFIED'));
+      assert.ok(!messages[0].includes('fixture-private-failure') && !messages[0].includes('fixture-observed-order'));
+      checks += 8; continue;
+    }
+    let current = (await read(p.directory)).orders[key];
+    assert.equal(current.recordKind, 'SCOPED_MANAGEMENT_EXIT_V3');
+    assert.equal(current.submissionPhase, 'STOPPED'); assert.equal(current.brokerStatus, 'accepted');
+    assert.equal(current.brokerEventTimestamps.createdAt, at);
+    assert.equal(current.originalOwnershipVerified, false); assert.equal(current.realizedPnlVerified, false);
+    checks += 9;
+    if (mode === 'accepted') continue;
+    p.deps.records = Object.values((await read(p.directory)).orders);
+    p.authority.expectedHashes = await hashes(p.directory); p.authority.recordsSha256 = hash(p.deps.records);
+    const { approval: renewed, ...nextBasis } = p.authority; renewed.authoritySha256 = hash(nextBasis);
+    const calls = p.f.calls.length, saved = await hashes(p.directory);
+    p.f.bodies.lookup = order(p.f, current, 'filled', current.qty);
+    p.f.bodies.lookup.updated_at = p.f.bodies.lookup.filled_at = mode === 'timestamp-regression'
+      ? '2026-10-09T14:59:59.999999999Z' : p.f.clock.now();
+    p.f.bodies.positions = p.f.bodies.positions.filter(row => row.asset_id !== current.assetId);
+    const resumed = await oversight.runScopedPaperOversight(p.deps);
+    if (mode === 'timestamp-regression') {
+      assert.equal(resumed.status, 'UNRESOLVED_HANDOFF');
+      assert.equal(p.f.calls.length, calls + 2); assert.deepEqual(await hashes(p.directory), saved); checks += 3;
+    } else {
+      assert.equal(resumed.status, 'ATTEMPTED_ORDERS_RECONCILED'); assert.equal(resumed.flatReconciledRows, 1);
+      assert.equal(resumed.lifecycleSummary.counts.FILLED_AND_FLAT_RECONCILED, 1);
+      assert.equal(resumed.lifecycleSummary.counts.NOT_ATTEMPTED, 4);
+      assert.equal(resumed.lifecycleSummary.fullScopeReconciled, false, 'one attempted fill is not five-row completion');
+      checks += 3;
+      current = (await read(p.directory)).orders[key];
+      assert.equal(current.schemaVersion, 3); assert.equal(current.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+      assert.equal(current.externalTradingStatus, 'NOT_VERIFIED'); assert.equal(current.submissionPhase, 'STOPPED');
+      assert.equal(current.brokerStatus, 'filled'); assert.equal(current.filledQty, current.qty);
+      assert.equal(current.realizedPnlVerified, false); assert.equal(current.brokerSubmitAllowed, false);
+      assert.ok(p.f.calls.every(call => call.method === 'GET')); checks += 11;
+    }
+  } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+}
+for (const mode of ['partial', 'canceled', 'unknown', 'filled-residual', 'all-flat', 'unscoped-drift', 'open-order']) {
+  const p = await prepared(mode === 'all-flat' || mode === 'unscoped-drift' || mode === 'open-order' ? 5 : 1, true);
+  try {
+    const baseFetch = p.f.fetchImpl;
+    if (['all-flat', 'unscoped-drift', 'open-order'].includes(mode)) {
+      p.f.bodies.positions = p.f.bodies.positions.filter(position => !p.records.some(r => r.assetId === position.asset_id));
+      if (mode === 'unscoped-drift') p.f.bodies.positions.push({ asset_id: 'fixture-unscoped-asset', symbol: 'UNSCOPED',
+        asset_class: 'us_equity', side: 'long', qty: '1' });
+      if (mode === 'open-order') p.f.bodies.orders.push({ id: 'fixture-other-open-order' });
+      p.f.fetchImpl = async (url, options) => {
+        if (url.includes('orders:by_client_order_id')) {
+          const id = new URL(url).searchParams.get('client_order_id'), r = p.records.find(r => r.clientOrderId === id);
+          p.f.bodies.lookup = { ...order(p.f, r, 'filled', r.qty), id: `fixture-order-${r.assetId}` };
+        }
+        return baseFetch(url, options);
+      };
+    } else if (mode === 'partial') {
+      p.f.bodies.lookup = order(p.f, p.records[0], 'partially_filled', '1');
+      p.f.bodies.positions[0].qty = '1';
+    } else if (mode === 'canceled' || mode === 'unknown') p.f.bodies.lookup.status = mode === 'canceled' ? 'canceled' : 'fixture-private-unknown';
+    else p.f.bodies.lookup = order(p.f, p.records[0], 'filled', '2');
+    const result = await oversight.runScopedPaperOversight(p.deps), summary = result.lifecycleSummary;
+    assert.ok(summary);
+    assert.equal(Object.values(summary.counts).reduce((a, b) => a + b, 0), 5);
+    assert.equal(summary.unknownOrUnclassifiedRows, 0);
+    assert.equal(summary.fullScopeReconciled, mode === 'all-flat');
+    assert.equal(summary.runtimeProof, false, 'observation is not full source-qualified runtime proof');
+    assert.equal(summary.liveReadiness, false); assert.equal(summary.brokerSubmitAllowed, false);
+    const classified = { partial: 'PARTIALLY_FILLED', canceled: 'TERMINAL_WITH_RESIDUAL', unknown: 'SUBMISSION_UNCERTAIN',
+      'filled-residual': 'CONTRACT_BLOCKED', 'all-flat': 'FILLED_AND_FLAT_RECONCILED',
+      'unscoped-drift': 'CONTRACT_BLOCKED', 'open-order': 'CONTRACT_BLOCKED' }[mode];
+    assert.equal(summary.counts[classified], p.records.filter(r => r.submissionPhase !== 'RESERVED').length);
+    assert.ok(p.f.calls.every(call => call.method === 'GET')); assert.ok(p.f.calls.length <= 17);
+    assert.ok(!JSON.stringify(summary).includes('fixture-')); checks += 11;
+    if (mode !== 'all-flat') continue;
+    const records = Object.values((await read(p.directory)).orders), transport = p.f.transport();
+    const get = group => transport.request({ group, phase: group === 'account' ? 'account' : 'observation', routeInput: {} });
+    const binding = evidence.bindScopedObservationAccount({ scope: p.f.input, receipt: await get('account'),
+      bindings: p.f.config.accountBinding, transport, clock: p.f.clock });
+    const receipts = [];
+    for (const group of ['positions', 'orders', 'clock']) receipts.push(await get(group));
+    const portfolio = evidence.mapOversightPortfolio({ scope: p.f.input, records, receipts, accountBinding: binding, transport, clock: p.f.clock });
+    const args = { scope: p.f.input, records, state: { portfolio, reason: null, observedAt: p.f.clock.now() }, notificationDelivery: { status: 'DELIVERY_UNCERTAIN' } };
+    const baseline = buildAttendedLifecycleSummary(args);
+    assert.equal(baseline.fullScopeReconciled, true); assert.equal(baseline.notificationDeliveryVerified, false);
+    assert.deepEqual(buildAttendedLifecycleSummary(args), baseline, 'summary is deterministic'); checks += 3;
+    for (const change of [
+      a => { a.state.portfolio = structuredClone(portfolio); },
+      a => { a.state.observedAt = '2026-10-09T15:02:00.000Z'; },
+      a => { a.state.observedAt = '2026-10-09T15:00:00.000Z'; },
+      a => { a.scope.attemptId = 'fixture-different-attempt'; },
+      a => { a.records[4] = a.records[0]; },
+      a => { a.records[0].realizedPnlVerified = true; },
+      a => { a.records[0].observedEvidenceSha256 = hash('different-record'); },
+      a => { a.scope.terms.targets[0] = null; a.scope.termsSha256 = hash(a.scope.terms); a.records.forEach(r => { r.termsSha256 = a.scope.termsSha256; }); },
+    ]) {
+      const modified = structuredClone(args); modified.state.portfolio = portfolio; change(modified);
+      const blocked = buildAttendedLifecycleSummary(modified);
+      assert.equal(blocked.fullScopeReconciled, false); assert.equal(blocked.counts.CONTRACT_BLOCKED, 5); checks += 2;
+    }
+    args.state.reason = 'SCOPED_ADAPTER_OBSERVATION_READ_FAILED';
+    assert.equal(buildAttendedLifecycleSummary(args).fullScopeReconciled, false); checks++;
+  } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
 }
 for (const mode of ['missing', 'drift', 'unattended']) {
   const p = await prepared();
@@ -487,6 +638,55 @@ for (const mode of ['accepted', 'cloned', 'records-drift', 'hash-drift', 'expire
     checks += 17;
   } finally {
     for (const [key, value] of Object.entries(originalFlags)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await fs.rm(p.directory, { recursive: true, force: true });
+  }
+}
+for (const mode of ['operator-stop', 'same-approval-restart', 'terminated', 'termination-during-read', 'expired-submit']) {
+  const p = await prepared(1, true), flags = { READ_ONLY: process.env.READ_ONLY, EXEC_ENABLED: process.env.EXEC_ENABLED };
+  try {
+    process.env.READ_ONLY = 'false'; process.env.EXEC_ENABLED = 'true';
+    const { config } = p.f, approval = { ...p.f.approval, stableScopeSha256: hash(config) };
+    const cap = contract.authorizeAttendedInvocation({ config, approval, clock: p.f.clock });
+    contract.validateObservedCloseoutInput(config.input, cap);
+    if (mode === 'expired-submit') {
+      p.f.advance(230000); p.f.bodies.clock.timestamp = p.f.clock.now();
+      assert.throws(() => contract.assertAttendedInvocation(cap, p.f), /AUTHORITY_EXPIRED/); checks++;
+    }
+    contract.retireAttendedSubmission(cap, 'OPERATOR_STOP');
+    const args = { config, records: p.records, expectedHashes: p.authority.expectedHashes, clock: p.f.clock };
+    const handoff = contract.handoffAttendedObservation(cap, args), deps = { ...p.deps, authority: handoff };
+    if (mode === 'terminated') contract.retireAttendedSubmission(cap, 'PROCESS_TERMINATION');
+    if (mode === 'termination-during-read') deps.observationTransport = ({ beforeRead }) => p.f.transport(beforeRead, async (...args) => {
+      const response = await p.f.fetchImpl(...args); contract.retireAttendedSubmission(cap, 'PROCESS_TERMINATION'); return response;
+    });
+    process.env.READ_ONLY = 'true'; process.env.EXEC_ENABLED = 'false';
+    const result = await oversight.runScopedPaperOversight(deps);
+    assert.equal(result.status, 'UNRESOLVED_HANDOFF'); assert.equal(result.brokerSubmitAllowed, false);
+    assert.equal(result.actualBrokerMutationAttempted, false);
+    assert.equal(p.f.calls.length, mode === 'terminated' ? 0 : mode === 'termination-during-read' ? 1 : mode === 'expired-submit' ? 5 : 9);
+    if (mode === 'expired-submit') {
+      assert.deepEqual(result.reasons, ['SCOPED_ADAPTER_OBSERVATION_HANDOFF_TIME_RESERVED']); checks++;
+    }
+    if (mode !== 'terminated') {
+      assert.equal(result.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+      assert.equal(result.externalTradingStatus, 'NOT_VERIFIED'); checks += 2;
+    }
+    if (mode === 'same-approval-restart') {
+      process.env.READ_ONLY = 'false'; process.env.EXEC_ENABLED = 'true';
+      const again = contract.authorizeAttendedInvocation({ config, approval, clock: p.f.clock });
+      const records = Object.values((await read(p.directory)).orders);
+      const observer = contract.handoffAttendedObservation(again, { ...args, records, expectedHashes: await hashes(p.directory) });
+      process.env.READ_ONLY = 'true'; process.env.EXEC_ENABLED = 'false';
+      const repeated = await oversight.runScopedPaperOversight({ ...deps, records, authority: observer });
+      assert.equal(p.f.calls.length, 9); assert.equal(repeated.status, 'UNRESOLVED_HANDOFF');
+      assert.ok(repeated.reasons.includes('SCOPED_STORE_OBSERVATION_AUTHORITY_USED')); checks += 3;
+    }
+    const before = p.f.calls.length;
+    await oversight.runScopedPaperOversight(deps); assert.equal(p.f.calls.length, before); checks += 5;
+  } finally {
+    for (const [key, value] of Object.entries(flags)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
     await fs.rm(p.directory, { recursive: true, force: true });

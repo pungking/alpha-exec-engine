@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-24-attended-paper-lifecycle-validation-design.md`
 
-**Execution method:** Native, already selected. Use executing-plans after plan approval, with one fresh whole-branch implementation review at the end. This document is a plan for review, not implementation or runtime authorization.
+**Execution method:** Native, approved for offline implementation, validation, independent review and PR/CI/merge. Use executing-plans, with one fresh whole-branch implementation review at the end. Runtime authorization is separate; the later source-collection and interval amendments have their own narrower approval boundaries below.
 
 **Baseline:** `688fb2b0646b0ba450662c53c5f2d5eb60ab181a`, branch `codex/paper-operational-binding-design`, worktree `/Users/givet-bsm/Documents/GitHub/.worktrees/alpha-exec-engine/complete-private-evidence-capture`.
 
@@ -18,7 +18,7 @@
 
 ## Global Constraints
 
-- Planning is authorized; implementation, runtime, state adoption and orders are NOT_AUTHORIZED. No push or CI dispatch during planning.
+- Approved offline implementation may proceed; runtime, state adoption and orders remain NOT_AUTHORIZED. A new original-source collector is not included in this approval. No push or CI dispatch during planning.
 - Default `READ_ONLY=true`, `EXEC_ENABLED=false`, `LIVE_ORDER_SUBMIT_ENABLED=false`, `MARKET_GUARD_MODE=observe`; all FORCE/guard mutation defaults remain false.
 - Fixed `validationScope=ATTENDED_PAPER_LIFECYCLE_ONLY`; PAPER only, attended only, exactly five existing identities. Never include a later manual holding.
 - Long/full-quantity SELL, LIMIT DAY, extendedHours=false; original private per-row/total caps, spread <=10 bps, adverse price <=10 bps, evidence <=30 seconds. No inferred caps or risk exemptions.
@@ -59,7 +59,7 @@ These are explicit implementation choices, not claims that suitable private evid
 - Historical inputs are read from individually pinned, reviewed original artifacts and their provenance/coverage manifests. The new private replay view is computed from those bytes, never accepted as a precomputed PASS. Hashes establish byte identity, not provenance: unidentified producer/schema, unsigned assertion of coverage, missing underlying records or unsupported source adapters return BLOCKED. No new remote acquisition is part of this plan.
 - The existing broker clock receipt is an external-to-host reference observation only. Bind its TLS route, receipt ownership, remote timestamp and monotonic send/receive interval; require the remote time to fit the observed request interval without compensation. This proves origin/interval consistency, not UTC accuracy, host synchronization or a provider accuracy SLA. Subsequent wall-time versus monotonic elapsed divergence beyond the explicitly pinned uncertainty bound blocks; no implicit skew tolerance. A policy requiring stronger guarantees remains blocked, never silently downgraded.
 
-Official field reference inspected on 2026-10-25: [Alpaca SDK trading models](https://alpaca.markets/sdks/python/api_reference/trading/models.html) documents account equity and the clock timestamp. It does not supply the missing portfolio history, cash-flow coverage, external halt guarantee or clock-accuracy SLA. No broker request was made to inspect that documentation.
+Official field reference inspected on 2026-10-25: the account/clock sections of [Alpaca SDK trading models](https://alpaca.markets/sdks/python/api_reference/trading/models.html) document account equity and the clock timestamp. That inspection did not establish original portfolio-history/cash-flow coverage, external halt guarantees or a clock-accuracy SLA. The 2026-10-26 collection amendment below separately inspects the SDK's portfolio-history model; documented fields do not establish this account's evidence. No broker request was made to inspect that documentation.
 
 Real source availability and current custody are NOT_ESTABLISHED by this plan. Implementation must support the valid evidence path and every explicit rejection, not hard-code perpetual BLOCKED or accept fixture-style labels. A missing real input later prevents runtime approval, not offline implementation. If authentic source bytes cannot support a proposed mapping, record the exact unsupported mapping and stop that runtime preparation; do not introduce another provider or weaken a risk dimension.
 
@@ -165,6 +165,15 @@ Deliverable: limited scope survives every valid transition/restart; invalid or o
 - CLI `--validate-attended`/`--assess-attended` follow existing five-argument pinned config/approval-file pattern and remain zero broker/state I/O. `--execute-attended` uses the approved dependency-injected caller only; without exact bound dependencies/authority it is inert/BLOCKED. It does not load .env, enable flags or grant runtime permission. Old commands reject the new schema.
 - SIGINT is bound only around an explicitly authorized attended caller. First interrupt retires submits and sets stopSignal; a second interrupt/SIGTERM prevents further observation and initiates safe local handoff if possible. Remove listeners in finally. This is not a cancellation API or physical-presence detector.
 
+**Independent observer subcycle (2026-10-27):** The real V3 observer now calls
+the seven-state summary using durable records and its receipt-sealed portfolio
+snapshot. One reconciled attempted row cannot mean full five-row completion;
+cloned/stale evidence, portfolio drift and open-order conflicts cannot prove
+flatness. This observation-only entry point explicitly returns `runtimeProof=false`
+even for five reconciled rows. It cannot attest to the missing source/risk
+admission or complete submission path. Complete-caller runtime adjudication and
+the following composition tests are still required; none is checked off here.
+
 - [ ] **1. Write failing complete mock-composition tests.** Exercise the actual CLI -> authorizer -> authentic receipt mapper -> controller -> paired temp stores -> observer -> mock sender path, not replacement methods returning PASS. The complete valid fixture must show five reconciled targets with original false claims and no real network.
 
 ```js
@@ -225,13 +234,13 @@ PASS means all commands exit0, asserted mock calls stay inside the declared budg
 | Claim | Required evidence | Current state |
 | --- | --- | --- |
 | Written design accepted | Direct operator reply on2026-10-25 | ACCEPTED |
-| Native implementation plan prepared | This document plus path/interface/coverage self-review | PLAN_PREPARED_FOR_REVIEW |
-| Limited offline contract complete | Tasks1-3, full green matrix, independent review, PR/CI/merge | NOT_IMPLEMENTED |
+| Native implementation plan prepared | This document plus subsequent direct Native implementation approval | APPROVED_OFFLINE_IMPLEMENTATION_IN_PROGRESS |
+| Limited offline contract complete | Tasks1-3, full green matrix, independent review, PR/CI/merge | PARTIALLY_IMPLEMENTED_NOT_COMPLETE |
 | Real current risk/time/custody available | Authentic original input records, exact current binding and supported calculation basis | NOT_ESTABLISHED |
 | Limited PAPER order permission | Separate exact current scope/flags/account/budgets/rollback and approval gate | NOT_AUTHORIZED |
 | Production/LIVE/unattended readiness | Full original source/risk/state/runtime requirements | NOT_ESTABLISHED |
 
-Next action is review this plan and authorize its Native offline implementation scope. Do not ask attendance/design-method questions again. After static integration, prepare one exact current-evidence/custody readiness package; request actual PAPER runtime permission only when all non-halt prerequisites are genuinely met. No promise that one attempt fills every order, no LIVE/deposit instruction, no return target.
+Native offline implementation was subsequently approved; do not request that approval again or repeat attendance/design-method questions. The newly discovered original-source collection gap and its separate design-review boundary are recorded below. After static integration, prepare one exact current-evidence/custody readiness package; request actual PAPER runtime permission only when all non-halt prerequisites are genuinely met. No promise that one attempt fills every order, no LIVE/deposit instruction, no return target.
 
 ## Planning self-review
 
@@ -243,3 +252,139 @@ Next action is review this plan and authorize its Native offline implementation 
 - All five Review Focus classes have named tests. New helper signatures and files are shared consistently across tasks; existing helpers are reused instead of replaced.
 - Remaining real source availability, measurement-basis review and UTC-accuracy limitations are disclosed, not represented by fabricated PASS data or an implementation stub. This plan proposes no acquisition or risk-policy activation.
 - No production-code edit, fixture execution, independent implementation review, push/CI, order or runtime proof has occurred as part of preparing this plan.
+
+## Implementation discovery: original-risk collection gap (2026-10-26)
+
+The operator subsequently approved Native offline implementation, verification,
+independent review and PR/CI/merge. The planning-era permission statements above
+describe the earlier planning step; they do not authorize runtime calls or orders.
+
+During implementation the operator explicitly confirmed that preserved original
+account-equity history and complete cash-movement evidence are unavailable.
+The existing `capture-paper-private-evidence.mjs` captures account, positions,
+open/closed orders and clock only. It does not establish either historical-equity
+sampling coverage or complete external cash-flow coverage. Reusing its previous
+five-GET approval would not authorize collecting these missing sources.
+
+| Requirement | Current evidence | Consequence |
+| --- | --- | --- |
+| Current account/positions | Existing authenticated receipt mapper | Does not prove past equity or absent cash flows |
+| Historical equity sampling grid | No preserved original, operator-confirmed | Daily loss/drawdown source binding incomplete |
+| Complete external cash movements | No preserved original, operator-confirmed | Empty array cannot be treated as zero cash movement |
+| Original producer/schema/coverage verification | No supported historical adapter established | Byte pins and replay arithmetic cannot mint source authority |
+| Risk arithmetic | Offline synthetic replay exists | `sourceVerified=false`; not runtime readiness |
+
+The next source work is an **offline collection-contract amendment**, not another
+account probe: identify the existing-provider original response schemas, explicit
+time/grid/transaction coverage and completeness evidence, private retention and
+redaction, and the bounded acquisition scope needed to produce them. Do not name
+an undocumented field or assert that a bounded request necessarily returns full
+coverage. Implementation of a new collector and its actual execution require
+their own explicit scope approval; neither is authorized by this discovery note.
+
+Task1's original-source mapping, sealed risk readiness and the complete caller
+acceptance path remain incomplete. No permanent BLOCKED stub, fabricated source
+receipt, zero-flow assumption, current-balance backfill or risk waiver substitutes
+for them. Task2/3's independently testable compatibility and stop controls do not
+complete Task1 or the parent objective. Existing evidence and state stay intact;
+there is no need to wait for a market session to resolve this contract gap.
+
+### Public-source findings for the collection gap (2026-10-26)
+
+This is a factual gap assessment, not an approved collector design or acquisition
+scope. No account endpoint was called. Existing request budgets are unchanged.
+
+- The official Trading API documents a PAPER portfolio-history route with an
+  explicit timespan, resolution and optional cash-flow activity selection:
+  https://docs.alpaca.markets/us/reference/getaccountportfoliohistory-1.
+  Its existence does not establish this account's historical coverage.
+- The official SDK model labels portfolio timestamps at the interval start but
+  describes equity at the interval end. Preserve both meanings; copying a label
+  into an exact observation timestamp would misrepresent the evidence:
+  https://alpaca.markets/sdks/python/api_reference/trading/models.html#portfoliohistory.
+- The activities reference documents creation-time filters and pagination. The
+  conceptual guide describes a non-trade activity date as occurrence/settlement
+  date. Neither can silently substitute for the exact cash-movement time needed
+  by the current replay. A full first page is not complete history, and an empty
+  response does not establish all effective-time movements through decisionAt:
+  https://docs.alpaca.markets/us/reference/getaccountactivities-2 and
+  https://docs.alpaca.markets/us/docs/account-activities.
+- Current source coverage, interval-end mapping, external-versus-investment cash
+  classification and late-posting/current-boundary completeness remain unproven.
+  The guide and endpoint reference also differ on date-specific page-size
+  behavior; do not use an unbounded date request to evade a collection budget.
+
+The operator-confirmed disposition remains COLLECTION_CONTRACT_GAP. An offline
+amendment must resolve these mappings and specify a finite request/page budget
+and explicit incomplete outcome before any collector implementation is approved.
+It must distinguish a documented schema from observed completeness. Do not
+reinterpret an SDK default empty cash-flow map as proof of no cash movements,
+or assert that a future bounded acquisition necessarily satisfies the risk gate.
+No missing-original goal, Task1 source proof or execution readiness is completed
+by this documentation review.
+
+The operator selected drafting the offline collection-contract amendment. Its
+review copy is `docs/superpowers/specs/2026-10-26-paper-risk-original-collection-amendment-design.md`.
+The proposed ten-GET envelope and bounded activity pagination are not approved
+runtime calls and do not modify this plan's existing transport budget or
+no-pagination rule. Source qualification and design approval precede any new
+collector implementation; capture success cannot by itself unlock risk readiness.
+
+### Approved V2 interval representation subcycle (2026-10-27)
+
+The direct operator response approved offline V2 code and fixtures, as specified
+in `docs/superpowers/specs/2026-10-27-paper-interval-risk-measurement-design.md`.
+`replayAttendedRisk` now accepts the paired V2 definition/records schemas and
+complete, source-referenced external-capital intervals. V1 remains exact-event
+only. Limits, formulas, policy endpoints and the current account cutoff are
+unchanged. Gaps, overlap, reused references, coarse intervals crossing a policy
+endpoint and unproven current tails reject; no event timestamp is manufactured.
+
+The new fixture failed before implementation. After implementation, the attended
+suite passed 688 parent and 863 authority-child assertions; the 16-command local
+regression and two disposable-directory safety checks completed with exit0.
+All used network-denied fixtures. This is offline sub-contract evidence, not
+independent whole-branch review or actual GitHub CI. No dependency changed.
+
+The replay is imported only by the offline test. It cannot authenticate source
+bytes or grant execution authority. No source sealer, collector, runtime caller
+or execution permission was added. Task1 source mapping/current-tail coverage,
+the full Task2/3 caller path, independent review and Git integration remain
+incomplete. No whole Task checkbox or parent completion is inferred from this
+representation change. Existing local test logs and the progress ledger record
+the exact code hashes and terminal command results without private evidence.
+
+### Reviewed offline subcontracts checkpoint (2026-11-02)
+
+The interrupted changes were recovered with exact checkpoint hash parity. A
+fresh independent review covered the full base-to-working-tree delta, including
+the uncommitted interval replay. It found one notification compatibility defect:
+the generic notification consumer accepted V3 flat-reconciled records without
+carrying their attended-only and unverified-trading-status labels.
+
+The generic builder now rejects any V3 record in either store or release list;
+the existing scoped builder retains those labels. A valid paired V3 fixture
+first reproduced the defect. Both-store, one-store, released and malformed V3
+cases now reject without sending or writing a delivery receipt. Mixed generic
+snapshots are also rejected rather than silently dropping the limited scope.
+Existing V1/V2 notifications and scoped V3 delivery remain covered.
+
+After that fix, all 33 local offline regression/CI-equivalent commands passed,
+including build/typecheck, the HF fixture replay and both safety audits. The
+tests used a disposable source copy, empty HOME and network-denial preload;
+production state hashes remained unchanged. The unchanged lockfile's package
+registry audit reported zero vulnerabilities. This is local evidence, not a
+claim that GitHub CI or a broker run has already succeeded.
+
+Ruling: integrate only these independently testable offline subcontracts under
+the existing approved PR/CI scope. This does not complete Tasks 1-3, change the
+current-cutoff risk requirement, or authorize acquisition, state adoption or
+orders. The CLI still exposes no attended execution command, replay still has
+no runtime importer, and public readiness/authorization claims remain false.
+
+Required remaining work is unchanged: qualify authentic source and custody with
+complete external-capital coverage through the current account observation;
+then implement the separately gated source producer/binding and full attended
+caller, including known-halt stickiness and actual wire-attempt-aware oversight.
+The parent's operational completion and execution-readiness gates remain open
+regardless of whether this static checkpoint is merged.

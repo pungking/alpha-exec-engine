@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { validateScopedPaperAuthorityFields, validateOperationalApprovalFields } from './scoped-closeout-contract.mjs';
+import { validateScopedPaperAuthorityFields, validateOperationalApprovalFields, validateAttendedApprovalFields } from './scoped-closeout-contract.mjs';
 import { readScopedPaperFile, verifyScopedPaperInputs } from './scoped-paper-adapter.mjs';
 import { parseStrictJsonText } from '../../dist/src/json-utils.js';
 import { decimalRatio, compare } from './closeout-decimal.mjs';
@@ -33,16 +33,21 @@ function validateOversight(o) {
 }
 
 // Static validation establishes an approval hash, not the truth of any pinned source file.
-export function validateOperationalConfiguration(config) {
+export function validateOperationalConfiguration(config) { return validateConfiguration(config, false); }
+export function validateAttendedConfiguration(config) { return validateConfiguration(config, true); }
+function validateConfiguration(config, attended) {
   try {
-    check(exact(config, `schemaVersion input accountBinding sourcePolicy directory sourceFile codeFiles writerExclusion custody oversight${config?.notifications === undefined ? '' : ' notifications'}`)
-      && config.schemaVersion === 'scoped-paper-operational-invocation-v1', 'CONFIG_INVALID');
+    check(exact(config, `schemaVersion input accountBinding sourcePolicy directory sourceFile codeFiles writerExclusion custody oversight${attended ? ' validationScope' : ''}${config?.notifications === undefined ? '' : ' notifications'}`)
+      && config.schemaVersion === (attended ? 'scoped-paper-attended-lifecycle-invocation-v1' : 'scoped-paper-operational-invocation-v1')
+      && (!attended || config.validationScope === 'ATTENDED_PAPER_LIFECYCLE_ONLY'), 'CONFIG_INVALID');
     validateScopedPaperAuthorityFields(config);
     const b = config.accountBinding, p = config.sourcePolicy, c = config.custody;
     check(exact(b, 'rawAccountIdSha256 rawAccountHashBasis accountHashBasis') && hash(b.rawAccountIdSha256)
       && b.rawAccountHashBasis === 'RAW_ACCOUNT_ID_UTF8' && b.accountHashBasis === 'CANONICAL_PAPER_ACCOUNT_ID', 'SOURCE_BINDING_INVALID');
-    check(exact(p, 'feed currency quoteCoverage acceptsNonNbboPaperEvidence contractFile riskPolicyFile clockPolicyFile')
-      && p.currency === 'USD' && ['contractFile', 'riskPolicyFile', 'clockPolicyFile'].every(k => pin(p[k]))
+    const sourcePins = attended ? ['validationPolicyFile', 'riskSourceInventoryFile', 'riskPolicyFile', 'clockPolicyFile']
+      : ['contractFile', 'riskPolicyFile', 'clockPolicyFile'];
+    check(exact(p, `feed currency quoteCoverage acceptsNonNbboPaperEvidence ${sourcePins.join(' ')}`)
+      && p.currency === 'USD' && sourcePins.every(k => pin(p[k]))
       && ((p.feed === 'iex' && p.quoteCoverage === 'IEX_SINGLE_EXCHANGE' && p.acceptsNonNbboPaperEvidence === true)
         || (p.feed === 'sip' && p.quoteCoverage === 'CONSOLIDATED_SIP' && p.acceptsNonNbboPaperEvidence === false)), 'SOURCE_POLICY_INVALID');
     check(exact(c, 'basis hostIdSha256 evidenceFile') && c.basis === 'REVIEWED_SINGLE_HOST_PAPER_CUSTODY'
@@ -57,25 +62,46 @@ export function validateOperationalConfiguration(config) {
 }
 
 // Exact bytes are necessary input evidence, never proof of custody, market status or readiness.
-export async function loadOperationalEvidenceFiles({ config }) {
+export async function loadOperationalEvidenceFiles({ config }) { return loadEvidenceFiles(config, false); }
+export async function loadAttendedEvidenceFiles({ config }) { return loadEvidenceFiles(config, true); }
+async function loadEvidenceFiles(config, attended) {
   try {
     config = structuredClone(config);
-    check(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
-    const refs = { sourceContract: config.sourcePolicy.contractFile, riskPolicy: config.sourcePolicy.riskPolicyFile,
+    check(validateConfiguration(config, attended).status === 'PASS', 'CONFIG_INVALID');
+    const refs = { ...(attended ? { validationPolicy: config.sourcePolicy.validationPolicyFile,
+      riskSourceInventory: config.sourcePolicy.riskSourceInventoryFile } : { sourceContract: config.sourcePolicy.contractFile }),
+      riskPolicy: config.sourcePolicy.riskPolicyFile,
       clockPolicy: config.sourcePolicy.clockPolicyFile, custody: config.custody.evidenceFile,
       operatorAttendance: config.oversight.operatorAttendanceFile };
     const paths = [config.sourceFile, ...config.codeFiles, ...Object.values(refs)].map(f => path.resolve(f.path));
     check(new Set(paths).size === paths.length, 'FILE_IDENTITY_DUPLICATE');
     await verifyScopedPaperInputs(config);
-    const documents = {};
-    for (const [name, ref] of Object.entries(refs)) {
+    const read = async (ref, original = false) => {
       const bytes = await readScopedPaperFile(ref, true);
-      documents[name] = parseStrictJsonText(new TextDecoder('utf-8', { fatal: true }).decode(bytes), 'SCOPED_CLOSEOUT_DOCUMENT_INVALID');
-      check(object(documents[name]), 'DOCUMENT_INVALID');
+      const document = parseStrictJsonText(new TextDecoder('utf-8', { fatal: true }).decode(bytes), 'SCOPED_CLOSEOUT_DOCUMENT_INVALID');
+      check(object(document) || (original && Array.isArray(document)), 'DOCUMENT_INVALID'); return document;
+    };
+    const documents = {}, originals = {};
+    for (const [name, ref] of Object.entries(refs)) {
+      documents[name] = await read(ref);
     }
-    const files = freeze({ status: 'PINNED_BYTES_VERIFIED_NOT_READINESS', documents,
+    if (attended) {
+      const inventory = documents.riskSourceInventory;
+      const kinds = ['equity', 'cashFlows', 'bars', 'earnings', 'identifiers', 'marketSessions'];
+      check(exact(inventory, 'schemaVersion accountSha256 termsSha256 sources')
+        && inventory.schemaVersion === 'attended-risk-source-inventory-v1'
+        && inventory.accountSha256 === config.input.accountSha256 && inventory.termsSha256 === config.input.termsSha256
+        && Array.isArray(inventory.sources) && inventory.sources.length === kinds.length
+        && new Set(inventory.sources.map(s => s?.kind)).size === kinds.length
+        && inventory.sources.every(s => exact(s, 'kind artifact provenance') && kinds.includes(s.kind)
+          && pin(s.artifact) && pin(s.provenance)), 'SOURCE_INVENTORY_INVALID');
+      const allPaths = [...paths, ...inventory.sources.flatMap(s => [s.artifact, s.provenance]).map(f => path.resolve(f.path))];
+      check(new Set(allPaths).size === allPaths.length, 'FILE_IDENTITY_DUPLICATE');
+      for (const s of inventory.sources) originals[s.kind] = { artifact: await read(s.artifact, true), provenance: await read(s.provenance) };
+    }
+    const files = freeze({ status: 'PINNED_BYTES_VERIFIED_NOT_READINESS', documents, ...(attended ? { originals } : {}),
       sourceEvidenceVerified: false, brokerSubmitAllowed: false });
-    fileBindings.set(files, digest(config));
+    fileBindings.set(files, { config: freeze(config), attended });
     return files;
   } catch (error) {
     throw Error(/^SCOPED_(?:ADAPTER|CLOSEOUT)_[A-Z_]+$/.test(error?.message)
@@ -84,9 +110,23 @@ export async function loadOperationalEvidenceFiles({ config }) {
 }
 
 export async function verifyOperationalEvidenceFiles({ config, files }) {
-  check(fileBindings.has(files) && fileBindings.get(files) === digest(config), 'FILES_UNBOUND');
-  await loadOperationalEvidenceFiles({ config });
+  return verifyEvidenceFiles(config, files, false);
+}
+export async function verifyAttendedEvidenceFiles({ config, files }) {
+  return verifyEvidenceFiles(config, files, true);
+}
+async function verifyEvidenceFiles(config, files, attended) {
+  const saved = fileBindings.get(files);
+  check(saved && saved.attended === attended && digest(saved.config) === digest(config), 'FILES_UNBOUND');
+  await loadEvidenceFiles(config, attended);
   return true;
+}
+
+export async function verifyAttendedScopeFiles({ scope, files }) {
+  const saved = fileBindings.get(files);
+  check(saved?.attended && digest(saved.config.input) === digest(scope), 'SCOPE_FILES_UNBOUND');
+  await verifyEvidenceFiles(saved.config, files, true);
+  return saved.config;
 }
 
 function controlWindow(document, config, now, start) {
@@ -124,11 +164,17 @@ function attendanceAttested(a, config, now, start) {
 
 // Pinned operator attestations are necessary controls, not independent observation of their truth.
 export async function assessOperationalControlEvidence({ config, files, clock, purpose = 'SUBMISSION' }) {
+  return assessControlEvidence({ config, files, clock, purpose }, false);
+}
+export async function assessAttendedControlEvidence({ config, files, clock, purpose = 'SUBMISSION' }) {
+  return assessControlEvidence({ config, files, clock, purpose }, true);
+}
+async function assessControlEvidence({ config, files, clock, purpose }, attended) {
   const reasons = [];
   try {
     check(['SUBMISSION', 'OBSERVATION'].includes(purpose), 'CONTROL_PURPOSE_INVALID');
     config = structuredClone(config);
-    await verifyOperationalEvidenceFiles({ config, files });
+    await verifyEvidenceFiles(config, files, attended);
     const now = time(clock.now()); check(Number.isFinite(now), 'CONTROL_TIME_INVALID');
     const start = purpose === 'OBSERVATION' ? time(config.oversight.validFrom)
       : Math.min(time(config.input.authority.validFrom), time(config.oversight.validFrom));
@@ -214,13 +260,19 @@ export async function assessOperationalReadiness({ config, files, clock }) {
 
 // Local file validation cannot grant an in-process execution capability or establish source truth.
 export async function loadOperationalInvocationFiles({ configFile, approvalFile }) {
+  return loadInvocationFiles(configFile, approvalFile, false);
+}
+export async function loadAttendedInvocationFiles({ configFile, approvalFile }) {
+  return loadInvocationFiles(configFile, approvalFile, true);
+}
+async function loadInvocationFiles(configFile, approvalFile, attended) {
   try {
     check(pin(configFile) && pin(approvalFile) && path.resolve(configFile.path) !== path.resolve(approvalFile.path), 'FILE_PINS_INVALID');
     const read = async file => parseStrictJsonText(new TextDecoder('utf-8', { fatal: true }).decode(await readScopedPaperFile(file, true)), 'SCOPED_CLOSEOUT_DOCUMENT_INVALID');
     const config = await read(configFile), approval = await read(approvalFile);
-    check(validateOperationalConfiguration(config).status === 'PASS', 'CONFIG_INVALID');
-    validateOperationalApprovalFields(config, approval);
-    const files = await loadOperationalEvidenceFiles({ config });
+    check(validateConfiguration(config, attended).status === 'PASS', 'CONFIG_INVALID');
+    (attended ? validateAttendedApprovalFields : validateOperationalApprovalFields)(config, approval);
+    const files = await loadEvidenceFiles(config, attended);
     return freeze({ config, approval, files });
   } catch (error) {
     throw Error(/^SCOPED_(?:ADAPTER|CLOSEOUT)_[A-Z_]+$/.test(error?.message)

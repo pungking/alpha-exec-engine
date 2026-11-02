@@ -11,14 +11,26 @@ const symbol = v => typeof v === 'string' && /^[A-Z0-9][A-Z0-9.-]{0,19}$/.test(v
 const decimal = v => typeof v === 'string' && /^(0|[1-9]\d{0,15})(\.\d{1,9})?$/.test(v) && Number(v) > 0;
 const receipts = new WeakSet();
 const receiptOwners = new WeakMap();
+const receiptTimings = new WeakMap();
 const transports = new WeakMap();
 const observationTransports = new WeakMap();
-export const isScopedPaperTransport = (value, gate) => transports.has(value) && transports.get(value) === gate;
+export const isScopedPaperTransport = (value, gate, wireGate) => transports.has(value)
+  && transports.get(value).beforeSubmit === gate && transports.get(value).beforeWire === wireGate;
 export const isScopedPaperObservationTransport = (value, gate) => observationTransports.has(value) && observationTransports.get(value) === gate;
 const freeze = value => { if (object(value) || Array.isArray(value)) { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 export const isScopedPaperReceipt = value => receipts.has(value);
 export const isScopedPaperReceiptForTransport = (value, transport) => receipts.has(value) && receiptOwners.get(value) === transport;
-const seal = (value, transport) => { freeze(value); receipts.add(value); receiptOwners.set(value, transport); return value; };
+const seal = (value, transport, timing) => {
+  freeze(value); receipts.add(value); receiptOwners.set(value, transport);
+  if (timing) receiptTimings.set(value, timing);
+  return value;
+};
+export function scopedPaperReceiptTiming(receipt, transport, clock) {
+  const saved = receiptTimings.get(receipt);
+  check(isScopedPaperReceiptForTransport(receipt, transport) && saved && saved.clock === clock
+    && saved.now === clock.now && saved.monotonicMs === clock.monotonicMs, 'RECEIPT_TIMING_UNBOUND');
+  return saved.observation;
+}
 const phases = { account: ['account'], initial: ['positions', 'orders', 'clock', 'calendar', 'assets', 'quotes'],
   presubmit: ['account', 'positions', 'orders', 'clock', 'assets', 'quotes'], postcheck: ['lookup', 'positions', 'orders', 'clock'], submit: ['submit'],
   observation: ['lookup', 'positions', 'orders', 'clock'] };
@@ -64,11 +76,13 @@ export function createScopedPaperObservationTransport({ oversight, beforeRead, .
   return createTransport({ ...options, deadlineMs: duration }, { budget: Object.freeze({ ...budget }), beforeRead,
     expiresAt: Date.parse(oversight.expiresAt) });
 }
-function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubmit }, observation = null) {
+function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubmit, beforeWire }, observation = null) {
   check(typeof fetchImpl === 'function' && typeof clock?.now === 'function' && typeof clock?.monotonicMs === 'function'
-    && Number.isFinite(deadlineMs) && deadlineMs > 0 && (observation || deadlineMs <= 300000), 'TRANSPORT_CONFIG_INVALID');
+    && Number.isFinite(deadlineMs) && deadlineMs > 0 && (observation || deadlineMs <= 300000)
+    && (beforeWire === undefined || typeof beforeWire === 'function'), 'TRANSPORT_CONFIG_INVALID');
   check(exact(credentials, 'key secret') && [credentials.key, credentials.secret].every(v => typeof v === 'string' && v.trim()), 'CREDENTIALS_MISSING');
   const headers = Object.freeze({ 'APCA-API-KEY-ID': credentials.key, 'APCA-API-SECRET-KEY': credentials.secret });
+  const now = clock.now, monotonicMs = clock.monotonicMs;
   const budget = observation?.budget ?? BUDGET;
   const counts = Object.fromEntries(Object.keys(budget).filter(k => k !== 'total').map(k => [k, 0]));
   const start = clock.monotonicMs(); let stopped = false, reconcileOnly = false, active = null, last = start;
@@ -94,16 +108,28 @@ function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubm
         if (group === 'submit') check(typeof beforeSubmit === 'function' && await beforeSubmit(Object.freeze(request.body)) === true, 'SUBMIT_GATE_REQUIRED');
         check(!stopped && !abort.signal.aborted, 'TRANSPORT_STOPPED');
         const dispatchAt = clock.monotonicMs();
+        const dispatchedAt = clock.now();
         check(Number.isFinite(dispatchAt) && dispatchAt >= before, 'CLOCK_INVALID');
+        check(Date.parse(dispatchedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
         check(dispatchAt - start < deadlineMs, 'ATTEMPT_EXPIRED');
         const timeout = new Promise((_, reject) => { timer = setTimeout(() => {
           abort.abort(); reject(Error('REQUEST_TIMEOUT'));
         }, Math.min(3000, deadlineMs - (before - start))); });
-        counts[group]++;
         const work = async () => {
-          const response = await fetchImpl(target.url, { method: target.method, redirect: 'error', signal: abort.signal,
+          const options = { method: target.method, redirect: 'error', signal: abort.signal,
             headers: { ...headers, ...(group === 'submit' ? { 'Content-Type': 'application/json' } : {}) },
-            ...(group === 'submit' ? { body: JSON.stringify(request.body) } : {}) });
+            ...(group === 'submit' ? { body: JSON.stringify(request.body) } : {}) };
+          // Recheck retirement after the async gate, without yielding before the wire call.
+          if (group === 'submit' && beforeWire) {
+            let allowed;
+            try {
+              allowed = beforeWire(request.body);
+              if (allowed instanceof Promise) void allowed.catch(() => {});
+            } catch { throw Error('SUBMIT_WIRE_GATE_REQUIRED'); }
+            check(allowed === true, 'SUBMIT_WIRE_GATE_REQUIRED');
+          }
+          counts[group]++;
+          const response = await fetchImpl(target.url, options);
           check(!abort.signal.aborted, 'REQUEST_TIMEOUT');
           status = response.status;
           check(!response.redirected && (!response.url || response.url === target.url) && status >= 200 && status < 300, 'HTTP_FAILURE');
@@ -133,16 +159,19 @@ function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubm
         const data = await Promise.race([work(), timeout]);
         retrievedAt = clock.now(); const completedAt = clock.monotonicMs(); durationMs = completedAt - before;
         check(!abort.signal.aborted && Number.isFinite(completedAt) && completedAt >= dispatchAt && durationMs <= 3000
-          && Date.parse(retrievedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
+          && Date.parse(retrievedAt) >= Date.parse(dispatchedAt), 'CLOCK_INVALID');
         last = completedAt;
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null,
-          ...(group === 'quotes' ? { feed: target.feed } : {}) }, transport);
+          ...(group === 'quotes' ? { feed: target.feed } : {}) }, transport, clock.now === now && clock.monotonicMs === monotonicMs ? {
+          clock, now, monotonicMs, observation: Object.freeze({ origin: group === 'quotes' ? DATA : PAPER,
+            method: target.method, dispatchedAt, sentMonotonicMs: dispatchAt, receivedMonotonicMs: completedAt }),
+        } : undefined);
       } catch (error) {
         if (phase === 'submit' && counts.submit > 0 && !stopped) reconcileOnly = true;
         else stopped = true;
         abort?.abort();
         const codes = ['ROUTE_INVALID', 'ORDER_INVALID', 'REQUEST_BUDGET_EXCEEDED', 'CLOCK_INVALID', 'ATTEMPT_EXPIRED',
-          'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'OBSERVATION_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
+          'REQUEST_TIMEOUT', 'HTTP_FAILURE', 'BODY_INVALID', 'RESPONSE_TOO_LARGE', 'JSON_INVALID', 'SUBMIT_GATE_REQUIRED', 'SUBMIT_WIRE_GATE_REQUIRED', 'OBSERVATION_GATE_REQUIRED', 'TRANSPORT_STOPPED', 'CONCURRENT_REQUEST'];
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data: null,
           error: codes.includes(error?.message) ? error.message : 'TRANSPORT_FAILURE' }, transport);
       } finally {
@@ -154,6 +183,6 @@ function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubm
     },
   });
   if (observation) observationTransports.set(transport, observation.beforeRead);
-  else transports.set(transport, beforeSubmit);
+  else transports.set(transport, { beforeSubmit, beforeWire });
   return transport;
 }

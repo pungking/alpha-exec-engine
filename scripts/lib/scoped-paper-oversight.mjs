@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { sha256Canonical as digest } from './active-position-limited-recovery.mjs';
-import { validateOperationalConfiguration, loadOperationalEvidenceFiles, assessOperationalControlEvidence } from './scoped-paper-operational.mjs';
+import { validateOperationalConfiguration, loadOperationalEvidenceFiles, assessOperationalControlEvidence,
+  validateAttendedConfiguration, loadAttendedEvidenceFiles, assessAttendedControlEvidence } from './scoped-paper-operational.mjs';
 import { takeOperationalObservationAuthority } from './scoped-closeout-contract.mjs';
 import { isScopedPaperObservationTransport } from './scoped-paper-transport.mjs';
 import { bindScopedObservationAccount, isScopedObservationAccount, mapOversightObservation, mapOversightPortfolio } from './scoped-paper-evidence.mjs';
 import { withScopedObservationStores, recordScopedObservation } from './scoped-closeout-storage.mjs';
-import { boundedNotificationSend } from './scoped-paper-adapter.mjs';
+import { boundedNotificationSend, buildAttendedLifecycleSummary } from './scoped-paper-adapter.mjs';
 import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
 
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
@@ -16,12 +17,14 @@ const exact = (v, fields) => object(v) && Object.keys(v).sort().join(' ') === fi
 const pin = v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 const time = v => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v)
   && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v ? Date.parse(v) : NaN;
+const attendedConfig = config => config?.schemaVersion === 'scoped-paper-attended-lifecycle-invocation-v1';
 function observationAuthority(authority, records, clock) {
   const inherited = takeOperationalObservationAuthority(authority, records, clock);
   if (inherited) authority = inherited.binding;
   else {
     authority = structuredClone(authority);
-    check(exact(authority, 'config expectedHashes recordsSha256 approval') && validateOperationalConfiguration(authority.config).status === 'PASS', 'OBSERVATION_AUTHORITY_INVALID');
+    const validate = attendedConfig(authority?.config) ? validateAttendedConfiguration : validateOperationalConfiguration;
+    check(exact(authority, 'config expectedHashes recordsSha256 approval') && validate(authority.config).status === 'PASS', 'OBSERVATION_AUTHORITY_INVALID');
     const { approval, ...basis } = authority;
     check(exact(approval, 'kind phrase authoritySha256 approvedAt') && approval.kind === 'DIRECT_SCOPED_OBSERVATION_INVOCATION'
       && approval.phrase === 'AUTHORIZE PAPER SCOPED OUTCOME OBSERVATION ONE-SHOT' && approval.authoritySha256 === digest(basis)
@@ -29,6 +32,11 @@ function observationAuthority(authority, records, clock) {
     authority = { ...basis, authoritySha256: approval.authoritySha256 };
   }
   const { input: scope, oversight: policy } = authority.config;
+  const attended = attendedConfig(authority.config);
+  check(Array.isArray(records) && records.every(r => attended
+    ? r?.recordKind === 'SCOPED_MANAGEMENT_EXIT_V3' && r.schemaVersion === 3
+      && r.validationScope === 'ATTENDED_PAPER_LIFECYCLE_ONLY' && r.externalTradingStatus === 'NOT_VERIFIED'
+    : ['SCOPED_MANAGEMENT_EXIT_V1', 'SCOPED_MANAGEMENT_EXIT_V2'].includes(r?.recordKind)), 'OBSERVATION_PURPOSE_INVALID');
   check(exact(authority.expectedHashes, 'orderLedger orderIdempotency') && Object.values(authority.expectedHashes).every(pin)
     && Array.isArray(records) && records.length === 5 && digest(records) === authority.recordsSha256
     && records.every(r => r.accountSha256 === scope.accountSha256 && r.attemptId === scope.attemptId
@@ -69,7 +77,8 @@ function observedRecord(before, observation, at) {
     && digest(before.brokerEventTimestamps ?? null) === digest(observation.eventTimestamps)) return before;
   check(before.submissionPhase !== 'FLAT_RECONCILED', 'TERMINAL_RECORD_CONFLICT');
   const evidenceSha256 = digest(observation);
-  return { ...before, recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, brokerEventTimestamps: observation.eventTimestamps,
+  return { ...before, ...(before.schemaVersion === 3 ? {} : { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2 }),
+    brokerEventTimestamps: observation.eventTimestamps,
     submissionPhase: 'STOPPED', brokerOrderId: observation.brokerOrderId, brokerStatus: observation.brokerStatus,
     filledQty: observation.filledQty, updatedAt: at, observedEvidenceSha256: evidenceSha256, history: [...before.history,
       { at, phase: 'STOPPED', evidenceSha256, brokerStatus: observation.brokerStatus, filledQty: observation.filledQty }] };
@@ -77,7 +86,7 @@ function observedRecord(before, observation, at) {
 
 export async function runScopedPaperOversight({ authority, records, observationTransport, clock, notify }) {
   let transport, reason = null, receipt, cycles = 0, flatReconciledRows = 0, observedRows = 0, attemptedRows = 0, complete = false;
-  let config;
+  let config, portfolio;
   let stateWriteAttempted = false, receiptPath, sendNotification, notificationSnapshot, notificationReady;
   let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
   const notificationEvents = new Map();
@@ -93,7 +102,8 @@ export async function runScopedPaperOversight({ authority, records, observationT
     if (notificationEvents.size > 5 * (16 + 1) + 1) {
       notificationDelivery = { status: 'EVIDENCE_UNAVAILABLE', eventCount: 0 }; receiptPath = null; return;
     }
-    notificationSnapshot = { ...snapshot, events: [...notificationEvents.values()] };
+    notificationSnapshot = { ...snapshot, events: [...notificationEvents.values()], ...(attendedConfig(config)
+      ? { validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED' } : {}) };
   };
   try {
     records = structuredClone(records);
@@ -102,9 +112,10 @@ export async function runScopedPaperOversight({ authority, records, observationT
     const indices = records.map((r, i) => r.submissionPhase !== 'RESERVED' ? i : -1).filter(i => i >= 0);
     attemptedRows = indices.length;
     check(attemptedRows > 0 && typeof observationTransport === 'function' && typeof clock.sleep === 'function', 'OBSERVATION_CONFIG_INVALID');
-    const files = await loadOperationalEvidenceFiles({ config });
+    const attended = attendedConfig(config);
+    const files = await (attended ? loadAttendedEvidenceFiles : loadOperationalEvidenceFiles)({ config });
     const controls = async () => {
-      const result = await assessOperationalControlEvidence({ config, files, clock, purpose: 'OBSERVATION' });
+      const result = await (attended ? assessAttendedControlEvidence : assessOperationalControlEvidence)({ config, files, clock, purpose: 'OBSERVATION' });
       if (result.status === 'BLOCKED') throw Error(result.reasons[0]);
       guard();
     };
@@ -143,6 +154,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
       accountBinding = bindScopedObservationAccount({ scope, receipt: await read('account'), bindings: config.accountBinding, transport, clock });
       const previous = new Map();
       for (let cycle = 0; cycle < policy.maxCycles; cycle++) {
+        portfolio = undefined;
         if (cycle) await waitForObservation(clock, policy.intervalMs, guard, indices.length + 3);
         for (const index of indices) {
           const before = records[index], observed = mapOversightObservation({ scope, record: before,
@@ -157,6 +169,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
         const responses = [];
         for (const group of ['positions', 'orders', 'clock']) responses.push(await read(group));
         const snapshot = mapOversightPortfolio({ scope, records, receipts: responses, accountBinding, transport, clock });
+        portfolio = snapshot;
         cycles++; flatReconciledRows = snapshot.flatKeys.length;
         if (receiptPath) for (const index of indices) {
           const row = records[index];
@@ -190,7 +203,15 @@ export async function runScopedPaperOversight({ authority, records, observationT
   }
   const counts = transport?.counts() ?? { account: 0, lookup: 0, positions: 0, orders: 0, clock: 0, total: 0 };
   const budget = config?.oversight?.requestBudget;
+  let summaryObservedAt;
+  if (attendedConfig(config)) {
+    try { summaryObservedAt = clock.now(); }
+    catch (error) { reason ??= failureCode(error); }
+  }
   return Object.freeze({ status: complete && !reason ? 'ATTEMPTED_ORDERS_RECONCILED' : 'UNRESOLVED_HANDOFF', reasons: reason ? [reason] : [],
+    ...(attendedConfig(config) ? { validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED',
+      lifecycleSummary: buildAttendedLifecycleSummary({ scope: config.input, records,
+        state: { portfolio, reason, observedAt: summaryObservedAt }, notificationDelivery }) } : {}),
     requestCounts: counts, requestBudgetCompliant: counts.total === 0 || (budget && Object.entries(counts).every(([k, v]) => v <= budget[k])),
     cycles, attemptedRows, observedRows, flatReconciledRows, reservedUnsubmittedRows: 5 - attemptedRows,
     storeHashes: receipt?.storeHashes ?? {}, notificationDelivery, actualBrokerMutationAttempted: false, actualStateWriteAttempted: stateWriteAttempted,

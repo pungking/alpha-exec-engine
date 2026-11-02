@@ -97,6 +97,19 @@ export function operationalFixture() {
   return { ...f, config, approval };
 }
 
+export function attendedFixture() {
+  const f = operationalFixture();
+  f.config.schemaVersion = 'scoped-paper-attended-lifecycle-invocation-v1';
+  f.config.validationScope = 'ATTENDED_PAPER_LIFECYCLE_ONLY';
+  const p = f.config.sourcePolicy;
+  delete p.contractFile;
+  for (const name of ['validationPolicyFile', 'riskSourceInventoryFile'])
+    p[name] = { path: `/private/tmp/fixture-${name}.json`, sha256: hash(['fixture', name]) };
+  f.approval = { ...f.approval, kind: 'DIRECT_SCOPED_ATTENDED_LIFECYCLE_INVOCATION',
+    stableScopeSha256: hash(f.config), validationScope: f.config.validationScope, externalTradingStatus: 'NOT_VERIFIED' };
+  return f;
+}
+
 // Synthetic control declarations never prove current broker, host or source facts.
 export function operationalControlDocuments(config) {
   const start = config.input.authority.validFrom, end = config.oversight.handoffDeadline;
@@ -129,7 +142,17 @@ export async function pinOperationalFixtureFiles(config, directory) {
   config.codeFiles = await Promise.all(SCOPED_PAPER_REVIEWED_FILES.map(async file =>
     ({ path: file, sha256: createHash('sha256').update(await fs.readFile(file)).digest('hex') })));
   config.input.codeSha256 = hash(config.codeFiles);
-  for (const name of ['contractFile', 'riskPolicyFile', 'clockPolicyFile']) config.sourcePolicy[name] = await write(name, { status: 'UNKNOWN' });
+  const attended = config.schemaVersion === 'scoped-paper-attended-lifecycle-invocation-v1';
+  for (const name of [attended ? 'validationPolicyFile' : 'contractFile', 'riskPolicyFile', 'clockPolicyFile'])
+    config.sourcePolicy[name] = await write(name, { status: 'UNKNOWN' });
+  if (attended) {
+    const sources = [];
+    for (const kind of ['equity', 'cashFlows', 'bars', 'earnings', 'identifiers', 'marketSessions']) sources.push({ kind,
+      artifact: await write(`original-${kind}`, { syntheticFixture: true }),
+      provenance: await write(`provenance-${kind}`, { status: 'UNVERIFIED' }) });
+    config.sourcePolicy.riskSourceInventoryFile = await write('inventory', { schemaVersion: 'attended-risk-source-inventory-v1',
+      accountSha256: config.input.accountSha256, termsSha256: config.input.termsSha256, sources });
+  }
   const { custody, attendance } = operationalControlDocuments(config);
   config.writerExclusion.evidenceSha256 = hash(custody.writerExclusion);
   config.custody.evidenceFile = await write('custody', custody);

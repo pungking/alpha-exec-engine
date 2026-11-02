@@ -3,18 +3,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { operationalFixture, operationalControlDocuments, hash } from './fixtures/scoped-paper-adapter.mjs';
+import { operationalFixture, attendedFixture, operationalControlDocuments, hash } from './fixtures/scoped-paper-adapter.mjs';
 import { SCOPED_PAPER_REVIEWED_FILES } from './lib/scoped-paper-adapter.mjs';
 import * as operational from './lib/scoped-paper-operational.mjs';
 import { main } from './run-scoped-paper-closeout.mjs';
+import * as evidence from './lib/scoped-paper-evidence.mjs';
+import { createScopedPaperTransport } from './lib/scoped-paper-transport.mjs';
 
 assert.equal(typeof operational.loadOperationalEvidenceFiles, 'function', 'load and pin actual bytes, not caller PASS labels');
 assert.equal(typeof operational.verifyOperationalEvidenceFiles, 'function');
 assert.equal(typeof operational.assessOperationalControlEvidence, 'function', 'pinned labels are not custody, writer or attendance attestations');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 let checks = 0;
-async function fixture() {
-  const { config } = operationalFixture();
+async function fixture(attended = false) {
+  const { config } = attended ? attendedFixture() : operationalFixture();
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'operational-files-')));
   await fs.chmod(directory, 0o700);
   const write = async (name, value) => {
@@ -26,12 +28,20 @@ async function fixture() {
   config.input.sourceSha256 = config.sourceFile.sha256;
   config.codeFiles = await Promise.all(SCOPED_PAPER_REVIEWED_FILES.map(async file => ({ path: file, sha256: sha(await fs.readFile(file)) })));
   config.input.codeSha256 = hash(config.codeFiles);
-  config.sourcePolicy.contractFile = await write('source-contract', { status: 'UNKNOWN', continuity: 'UNVERIFIED' });
+  if (attended) {
+    config.sourcePolicy.validationPolicyFile = await write('validation-policy', { status: 'UNKNOWN' });
+    const sources = [];
+    for (const kind of ['equity', 'cashFlows', 'bars', 'earnings', 'identifiers', 'marketSessions']) sources.push({ kind,
+      artifact: await write(`original-${kind}`, { recordKind: kind, rawFixture: true }),
+      provenance: await write(`provenance-${kind}`, { recordKind: kind, status: 'UNVERIFIED' }) });
+    config.sourcePolicy.riskSourceInventoryFile = await write('inventory', { schemaVersion: 'attended-risk-source-inventory-v1',
+      accountSha256: config.input.accountSha256, termsSha256: config.input.termsSha256, sources });
+  } else config.sourcePolicy.contractFile = await write('source-contract', { status: 'UNKNOWN', continuity: 'UNVERIFIED' });
   config.sourcePolicy.riskPolicyFile = await write('risk', { status: 'PASS', evidence: 'synthetic-label-is-not-proof' });
   config.sourcePolicy.clockPolicyFile = await write('clock', { status: 'UNVERIFIED' });
   config.custody.evidenceFile = await write('custody', { status: 'NOT_ADOPTED' });
   config.oversight.operatorAttendanceFile = await write('attendance', { status: 'NOT_AUTHORIZED' });
-  const refs = [config.sourcePolicy.contractFile, config.sourcePolicy.riskPolicyFile, config.sourcePolicy.clockPolicyFile,
+  const refs = [...Object.entries(config.sourcePolicy).filter(([k]) => k.endsWith('File')).map(([, v]) => v),
     config.custody.evidenceFile, config.oversight.operatorAttendanceFile];
   return { config, directory, refs, write };
 }
@@ -66,6 +76,162 @@ try {
   finally { fs.open = originalOpen; }
   assert.equal(opened, 0); checks += 2;
 } finally { await fs.rm(p.directory, { recursive: true, force: true }); }
+
+assert.equal(typeof operational.loadAttendedEvidenceFiles, 'function', 'attended originals must be pinned and purpose bound');
+const attended = await fixture(true);
+try {
+  const { config } = attended, files = await operational.loadAttendedEvidenceFiles({ config });
+  assert.equal(files.status, 'PINNED_BYTES_VERIFIED_NOT_READINESS');
+  assert.equal(files.sourceEvidenceVerified, false);
+  assert.equal(files.brokerSubmitAllowed, false);
+  assert.equal(Object.keys(files.originals).length, 6);
+  assert.equal(Object.isFrozen(files.originals.equity.artifact), true);
+  assert.equal(files.originals.equity.provenance.status, 'UNVERIFIED', 'loading does not certify original-source authenticity');
+  assert.equal(await operational.verifyAttendedEvidenceFiles({ config, files }), true);
+  await assert.rejects(() => operational.verifyAttendedEvidenceFiles({ config, files: structuredClone(files) }), /FILES_UNBOUND/);
+  await assert.rejects(() => operational.verifyOperationalEvidenceFiles({ config, files }), /FILES_UNBOUND/);
+  const input = { config, files, clock: attendedFixture().clock };
+  assert.equal((await operational.assessAttendedControlEvidence(input)).status, 'BLOCKED');
+  const { custody, attendance } = operationalControlDocuments(config);
+  config.writerExclusion.evidenceSha256 = hash(custody.writerExclusion);
+  config.custody.evidenceFile = await attended.write('custody', custody);
+  config.oversight.operatorAttendanceFile = await attended.write('attendance', attendance);
+  const boundControls = await operational.loadAttendedEvidenceFiles({ config });
+  assert.equal((await operational.assessAttendedControlEvidence({ ...input, files: boundControls })).status,
+    'OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS');
+  const refs = files.documents.riskSourceInventory.sources.flatMap(s => [s.artifact, s.provenance]);
+  for (const ref of refs) {
+    const bytes = await fs.readFile(ref.path); await fs.appendFile(ref.path, ' ');
+    await assert.rejects(() => operational.verifyAttendedEvidenceFiles({ config, files: boundControls }), /FILE_HASH_DRIFT/);
+    await fs.writeFile(ref.path, bytes); checks++;
+  }
+  const arrayInventory = structuredClone(files.documents.riskSourceInventory);
+  arrayInventory.sources.find(s => s.kind === 'cashFlows').artifact = await attended.write('original-cashFlows', []);
+  config.sourcePolicy.riskSourceInventoryFile = await attended.write('inventory', arrayInventory);
+  const arrayFiles = await operational.loadAttendedEvidenceFiles({ config });
+  assert.deepEqual(arrayFiles.originals.cashFlows.artifact, [], 'original API arrays are preserved, not rewritten as an invented envelope');
+  assert.equal(arrayFiles.sourceEvidenceVerified, false, 'an empty array alone does not prove complete cash-flow coverage');
+  arrayInventory.sources.find(s => s.kind === 'cashFlows').artifact = await attended.write('original-cashFlows', null);
+  config.sourcePolicy.riskSourceInventoryFile = await attended.write('inventory', arrayInventory);
+  await assert.rejects(() => operational.loadAttendedEvidenceFiles({ config }), /DOCUMENT_INVALID/);
+  await attended.write('original-cashFlows', files.originals.cashFlows.artifact); checks += 3;
+  for (const change of [s => { s.sources.pop(); }, s => { s.sources[0].kind = 'unsupported'; },
+    s => { s.sources[1].kind = s.sources[0].kind; }, s => { s.accountSha256 = hash('other-account'); },
+    s => { s.sources[0].artifact = s.sources[0].provenance; }, s => { s.sources[0].artifact = config.sourceFile; },
+    s => { s.sources[0].provenance.sha256 = hash('drift'); }, s => { s.ready = true; }]) {
+    const inventory = structuredClone(files.documents.riskSourceInventory); change(inventory);
+    config.sourcePolicy.riskSourceInventoryFile = await attended.write('inventory', inventory);
+    await assert.rejects(() => operational.loadAttendedEvidenceFiles({ config }), /INVENTORY_INVALID|FILE_IDENTITY_DUPLICATE|FILE_HASH_DRIFT/);
+    checks++;
+  }
+  checks += 11;
+} finally { await fs.rm(attended.directory, { recursive: true, force: true }); }
+
+const attendedInvocation = await fixture(true);
+try {
+  const { config, write, directory } = attendedInvocation, { clock, approval } = attendedFixture();
+  const { custody, attendance } = operationalControlDocuments(config);
+  config.writerExclusion.evidenceSha256 = hash(custody.writerExclusion);
+  config.custody.evidenceFile = await write('custody', custody);
+  config.oversight.operatorAttendanceFile = await write('attendance', attendance);
+  approval.stableScopeSha256 = hash(config);
+  const configFile = await write('invocation', config), approvalFile = await write('approval', approval);
+  const args = ['--validate-attended', configFile.path, configFile.sha256, approvalFile.path, approvalFile.sha256];
+  const forbidden = { clock, get transport() { assert.fail('validation must not access broker/credentials'); },
+    get notify() { assert.fail('validation must not access sender'); }, get config() { assert.fail('use pinned file, not injected config'); } };
+  const before = await fs.readdir(directory), valid = await main(args, forbidden);
+  assert.equal(valid.status, 'PINNED_INPUTS_VERIFIED_NOT_READY');
+  assert.equal(valid.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+  assert.equal(valid.externalTradingStatus, 'NOT_VERIFIED');
+  assert.equal(valid.executionAuthorized, false); assert.equal(valid.sourceReadinessProven, false);
+  assert.equal(valid.actualBrokerMutationAttempted, false); assert.equal(valid.actualStateWriteAttempted, false);
+  assert.deepEqual(await fs.readdir(directory), before);
+  assert.ok(!JSON.stringify(valid).includes(directory));
+  const loaded = await operational.loadAttendedInvocationFiles({ configFile, approvalFile });
+  assert.equal(loaded.files.sourceEvidenceVerified, false);
+  assert.equal(await operational.verifyAttendedEvidenceFiles(loaded), true);
+  await assert.rejects(operational.loadOperationalInvocationFiles({ configFile, approvalFile }), /CONFIG_INVALID/);
+  assert.equal((await main(['--validate-operational', ...args.slice(1)], forbidden)).status, 'BLOCKED'); checks += 13;
+  for (const change of [a => { a.kind = 'DIRECT_SCOPED_OPERATIONAL_INVOCATION'; }, a => { a.externalTradingStatus = 'NOT_HALTED'; },
+    a => { a.validationScope = 'UNATTENDED'; }, a => { a.stableScopeSha256 = hash('other'); },
+    a => { a.expiresAt = a.approvedAt; }, a => { delete a.rollbackPlanSha256; }]) {
+    const bad = structuredClone(approval); change(bad);
+    const ref = await write('approval', bad);
+    const result = await main([...args.slice(0, 3), ref.path, ref.sha256], forbidden);
+    assert.equal(result.status, 'BLOCKED'); assert.equal(result.executionAuthorized, false);
+    assert.equal(result.actualBrokerMutationAttempted, false); assert.equal(result.actualStateWriteAttempted, false); checks += 4;
+  }
+  await write('approval', approval);
+  const originalRead = fs.readFile, originalOpen = fs.open;
+  fs.readFile = async () => assert.fail('invalid argument count must not open files');
+  fs.open = async () => assert.fail('invalid argument count must not open files');
+  try {
+    for (const bad of [args.slice(0, 4), [...args, '--extra'], ['--validate-attended']]) {
+      assert.equal((await main(bad, forbidden)).status, 'ARGUMENTS_INVALID'); checks++;
+    }
+  } finally { fs.readFile = originalRead; fs.open = originalOpen; }
+  await fs.appendFile(config.sourcePolicy.riskPolicyFile.path, ' ');
+  const drift = await main(args, forbidden);
+  assert.equal(drift.status, 'BLOCKED'); assert.deepEqual(drift.reasons, ['SCOPED_ADAPTER_FILE_HASH_DRIFT']); checks += 2;
+} finally { await fs.rm(attendedInvocation.directory, { recursive: true, force: true }); }
+
+assert.equal(typeof evidence.buildAttendedClockEvidence, 'function', 'a reference interval must be authenticated by the receipt owner');
+const clockFiles = await fixture(true);
+try {
+  const { config } = clockFiles;
+  const policy = { schemaVersion: 'attended-paper-clock-policy-v1', basis: 'BROKER_TLS_REMOTE_REFERENCE_INTERVAL',
+    hostIdSha256: config.custody.hostIdSha256, maxAgeMs: 30000, maxUncertaintyMs: 2,
+    requiresHostSynchronizationProof: false, requiresProviderAccuracySla: false };
+  const scope = Object.freeze(structuredClone(config.input));
+  const make = async (payloadTime = '2026-10-09T15:00:00.001000000Z', change = () => {}) => {
+    const p = structuredClone(policy); change(p);
+    config.sourcePolicy.clockPolicyFile = await clockFiles.write('clock-policy', p);
+    const files = await operational.loadAttendedEvidenceFiles({ config });
+    let wall = Date.parse('2026-10-09T15:00:00.000Z'), mono = 100;
+    const clock = { now: () => new Date(wall).toISOString(), monotonicMs: () => mono };
+    const transport = createScopedPaperTransport({ credentials: { key: 'fixture', secret: 'fixture' }, clock, deadlineMs: 300000,
+      fetchImpl: async () => { wall += 2; mono += 2; return new Response(JSON.stringify({ timestamp: payloadTime, is_open: true })); } });
+    const receipt = await transport.request({ group: 'clock', phase: 'initial', routeInput: {} });
+    return { scope, files, receipt, transport, clock, advance: (w, m) => { wall += w; mono += m; } };
+  };
+  const f = await make(), binding = await evidence.buildAttendedClockEvidence(f);
+  assert.equal(binding.status, 'REMOTE_REFERENCE_INTERVAL_BOUND');
+  assert.equal(binding.referenceProvenanceVerified, true);
+  for (const claim of ['hostSynchronizationVerified', 'providerClockAccuracyVerified', 'timestampCompensationApplied', 'executionAuthorized'])
+    assert.equal(binding[claim], false);
+  assert.equal(evidence.isAttendedClockEvidence(binding, f), true);
+  for (const change of [x => { x.receipt = structuredClone(x.receipt); }, x => { x.files = structuredClone(x.files); },
+    x => { x.transport = {}; }, x => { x.clock = { ...x.clock }; }, x => { x.scope = { ...x.scope, accountSha256: hash('wrong') }; }]) {
+    const input = { ...f }; change(input);
+    await assert.rejects(() => evidence.buildAttendedClockEvidence(input), /SCOPED_.*(?:UNBOUND|CLOCK|SCOPE|TRANSPORT)/); checks++;
+  }
+  assert.equal(evidence.isAttendedClockEvidence(structuredClone(binding), f), false);
+  assert.equal(evidence.isAttendedClockEvidence(binding, { ...f, scope: { ...scope } }), false);
+  f.advance(2, 0);
+  assert.equal(evidence.isAttendedClockEvidence(binding, f), true, 'exact approved uncertainty is not a compensation');
+  f.advance(1, 0);
+  assert.equal(evidence.isAttendedClockEvidence(binding, f), false, 'wall clock drift beyond explicit bound invalidates reference');
+  f.advance(0, 1);
+  assert.equal(evidence.isAttendedClockEvidence(binding, f), false, 'invalidated time evidence never revives');
+  for (const stamp of ['2026-10-09T15:00:00.002000001Z', '2026-10-09T14:59:59.999999999Z', 'invalid']) {
+    await assert.rejects(() => make(stamp).then(evidence.buildAttendedClockEvidence), /SCOPED_EVIDENCE_(?:TIMESTAMP|CLOCK)/); checks++;
+  }
+  for (const change of [p => { p.requiresHostSynchronizationProof = true; }, p => { p.requiresProviderAccuracySla = true; },
+    p => { p.maxAgeMs = 30001; }, p => { p.maxUncertaintyMs = 1; }, p => { p.hostIdSha256 = hash('other-host'); },
+    p => { p.basis = 'LOCAL_DAEMON_RUNNING'; }]) {
+    const invalid = await make(undefined, change);
+    await assert.rejects(() => evidence.buildAttendedClockEvidence(invalid), /SCOPED_EVIDENCE_CLOCK/); checks++;
+  }
+  const expires = await make(), old = await evidence.buildAttendedClockEvidence(expires);
+  expires.advance(30001, 30001);
+  assert.equal(evidence.isAttendedClockEvidence(old, expires), false);
+  const regression = await make(), saved = await evidence.buildAttendedClockEvidence(regression);
+  regression.advance(1, -1);
+  assert.equal(evidence.isAttendedClockEvidence(saved, regression), false);
+  const drift = await make(); await fs.appendFile(config.sourcePolicy.clockPolicyFile.path, ' ');
+  await assert.rejects(() => evidence.buildAttendedClockEvidence(drift), /FILE_HASH_DRIFT/);
+  checks += 16;
+} finally { await fs.rm(clockFiles.directory, { recursive: true, force: true }); }
 
 // These are synthetic operator attestations, not observed account/source/host facts.
 async function controlsFixture() {
