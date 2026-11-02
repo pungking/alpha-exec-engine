@@ -6,11 +6,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { managementRecord } from './fixtures/scoped-closeout.mjs';
+import { managementRecord, limitedManagementRecord } from './fixtures/scoped-closeout.mjs';
 import { buildPaperExitReadiness } from './build-live-readiness-scorecard.mjs';
 import { buildBrokerRealizedPnlSummary } from './build-performance-dashboard.mjs';
 import { buildExactPrivateReportState, validateTargets } from './audit-paper-closeout-private-evidence.mjs';
 import { sourceJson } from './paper-exact-cache-private-export.mjs';
+import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 const record = managementRecord(), orders = { [record.exitIdempotencyKey]: record };
 const ledger = { orders, updatedAt: record.updatedAt }, idempotency = { orders, releases: [], updatedAt: record.updatedAt };
 const rejected = /SCOPED_MANAGEMENT_REQUIRES_SCOPED_CONSUMER/;
@@ -22,6 +23,26 @@ for (const run of [
   () => validateTargets([], { orderLedger: ledger, orderIdempotency: idempotency }),
 ]) { assert.throws(run, rejected); checks++; }
 assert.deepEqual(sourceJson(Buffer.from(JSON.stringify(ledger))), ledger); checks++;
+
+for (const terminal of [false, true]) {
+  const limited = limitedManagementRecord();
+  if (terminal) {
+    limited.requestSha256 = 'a'.repeat(64); limited.brokerOrderId = 'fixture-terminal-order';
+    limited.brokerStatus = 'filled'; limited.filledQty = limited.qty; limited.submissionPhase = 'FLAT_RECONCILED';
+    limited.brokerEventTimestamps = { createdAt: limited.createdAt, updatedAt: limited.updatedAt, filledAt: limited.updatedAt };
+    limited.history.push(...['ATTEMPTED', 'OBSERVED', 'FLAT_RECONCILED'].map(phase => ({ ...limited.history[0], phase,
+      brokerStatus: phase === 'ATTEMPTED' ? null : 'filled', filledQty: phase === 'ATTEMPTED' ? '0' : limited.qty })));
+  }
+  assert.equal(validateScopedManagementRecord(limited.exitIdempotencyKey, limited), true); checks++;
+  const orders = { [limited.exitIdempotencyKey]: limited };
+  const limitedLedger = { ...ledger, orders }, limitedIdempotency = { ...idempotency, orders };
+  for (const run of [
+    () => buildPaperExitReadiness({ orderLedger: limitedLedger, orderIdempotency: limitedIdempotency }),
+    () => buildBrokerRealizedPnlSummary({ orderLedger: limitedLedger, orderIdempotency: limitedIdempotency }),
+    () => buildExactPrivateReportState({ ledger: limitedLedger, idempotency: limitedIdempotency }),
+    () => validateTargets([], { orderLedger: limitedLedger, orderIdempotency: limitedIdempotency }),
+  ]) { assert.throws(run, rejected); checks++; }
+}
 
 const repo = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'scoped-consumers-'));

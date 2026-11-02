@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { managementRecord, hash } from './fixtures/scoped-closeout.mjs';
 import { fixture as scopedFixture } from './fixtures/scoped-closeout.mjs';
 import * as notificationModule from './paper-order-notifications.mjs';
+import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 
 const at = '2026-10-02T15:00:00.000Z';
 const order = (patch = {}) => ({ id: 'synthetic-order', client_order_id: 'synthetic-client', symbol: 'TESTX',
@@ -66,6 +67,29 @@ const managementInput = () => input({ openOrders: [], closedOrders: [{ ...exit, 
   orderIdempotency: { orders: { [management.exitIdempotencyKey]: structuredClone(management) }, releases: [] } });
 assert.ok(types(buildNotificationSnapshot(managementInput())).includes('MANAGEMENT_POSITION_FLAT_RECONCILED'));
 assert.equal(types(buildNotificationSnapshot(managementInput())).includes('POSITION_CLOSEOUT_RECONCILED'), false);
+const limitedGenericRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'limited-generic-notification-fixture-'));
+try {
+  const limited = { ...structuredClone(management), recordKind: 'SCOPED_MANAGEMENT_EXIT_V3', schemaVersion: 3,
+    brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at },
+    validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED' };
+  assert.equal(validateScopedManagementRecord(limited.exitIdempotencyKey, limited), true);
+  for (const lane of ['both', 'ledger-only', 'idempotency-only', 'release-only', 'malformed']) {
+    const v = managementInput();
+    if (['both', 'ledger-only', 'malformed'].includes(lane)) v.orderLedger.orders[limited.exitIdempotencyKey] = structuredClone(limited);
+    if (['both', 'idempotency-only'].includes(lane)) v.orderIdempotency.orders[limited.exitIdempotencyKey] = structuredClone(limited);
+    if (lane === 'release-only') v.orderIdempotency.releases.push({ ...limited, key: limited.exitIdempotencyKey });
+    if (lane === 'malformed') delete v.orderLedger.orders[limited.exitIdempotencyKey].validationScope;
+    v.openOrders.push(order());
+    const snapshot = buildNotificationSnapshot(v);
+    assert.equal(snapshot.status, 'EVIDENCE_UNAVAILABLE', `${lane}: V3 requires the scope-preserving notification path`);
+    assert.deepEqual(snapshot.events, []);
+    const receiptPath = path.join(limitedGenericRoot, `${lane}.json`); let sends = 0;
+    assert.equal((await deliverNotifications({ snapshot, receiptPath, send: async () => { sends++; return { ok: true }; } })).status,
+      'EVIDENCE_UNAVAILABLE');
+    assert.equal(sends, 0); assert.equal(fs.existsSync(receiptPath), false);
+    assert.equal(fs.existsSync(`${receiptPath}.lock`), false);
+  }
+} finally { fs.rmSync(limitedGenericRoot, { recursive: true, force: true }); }
 for (const change of [
   v => { for (const state of [v.orderLedger, v.orderIdempotency]) {
     const r = state.orders[management.exitIdempotencyKey]; r.history = [r.history[0], r.history.at(-1)];
@@ -257,3 +281,40 @@ try {
   args.storeReceipt.recordsSha256 = hash('mismatch'); assert.equal(snapshot().status, 'EVIDENCE_UNAVAILABLE');
 } finally { fs.rmSync(scopedRoot, { recursive: true, force: true }); }
 console.log('scoped notifications: PASS (durable scope, first delivery, stop, dedup, redaction)');
+const limitedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'limited-notification-fixture-'));
+try {
+  const scope = scopedFixture().input, r = managementRecord();
+  const row = { ...r, recordKind: 'SCOPED_MANAGEMENT_EXIT_V3', schemaVersion: 3,
+    validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED',
+    brokerEventTimestamps: { createdAt: r.createdAt, updatedAt: r.updatedAt, filledAt: null },
+    requestSha256: hash('intent'), brokerOrderId: 'private-fixture-order', brokerStatus: 'accepted', submissionPhase: 'OBSERVED',
+    history: [...r.history, ...['ATTEMPTED', 'OBSERVED'].map(phase => ({ at: r.createdAt, phase,
+      evidenceSha256: r.observedEvidenceSha256, brokerStatus: phase === 'OBSERVED' ? 'accepted' : null, filledQty: '0' }))] };
+  const args = { scope, records: [], storeReceipt: null, observations: { symbols: [{ assetId: r.assetId, symbol: 'TESTX' }] },
+    sourceRunId: '123', headSha: 'a'.repeat(40), observedAt: r.createdAt };
+  const receiptPath = path.join(limitedRoot, 'receipt.json'); let sends = 0;
+  const send = async text => { sends++; assert.ok(text.includes('ATTENDED_PAPER_LIFECYCLE_ONLY'));
+    assert.ok(text.includes('NOT_VERIFIED')); assert.ok(!text.includes('private-fixture-order')); return { ok: true }; };
+  await deliverNotifications({ snapshot: notificationModule.buildScopedNotificationSnapshot(args), receiptPath, send });
+  args.records = [row];
+  args.storeReceipt = { recordsSha256: hash(args.records), storeHashes: { orderLedger: hash('l'), orderIdempotency: hash('i') } };
+  const current = notificationModule.buildScopedNotificationSnapshot(args);
+  assert.equal(current.status, 'OBSERVATIONS_READY');
+  assert.equal(current.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+  assert.equal(current.externalTradingStatus, 'NOT_VERIFIED');
+  assert.equal((await deliverNotifications({ snapshot: current, receiptPath, send })).status, 'DELIVERED');
+  assert.equal((await deliverNotifications({ snapshot: current, receiptPath, send })).status, 'NO_CHANGE');
+  assert.equal(sends, 1);
+  for (const mutate of [s => { delete s.validationScope; }, s => { delete s.externalTradingStatus; },
+    s => { s.externalTradingStatus = 'VERIFIED'; }, s => { s.validationScope = 'LIVE'; },
+    s => { s.observationBasis = 'OTHER'; }]) {
+    const invalid = structuredClone(current), saved = fs.readFileSync(receiptPath, 'utf8'); mutate(invalid);
+    assert.equal((await deliverNotifications({ snapshot: invalid, receiptPath, send })).status, 'EVIDENCE_UNAVAILABLE');
+    assert.equal(sends, 1); assert.equal(fs.readFileSync(receiptPath, 'utf8'), saved);
+  }
+  args.records.push(managementRecord(1)); args.storeReceipt.recordsSha256 = hash(args.records);
+  assert.equal(notificationModule.buildScopedNotificationSnapshot(args).status, 'EVIDENCE_UNAVAILABLE', 'mixed purposes cannot lose the limited label');
+} finally { fs.rmSync(limitedRoot, { recursive: true, force: true }); }
+const crowded = Array.from({ length: 20 }, (_, i) => ({ type: 'ORDER_ACCEPTED', symbol: `FIX${i}`, side: 'sell' }));
+crowded.push({ type: 'SCOPED_OVERSIGHT_UNRESOLVED', reason: 'SCOPED_ADAPTER_OBSERVATION_BUDGET_EXHAUSTED' });
+assert.ok(formatNotification(crowded, 'BOUNDED_SCOPED_CLOSEOUT').includes('감시 종료: 미해결'), 'handoff must not be hidden by display truncation');

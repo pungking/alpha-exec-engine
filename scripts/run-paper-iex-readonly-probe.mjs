@@ -14,6 +14,10 @@ export const CODE_FILES = Object.freeze([
   'scripts/build-live-readiness-scorecard.mjs', 'scripts/lib/position-protection-classification.mjs',
   'scripts/lib/active-position-limited-recovery.mjs', 'scripts/lib/closeout-decimal.mjs',
   'scripts/lib/scoped-paper-transport.mjs', 'scripts/lib/scoped-paper-evidence.mjs', 'scripts/lib/scoped-closeout-contract.mjs',
+  'scripts/lib/scoped-paper-operational.mjs', 'scripts/lib/scoped-paper-adapter.mjs',
+  'scripts/lib/scoped-closeout-storage.mjs', 'scripts/paper-order-notifications.mjs',
+  'dist/src/scoped-management-record.js', 'dist/src/order-state-storage.js',
+  'dist/src/order-ledger-storage.js', 'dist/src/order-idempotency-storage.js', 'dist/src/json-utils.js',
 ]);
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);

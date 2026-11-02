@@ -22,6 +22,10 @@ export function managementRecord(index = 0) {
     realizedPnlVerified: false, historicalEvidenceNormalized: false, brokerSubmitAllowed: false,
     history: [{ at, phase: 'RESERVED', evidenceSha256: hash('evidence'), brokerStatus: null, filledQty: '0' }] };
 }
+export function limitedManagementRecord(index = 0) {
+  return { ...managementRecord(index), recordKind: 'SCOPED_MANAGEMENT_EXIT_V3', schemaVersion: 3,
+    validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED', brokerEventTimestamps: null };
+}
 export function fixture() {
   const targets = Array.from({ length: 5 }, (_, i) => ({
     originalIdentitySha256: hash(`synthetic-identity-${i}`), assetId: `fixture-asset-${i}`,

@@ -1,0 +1,501 @@
+# PAPER Operational Binding Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for the previously selected Native method. Use checkbox steps task-by-task. The operator approved Native offline implementation and the sequencing amendment; operational activation remains separate.
+
+**Goal:** Complete the existing five-target PAPER management route's operational binding without normalizing historical ownership or enabling orders during development.
+
+**Architecture:** Reuse the scoped controller, sealed transport/evidence, existing two stores and notification receipts. Separate fixed authority from changing observations; add observation-only oversight without re-entering submission. Missing official source guarantees remain an activation blocker, not a reason to stop provider-independent implementation.
+
+**Tech Stack:** Existing Node.js 20+, JavaScript ES modules, TypeScript validators and built-in assert/fs/crypto; no new dependency, ledger, broker abstraction or daemon.
+
+**Spec:** `docs/superpowers/specs/2026-10-16-paper-operational-binding-design.md` (approved architecture; source contract unresolved).
+
+**Status:** NATIVE_IMPLEMENTATION_APPROVED_OFFLINE_ONLY (2026-10-18). The operator requested immediate next-stage work after the revised implementation request. This approves the sequencing amendment and Native implementation/tests/PR/CI, not API calls, state adoption, orders or activation. Code inspected at `4b399bf4dd2f105ad0be88f39e636f105b024edb`; local origin/main is `e313185b9744f122bf36c9b5b5abcede90c42252`, not a freshly fetched remote assertion.
+
+## Approved sequencing amendment
+
+The original spec's sections 1 and 8 required source-contract closure before implementation planning. The approved amendment permits this plan and provider-independent implementation/tests before closure; the source gate remains before any source-dependent operational readiness or submission. This changes sequencing, not execution authority.
+
+An Alpaca support response is one possible source of contract evidence, not the only acceptable one. A documented official contract plus an appropriately authorized observation can also qualify. Fixture PASS cannot prove provider initialization, entitlement, gap coverage or continuity. No new broker probe is included here.
+
+Native implementation approval authorizes Tasks 1-5 with synthetic inputs and the offline portion of Task 6. Task 6's real source mapping remains incomplete until its documented contract exists. An unresolved source is a real blocker: never implement an always-PASS proof generator, claim an always-BLOCKED stub is the completed producer, or mark the parent goal complete from fixtures alone.
+
+## Global Constraints
+
+- alpha-exec-engine only. Scheduler changes are already separately integrated; do not reopen analysis, Harvester, Stage6 or OOS policy work.
+- Safe defaults: READ_ONLY=true, EXEC_ENABLED=false, LIVE_ORDER_SUBMIT_ENABLED=false, MARKET_GUARD_MODE=observe. No execution variable changes.
+- Development: broker/provider requests=0, actual Telegram sends=0, production state/cache changes=0, workflow dispatch/rerun=0. Never load .env for tests.
+- Five exact existing limited-control targets only; full positive-quantity SELL LIMIT DAY reductions. No entry, scale-in, short, cancel, replacement or protective-child mutation.
+- Preserve pinned private caps, spread 10 bps, adverse price 10 bps, evidence age 30 seconds, no retry/pagination. Do not calculate new caps from current prices.
+- Existing controller ceiling: 61 GET / 5 POST, total 66, request/body timeout 3 seconds, body 8 MiB, invocation 300 seconds. Ceilings are not execution permission.
+- New source and oversight reads cannot use leftover old one-shot allowances or silently reset controller counters.
+- Preserve existing explicit PAPER IEX support and coverage acknowledgment. IEX is not relabeled NBBO; no feed fallback or SIP purchase.
+- Original ownership, historical normalization and realized P&L verification stay false. Historical missing-input goal stays withdrawn, not completed.
+- The operator reports a manual trade in the same PAPER account. Old portfolio observations are not current. Do not add that exposure to the five-target authority or invent the new portfolio; future authorized current evidence must match a newly reviewed full-portfolio basis.
+- No state adoption, directory creation for production, lock clearing, unattended operation or launchd activation. Those require separate exact operational authority.
+
+## Review Focus
+
+1. Proof replacement between validation and POST must invalidate that send, even if its label still says PASS (Tasks 1/2/5).
+2. An unchanged resting order can have an old event time but a fresh query interval; do not fabricate an event or weaken submit-time checks (Task 4).
+3. A crash can leave a permanent directory fence or one updated store; never delete the fence, restore an old backup or resume submission automatically (Task 3).
+4. A manual account trade can change an unrelated holding while all five targets still match; full-portfolio drift still blocks the existing authority (Tasks 2/5).
+5. Observation budget, record-history capacity or host availability can end before an order does; explicit unresolved handoff is required, not simulated cancellation (Tasks 3/4/5).
+
+## Existing gaps and file map
+
+| Existing code | Verified gap / planned owner |
+| --- | --- |
+| `scripts/lib/scoped-closeout-contract.mjs` | `authorizeScopedPaperInvocation` pins fresh `bindings.proof` in the whole config; `observedBindings` pins one proof hash. Task 1 adds a distinct authority path, not a forged legacy approval. |
+| `scripts/lib/scoped-paper-evidence.mjs` | `assessSourceBindings` consumes proof but does not produce it. Tasks 2/6 bind exact source records; Task 4 adds a separate current-query observation mapper. |
+| `scripts/lib/scoped-paper-adapter.mjs` | Existing bounded submit/postcheck composition, not persistent oversight. Tasks 1/2/5 reuse it and its private-file/code-pin checks. |
+| `scripts/lib/scoped-closeout-storage.mjs` | `withScopedStores` rejects every prior management attempt. Task 3 adds observation-only access, retaining that rejection for submission. |
+| `src/order-state-storage.ts` | Local fence remains on exceptional exit; it is not cross-host exclusion. Reuse, do not relax or auto-clear. |
+| `src/scoped-management-record.ts` | STOPPED is sticky; history has a 16-entry ceiling. Task 3 preserves both rather than treating polling as a new submission or truncating history. |
+| `scripts/lib/scoped-paper-transport.mjs` | Fixed submit/postcheck phases and counters. Task 4 adds separately gated observation-only requests with no submit capability. |
+| `scripts/run-scoped-paper-closeout.mjs` | Dependency-injected, default-inert CLI. Task 5 adds explicit operational loading, not an automatic scheduler. |
+| `scripts/paper-order-notifications.mjs` | Reuse scoped events and delivery receipts; supervision alerts must not imply cancellation or normal P&L. |
+| `scripts/lib/scoped-paper-operational.mjs` (new) | Only operational configuration/source-readiness composition and custody/writer checks; no alternate execution controller. |
+| `scripts/lib/scoped-paper-oversight.mjs` (new) | Observation-only orchestration for the exact attempted identities. |
+| `scripts/test-scoped-paper-operational.mjs`, `scripts/test-scoped-paper-oversight.mjs` (new) | Synthetic red/green fixtures using existing network-denial preload and temporary stores. |
+| Existing scoped tests/fixtures, `package.json`, `.github/workflows/ci.yml` | Extend regression coverage; synthetic fixtures only in CI. |
+
+Do not change generic entry/protection consumers merely to accept management records. Preserve their fail-closed treatment. Any necessary compatibility edit must be tied to a failing regression, not a broad schema rewrite.
+
+## Task 1: Stable authority and sealed changing observations
+
+**Files:** Modify contract, adapter, existing contract/adapter tests; create operational module/test above.
+
+**Interfaces (new, internal):**
+- `validateOperationalConfiguration(config)` returns a frozen assessment, without I/O.
+- `authorizeOperationalInvocation({ config, approval, clock })` returns an unforgeable in-process capability after actual process/authority checks.
+- `bindOperationalObservation(capability, { scope, observation, clock })` registers only a sealed, scope-bound observation for the existing controller.
+
+**Schema:** `scoped-paper-operational-invocation-v1`. Stable fields explicitly contain the existing exact targets/portfolio, account hash bases, terms, input/code pins, directory/pre-write hashes, session/expiry, source/risk/time rules, writer/custody references, oversight limits and notification destination hash. Observation content is a separate named object, not arbitrary excluded hash fields. Approval binds the stable hash; each observation binds it and its own hash. Legacy synthetic v1 and observed v2 remain separate and unchanged.
+
+- [x] Write tests: refresh verified observation without changing stable hash; mutate every stable field and reject; old v2 approval/serialized capability/forged PASS rejected; previous observation invalid after generation change.
+- [x] Run `node scripts/test-scoped-paper-operational.mjs`; require the new cases to fail before production changes.
+- [x] Implement the three interfaces using existing canonical hash/WeakMap patterns. Revalidate actual flags, authority, source generation and time at pre-send. Do not call the legacy authorizer with a freshly fabricated config approval.
+- [x] Run the new test plus `npm run ops:test:scoped-closeout-contract` and `npm run ops:test:scoped-paper-adapter` under network denial; require PASS.
+- [x] Commit only these changes: `feat: separate scoped PAPER authority from current evidence`.
+
+## Task 2: Real-evidence boundary with explicit unresolved source gate
+
+**Files:** Modify operational/evidence/adapter modules, fixtures and operational/evidence tests.
+
+**Interfaces:** `assessOperationalReadiness({ config, custody, writer, sourceContract, clock })` returns status/reasons without network or writes. `collectOperationalEvidence({ capability, transport, sourceRecords, clock })` consumes existing sealed allowlisted receipts and produces the sealed observation consumed by Task 1. It cannot receive a caller-created PASS binding as a substitute for source records.
+
+- [ ] Add failing tests for absent source contract, unknown status, gap/disconnect, expired time proof, stale/future evidence, risk input missing, substituted referenced bytes, identity ambiguity, nested orders and whole-portfolio drift including an unscoped manual position.
+- [ ] Run operational/evidence tests and record failing assertions.
+- [ ] Reuse existing account/positions/orders/assets/calendar/quotes mapping and exact private-file/hash checks. Keep provider event time, query receipt interval and independently established coverage time distinct. Return named blocks for missing status initialization/continuity, clock alignment, risk policy or custody; never create those facts from hashes or labels.
+- [ ] Keep source-contract-dependent mapping explicitly unimplemented until Task 6's contract gate is satisfied; a blocked real path is not the completed producer. Fixtures may inject synthetic records only into mock transport and must not be accepted as operational source evidence.
+- [ ] Verify unknown source rejects before broker credential/transport creation for a new submission attempt; a previously authorized order observer has a separate authority and cannot regain submission privilege.
+- [ ] Run operational, evidence and adapter regression tests; commit: `feat: bind operational evidence with unresolved-source rejection`.
+
+Local-byte substep implemented: `loadOperationalEvidenceFiles` and `verifyOperationalEvidenceFiles` reuse the existing code/source reader for owner-only source-contract, risk, clock, custody and attendance documents. Exact bytes and revalidation pass the offline fixtures; the result explicitly does not establish source readiness. Operator-control attestation validation is described below. The source readiness evaluator and real source producer remain incomplete.
+
+2026-10-21 prerequisite-audit amendment: `assessOperationalReadiness` now checks
+those pinned bytes and control attestations, risk-policy representation and clock
+interval consistency. It is a prerequisite audit, not the missing actual source
+producer or an execution readiness certificate. The supported public status
+contract is insufficient for this design, so the result remains BLOCKED even if
+the independent local checks are valid. Do not check off Task 2 from this result.
+
+Risk/time/source rules have no permissive defaults. All applicable existing risk dimensions must have verified inputs or a separately approved reduction-only exception; no exception is approved here. Status silence, tradable=true, fresh quotes, clock.is_open, subscription acknowledgment or missing RSS rows never establish NOT_HALTED.
+
+## Task 3: Custody, writer fence and observation-only store access
+
+**Files:** Modify scoped storage; test storage and operational modules. Reuse both strict TypeScript store validators and `withOrderStateDirectoryLock` unchanged unless a fixture proves a specific defect.
+
+**Interfaces:** `withScopedObservationStores({ directory, attemptId, authoritySha256, expectedHashes }, task)` returns an opaque observation-only context. That context is rejected by `reserveScopedExits` and `recordScopedAttempt`; it may only append valid observed state via `recordScopedObservation`.
+
+- [x] Add failing tests: identical valid paired records reopen for separately authorized observation; mismatched pair/hash/authority, symlink, stale fence, wrong account, externally active writer and expired exclusion reject; repeated observation authority with unchanged stores rejects before network; no implicit state adoption or replay.
+- [x] Run storage test and verify red.
+- [x] Reuse owner-only reads, exact schema, lock, compare-and-swap, backup and parity checks. Preserve initial backups and existing attempt directory. Observation authority must cover the current hashes, exact prior attempt and all management identities, not the old pre-write hashes masquerading as current state.
+- [x] Before credential/network access, atomically claim the canonical observation-authority hash once in the existing attempt directory using an owner-only exclusive-create receipt, file/directory sync and readback. Preserve the claim after success, failure or crash; an existing claim rejects invocation even if store hashes never changed. Restart requires fresh exact observation authority, never automatic renewal or claim deletion. This is an attempt receipt, not a new ledger or a reset of submission authority. Do not write order records until Task 4 verifies the active transport's account.
+- [x] Preserve STOPPED as a no-submit state even when later broker evidence is filled. Record independently verified fill under the same sticky state; report terminal/position reconciliation from exact observation evidence without marking the controller resubmittable or P&L verified.
+- [x] Deduplicate unchanged broker state before appending history. Preserve the 16-entry limit; on capacity exhaustion or torn write, stop observation writes and issue unresolved handoff. No truncation, automatic repair, fence deletion or stale-backup restore.
+- [x] Exercise injected failure before/after each existing backup/write/sync/rename boundary, including two-store parity; run storage/consumer regressions; commit: `feat: allow scoped observation without submission replay`.
+
+Actual production directory adoption and account-wide writer exclusion remain separate operator-authorized operations. A local lock or zero open orders is not proof of remote/manual writer exclusion. If the operator cannot enforce that exclusion, submission stays blocked.
+
+## Task 4: Bounded accepted/partial/uncertain oversight
+
+**Files:** Create oversight module/test; modify evidence, transport, storage tests and scoped integration fixtures.
+
+**Interfaces:** `mapOversightObservation({ scope, record, receipt, accountBinding, clock })` requires an in-process account binding for the same observation transport, preserves broker event timestamps and verifies a fresh sealed query interval. `runScopedPaperOversight({ authority, records, observationTransport, stores, clock, notify })` returns a safe aggregate and has no submit/cancel/replace capability. A copied scope account hash is not an account binding.
+
+- [x] Add failing tests: old unchanged accepted event with fresh query; partial then filled; unknown submit then exact lookup; terminal status with residual position; future/regressing times, quantity or identity drift; read failure; exhausted budget; expired submit authority with valid observation authority; wrong-account restart with a matching client ID rejected before lookup; repeated authority with unchanged stores rejected before any GET; restart never submits.
+- [x] Run `node scripts/test-scoped-paper-oversight-runtime.mjs`; require red (storage fault tests remain separate).
+- [x] Add an observation-only transport mode using existing fixed PAPER routes, complete-response/time/byte guards and sealed receipts. It rejects POST/PATCH/DELETE and records its own counters. Do not reopen a sticky-failed submission transport or reset its budget.
+- [x] Every fresh observation transport performs exactly one separately budgeted account GET before order lookups. Verify both named account hash bases from that sealed receipt against the approved account and bind the result to the transport's immutable credentials/capability. Reuse existing account identity checks, distinguishing identity validation from permission to trade. A different account, cloned binding or credential/transport replacement rejects all subsequent observation calls and record writes; never infer account identity from a client-order ID or an old capture.
+- [x] Observe only the exact attempted identities. Use original client/order/asset IDs, never a new ID or symbol-only search. Each approved observation cycle permits at most one lookup per attempted identity plus one positions, one open-orders and one clock GET. No pagination/retry; stop immediately on a failed/incomplete response.
+- [x] Require explicit finite `validFrom`, `expiresAt`, `maxCycles`, `intervalMs`, per-group/total ceilings, handoff deadline and operator-attendance evidence in oversight authority; no operational default values. Budget one account GET per authorized invocation plus at most 5 lookups + 3 shared GETs per cycle: maximum `1 + 8 * maxCycles`. An explicit maximum cycle count must fit the signed total ceiling and observation deadline. Task 3's durable single-use claim prevents transport restart from renewing that allowance; a fresh authorization is required instead. Test-only example values are never runtime defaults.
+- [x] Append only meaningful status/quantity changes through Task 3. Broker-filled alone is not position-flat; confirm portfolio/open-order evidence and preserve unscoped holdings. Canceled/rejected/expired residual exposure stays unresolved. No resubmission after a timeout/404 or partial fill.
+- [x] Run oversight, adapter, storage, consumer and notification tests; commit: `feat: supervise scoped PAPER outcomes without new order authority`.
+
+The existing 3-second/8-MiB per-response bounds remain. Observation windows are distinct from the 300-second submit attempt and require separately reviewed finite policy before activation. No unbounded loop, automatic reconnect or schedule is authorized. Power loss cannot be locally detected as an alert delivered; require attending operator until a separately approved independent observer exists.
+
+## Task 5: Default-inert caller, notifications and end-to-end composition
+
+**Files:** Modify existing CLI, adapter, operational/oversight modules, notification helpers and tests. No workflow schedule or launchd file.
+
+**Interfaces:** Preserve `main(argv, dependencies)` and legacy dependency-injected behavior. Add explicit operational schema dispatch and pinned config/approval file loading only when the operator selects that route. No-argument invocation remains zero-I/O `CONFIGURATION_REQUIRED`; local validation never reads credentials or writes stores. `runOperationalPaperCloseout(...)` composes Tasks 1-4, not a parallel controller.
+
+- [ ] Add failing tests: default invocation no I/O; malformed/old approval stops before credentials; safe flags zero network/state; source/code/custody/writer drift before send; all five initial readiness before first POST; observation handoff on first nonterminal/uncertain outcome; ignored manual position is never an order target.
+- [ ] Run operational/adapter tests; require red.
+- [ ] Load fixed PAPER credentials only in a separately authorized runtime caller after config/authority/local evidence gates. Do not source .env implicitly. No host/feed/account auto-selection. Update `SCOPED_PAPER_REVIEWED_FILES` for every newly reachable runtime module and validator.
+- [ ] Use the existing controller/store/transport once for submission and Task 4 for oversight. Any nonterminal/uncertain action permanently stops later targets for that invocation. Stopping submission does not cancel orders; observer expiry or error must surface remaining uncertainty.
+- [x] Reuse `buildScopedNotificationSnapshot`/`deliverNotifications`: accepted, partial, terminal-with-residual, filled-and-reconciled and unresolved handoff remain distinct. Deduplicate by existing receipts; notification failure cannot resubmit or erase state. Mark actual send unverified unless confirmed.
+- [ ] Verify unattended mode without independent supervision rejects before first order; do not claim a Mac power-loss test proves a real remote alert. Run integration/notification/dispatch-safety regressions; commit: `feat: compose default-inert PAPER operational caller`.
+
+Provider-independent caller/notification checkpoint (2026-10-19): observation results now reuse the existing attempt's notification receipt. A fresh, sealed, same-scope/record portfolio result is required for observed flatness or terminal residual exposure; STOPPED history and unverified ownership/P&L remain unchanged. Delivery is bounded by the signed handoff deadline and a three-second send bound. Ambiguous delivery reserves the events without automatic resend, including on a separately authorized observer restart. Unresolved alerts appear before truncated event details. Capacity covers the existing five-record/16-history limit, rather than the shorter submit-only notification budget. Actual delivery is not tested.
+
+The existing CLI additionally accepts the local-only form:
+
+```text
+node scripts/run-scoped-paper-closeout.mjs --validate-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
+```
+
+It verifies owner-only config/approval bytes, the operational approval's structural hash binding, pinned input/code documents and the operator-control attestations below without credentials, broker calls, sender access or store writes. Success is `PINNED_INPUTS_VERIFIED_NOT_READY`, not execution permission, current authority, source readiness or custody proof. Default invocation stays zero-I/O; the legacy execution route is unchanged and does not accept this operational schema. The actual `runOperationalPaperCloseout` composition and authentic source/host/custody verification remain incomplete. The submit-to-observer authority boundary was subsequently implemented as described below; it is not the complete caller. This is not Task 5 completion.
+
+Compatibility: the new observation aggregate's `notificationDelivery` and the scoped residual/handoff event types are additive. Notification envelope/receipt and management-record schemas remain unchanged; old receipts remain deduplication inputs. Referenced runtime code now includes oversight; changed code bytes require newly reviewed pins/authority, never an automatic update to an old private approval. No private file or historical state migration is part of this change.
+
+### Submission-to-observation authority boundary (2026-10-20)
+
+`handoffOperationalObservation` irreversibly retires an existing operational
+capability and returns an opaque, single-use observation capability. Its authority
+is the original operator-approved stable configuration's finite oversight policy,
+not a fabricated `DIRECT_SCOPED_OBSERVATION_INVOCATION` approval. It binds the exact
+five resulting management records and their paired store hashes; the existing
+observation-store boundary verifies those current bytes before credentials/GETs.
+The durable claim hash is fixed to the original stable configuration and approval.
+Changed records or store hashes cannot renew that original observation budget.
+
+The original submission window may have expired, but the original observation
+window and monotonic deadline must still be valid. The handoff cannot extend them.
+Both original submission assertions and source-observation rebinding reject the
+retired capability. Serialized/cloned observer capabilities are unusable. Process
+flags are never rewritten: the bound observer may run under the original explicit
+PAPER invocation flags or a stricter read-only pair; LIVE, mixed flags and other
+unsafe settings reject, including drift between reads. Its transport remains
+GET-only and cannot submit, cancel, replace or mint new authority.
+
+The existing separately approved read-only observer remains supported and requires
+its original read-only process flags. Restarting after a crash still requires
+separate authority; there is no capability persistence or automatic approval.
+This closes the handoff boundary only. The real source producer and full
+`runOperationalPaperCloseout` caller composition remain incomplete, and no
+operational route is enabled by these fixtures.
+
+### Operator-control evidence contract (2026-10-19)
+
+The existing custody and attendance file pins now have exact, versioned contents.
+They are operator declarations, not a new ledger or independent telemetry. No
+production declaration is created by the implementation or fixtures.
+
+- Custody: `scoped-paper-custody-attestation-v1`, basis
+  `OPERATOR_ATTESTED_SINGLE_HOST`, exact account/host/directory, original pre-write
+  hashes, terms/source hashes, recorded time, adoption-approval hash,
+  `historicalEvidenceNormalized=false`, and the writer declaration.
+- Writer: `scoped-paper-writer-attestation-v1`, exact account/host/session,
+  attested/valid-from/expiry times and procedure hash. Its canonical hash must
+  match `writerExclusion.evidenceSha256`; its expiry must match that pinned policy.
+  Exactly four controls are required: GitHub Actions, other hosts and other
+  processes each declare `WRITE_DISABLED`; manual trading declares
+  `OPERATOR_NONINTERFERENCE`. Every control includes an evidence hash. A local
+  lock, unknown/omitted lane or empty broker order list cannot substitute for it.
+- Attendance: `scoped-paper-attendance-attestation-v1`, basis
+  `NAMED_OPERATOR_BROKER_INTERFACE`, operator/account/host/session hashes/binding,
+  attested/valid-from/expiry times, handoff-procedure hash, attended broker
+  interface and acknowledgment that orders can survive host loss. Unattended
+  local-heartbeat claims are rejected. No independent supervisor is activated.
+
+For submission, writer/attendance validity must cover submission, observation and
+handoff, not only the current wall-clock instant. A separately approved read-only
+observer checks its own observation/handoff window; renewing observation must not
+require backdating an attestation or renew the expired submit authority.
+Malformed/future/revoked/mismatched evidence
+blocks. Wall time here only bounds attestation validity; it does not prove market
+opening or host synchronization. `assessOperationalControlEvidence` re-reads the
+pinned bytes and returns `OPERATOR_ATTESTATIONS_BOUND_NOT_READINESS` only when all
+three declarations bind correctly. It explicitly leaves current state, physical
+attendance, host identity, external-writer exclusion and source readiness
+independently unverified, with execution authorization false.
+
+The local validation CLI now reports `BLOCKED` for absent/invalid declarations.
+The observation-only runner checks them before the durable observation claim and
+credential/transport creation, then revalidates pinned inputs/code/control bytes
+before each bounded GET. It does not require a new halt/quote proof to observe an
+already authorized attempt, and cannot regain submission authority. Legacy
+submission and management-state schemas are unchanged. This tightens only the
+new operational/observation interfaces; old private approval pins must never be
+rewritten to satisfy it. Actual custody adoption, writer controls and attendance
+remain separate operator actions, not inferred from passing fixtures.
+
+## Task 6: Source closure, full regression and reviewed integration
+
+**Files:** Existing spec, operational/evidence code/tests, package scripts, CI and this plan's evidence checkboxes only. Any new provider source module needs the documented contract first; no invented endpoint or broker field.
+
+- [ ] Establish and record exact official initialization/current-state, entitlement, coverage and gap-recovery rules, including how the approved 30-second basis is satisfied. A support reply is evidence to evaluate, not executable instructions or sufficient merely because it arrived.
+- [ ] Implement the actual source mapping/producer inside the existing structure only after those facts exist. Add fixtures derived from the documented schema and malformed/unknown/gap cases. Keep broker runtime access unperformed. If contract evidence remains absent, leave this step unchecked and report `SOURCE_INITIAL_STATE_AND_CONTINUITY_UNVERIFIED`, not complete producer.
+- [x] Wire the new operational/byte-binding/oversight offline tests into package scripts and `.github/workflows/ci.yml` using `scripts/fixtures/scoped-paper-offline.cjs`. No secrets, raw artifacts or private scopes in CI.
+- [x] Run the full validation matrix below, then one independent whole-branch review using the approved Native method. A usage-limit failure is NOT a completed review. Address concrete findings and rerun affected checks. Review completed and both findings reproduced/fixed on 2026-10-21; the follow-up matrix passed. This does not check off source/caller completion.
+- [ ] Commit, non-force push and create a single execution-repo PR only after implementation approval. Include safety, additive schema/compatibility, source limits, tests and rollback sections; attach the PR. Merge only after required CI passes. No runtime dispatch/rerun.
+- [ ] Confirm reviewed main commit, post-merge CI and clean intended checkout. Preserve old v1/v2 contracts, original data and unresolved runtime gates. No production state migration is part of the merge.
+
+## Validation matrix
+
+Run with scrubbed process environment, safe flags, existing network-denial preload and disposable owner-only test directories. Do not print private input values. All commands below are static/mock-only except dependency audit, which contacts the package registry and is not a broker/provider proof.
+
+```text
+npm run ops:test:scoped-paper-adapter
+npm run ops:test:scoped-closeout-contract
+npm run ops:test:scoped-paper-operational
+npm run ops:test:order-idempotency-storage
+npm run ops:test:order-ledger-storage
+npm run ops:test:order-state-consistency
+npm run ops:test:live-readiness-blockers
+npm run ops:test:paper-exit-liveness
+npm run ops:test:paper-realized-pnl
+npm run ops:test:protection-lanes
+npm run ops:test:protection-report
+npm run ops:test:paper-order-notifications
+npm run ops:test:dry-run-dispatch-safety
+npm run ops:safety:symbol-agnostic
+npm run ops:safety:telegram-routing
+npm run typecheck
+npm run build
+npm audit --audit-level=high
+git diff --check
+```
+
+## Acceptance and approval separation
+
+| Gate | Evidence required | Current result |
+| --- | --- | --- |
+| Existing component behavior | Fresh network-denied adapter/contract suites | PASS on inspected HEAD; not new operational implementation |
+| Revised sequencing / implementation | Operator requested immediate next-stage work after revised plan request; preserve Native method | APPROVED_OFFLINE_ONLY_2026_10_18 |
+| Full static binding | Tasks 1-6 implemented, fixtures, independent review, PR/CI | PARTIAL: Tasks 1/3/4 locally verified; Tasks 2/5/6 incomplete |
+| Real source validity | Documented current-state/continuity + authentic allowed observation | UNVERIFIED |
+| Operational custody/exclusion | Exact state adoption, current portfolio, single-writer/attendance evidence | NOT_AUTHORIZED_NOT_VERIFIED |
+| PAPER execution | Separate exact session/scope approval plus all current gates | NOT_AUTHORIZED |
+| Parent goal complete | Full operational contract implemented and verified, without claiming an actual closeout | NOT_COMPLETE |
+
+Actual order completion additionally requires broker terminal/position reconciliation, never just code/test/merge/accepted-order evidence. This exceptional five-target work does not itself complete normal Stage6 entry/holding/protection automation or Toss LIVE readiness.
+
+## 2026-10-21 finite source decision and prerequisite audit
+
+Decision: `REVIEWED_PUBLIC_SOURCE_CONTRACT_INSUFFICIENT`. Under the unchanged
+approved design, operational submission is not executable. This is a conclusion
+about the reviewed contract, not a claim that Alpaca never provides the needed
+capability. Do not repeat account/position reads, query today's support thread
+again, rerun workflows, or wait for another RTH to solve a documentation gap.
+The existing bounded support monitor is unchanged; only new substantive evidence
+or an explicitly approved design change can reopen the source decision.
+
+Official sources checked on 2026-10-21:
+
+- [Real-time stock data](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data)
+  documents status events and feed-dependent subscriptions. It distinguishes
+  quotation resumption from trading resumption. It does not establish the initial
+  snapshot and gap-recovery guarantees required by this design.
+- [WebSocket stream](https://docs.alpaca.markets/us/docs/streaming-market-data)
+  describes subscription acknowledgments and possible disconnection of slow
+  clients, including without a prior slow-client error. The reviewed page does
+  not define a complete trading-status replay after reconnect.
+- [Historical stock data](https://docs.alpaca.markets/us/docs/historical-stock-data-1)
+  distinguishes IEX single-exchange data from consolidated SIP. A quote feed or a
+  subscription upgrade is not itself initial trading-status evidence.
+
+These findings do not authorize UNKNOWN-to-NOT_HALTED promotion, a new provider,
+status stream, subscription purchase, or a risk exception. A design amendment
+must specify the actual replacement source and its current-state/continuity
+basis, independent host-time provenance, and current inputs for each applicable
+risk dimension. If proposing a PAPER-only relaxation instead, the amendment
+must name that policy change and its residual risk explicitly; none is applied
+or approved here. A separate operator-managed broker closeout remains the
+alternative already described in the spec, not an agent execution permission.
+
+The added local command is:
+
+```text
+node scripts/run-scoped-paper-closeout.mjs --assess-operational <absolute-config-file> <config-sha256> <absolute-approval-file> <approval-sha256>
+```
+
+It uses only pinned local files. It does not access credentials/transport/sender,
+create state, or execute the adapter. Its three unresolved producer reasons are
+source initialization/continuity, current risk measurements and reference-clock
+provenance. An error from a private input is reduced to a fixed safe code.
+
+The risk document representation is additive `scoped-paper-risk-policy-v1`:
+account and terms hashes, policy source hash, and explicit positive decimal
+limits for position/sector/portfolio exposure, daily loss, drawdown and volatility
+(percent), average daily dollar volume (USD) and earnings distance (integer days).
+There are no default values or exceptions. This validates representation only;
+it neither changes existing configured limits nor proves measurements. Existing
+notional/spread/depth checks remain in the scoped controller. The source hash
+alone does not certify the original policy bytes. Result:
+`POLICY_CONTRACT_VALID_NOT_CURRENT_RISK`.
+
+The clock document representation is additive `scoped-paper-clock-evidence-v1`:
+exact host hash, independent-reference interval basis and reference hash, explicit
+age/uncertainty bounds, and the unmodified local sample/reference interval times.
+The local sample must lie within the reference interval, the interval may not be
+future, and its age/width must fit the declared bounds within the existing
+30-second ceiling. This is neither a sync command nor timestamp compensation.
+Reference authenticity and live monotonic continuity still need the real producer.
+Result: `REFERENCE_INTERVAL_CONSISTENT_NOT_AUTHENTICATED`.
+
+Compatibility: `--validate-operational`, legacy execution and all default flags
+are unchanged. Existing UNKNOWN documents remain readable but are not valid new
+policy/time representations. No private document is migrated. The actual
+`collectOperationalEvidence` and `runOperationalPaperCloseout` composition remain
+incomplete: do not substitute this audit for them or merge the Draft as full
+operational closure. Finish the source decision through new evidence or a
+separately reviewed design, not another identical read-only audit goal.
+
+Rollback before activation: revert the implementation merge without touching private artifacts or stores. After any separately authorized broker action, stop new submissions and preserve oversight/handoff; reverting code is not cancellation or permission to restore historical state.
+
+## Draft self-review
+
+- Spec sections 1-4: scope/authority/legacy compatibility -> Task 1, global constraints.
+- Section 5: exact source production, risk/time and unresolved provider contract -> Tasks 2/6; completion explicitly withheld.
+- Section 6: custody, local fence and external writer boundary -> Task 3 and runtime gate.
+- Section 7: resting/partial/uncertain/terminal, host loss and time semantics -> Tasks 4/5.
+- Section 8: per-route budgets and approvals -> Tasks 4/6; no new operational budget defaults.
+- Section 9: negative cases/compatibility -> task fixtures and full validation matrix.
+- Sections 10-11: official-source research remains evidence, not automatic authorization; original spec preserved.
+- No executed task is represented by an unchecked future step; no blocked producer is relabeled complete.
+
+## Independent draft review and baseline verification
+
+One independent draft review completed on 2026-10-17 against commit `d9c078a9bc76c819f9d651dee49e65fe237c85ab`. Two concrete findings were accepted after checking the current code: restarted observation lacked account verification, and transport-local counters could renew the same authority after restart. Tasks 3/4 now require same-transport account binding and a durable single-use observation-authority claim with explicit account-read budget. These are plan corrections, not implemented fixes or runtime permission.
+
+The requested independent recheck of those corrections stopped at a usage limit. Its agent handle was no longer present when checked on 2026-10-18; no live review is waiting to finish. Correction closure remains independently unverified, not PASS. Do not restart agents to bypass the limit or count the initial review as the recheck. This does not replace Task 6's required whole-branch implementation review.
+
+Fresh baseline checks also passed: `typecheck`, idempotency storage (42 rejection cases), order-ledger storage (51 rejection cases), and notification fixtures including scoped dedup/redaction. They used disposable synthetic files/mock senders, broker requests=0 and production state mutation=0. Existing-component PASS does not check off future implementation tasks or establish provider continuity/custody.
+
+## Offline implementation checkpoint (2026-10-19)
+
+- Tasks 1/3/4 are implemented and locally verified. Observation fixtures cover 210 checks, storage 160 checks and stable authority 105 field mutations. No observation may shorten its signed polling interval or hang indefinitely in its wait callback.
+- Task 2 has the local-byte boundary only: 41 tests for code/source pins, private files, aliases, drift and redaction. Pin verification is not semantic source/custody readiness.
+- Task 5 operational submission/oversight/notification composition is still incomplete. Do not fabricate observation approval from a submit approval or change process flags to make a handoff pass.
+- Task 6 offline test wiring and the full local matrix pass; dependency audit reports zero vulnerabilities. Independent whole-branch review, GitHub CI and merge are not yet complete.
+- Official trading-status initialization/continuous coverage, host-clock/risk evidence and actual custody/exclusion/attendance remain runtime requirements. No API, activation or production state mutation was performed by this development checkpoint.
+
+## Verification and integration checkpoint (2026-10-20)
+
+- At `dc27c3d78ea122b9081908b6e7ed80ecb4e955fd`, the network-denied matrix
+  completed with all 17 npm commands and `git diff --check` passing. This includes
+  105 authority mutations, 173 file/control checks, 160 observation-store checks
+  and 572 observation-runtime checks. The unchanged lockfile's dependency audit
+  reports zero vulnerabilities. These are synthetic/static results only.
+- The fresh-context whole-branch implementation reviewer terminated with a usage
+  limit error, without returning findings. Independent review remains
+  `NOT_COMPLETED_USAGE_LIMIT`; neither the earlier draft review nor self-review
+  substitutes for it. No new reviewer is started to bypass the limit.
+- Preserve this unfinished implementation in a Draft PR and run the normal
+  offline PR CI. Draft publication is not review completion, permission to merge,
+  source-contract closure or operational readiness.
+- Tasks 2, 5 and 6 remain incomplete. Finish documented source/risk/time evidence
+  production and the actual caller composition before claiming full static
+  binding. Do not turn a rejection-only path or operator declarations into proof
+  of current provider/state truth.
+- No broker call, workflow dispatch/rerun, actual notification, state adoption,
+  execution activation, Stage6/OOS change or production-state mutation occurred.
+- Initial Draft PR CI exposed a downstream code-inventory omission: the existing
+  IEX read-only probe did not pin nine newly reachable dependencies of the shared
+  contract. The unchanged transitive-import test reproduced the failure locally.
+  Add those exact files to its reviewed hash inventory and build its compiled
+  validators before the test; all 44 offline probe cases then pass. No probe was
+  executed against Alpaca. Old code hashes/approvals are not repinned or reused:
+  any future invocation must receive a separately reviewed current code hash.
+
+## Independent review corrections (2026-10-21)
+
+The same whole-branch implementation reviewer resumed after the usage-limit
+reset and completed its review of `e313185..00b4247`. The earlier limit result is
+preserved above, but is no longer the current review status. Two P2 findings
+were reproduced with failing offline fixtures; no new reviewer or runtime probe
+was started. This review does not establish the unresolved provider contract or
+complete Tasks 2/5/6.
+
+- Observation now leaves time for the bounded notification send instead of
+  starting a polling interval/read that cannot fit inside its original window.
+  A late-start fixture with equal observation/handoff deadlines sends the
+  unresolved handoff before expiry, without another read cycle. An already
+  expired delivery is rejected before its event keys are reserved; a send that
+  actually starts remains uncertain on failure and is not automatically retried.
+- Order observations retain exact broker event timestamps in the existing
+  paired stores. A separately authorized restart rejects a regressing broker
+  event, including nanosecond regression. Local receipt/recording time is not
+  substituted for the prior broker event. Sticky STOPPED, the history ceiling,
+  terminal reconciliation and false ownership/P&L verification are unchanged.
+
+### Management record compatibility and migration
+
+This changes the management-record schema, not Stage6, the store envelope or
+the legacy invocation schemas. New observed management records use
+`SCOPED_MANAGEMENT_EXIT_V2`, `schemaVersion=2`, and required
+`brokerEventTimestamps={createdAt,updatedAt,filledAt}`. These are the exact
+validated broker order-event times, separately from the existing local
+`createdAt`/`updatedAt`. Zero-filled observations retain `filledAt=null`.
+
+Both scoped store readers validate V1 and V2 records; generic entry/protection
+consumers still reject management records. A V1 reservation/attempt with no
+prior broker observation may advance to V2 when a genuinely verified observation
+arrives. An already observed V1 record without its prior event basis cannot
+establish restart continuity: it is blocked with
+`ORDER_TIMESTAMP_CONTINUITY_UNAVAILABLE`, not silently backfilled or normalized.
+Existing V2 timestamps cannot be removed, regressed or downgraded to V1.
+
+No existing private/runtime state is migrated during development. Future
+authorized writes retain the existing paired-store hash checks, backups,
+single-writer fence and append-only history. Tests cover V1 read compatibility,
+V1-to-V2 observation, malformed/missing times, downgrade rejection, unchanged
+bytes on rejection, generic consumer rejection and cross-invocation continuity.
+
+Rollback is code-only before any authorized V2 persistence. Once V2 records
+exist, an older reader must fail closed; do not roll back into it for continued
+operation, strip the event fields or restore old state. Keep a V2-capable reader
+and preserve the evidence pending an explicitly reviewed recovery. No dependency,
+ledger, execution flag, approval extension or source-policy relaxation is added.
+
+### Post-correction verification
+
+All 18 offline npm commands (the 17-command matrix plus the existing IEX probe
+fixture), `git diff --check`, and the final paired-storage fixture passed after
+the corrections. The final storage fixture includes 129 cumulative checks;
+oversight runtime 584, scoped integration 783, operational file/control 173,
+observation-store 160, authority mutations 105 and IEX probe 44. Counts within a
+suite are cumulative, not additive totals. Every broker/Telegram transport used
+synthetic responses and network denial; production state writes remained zero.
+The package-registry-only audit reports zero vulnerabilities with unchanged
+lockfile SHA-256
+`3a21fe3876d4c8d5091f16f910a2e67a194eeda3f052f8ba7cd61b3c36f7f0f4`.
+
+The independent reviewer inspected the pre-correction branch; closure of its two
+findings is backed by red/green regressions and the follow-up matrix, not a claim
+of a second independent review. PR #57 remains Draft. Passing these tests cannot
+complete the actual source/risk/time producer, final caller or operational proof.
+
+## Prerequisite-audit verification (2026-10-22)
+
+The local risk/time prerequisite audit and `--assess-operational` route passed
+the existing 17-command offline matrix plus the 44-case IEX probe fixture,
+typecheck/build, dependency audit (zero vulnerabilities), and diff checks.
+The fresh-context reviewer found no verified P0-P3 issue in this patch or its
+integration with the prior branch. Its independent coverage was 11 focused
+offline scripts, no-emit typecheck and diff checks; it did not run the entire
+repository matrix or inspect private runtime evidence. That is review of this
+checkpoint, not completion of the missing producer and caller.
+
+The finite outcome remains `REVIEWED_PUBLIC_SOURCE_CONTRACT_INSUFFICIENT`.
+No repeated account read, RTH wait or fixture rerun can close the undocumented
+initial-state/continuity guarantee. Current-risk and independent-clock provenance
+also need genuine source implementations; document/interval validity alone does
+not supply them. Tasks 2/5/6 and the parent goal remain incomplete. Keep PR #57
+Draft and do not merge it as operational binding. Proceed only with sufficient
+official source-contract evidence or a separately approved design amendment;
+do not silently weaken the current contract to make a passing path.

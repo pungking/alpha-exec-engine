@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { managementRecord, hash, at } from './fixtures/scoped-closeout.mjs';
+import { managementRecord, limitedManagementRecord, hash, at } from './fixtures/scoped-closeout.mjs';
 import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 import * as ledger from '../dist/src/order-ledger-storage.js';
 import * as idem from '../dist/src/order-idempotency-storage.js';
@@ -20,6 +20,40 @@ try {
   const premature = { ...r, submissionPhase: 'ATTEMPTED', requestSha256: hash('request'), brokerOrderId: 'fixture-broker', brokerStatus: 'filled', filledQty: '2',
     history: [...r.history, { ...r.history[0], phase: 'ATTEMPTED', brokerStatus: 'filled', filledQty: '2' }] };
   assert.equal(validateScopedManagementRecord(key, premature), false); checks++;
+  const verified = { ...premature, recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, submissionPhase: 'STOPPED',
+    brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at },
+    history: [r.history[0], { ...r.history[0], phase: 'ATTEMPTED' },
+      { ...r.history[0], phase: 'STOPPED', brokerStatus: 'filled', filledQty: '2' }] };
+  assert.equal(validateScopedManagementRecord(key, verified), true); checks++;
+  const v3 = limitedManagementRecord(), observedV3 = { ...verified, recordKind: v3.recordKind, schemaVersion: 3,
+    validationScope: v3.validationScope, externalTradingStatus: v3.externalTradingStatus };
+  assert.equal(validateScopedManagementRecord(key, v3), true, 'V3 reservation has no invented broker event time');
+  assert.equal(validateScopedManagementRecord(key, observedV3), true);
+  for (const patch of [{ validationScope: 'UNATTENDED' }, { externalTradingStatus: 'NOT_HALTED' },
+    { schemaVersion: 2 }, { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2' }, { brokerEventTimestamps: undefined },
+    { brokerEventTimestamps: verified.brokerEventTimestamps }, { realizedPnlVerified: true }]) {
+    assert.equal(validateScopedManagementRecord(key, { ...v3, ...patch }), false); checks++;
+  }
+  for (const field of ['validationScope', 'externalTradingStatus', 'brokerEventTimestamps']) {
+    const missing = { ...v3 }; delete missing[field];
+    assert.equal(validateScopedManagementRecord(key, missing), false); checks++;
+  }
+  assert.equal(validateScopedManagementRecord(key, { ...observedV3, brokerEventTimestamps: null }), false);
+  assert.equal(validateScopedManagementRecord(key, { ...observedV3, brokerEventTimestamps: { ...verified.brokerEventTimestamps,
+    updatedAt: '2026-10-09T15:00:00.000000001Z' } }), false); checks += 4;
+  const erasedObservation = { ...v3, requestSha256: hash('request'), submissionPhase: 'STOPPED',
+    history: [v3.history[0], { ...v3.history[0], phase: 'ATTEMPTED' },
+      { ...v3.history[0], phase: 'OBSERVED', brokerStatus: 'accepted' }, { ...v3.history[0], phase: 'STOPPED' }] };
+  assert.equal(validateScopedManagementRecord(key, erasedObservation), false, 'V3 cannot erase an observed broker status back to unknown'); checks++;
+  for (const patch of [{ schemaVersion: 1 }, { recordKind: 'SCOPED_MANAGEMENT_EXIT_V1' }, { brokerEventTimestamps: null },
+    ...[{ updatedAt: '2026-02-30T00:00:00Z' }, { updatedAt: '2026-10-09T15:00:00.000000001Z' },
+      { filledAt: null }, { filledAt: '2026-10-09T14:59:59Z' }, { createdAt: '2026-10-09T14:59:59Z' },
+      { updatedAt: '2026-10-09T15:00:00.0000000001Z' }, { extra: true }]
+      .map(change => ({ brokerEventTimestamps: { ...verified.brokerEventTimestamps, ...change } }))]) {
+    assert.equal(validateScopedManagementRecord(key, { ...verified, ...patch }), false); checks++;
+  }
+  const missing = { ...verified }; delete missing.brokerEventTimestamps;
+  assert.equal(validateScopedManagementRecord(key, missing), false); checks++;
   for (const patch of [{ firstSeenAt: at }, { side: 'buy' }, { stage6Hash: hash('s') },
     { originalOwnershipVerified: true }, { realizedPnlVerified: true }, { historicalEvidenceNormalized: true },
     { brokerSubmitAllowed: true }, { submissionPhase: 'FILLED' }, { filledQty: '3' },
@@ -39,6 +73,14 @@ try {
     await lib[save](file, state);
     assert.deepEqual((await lib[load](file)).preservedExtension, initial.preservedExtension);
     await assert.rejects(lib[old](file), /SCHEMA_INVALID/); checks += 2;
+    state.orders[key] = verified; await lib[save](file, state);
+    assert.deepEqual((await lib[load](file)).orders[key], verified);
+    await assert.rejects(lib[old](file), /SCHEMA_INVALID/); checks += 2;
+    for (const row of [v3, observedV3]) {
+      state.orders[key] = structuredClone(row); await lib[save](file, state);
+      assert.deepEqual((await lib[load](file)).orders[key], row);
+      await assert.rejects(lib[old](file), /SCHEMA_INVALID/); checks += 2;
+    }
     const bytes = await fs.readFile(file);
     state.orders[key].realizedPnlVerified = true;
     await assert.rejects(lib[save](file, state), /SCHEMA_INVALID/);
@@ -48,8 +90,9 @@ try {
   }
 } finally { await fs.rm(root, { recursive: true, force: true }); }
 
-const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-coordinator-'))); await fs.chmod(directory, 0o700);
 const sha = b => createHash('sha256').update(b).digest('hex');
+for (const recordFactory of [managementRecord, limitedManagementRecord]) {
+const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-coordinator-'))); await fs.chmod(directory, 0o700);
 try {
   const l = Buffer.from(JSON.stringify({ orders: {}, updatedAt: '', extension: 'preserved' }));
   const i = Buffer.from(JSON.stringify({ orders: {}, releases: [], updatedAt: '', extension: 'preserved' }));
@@ -58,7 +101,7 @@ try {
   const expectedHashes = { orderLedger: sha(l), orderIdempotency: sha(i) };
   const options = { directory, expectedHashes, attemptId: 'fixture-attempt' };
   await withScopedStores(options, async context => {
-    const records = Array.from({ length: 5 }, (_, n) => ({ ...managementRecord(n), preWriteHashes: expectedHashes }));
+    const records = Array.from({ length: 5 }, (_, n) => ({ ...recordFactory(n), preWriteHashes: expectedHashes }));
     const mixed = structuredClone(records); mixed[1].accountSha256 = hash('other');
     await assert.rejects(reserveScopedExits(context, mixed), /SCOPED_STORE_/); checks++;
     const receipt = await reserveScopedExits(context, records);
@@ -71,18 +114,45 @@ try {
     await assert.rejects(recordScopedAttempt(context, records[0].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_/); checks++;
     let record = (await ledger.loadScopedOrderLedgerState(path.join(directory, 'order-ledger.json'))).orders[records[0].exitIdempotencyKey];
     for (const [phase, status, qty] of [['OBSERVED', 'partially_filled', '0.5'], ['OBSERVED', 'filled', '2'], ['FLAT_RECONCILED', 'filled', '2']]) {
-      record = { ...record, submissionPhase: phase, brokerStatus: status, filledQty: qty, brokerOrderId: 'fixture-broker',
+      record = { ...record, ...(record.schemaVersion === 3 ? {} : { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2 }),
+        brokerEventTimestamps: { createdAt: at, updatedAt: at, filledAt: at },
+        submissionPhase: phase, brokerStatus: status, filledQty: qty, brokerOrderId: 'fixture-broker',
         history: [...record.history, { at, phase, evidenceSha256: record.observedEvidenceSha256, brokerStatus: status, filledQty: qty }] };
       await recordScopedObservation(context, record.exitIdempotencyKey, record);
+      if (record.schemaVersion === 3) {
+        assert.equal(record.validationScope, 'ATTENDED_PAPER_LIFECYCLE_ONLY');
+        assert.equal(record.externalTradingStatus, 'NOT_VERIFIED');
+        const priorBytes = await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f))));
+        const { validationScope, externalTradingStatus, ...downgrade } = record;
+        Object.assign(downgrade, { recordKind: 'SCOPED_MANAGEMENT_EXIT_V2', schemaVersion: 2, history: [...record.history, record.history.at(-1)] });
+        if (phase !== 'FLAT_RECONCILED') assert.equal(validateScopedManagementRecord(record.exitIdempotencyKey, downgrade), true);
+        await assert.rejects(recordScopedObservation(context, record.exitIdempotencyKey, downgrade), /OBSERVATION_VERSION_INVALID/);
+        assert.deepEqual(await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f)))), priorBytes);
+        checks += 4;
+      }
+      if (status === 'partially_filled') {
+        const bytes = await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f))));
+        const downgraded = { ...record, recordKind: 'SCOPED_MANAGEMENT_EXIT_V1', schemaVersion: 1,
+          history: [...record.history, record.history.at(-1)] };
+        delete downgraded.brokerEventTimestamps;
+        delete downgraded.validationScope; delete downgraded.externalTradingStatus;
+        assert.equal(validateScopedManagementRecord(record.exitIdempotencyKey, downgraded), true); checks++;
+        await assert.rejects(recordScopedObservation(context, record.exitIdempotencyKey, downgraded), /OBSERVATION_TIMESTAMP_REGRESSION/); checks++;
+        const removed = { ...record, history: [...record.history, record.history.at(-1)] };
+        delete removed.brokerEventTimestamps;
+        await assert.rejects(recordScopedObservation(context, record.exitIdempotencyKey, removed), /OBSERVATION_TIMESTAMP_REGRESSION/); checks++;
+        assert.deepEqual(await Promise.all(['order-ledger.json', 'order-idempotency.json'].map(f => fs.readFile(path.join(directory, f)))), bytes); checks++;
+      }
     }
     await assert.rejects(recordScopedAttempt(context, records[1].exitIdempotencyKey, requestSha256, details), /SCOPED_STORE_BATCH_STOPPED/); checks++;
   });
   await assert.rejects(withScopedStores(options, () => {}), /SCOPED_STORE_/); checks++;
   assert.deepEqual(await fs.readFile(path.join(directory, '.scoped-closeout-fixture-attempt', 'order-ledger.json')), l); checks++;
 } finally { await fs.rm(directory, { recursive: true, force: true }); }
+}
 
 // Inject failures into real temporary-file writes, including the cross-file gap.
-for (const stage of ['backup-write', 'backup-sync', 'backup-rename',
+for (const recordFactory of [managementRecord, limitedManagementRecord]) for (const stage of ['backup-write', 'backup-sync', 'backup-rename',
   ...['idempotency', 'ledger'].flatMap(file => ['write', 'sync', 'readback', 'rename', 'after-rename', 'directory-sync'].map(op => `${file}-${op}`))]) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'scoped-fault-'))); await fs.chmod(dir, 0o700);
   const seedL = JSON.stringify({ orders: {}, updatedAt: '', extension: { untouched: true } });
@@ -119,7 +189,7 @@ for (const stage of ['backup-write', 'backup-sync', 'backup-rename',
   syncBuiltinESMExports();
   try {
     await assert.rejects(withScopedStores({ directory: dir, expectedHashes, attemptId: 'fixture-fault' }, async context => {
-      await reserveScopedExits(context, Array.from({ length: 5 }, (_, n) => ({ ...managementRecord(n), attemptId: 'fixture-fault', preWriteHashes: expectedHashes })));
+      await reserveScopedExits(context, Array.from({ length: 5 }, (_, n) => ({ ...recordFactory(n), attemptId: 'fixture-fault', preWriteHashes: expectedHashes })));
     }), /^Error: SCOPED_STORE_[A-Z_]+$/);
     assert.equal(injected, true, stage); checks += 2;
     assert.equal((await fs.stat(path.join(dir, '.scoped-closeout.lock'))).isFile(), true); checks++;

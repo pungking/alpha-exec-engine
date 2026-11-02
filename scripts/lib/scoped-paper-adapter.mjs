@@ -9,19 +9,60 @@ import { authorizeScopedPaperInvocation, assertScopedPaperInvocation, validateOb
   createScopedCloseoutState, advanceScopedCloseout, evaluateCloseoutSnapshot, BUDGET } from './scoped-closeout-contract.mjs';
 import { withScopedStores, reserveScopedExits, recordScopedAttempt, recordScopedObservation, verifyScopedStoreReceipt } from './scoped-closeout-storage.mjs';
 import { isScopedPaperTransport } from './scoped-paper-transport.mjs';
-import { mapAccountEvidence, mapPreflightEvidence, mapOrderObservation, mapPostcheckEvidence } from './scoped-paper-evidence.mjs';
+import { mapAccountEvidence, mapPreflightEvidence, mapOrderObservation, mapPostcheckEvidence,
+  isObservedSnapshot, evidenceTimestampFresh } from './scoped-paper-evidence.mjs';
+import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
-  './scoped-closeout-storage.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
+  './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './scoped-paper-oversight.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
   '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',
 ].map(p => fileURLToPath(new URL(p, import.meta.url))).sort());
 const sha = b => createHash('sha256').update(b).digest('hex');
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
+export function buildAttendedLifecycleSummary({ scope, state, records, notificationDelivery }) {
+  const counts = { NOT_ATTEMPTED: 0, ACCEPTED_OPEN: 0, PARTIALLY_FILLED: 0, SUBMISSION_UNCERTAIN: 0,
+    TERMINAL_WITH_RESIDUAL: 0, FILLED_AND_FLAT_RECONCILED: 0, CONTRACT_BLOCKED: 0 };
+  const targets = scope?.terms?.targets;
+  const valid = Array.isArray(targets) && targets.length === 5 && Array.isArray(records) && records.length === 5
+    && targets.every(t => t !== null && typeof t === 'object' && !Array.isArray(t))
+    && digest(scope.terms) === scope.termsSha256
+    && ['assetId', 'clientOrderId', 'originalIdentitySha256', 'exitIdempotencyKey'].every(k =>
+      new Set(targets.map(t => t?.[k])).size === 5 && new Set(records.map(r => r?.[k])).size === 5)
+    && records.every(r => validateScopedManagementRecord(r?.exitIdempotencyKey, r)
+      && r.recordKind === 'SCOPED_MANAGEMENT_EXIT_V3' && r.attemptId === scope.attemptId
+      && r.accountSha256 === scope.accountSha256 && r.termsSha256 === scope.termsSha256
+      && r.managementAuthoritySha256 === scope.authoritySha256 && digest(r.preWriteHashes) === digest(scope.preWriteHashes)
+      && targets.some(t => ['assetId', 'clientOrderId', 'originalIdentitySha256', 'exitIdempotencyKey', 'qty'].every(k => r[k] === t[k])));
+  const portfolio = state?.portfolio;
+  const reconciled = valid && isObservedSnapshot(portfolio) && portfolio.kind === 'SCOPED_OVERSIGHT_PORTFOLIO'
+    && portfolio.scopeSha256 === digest([scope.attemptId, scope.accountSha256, scope.termsSha256])
+    && evidenceTimestampFresh(portfolio.observedAt, state.observedAt)
+    && records.every(r => portfolio.recordHashes[r.exitIdempotencyKey] === digest(r))
+    && portfolio.portfolioMatches && !portfolio.openOrderConflict;
+  if (!valid) counts.CONTRACT_BLOCKED = 5;
+  else for (const r of records) {
+    let status = 'CONTRACT_BLOCKED';
+    if (r.submissionPhase === 'RESERVED') status = 'NOT_ATTEMPTED';
+    else if (r.brokerStatus === null) status = 'SUBMISSION_UNCERTAIN';
+    else if (r.brokerStatus === 'accepted') status = 'ACCEPTED_OPEN';
+    else if (r.brokerStatus === 'partially_filled') status = 'PARTIALLY_FILLED';
+    else if (reconciled && portfolio.flatKeys.includes(r.exitIdempotencyKey)) status = 'FILLED_AND_FLAT_RECONCILED';
+    else if (reconciled && portfolio.residualKeys.includes(r.exitIdempotencyKey)) status = 'TERMINAL_WITH_RESIDUAL';
+    counts[status]++;
+  }
+  // Observation alone cannot prove the source/risk admission or the complete submission lifecycle.
+  return Object.freeze({ status: 'PAPER_LIFECYCLE_OBSERVATION_SUMMARY_ONLY', counts: Object.freeze(counts),
+    fullScopeReconciled: counts.FILLED_AND_FLAT_RECONCILED === 5 && state?.reason === null,
+    unknownOrUnclassifiedRows: 0, validationScope: 'ATTENDED_PAPER_LIFECYCLE_ONLY', externalTradingStatus: 'NOT_VERIFIED',
+    notificationDeliveryVerified: notificationDelivery?.status === 'DELIVERED', runtimeProof: false,
+    liveReadiness: false, brokerSubmitAllowed: false, realizedPnlVerified: false, historicalEvidenceNormalized: false });
+}
 async function pinnedFile(file, privateOnly) {
+  check(await fs.realpath(file.path) === path.resolve(file.path), 'FILE_INVALID');
   const h = await fs.open(file.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const s = await h.stat();
@@ -30,6 +71,7 @@ async function pinnedFile(file, privateOnly) {
     const bytes = await h.readFile(); check(sha(bytes) === file.sha256, 'FILE_HASH_DRIFT'); return bytes;
   } finally { await h.close(); }
 }
+export { pinnedFile as readScopedPaperFile, verifyInputs as verifyScopedPaperInputs };
 async function verifyInputs(config) {
   check(digest(config.codeFiles.map(f => f.path)) === digest(SCOPED_PAPER_REVIEWED_FILES), 'CODE_MANIFEST_INVALID');
   for (const file of config.codeFiles) await pinnedFile(file, false);
@@ -70,8 +112,8 @@ async function persistWire(config, state, body, receipt) {
   await fs.link(temp, dest); await fs.unlink(temp);
   const d = await fs.open(dir, 'r'); try { await d.sync(); } finally { await d.close(); }
 }
-async function boundedNotificationSend(send, message, clock, startedAt) {
-  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, 300000 - elapsed);
+export async function boundedNotificationSend(send, message, clock, startedAt, deadlineMs = 300000) {
+  const elapsed = clock.monotonicMs() - startedAt, remaining = Math.min(3000, deadlineMs - elapsed);
   check(Number.isFinite(elapsed) && elapsed >= 0 && remaining > 0, 'NOTIFICATION_DEADLINE_EXPIRED');
   const controller = new AbortController(); let timer;
   try {
