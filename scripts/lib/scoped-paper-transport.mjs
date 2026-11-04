@@ -112,9 +112,11 @@ function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubm
         check(Number.isFinite(dispatchAt) && dispatchAt >= before, 'CLOCK_INVALID');
         check(Date.parse(dispatchedAt) >= Date.parse(requestedAt), 'CLOCK_INVALID');
         check(dispatchAt - start < deadlineMs, 'ATTEMPT_EXPIRED');
+        // Persistence/approval checks consume the invocation budget, not broker response latency.
+        requestedAt = dispatchedAt;
         const timeout = new Promise((_, reject) => { timer = setTimeout(() => {
           abort.abort(); reject(Error('REQUEST_TIMEOUT'));
-        }, Math.min(3000, deadlineMs - (before - start))); });
+        }, Math.min(3000, deadlineMs - (dispatchAt - start))); });
         const work = async () => {
           const options = { method: target.method, redirect: 'error', signal: abort.signal,
             headers: { ...headers, ...(group === 'submit' ? { 'Content-Type': 'application/json' } : {}) },
@@ -157,9 +159,9 @@ function createTransport({ credentials, fetchImpl, clock, deadlineMs, beforeSubm
           return data;
         };
         const data = await Promise.race([work(), timeout]);
-        retrievedAt = clock.now(); const completedAt = clock.monotonicMs(); durationMs = completedAt - before;
+        retrievedAt = clock.now(); const completedAt = clock.monotonicMs(); durationMs = completedAt - dispatchAt;
         check(!abort.signal.aborted && Number.isFinite(completedAt) && completedAt >= dispatchAt && durationMs <= 3000
-          && Date.parse(retrievedAt) >= Date.parse(dispatchedAt), 'CLOCK_INVALID');
+          && completedAt - start <= deadlineMs && Date.parse(retrievedAt) >= Date.parse(dispatchedAt), 'CLOCK_INVALID');
         last = completedAt;
         return seal({ group, phase, status, complete, bytes, responseSha256, requestedAt, retrievedAt, durationMs, data, error: null,
           ...(group === 'quotes' ? { feed: target.feed } : {}) }, transport, clock.now === now && clock.monotonicMs === monotonicMs ? {

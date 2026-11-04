@@ -16,6 +16,7 @@ export const CODE_FILES = Object.freeze([
   'scripts/lib/scoped-paper-transport.mjs', 'scripts/lib/scoped-paper-evidence.mjs', 'scripts/lib/scoped-closeout-contract.mjs',
   'scripts/lib/scoped-paper-operational.mjs', 'scripts/lib/scoped-paper-adapter.mjs',
   'scripts/lib/scoped-closeout-storage.mjs', 'scripts/paper-order-notifications.mjs',
+  'scripts/lib/github-paper-custody.mjs', 'scripts/paper-exact-cache-private-export.mjs',
   'dist/src/scoped-management-record.js', 'dist/src/order-state-storage.js',
   'dist/src/order-ledger-storage.js', 'dist/src/order-idempotency-storage.js', 'dist/src/json-utils.js',
 ]);

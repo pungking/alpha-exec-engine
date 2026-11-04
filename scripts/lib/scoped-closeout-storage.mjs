@@ -8,6 +8,7 @@ import { loadScopedOrderIdempotencyState, saveScopedOrderIdempotencyState } from
 import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import { sha256Canonical as canonical } from './active-position-limited-recovery.mjs';
 import { isScopedObservationAccount, evidenceTimestampNs } from './scoped-paper-evidence.mjs';
+import { assertGithubCustody, checkpointGithubCustody } from './github-paper-custody.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const contexts = new WeakMap();
@@ -40,7 +41,9 @@ async function backup(directory, attemptId, expectedHashes) {
   await syncDirectory(backupDir); await syncDirectory(directory);
 }
 function contextOf(context) {
-  const c = contexts.get(context); check(c && !c.closed && !c.poisoned, 'CONTEXT_INVALID'); return c;
+  const c = contexts.get(context); check(c && !c.closed && !c.poisoned, 'CONTEXT_INVALID');
+  if (c.custody !== undefined) assertGithubCustody(c.custody, c);
+  return c;
 }
 async function validateStoreLocation({ directory, expectedHashes, attemptId }) {
   check(typeof directory === 'string' && path.isAbsolute(directory) && await fs.realpath(directory) === path.resolve(directory), 'DIRECTORY_INVALID');
@@ -49,8 +52,9 @@ async function validateStoreLocation({ directory, expectedHashes, attemptId }) {
   check(/^[a-zA-Z0-9_-]{1,96}$/.test(attemptId) && expectedHashes && Object.keys(expectedHashes).sort().join(',') === 'orderIdempotency,orderLedger'
     && Object.values(expectedHashes).every(pin), 'PIN_INVALID');
 }
-export async function withScopedStores({ directory, expectedHashes, attemptId }, task) {
+export async function withScopedStores({ directory, expectedHashes, attemptId, custody }, task) {
   try {
+    if (custody !== undefined) assertGithubCustody(custody, { directory, attemptId });
     await validateStoreLocation({ directory, expectedHashes, attemptId });
     return await withOrderStateDirectoryLock(directory, async () => {
       check(canonical(await readHashes(directory)) === canonical(expectedHashes), 'HASH_DRIFT');
@@ -59,8 +63,9 @@ export async function withScopedStores({ directory, expectedHashes, attemptId },
       check([...Object.values(ledger.orders), ...Object.values(idem.orders)].every(r => !r.recordKind), 'EXISTING_MANAGEMENT_ATTEMPT');
       check(!(await fs.readdir(directory)).some(name => name.startsWith('.scoped-closeout-')), 'EXISTING_MANAGEMENT_ATTEMPT');
       await backup(directory, attemptId, expectedHashes);
+      if (custody !== undefined) await checkpointGithubCustody(custody, 'BACKUP');
       const context = Object.freeze({});
-      const c = { directory, attemptId, expectedHashes: structuredClone(expectedHashes), hashes: await readHashes(directory),
+      const c = { directory, attemptId, custody, expectedHashes: structuredClone(expectedHashes), hashes: await readHashes(directory),
         ledger, idem, keys: [], closed: false, poisoned: false, pending: false };
       contexts.set(context, c);
       try { const result = await task(context); check(!c.poisoned && !c.pending, 'COMMIT_UNCERTAIN'); return result; }
@@ -89,8 +94,9 @@ async function claimObservation(directory, attemptId, authoritySha256, expectedH
   await fs.link(temp, dest); await fs.unlink(temp); await syncDirectory(dir);
   check((await privateBytes(dest)).equals(bytes), 'CLAIM_VERIFY_FAILED');
 }
-export async function withScopedObservationStores({ directory, expectedHashes, attemptId, authoritySha256 }, task) {
+export async function withScopedObservationStores({ directory, expectedHashes, attemptId, authoritySha256, custody }, task) {
   try {
+    if (custody !== undefined) assertGithubCustody(custody, { directory, attemptId });
     await validateStoreLocation({ directory, expectedHashes, attemptId }); check(pin(authoritySha256), 'PIN_INVALID');
     return await withOrderStateDirectoryLock(directory, async () => {
       check(canonical(await readHashes(directory)) === canonical(expectedHashes), 'HASH_DRIFT');
@@ -106,7 +112,8 @@ export async function withScopedObservationStores({ directory, expectedHashes, a
         check(new Set(records.map(r => r[key])).size === 5, 'IDENTITY_DUPLICATE');
       check(records.some(r => r.submissionPhase !== 'RESERVED'), 'NO_ATTEMPTED_IDENTITY');
       await claimObservation(directory, attemptId, authoritySha256, expectedHashes, records);
-      const context = Object.freeze({}), c = { directory, attemptId, expectedHashes: structuredClone(expectedHashes),
+      if (custody !== undefined) await checkpointGithubCustody(custody, 'OBSERVATION_CLAIM');
+      const context = Object.freeze({}), c = { directory, attemptId, custody, expectedHashes: structuredClone(expectedHashes),
         hashes: await readHashes(directory), ledger, idem, keys: records.map(r => r.exitIdempotencyKey),
         observationOnly: true, accountSha256: records[0].accountSha256, accountBinding: null, closed: false, poisoned: false, pending: false };
       contexts.set(context, c);
@@ -138,6 +145,9 @@ async function commit(c, records) {
     const ledger = await loadScopedOrderLedgerState(path.join(c.directory, files.orderLedger));
     check(canonical(idem) === canonical(c.idem) && canonical(ledger) === canonical(c.ledger), 'PARITY_INVALID');
     c.idem = idem; c.ledger = ledger; c.hashes = await readHashes(c.directory);
+    if (c.custody !== undefined) await checkpointGithubCustody(c.custody,
+      snapshot.every(r => r.submissionPhase === 'RESERVED') ? 'RESERVATION'
+        : snapshot.every(r => r.submissionPhase === 'ATTEMPTED') ? 'ATTEMPT' : 'OBSERVATION');
     return Object.freeze({ recordsSha256: canonical(snapshot), storeHashes: Object.freeze({ ...c.hashes }) });
   } catch { c.poisoned = true; throw new Error('SCOPED_STORE_COMMIT_UNCERTAIN'); }
   finally { c.pending = false; }

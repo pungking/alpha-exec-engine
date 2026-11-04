@@ -9,6 +9,8 @@ import { createScopedPaperTransport } from './lib/scoped-paper-transport.mjs';
 import { invocationFixture, initialReceipts, useIexProof, hash } from './fixtures/scoped-paper-adapter.mjs';
 import { mapPreflightEvidence } from './lib/scoped-paper-evidence.mjs';
 import * as controller from './lib/scoped-closeout-contract.mjs';
+import { memoryGithub, file as custodyFile } from './fixtures/github-paper-custody.mjs';
+import { openGithubCustody, releaseGithubCustody } from './lib/github-paper-custody.mjs';
 const adapter = await import('./lib/scoped-paper-adapter.mjs').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') return {}; throw e; });
 assert.equal(typeof adapter.authorizeScopedPaperInvocation, 'function', 'explicit invocation gate must exist');
 const cli = await import('./run-scoped-paper-closeout.mjs').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') return {}; throw e; });
@@ -81,7 +83,8 @@ if (!process.argv.includes('--fixture-child')) {
     const f = invocationFixture();
     const wantsNotify = ['notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang'].includes(mode);
     let sends = 0, sendSignal;
-    const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paper-adapter-fixture-')));
+    let directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paper-adapter-fixture-')));
+    const cleanupDirectory = directory;
     await fs.chmod(directory, 0o700); let posts = 0, gets = 0; const orders = [];
     const read = async name => JSON.parse(await fs.readFile(path.join(directory, name), 'utf8'));
     try {
@@ -131,10 +134,33 @@ if (!process.argv.includes('--fixture-child')) {
       if (mode === 'locked') await fs.writeFile(path.join(directory, '.scoped-closeout.lock'), 'fixture-other-owner', { mode: 0o600 });
       if (mode === 'accountMismatch') f.bodies.account.id = 'wrong-account';
       if (mode === 'openOrder') f.bodies.orders = [{ id: 'fixture-open-child', asset_id: f.assets[0].id }];
-      let advanced = false;
-      const clock = mode === 'stale' ? { ...f.clock, now: () => advanced ? '2026-10-09T15:00:31.000Z' : f.clock.now() } : f.clock;
+      let advanced = false, custody, remote, persistDelay = 0;
+      if (mode.startsWith('github')) {
+        const files = await Promise.all(['order-ledger.json', 'order-idempotency.json', 'source.json'].map(async name =>
+          custodyFile(name === 'source.json' ? 'inputs/source.json' : name, await fs.readFile(path.join(directory, name)))));
+        remote = memoryGithub({ mutatePayload: p => { p.files = files; p.accountSha256 = f.input.accountSha256; } });
+        remote.config.accountSha256 = f.input.accountSha256;
+        remote.config.inputFiles = { 'inputs/source.json': f.config.sourceFile.sha256 };
+        directory = path.join(directory, 'restored');
+        custody = await openGithubCustody({ config: remote.config, request: remote.request, privateKey: remote.privateKey, directory });
+        f.config.directory = directory; f.config.sourceFile.path = path.join(directory, 'inputs/source.json');
+        f.approval.configSha256 = hash(f.config);
+        remote.afterPatch = () => {
+          if (remote.snapshot().phase !== 'WIRE') return;
+          if (mode === 'githubFailure') throw Error('fixture lost acknowledgement');
+          if (mode === 'githubStale') advanced = true;
+          if (mode === 'githubSlow') persistDelay += 4000;
+        };
+      }
+      const clock = mode === 'githubSlow' ? { now: () => new Date(Date.parse(f.clock.now()) + persistDelay).toISOString(),
+        monotonicMs: () => f.clock.monotonicMs() + persistDelay }
+        : ['stale', 'githubStale'].includes(mode) ? { ...f.clock, now: () => advanced ? '2026-10-09T15:00:31.000Z' : f.clock.now() } : f.clock;
       const fakeFetch = async (url, init) => {
         if (init.method === 'POST') {
+          if (remote) {
+            const checkpoint = remote.snapshot(); assert.equal(checkpoint.phase, 'WIRE');
+            assert.ok(checkpoint.files.some(x => x.path.endsWith(`/wire-${posts}.json`)));
+          }
           posts++;
           if (f.config.notifications) { const receipt = await read(`.scoped-closeout-${f.input.attemptId}/notifications.json`); assert.equal(receipt.lastDelivery, 'BASELINED'); }
           const body = JSON.parse(init.body), i = posts - 1, target = f.input.terms.targets[i];
@@ -166,11 +192,12 @@ if (!process.argv.includes('--fixture-child')) {
       const transport = options => mode === 'forgedTransport' ? { request: async () => { throw Error('must-not-call'); }, counts: () => ({}) } : createScopedPaperTransport({ ...options, credentials: { key: 'fixture-key', secret: 'fixture-secret' }, fetchImpl: fakeFetch });
       let timeout, rejectDeadline; const stalled = new Promise((_, reject) => { rejectDeadline = reject; });
       const notify = wantsNotify ? { destinationSha256: hash('private-route'), send: async (message, { signal } = {}) => { sends++; sendSignal = signal; if (mode === 'notifyHang') { timeout = setTimeout(() => rejectDeadline(Error('runner notification deadline missing')), 4000); return new Promise(() => {}); } assert.ok(message.includes('제한관리 범위')); if (mode === 'notifyFailure') throw Error('fixture-private'); return { ok: true }; } } : undefined;
-      const result = await Promise.race([adapter.runScopedPaperCloseout({ config: f.config, approval: f.approval, transport, clock, notify }),
+      const result = await Promise.race([adapter.runScopedPaperCloseout({ config: f.config, approval: f.approval, transport, clock, notify, custody }),
         stalled]).finally(() => clearTimeout(timeout));
       process.env.READ_ONLY = 'false';
-      const success = ['success', 'iexSuccess', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang', 'equivalentQty'].includes(mode);
+      const success = ['success', 'iexSuccess', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'notifyHang', 'equivalentQty', 'githubSuccess', 'githubSlow'].includes(mode);
       assert.equal(result.status, success ? 'COMPLETE' : 'STOPPED', JSON.stringify({ mode, result }));
+      if (['githubSuccess', 'githubSlow'].includes(mode)) await releaseGithubCustody(custody);
       assert.equal(posts, success ? 5 : ['partial', 'rejected', 'submitTimeout', 'postReadFailure', 'lookup404'].includes(mode) ? 1 : 0);
       assert.equal(sends, ['notifySuccess', 'notifyFailure', 'notifyHang'].includes(mode) ? 1 : 0);
       if (mode === 'notifySuccess') assert.equal(result.notificationDelivery.status, 'DELIVERED');
@@ -199,10 +226,11 @@ if (!process.argv.includes('--fixture-child')) {
         assert.equal(gets + posts, before, 'new ID must not bypass a failed preflight attempt');
       }
       assert.ok(!JSON.stringify(result).includes('fixture-broker-') && !JSON.stringify(result).includes('FIX0'));
-    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+    } finally { await fs.rm(cleanupDirectory, { recursive: true, force: true }); }
   }
   for (const mode of ['success', 'partial', 'rejected', 'submitTimeout', 'postReadFailure', 'accountMismatch', 'openOrder',
     'badSourceHash', 'sourceIdentityMismatch', 'stateDrift', 'stale', 'sourceDrift', 'flagsDrift', 'locked', 'lookup404', 'forgedTransport', 'mutateCaller', 'notifySuccess', 'notifyFailure', 'notifyNoAuthority', 'futureAuthority', 'equivalentQty', 'quantityDrift', 'notifyHang', 'obsoleteQuoteUnits',
-    'iexSuccess', 'iexMissingUnits', 'iexUnknownHalt', 'iexMissingRisk', 'iexWideSpread', 'iexLowLiquidity', 'iexOpenOrder']) await scenario(mode);
+    'iexSuccess', 'iexMissingUnits', 'iexUnknownHalt', 'iexMissingRisk', 'iexWideSpread', 'iexLowLiquidity', 'iexOpenOrder',
+    'githubSuccess', 'githubFailure', 'githubStale', 'githubSlow']) await scenario(mode);
   console.log('scoped PAPER runner: PASS (REST-shaped fake transport, durable private stores, failure/replay matrix)');
 }

@@ -33,6 +33,7 @@ function validateOversight(o) {
 }
 
 // Static validation establishes an approval hash, not the truth of any pinned source file.
+export { validateGithubCustodyConfiguration } from './github-paper-custody.mjs';
 export function validateOperationalConfiguration(config) { return validateConfiguration(config, false); }
 export function validateAttendedConfiguration(config) { return validateConfiguration(config, true); }
 function validateConfiguration(config, attended) {

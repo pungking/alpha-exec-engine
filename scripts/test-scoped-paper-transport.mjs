@@ -68,6 +68,17 @@ const permitted = make(async (url, init) => {
 assert.equal((await permitted.request({ group: 'submit', phase: 'submit', routeInput: {}, body: order })).complete, true);
 assert.equal(posts, 1);
 const submit = { group: 'submit', phase: 'submit', routeInput: {}, body: order };
+for (const [gateMs, responseMs, error] of [[4000, 0, null], [4000, 3001, 'CLOCK_INVALID'],
+  [299999, 2, 'CLOCK_INVALID'], [300001, 0, 'ATTEMPT_EXPIRED']]) {
+  let tick = 0, calls = 0;
+  const clock = { monotonicMs: () => tick, now: () => new Date(Date.parse('2026-10-09T15:00:00Z') + tick).toISOString() };
+  const t = make(async () => { calls++; tick += responseMs; return new Response('{}'); },
+    { clock, beforeSubmit: async () => { tick += gateMs; return true; } });
+  const result = await t.request(submit);
+  assert.equal(result.error, error, `gate=${gateMs},response=${responseMs}`);
+  assert.equal(calls, gateMs < 300000 ? 1 : 0);
+  if (error === null) { assert.equal(result.durationMs, responseMs); assert.equal(result.requestedAt, '2026-10-09T15:00:04.000Z'); }
+}
 for (const mode of ['stop-during-await', 'false', 'throw', 'promise', 'rejected-promise']) {
   let release, retired = false, calls = 0, wireChecks = 0;
   const beforeSubmit = () => new Promise(resolve => { release = resolve; });
