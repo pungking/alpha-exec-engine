@@ -5,6 +5,7 @@ import { sha256Canonical } from './lib/active-position-limited-recovery.mjs';
 import { decimalRatio, compare } from './lib/closeout-decimal.mjs';
 import { validateScopedManagementRecord } from '../dist/src/scoped-management-record.js';
 import { isObservedSnapshot } from './lib/scoped-paper-evidence.mjs';
+import { assertGithubCustody, checkpointGithubCustody } from './lib/github-paper-custody.mjs';
 
 const SCHEMA = 'paper-order-notification-v1';
 const RECEIPT_SCHEMA = 'paper-order-notification-receipts-v1';
@@ -296,9 +297,13 @@ function atomicReceipt(file, value) {
 
 // Reservation before send prevents automatic replay after an ambiguous response.
 // This is not exactly-once delivery: filesystem/cache and Telegram cannot commit together.
-export async function deliverNotifications({ snapshot, receiptPath, send }) {
+export async function deliverNotifications({ snapshot, receiptPath, send, custody }) {
   const safe = (status, eventCount = 0) => ({ status, eventCount, brokerRequests: 0, orderMutation: false });
   if (!validSnapshot(snapshot)) return safe('EVIDENCE_UNAVAILABLE');
+  if (custody !== undefined) {
+    try { assertGithubCustody(custody, { receiptPath, accountSha256: snapshot.accountSha256 }); }
+    catch { return safe('RECEIPT_INVALID'); }
+  }
   const lock = `${receiptPath}.lock`;
   let fd;
   try { fd = fs.openSync(lock, 'wx', 0o600); }
@@ -317,6 +322,7 @@ export async function deliverNotifications({ snapshot, receiptPath, send }) {
     } else {
       atomicReceipt(receiptPath, { schemaVersion: RECEIPT_SCHEMA, accountSha256: snapshot.accountSha256,
         seen: snapshot.events.map(e => e.eventKey).sort(), lastDelivery: 'BASELINED', attempts: [] });
+      if (custody !== undefined) await checkpointGithubCustody(custody, 'NOTIFICATION');
       return safe('BASELINE_RECORDED');
     }
     const prior = new Set(state.seen);
@@ -328,12 +334,14 @@ export async function deliverNotifications({ snapshot, receiptPath, send }) {
       lastDelivery: 'RESERVED', attempts: [...state.attempts, attempt] };
     if (!validReceipt(next)) return safe('RECEIPT_CAPACITY_REACHED');
     atomicReceipt(receiptPath, next);
+    if (custody !== undefined) await checkpointGithubCustody(custody, 'NOTIFICATION');
     try {
       const response = await send(formatNotification(events, snapshot.observationBasis, snapshot.validationScope));
       next.lastDelivery = response?.ok === true ? 'DELIVERED' : 'UNCERTAIN';
     } catch { next.lastDelivery = 'UNCERTAIN'; }
     attempt.status = next.lastDelivery;
     atomicReceipt(receiptPath, next);
+    if (custody !== undefined) await checkpointGithubCustody(custody, 'NOTIFICATION');
     return safe(next.lastDelivery === 'DELIVERED' ? 'DELIVERED' : 'DELIVERY_UNCERTAIN', events.length);
   } catch { return safe('RECEIPT_WRITE_FAILED'); }
   finally { fs.closeSync(fd); fs.unlinkSync(lock); }

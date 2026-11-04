@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "ops:test:github-paper-custody": "npm run build && node --require ./scripts/fixtures/scoped-paper-offline.cjs scripts/test-github-paper-custody.mjs",
     "progress:overall": "node scripts/progress-summary.mjs",
     "progress:daily": "node scripts/progress-daily.mjs",
     "evidence:snippet": "node scripts/evidence-snippet.mjs",

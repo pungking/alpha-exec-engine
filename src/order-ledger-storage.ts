@@ -98,3 +98,4 @@ function validateScopedState(value: unknown): asserts value is ScopedOrderLedger
 }
 export const loadScopedOrderLedgerState = (file: string): Promise<ScopedOrderLedgerState> => loadValidatedOrderState(file, validateScopedState, fail);
 export const saveScopedOrderLedgerState = (file: string, state: ScopedOrderLedgerState): Promise<void> => saveValidatedOrderState(file, state, validateScopedState, fail);
+export { validateScopedState as validateScopedOrderLedgerState };

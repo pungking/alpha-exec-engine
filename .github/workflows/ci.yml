@@ -57,6 +57,14 @@ jobs:
           LIVE_ORDER_SUBMIT_ENABLED: "false"
           MARKET_GUARD_MODE: observe
         run: npm run ops:test:scoped-paper-operational
+      - name: GitHub PAPER custody contract (network denied, synthetic encrypted state only)
+        env:
+          ALPHA_ENV: PAPER
+          READ_ONLY: "true"
+          EXEC_ENABLED: "false"
+          LIVE_ORDER_SUBMIT_ENABLED: "false"
+          MARKET_GUARD_MODE: observe
+        run: npm run ops:test:github-paper-custody
       - name: PAPER IEX read-only probe (network denied, synthetic inputs only)
         run: NODE_OPTIONS="--require=$PWD/scripts/fixtures/scoped-paper-offline.cjs" npm run ops:test:paper-iex-readonly-probe
       - name: Attended PAPER risk and authority contracts (offline, not lifecycle readiness)

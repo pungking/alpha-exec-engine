@@ -13,11 +13,13 @@ import { mapAccountEvidence, mapPreflightEvidence, mapOrderObservation, mapPostc
   isObservedSnapshot, evidenceTimestampFresh } from './scoped-paper-evidence.mjs';
 import { validateScopedManagementRecord } from '../../dist/src/scoped-management-record.js';
 import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
+import { assertGithubCustody, checkpointGithubCustody } from './github-paper-custody.mjs';
 
 export const SCOPED_PAPER_REVIEWED_FILES = Object.freeze([
   './scoped-paper-adapter.mjs', './scoped-paper-transport.mjs', './scoped-paper-evidence.mjs', './scoped-closeout-contract.mjs',
   './scoped-closeout-storage.mjs', './scoped-paper-operational.mjs', './scoped-paper-oversight.mjs', './closeout-decimal.mjs', './active-position-limited-recovery.mjs',
   '../paper-order-notifications.mjs', '../run-scoped-paper-closeout.mjs',
+  './github-paper-custody.mjs', '../paper-exact-cache-private-export.mjs',
   '../../dist/src/order-state-storage.js', '../../dist/src/order-ledger-storage.js',
   '../../dist/src/order-idempotency-storage.js', '../../dist/src/scoped-management-record.js', '../../dist/src/json-utils.js',
 ].map(p => fileURLToPath(new URL(p, import.meta.url))).sort());
@@ -94,9 +96,9 @@ function routeInput(effect, state, cache, assetIndex, feed) {
   if (effect.group === 'quotes') return { symbols: state.scope.terms.targets.map(t => cache.get(`assets:${t.assetId}`)?.data?.symbol), feed };
   return {};
 }
-function wireOrder(state) {
+function wireOrder(state, record = state.rows[state.index]) {
   const o = state.order, row = state.snapshot.rows.find(r => r.assetId === o.assetId);
-  check(row && digest(o) === state.rows[state.index].requestSha256, 'INTENT_MISMATCH');
+  check(row && digest(o) === record.requestSha256, 'INTENT_MISMATCH');
   return { symbol: row.symbol, qty: o.qty, side: 'sell', type: 'limit', time_in_force: 'day', limit_price: o.limitPrice,
     client_order_id: o.clientOrderId, extended_hours: false };
 }
@@ -126,7 +128,7 @@ export async function boundedNotificationSend(send, message, clock, startedAt, d
   } finally { clearTimeout(timer); }
 }
 
-export async function runScopedPaperCloseout({ config, approval, transport, clock, notify }) {
+export async function runScopedPaperCloseout({ config, approval, transport, clock, notify, custody }) {
   let activeTransport, state, step, lastReceipt, stateWriteAttempted = false, reason = null, notificationSnapshot, receiptPath, sendNotification;
   let notificationDelivery = { status: 'NOT_AUTHORIZED', eventCount: 0 };
   const cache = new Map(), notificationEvents = new Map();
@@ -152,12 +154,12 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
     await verifyInputs(config);
     assertScopedPaperInvocation(capability, { config, clock });
     stateWriteAttempted = true;
-    await withScopedStores({ directory: config.directory, expectedHashes: scope.preWriteHashes, attemptId: scope.attemptId }, async context => {
+    await withScopedStores({ directory: config.directory, expectedHashes: scope.preWriteHashes, attemptId: scope.attemptId, custody }, async context => {
       if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
         sendNotification = message => boundedNotificationSend(notify.send, message, clock, start);
         receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
         collectNotifications([]);
-        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification, custody });
         if (notificationDelivery.status !== 'BASELINE_RECORDED') { receiptPath = null; notificationSnapshot = null; }
       }
       const beforeSubmit = async body => {
@@ -165,17 +167,20 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
         await verifyScopedStoreReceipt(context, lastReceipt);
         check(state.phase === 'SUBMITTING' && digest(body) === digest(wireOrder(state)), 'WIRE_MISMATCH');
         check(evaluateCloseoutSnapshot(scope, state.snapshot, timing(), state.committed).status === 'READY_REPORT_ONLY', 'PRESEND_STALE');
-        await persistWire(config, state, body, lastReceipt);
+        if (custody === undefined) await persistWire(config, state, body, lastReceipt);
+        else assertGithubCustody(custody);
         assertScopedPaperInvocation(capability, { config, clock });
         await verifyScopedStoreReceipt(context, lastReceipt);
         check(evaluateCloseoutSnapshot(scope, state.snapshot, timing(), state.committed).status === 'READY_REPORT_ONLY', 'PRESEND_STALE');
         return true;
       };
+      if (custody !== undefined) assertGithubCustody(custody, { directory: config.directory, accountSha256: scope.accountSha256, attemptId: scope.attemptId });
       const candidate = transport({ beforeSubmit, clock, deadlineMs: 300000 - timing().elapsedMs });
       check(isScopedPaperTransport(candidate, beforeSubmit), 'TRANSPORT_INVALID');
       activeTransport = candidate;
       go({ type: 'INITIALIZE' });
       for (let n = 0; n < 80 && !['STOPPED', 'COMPLETE'].includes(state.phase); n++) {
+        if (custody !== undefined) assertGithubCustody(custody);
         let assetIndex = 0; const responses = [];
         for (const e of step.effects) {
           if (e.type === 'NOTIFY') continue;
@@ -196,6 +201,11 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
           case 'ATTEMPT_PERSIST':
             lastReceipt = await recordScopedAttempt(context, record.exitIdempotencyKey, record.requestSha256,
               { at: record.updatedAt, limitPrice: record.limitPrice, evidenceSha256: record.observedEvidenceSha256 });
+            // Finish custody before the controller starts its unchanged submit-response deadline.
+            if (custody !== undefined) {
+              await persistWire(config, state, wireOrder(state, record), lastReceipt);
+              await checkpointGithubCustody(custody, 'WIRE');
+            }
             go({ type: 'ATTEMPT_RECORDED', receipt: lastReceipt }); break;
           case 'SUBMITTING': {
             const response = await activeTransport.request({ group: 'submit', phase: 'submit', routeInput: {}, body: wireOrder(state) });
@@ -231,7 +241,7 @@ export async function runScopedPaperCloseout({ config, approval, transport, cloc
   if (receiptPath) {
     try {
       collectNotifications([]);
-      notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+      notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification, custody });
     } catch { notificationDelivery = { status: 'DELIVERY_UNCERTAIN', eventCount: 0 }; }
   }
   const counts = activeTransport?.counts() ?? { ...Object.fromEntries(Object.keys(BUDGET).map(k => [k, 0])), total: 0 };

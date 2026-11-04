@@ -8,6 +8,7 @@ import { bindScopedObservationAccount, isScopedObservationAccount, mapOversightO
 import { withScopedObservationStores, recordScopedObservation } from './scoped-closeout-storage.mjs';
 import { boundedNotificationSend, buildAttendedLifecycleSummary } from './scoped-paper-adapter.mjs';
 import { buildScopedNotificationSnapshot, deliverNotifications } from '../paper-order-notifications.mjs';
+import { assertGithubCustody } from './github-paper-custody.mjs';
 
 const check = (ok, code) => { if (!ok) throw Error(`SCOPED_ADAPTER_${code}`); };
 const failureCode = error => /^SCOPED_(?:ADAPTER|STORE|EVIDENCE|CLOSEOUT)_[A-Z_]+$/.test(error?.message)
@@ -84,7 +85,7 @@ function observedRecord(before, observation, at) {
       { at, phase: 'STOPPED', evidenceSha256, brokerStatus: observation.brokerStatus, filledQty: observation.filledQty }] };
 }
 
-export async function runScopedPaperOversight({ authority, records, observationTransport, clock, notify }) {
+export async function runScopedPaperOversight({ authority, records, observationTransport, clock, notify, custody }) {
   let transport, reason = null, receipt, cycles = 0, flatReconciledRows = 0, observedRows = 0, attemptedRows = 0, complete = false;
   let config, portfolio;
   let stateWriteAttempted = false, receiptPath, sendNotification, notificationSnapshot, notificationReady;
@@ -115,6 +116,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
     const attended = attendedConfig(config);
     const files = await (attended ? loadAttendedEvidenceFiles : loadOperationalEvidenceFiles)({ config });
     const controls = async () => {
+      if (custody !== undefined) assertGithubCustody(custody, { directory: config.directory, accountSha256: scope.accountSha256, attemptId: scope.attemptId });
       const result = await (attended ? assessAttendedControlEvidence : assessOperationalControlEvidence)({ config, files, clock, purpose: 'OBSERVATION' });
       if (result.status === 'BLOCKED') throw Error(result.reasons[0]);
       guard();
@@ -122,7 +124,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
     await controls();
     stateWriteAttempted = true;
     await withScopedObservationStores({ directory: config.directory, expectedHashes: authority.expectedHashes,
-      attemptId: scope.attemptId, authoritySha256: authority.authoritySha256 }, async (context, stored) => {
+      attemptId: scope.attemptId, authoritySha256: authority.authoritySha256, custody }, async (context, stored) => {
       try {
       check(digest(stored) === authority.recordsSha256, 'OBSERVATION_SCOPE_INVALID');
       if (config.notifications && notify?.destinationSha256 === config.notifications.destinationSha256 && typeof notify.send === 'function') {
@@ -137,7 +139,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
         sendNotification = message => boundedNotificationSend(send, message, clock, started, notificationReady());
         receiptPath = path.join(config.directory, `.scoped-closeout-${scope.attemptId}`, 'notifications.json');
         collectNotifications();
-        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification, custody });
         if (!['BASELINE_RECORDED', 'NO_CHANGE'].includes(notificationDelivery.status)) receiptPath = null;
       }
       let accountBinding;
@@ -197,7 +199,7 @@ export async function runScopedPaperOversight({ authority, records, observationT
       collectNotifications([], reason ? { handoffReason: reason } : {});
       if (receiptPath) {
         notificationReady(); deliveryAttempted = true;
-        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification });
+        notificationDelivery = await deliverNotifications({ snapshot: notificationSnapshot, receiptPath, send: sendNotification, custody });
       }
     } catch { notificationDelivery = { status: deliveryAttempted ? 'DELIVERY_UNCERTAIN' : 'DELIVERY_NOT_ATTEMPTED', eventCount: 0 }; }
   }

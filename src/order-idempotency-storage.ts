@@ -138,3 +138,4 @@ function validateScopedState(value: unknown): asserts value is ScopedOrderIdempo
 }
 export const loadScopedOrderIdempotencyState = (file: string): Promise<ScopedOrderIdempotencyState> => loadValidatedOrderState(file, validateScopedState, fail);
 export const saveScopedOrderIdempotencyState = (file: string, state: ScopedOrderIdempotencyState): Promise<void> => saveValidatedOrderState(file, state, validateScopedState, fail);
+export { validateScopedState as validateScopedOrderIdempotencyState };
