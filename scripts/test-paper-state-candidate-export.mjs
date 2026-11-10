@@ -5,12 +5,14 @@ import path from 'node:path';
 import { createHash, generateKeyPairSync } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { encryptPayload, decryptPayload } from './paper-exact-cache-private-export.mjs';
 
 const script = path.resolve('scripts/paper-state-candidate-export.mjs');
 assert.ok(fs.existsSync(script), 'Missing independently scoped PAPER state candidate exporter');
 const { APPROVAL, validateCandidateScope, prepareCandidateAttempt, preflightCandidateAttempt,
   encryptCandidateSource, decryptCandidateSource } = await import(pathToFileURL(script));
 const step3aOnly = process.argv.includes('--step3a');
+const step3bOnly = process.argv.includes('--step3b');
 const childNodeOptions = ['--require', path.resolve('scripts/fixtures/scoped-paper-offline.cjs')];
 const sha = b => createHash('sha256').update(b).digest('hex');
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paper-candidate-fixture-')));
@@ -242,6 +244,165 @@ try {
   const drift = ready(); write(path.join(drift, 'caches-after.json'), { ...caches, actions_caches: [{ ...cache, id: 999 }] });
   reject(() => encryptCandidateSource(s, drift, env), 'CANDIDATE_CACHE_MISMATCH');
   reject(() => encryptCandidateSource(s, ready(), { ...env, CACHE_HIT: 'false' }), 'CANDIDATE_EXACT_CACHE_MISS');
+
+  // These cases catch silent omission of backups and source writes on path overlap.
+  for (const mutate of [p => fs.mkdirSync(path.join(p, '.scoped-closeout-empty'), { mode: 0o700 }),
+    p => fs.chmodSync(p, 0o777)]) {
+    const p = source(); mutate(p);
+    check(() => assert.throws(() => encryptCandidateSource(p, ready(), env)));
+  }
+  const overlap = ready(), overlapNames = fs.readdirSync(overlap).sort();
+  check(() => { assert.throws(() => encryptCandidateSource(overlap, overlap, env));
+    assert.deepEqual(fs.readdirSync(overlap).sort(), overlapNames); });
+
+  const aliasTarget = ready(), aliasSource = path.join(root, 'alias-source');
+  fs.symlinkSync(aliasTarget, aliasSource);
+  const aliasBefore = fs.readdirSync(aliasTarget).sort();
+  check(() => { assert.throws(() => encryptCandidateSource(aliasSource, aliasTarget, env));
+    assert.deepEqual(fs.readdirSync(aliasTarget).sort(), aliasBefore); });
+  const failCapture = (mutate, expectedCode) => {
+    const p = source(), at = ready(); mutate(p, at);
+    check(() => { assert.throws(() => encryptCandidateSource(p, at, env), e => expectedCode ? e.message === expectedCode : /^CANDIDATE_[A-Z_]+$/.test(e.message));
+      assert.equal(fs.existsSync(path.join(at, 'candidate.enc.json')), false); });
+    reject(() => encryptCandidateSource(p, at, env), 'CANDIDATE_ATTEMPT_ALREADY_USED');
+  };
+  for (const mutate of [
+    p => fs.unlinkSync(path.join(p, 'order-idempotency.json')),
+    p => fs.linkSync(path.join(p, 'order-ledger.json'), path.join(p, 'inputs/hard.json')),
+    p => { fs.rmSync(path.join(p, 'inputs'), { recursive: true }); fs.symlinkSync(root, path.join(p, 'inputs')); },
+    p => fs.mkdirSync(path.join(p, 'inputs/nested')),
+    p => write(path.join(p, 'inputs/wire.json.lock'), {}),
+    p => write(path.join(p, '.incomplete.partial'), {}),
+    p => write(path.join(p, 'order-ledger.json'), Buffer.from('{"orders":{},"orders":{}}')),
+    p => write(path.join(p, 'order-ledger.json'), Buffer.from([0xff])),
+    p => write(path.join(p, 'inputs/bad.json'), []),
+    p => write(path.join(p, 'inputs/bad.json'), { nested: { api_key: null } }),
+    p => write(path.join(p, 'inputs/bad.json'), { nested: { privateKey: 'synthetic' } }),
+    p => write(path.join(p, 'inputs/bad.json'), { text: '-----BEGIN OPENSSH PRIVATE KEY-----' }),
+    p => write(path.join(p, 'order-ledger.json'), { orders: { synthetic: { attemptId: 'missing', preWriteHashes: { orderLedger: sha(original), orderIdempotency: sha(original) } } } }),
+    p => write(path.join(p, 'order-idempotency.json'), { orders: { synthetic: { attemptId: '../escape', preWriteHashes: {} } } }),
+    (_, at) => fs.unlinkSync(path.join(at, 'preflight.json')),
+    (_, at) => write(path.join(at, 'preflight.json'), { status: 'PASS' }),
+    (_, at) => fs.unlinkSync(path.join(at, 'preflight.started.json')),
+    (_, at) => write(path.join(at, 'prepared.json'), {}),
+    (_, at) => write(path.join(at, 'history.json'), { ...history, unexpected: true }),
+    (_, at) => write(path.join(at, 'caches-after.json'), { total_count: 0, actions_caches: [] }),
+    (_, at) => write(path.join(at, 'candidate.enc.json.partial'), Buffer.from('unfinished')),
+  ]) failCapture(mutate);
+  for (const [field, value] of [['id', 999], ['version', 'e'.repeat(64)], ['key', scope.cacheKey + '-suffix'],
+    ['ref', 'refs/heads/other'], ['created_at', '2026-01-02T14:03:00Z'], ['size_in_bytes', 1001]]) {
+    failCapture((_, at) => write(path.join(at, 'caches-after.json'), { total_count: 1, actions_caches: [{ ...cache, [field]: value }] }));
+  }
+  for (const key of ['TELEGRAM_BOT_TOKEN', 'GITHUB_TOKEN', 'token', 'githubToken']) {
+    failCapture(p => write(path.join(p, 'inputs/credential.json'), { [key]: 'SYNTHETIC_CREDENTIAL' }), 'CANDIDATE_SECRET_REJECTED');
+  }
+  for (const name of ['block', 'clock', 'lock']) {
+    const p = source(), prefix = '.scoped-closeout-' + name;
+    fs.mkdirSync(path.join(p, prefix), { mode: 0o700 });
+    for (const file of ['order-ledger.json', 'order-idempotency.json']) write(path.join(p, prefix, file), {});
+    check(() => assert.equal(encryptCandidateSource(p, ready(), env).fileCount, 6));
+  }
+  // Actual bytes (including whitespace) survive; all allowed companion shapes round-trip.
+  const complete = source(), pre = '.scoped-closeout-all'; fs.mkdirSync(path.join(complete, pre), { mode: 0o700 });
+  const originals = { orderLedger: Buffer.from(' { "orders": {} }\n'), orderIdempotency: Buffer.from('{\n "orders" : {}\n}\n') };
+  for (const [k, name] of [['orderLedger', 'order-ledger.json'], ['orderIdempotency', 'order-idempotency.json']]) write(path.join(complete, pre, name), originals[k]);
+  for (let i = 0; i < 5; i++) write(path.join(complete, pre, `wire-${i}.json`), { index: i });
+  for (const name of ['notifications.json', 'observation-' + 'b'.repeat(64) + '.json']) write(path.join(complete, pre, name), {});
+  write(path.join(complete, 'order-ledger.json'), { orders: { synthetic: { recordKind: 'SCOPED_MANAGEMENT_EXIT_V3', attemptId: 'all',
+    preWriteHashes: Object.fromEntries(Object.entries(originals).map(([k, v]) => [k, sha(v)])) } } });
+  const completeAttempt = ready(), completeResult = encryptCandidateSource(complete, completeAttempt, env);
+  const completeOut = path.join(root, 'complete-out');
+  const opened = decryptCandidateSource(path.join(completeAttempt, 'candidate.enc.json'), keyFile, completeOut,
+    completeResult.envelopeSha256, scopeFile, sha(scopeBytes), '789');
+  check(() => { assert.equal(opened.fileCount, 13); for (const key of ['currentStateAuthenticityVerified', 'sourceClosureVerified', 'stateAdopted', 'executionAuthorized', 'realizedPnlVerified']) assert.equal(opened[key], false); });
+  const files = JSON.parse(fs.readFileSync(path.join(completeOut, 'manifest.json'))).files;
+  check(() => { for (const f of files) {
+    assert.deepEqual(fs.readFileSync(path.join(completeOut, 'candidate', f.name)), fs.readFileSync(path.join(complete, f.name)));
+    assert.equal(fs.statSync(path.join(completeOut, 'candidate', f.name)).mode & 0o777, 0o600);
+  }
+    assert.equal(fs.statSync(completeOut).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(completeOut, 'candidate', pre)).mode & 0o777, 0o700);
+  });
+  write(path.join(complete, pre, 'order-ledger.json'), {});
+  reject(() => encryptCandidateSource(complete, ready(), env), 'CANDIDATE_BACKUP_MISSING');
+  fs.unlinkSync(path.join(s, 'last-dry-exec-preview.json'));
+  check(() => assert.equal(encryptCandidateSource(s, ready(), env).fileCount, 3));
+
+  // Repeated inventory detects content change, additions, and same-size in-read mutations.
+  for (const mutate of [p => write(path.join(p, 'order-ledger.json'), { orders: {}, changed: true }),
+    p => write(path.join(p, 'inputs/new.json'), {}), p => fs.mkdirSync(path.join(p, '.scoped-closeout-new'))]) {
+    const p = source(), at = ready(), originalReaddir = fs.readdirSync; let seen = 0;
+    fs.readdirSync = function (dir, ...args) { if (dir === p && ++seen === 2) mutate(p); return originalReaddir.call(this, dir, ...args); };
+    try { check(() => { assert.throws(() => encryptCandidateSource(p, at, env)); assert.equal(fs.existsSync(path.join(at, 'candidate.enc.json')), false); }); }
+    finally { fs.readdirSync = originalReaddir; }
+    reject(() => encryptCandidateSource(p, at, env), 'CANDIDATE_ATTEMPT_ALREADY_USED');
+  }
+  { const p = source(), at = ready(), originalRead = fs.readSync; let once = false;
+    fs.readSync = function (...args) { const n = originalRead.apply(this, args); if (!once && fs.fstatSync(args[0]).ino === fs.statSync(path.join(p, 'order-ledger.json')).ino) { once = true;
+      write(path.join(p, 'order-ledger.json'), { orders: {}, updatedAt: 'changed' }); } return n; };
+    try { check(() => assert.throws(() => encryptCandidateSource(p, at, env))); }
+    finally { fs.readSync = originalRead; }
+    check(() => assert.equal(fs.existsSync(path.join(at, 'candidate.enc.json')), false));
+  }
+  // Limits fail before encryption/publication, using only temporary synthetic files.
+  failCapture(p => fs.truncateSync(path.join(p, 'order-ledger.json'), 8 * 1024 * 1024 + 1), 'CANDIDATE_SIZE_LIMIT');
+  failCapture(p => fs.truncateSync(path.join(p, 'order-ledger.json'), 0), 'CANDIDATE_SIZE_LIMIT');
+  failCapture(p => { for (let i = 0; i < 1001; i++) write(path.join(p, 'inputs', `many-${i}.json`), {}); }, 'CANDIDATE_FILE_COUNT_INVALID');
+  failCapture(p => { const chunk = Buffer.from('{"text":"' + 'x'.repeat(8 * 1024 * 1024 - 11) + '"}');
+    for (let i = 0; i < 9; i++) write(path.join(p, 'inputs', `big-${i}.json`), chunk); }, 'CANDIDATE_SIZE_LIMIT');
+  // Authentic encrypted but invalid manifests cannot cross the extraction boundary.
+  const goodEnvelope = JSON.parse(fs.readFileSync(encrypted));
+  const plain = decryptPayload(goodEnvelope, keys.privateKey, goodEnvelope.context);
+  const rejectDecrypt = (raw, changes = {}) => {
+    const input = path.join(root, 'cipher-' + sequence++ + '.json'), out = path.join(root, 'rejected-' + sequence++);
+    write(input, raw);
+    check(() => { assert.throws(() => decryptCandidateSource(input, changes.keyFile ?? keyFile, out,
+      changes.envelopeSha ?? sha(raw), changes.scopeFile ?? scopeFile, changes.scopeSha ?? sha(scopeBytes), changes.run ?? '789'),
+      e => /^CANDIDATE_[A-Z_]+$/.test(e.message)); assert.equal(fs.existsSync(path.join(out, 'candidate')), false); });
+    reject(() => decryptCandidateSource(encrypted, keyFile, out, result.envelopeSha256, scopeFile, sha(scopeBytes), '789'), 'CANDIDATE_OUTPUT_EXISTS');
+  };
+  for (const mutate of [
+    p => p.files.push(p.files[0]), p => { p.files[0].name = '../escape.json'; },
+    p => { p.files[0].name = '/absolute.json'; }, p => { p.files[0].name = 'inputs/../escape.json'; },
+    p => { p.files[0].name = 'inputs/nested/deep.json'; }, p => { p.files[0].name = 'inputs\\escape.json'; },
+    p => { p.files[0].name = 'inputs/temp.json.tmp'; }, p => p.files.reverse(),
+    p => { p.files[0].sha256 = 'f'.repeat(64); }, p => { p.files[0].bytes += '\n'; },
+    p => { p.files[0].bytes = Buffer.from('{"access_token":"synthetic"}').toString('base64'); p.files[0].sha256 = sha(Buffer.from(p.files[0].bytes, 'base64')); },
+    p => { p.files = p.files.filter(f => f.name !== 'order-ledger.json'); },
+    p => { p.manifestSha256 = 'f'.repeat(64); }, p => { p.stateAdopted = true; },
+    p => { p.realizedPnlVerified = true; }, p => { p.sourceClosureVerified = true; },
+    p => { p.executionAuthorized = true; }, p => { p.currentStateAuthenticityVerified = true; },
+    p => { p.context.exportRunId = '999'; }, p => { p.receipts = {}; },
+  ]) { const payload = structuredClone(plain); mutate(payload);
+    rejectDecrypt(encryptPayload(payload, goodEnvelope.context, keys.publicKey, goodEnvelope.schemaVersion)); }
+  for (const key of ['TELEGRAM_BOT_TOKEN', 'GITHUB_TOKEN', 'token', 'githubToken']) {
+    const payload = structuredClone(plain), bytes = Buffer.from(JSON.stringify({ [key]: 'SYNTHETIC_CREDENTIAL' }));
+    payload.files[0].bytes = bytes.toString('base64'); payload.files[0].sha256 = sha(bytes);
+    payload.manifestSha256 = sha(JSON.stringify(payload.files.map(f => ({ name: f.name, sha256: f.sha256, size: Buffer.from(f.bytes, 'base64').length }))));
+    rejectDecrypt(encryptPayload(payload, goodEnvelope.context, keys.publicKey, goodEnvelope.schemaVersion));
+  }
+  for (const field of ['ciphertext', 'wrappedKey', 'iv', 'tag']) {
+    const bad = structuredClone(goodEnvelope); const bytes = Buffer.from(bad[field], 'base64'); bytes[0] ^= 1; bad[field] = bytes.toString('base64');
+    rejectDecrypt(Buffer.from(JSON.stringify(bad)));
+  }
+  rejectDecrypt(fs.readFileSync(encrypted), { envelopeSha: 'f'.repeat(64) });
+  rejectDecrypt(fs.readFileSync(encrypted), { scopeSha: 'f'.repeat(64) });
+  rejectDecrypt(fs.readFileSync(encrypted), { run: '790' });
+  const wrongKeys = generateKeyPairSync('rsa', { modulusLength: 3072 }), wrongKeyFile = path.join(root, 'wrong-private.pem');
+  write(wrongKeyFile, Buffer.from(wrongKeys.privateKey.export({ type: 'pkcs8', format: 'pem' })));
+  rejectDecrypt(fs.readFileSync(encrypted), { keyFile: wrongKeyFile });
+  const changedScope = Buffer.from(JSON.stringify({ ...scope, sourceHeadSha: 'f'.repeat(40) })), changedScopeFile = path.join(root, 'changed-scope.json');
+  write(changedScopeFile, changedScope);
+  rejectDecrypt(fs.readFileSync(encrypted), { scopeFile: changedScopeFile, scopeSha: sha(changedScope) });
+  const tooBig = path.join(root, 'oversize.enc.json'); write(tooBig, {}); fs.truncateSync(tooBig, 128 * 1024 * 1024 + 1);
+  check(() => assert.throws(() => decryptCandidateSource(tooBig, keyFile, path.join(root, 'oversize-out'), 'f'.repeat(64), scopeFile, sha(scopeBytes), '789')));
+  fs.chmodSync(keyFile, 0o644); rejectDecrypt(fs.readFileSync(encrypted)); fs.chmodSync(keyFile, 0o600);
+  const existingAttempt = ready(); write(path.join(existingAttempt, 'candidate.enc.json'), Buffer.from('preserved'));
+  reject(() => encryptCandidateSource(s, existingAttempt, env), 'CANDIDATE_OUTPUT_EXISTS');
+  check(() => assert.equal(fs.readFileSync(path.join(existingAttempt, 'candidate.enc.json'), 'utf8'), 'preserved'));
+  console.log(JSON.stringify({ status: 'PASS', phase: 'STEP_3B', cases: cases - 112, brokerRequests: 0 }));
+  if (!step3bOnly) {
+  assert.ok(fs.existsSync('.github/workflows/paper-state-candidate-export.yml'), 'STEP_3C_NOT_IMPLEMENTED: workflow and CLI integration');
   const cli = spawnSync(process.execPath, [...childNodeOptions, script], { env: {}, encoding: 'utf8' });
   check(() => { assert.equal(cli.status, 0); assert.equal(JSON.parse(cli.stdout).status, 'CANDIDATE_EXPORT_NOT_RUN'); assert.equal(cli.stderr, ''); });
   const badCli = spawnSync(process.execPath, [...childNodeOptions, script, 'preflight', '/private/SYNTHETIC_PRIVATE_DO_NOT_PRINT'], { env: {}, encoding: 'utf8' });
@@ -254,5 +415,6 @@ try {
   check(() => assert.equal((wf.match(/gh api /g) || []).length, 4));
   check(() => assert.ok(!wf.includes('${{ inputs.scope_json }}')));
   console.log(JSON.stringify({ status: 'PASS', cases, brokerRequests: 0, runtimeExports: 0, stateAdopted: false }));
+  }
   }
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

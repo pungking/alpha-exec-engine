@@ -8,11 +8,22 @@
 **Spec:** Operator-approved CUTOVER_SCOPE_DRAFT.md, preserved outside the repository. The public contract below contains no private evidence.
 **Approval:** 2026-11-05: offline implementation plan, implementation, fixtures, independent review, PR/CI and merge if passing. No runtime export, API acquisition, keys, state adoption or orders.
 
-**Current scope override, 2026-11-10:** STEP 3A only: implement the three Task 1
-functions, offline negative fixtures and independent review; preserve the existing
-branch and verify remote reflection. No STEP 3B/3C implementation, main edit,
-automatic merge, operational key generation or actual export. The parent remains
-incomplete. This narrower instruction supersedes the earlier integration sequence.
+**Current scope override, 2026-11-10:** STEP 3B only, based on verified STEP 3A
+commit d4d6de2f1137ea8daa8ec6b08a8e6067a5638401. Implement Task 2's two
+functions and offline synthetic encryption/decryption tests; independent review,
+ordinary commit/push on the existing branch only. Preserve STEP 3A. No STEP 3C,
+CLI/workflow wiring, PR/main merge, runtime export, actual cache restore,
+operational key access/provisioning, API calls, state adoption or orders.
+The parent goal remains incomplete.
+
+## Mandatory resume rule for development instructions
+
+Before resuming after interruption, inspect branch, HEAD, upstream, remote head,
+porcelain status, post-baseline commits/diff and existing tests/results. Check for
+concurrent conflicting work, preserve committed and uncommitted changes, and
+continue only unfinished work. Never reset/clean/force-checkout/force-push or
+silently overwrite changes. A failed/interrupted review is not a completed review.
+Reconfirm the approved step and retain parent-goal incompleteness.
 
 ## Global constraints and public contract
 
@@ -50,9 +61,10 @@ Interfaces: validateCandidateScope(bytes, expectedSha); prepareCandidateAttempt(
 - [x] Test missing approval/unsafe flags/wrong source/head/event/version/fallback/truncated or duplicate history and pre-existing attempt rejection.
 
 STEP 3A command: `node --require ./scripts/fixtures/scoped-paper-offline.cjs scripts/test-paper-state-candidate-export.mjs --step3a`.
-The full test deliberately fails at STEP_3B_NOT_IMPLEMENTED until the separately
-approved remaining steps exist; its later workflow assertions are not exercised.
-No encryption/decryption stubs or executable CLI are added in STEP 3A.
+At the STEP 3A checkpoint the full test failed at STEP_3B_NOT_IMPLEMENTED.
+After STEP 3B it must stop at STEP_3C_NOT_IMPLEMENTED; workflow/CLI assertions
+remain unexercised until that separate implementation.
+No encryption/decryption stubs or executable CLI were added in STEP 3A.
 The dedicated mode uses a fixed synthetic public ASN.1 fixture, not a key pair.
 Preflight consumes an exclusive private claim before reading metadata; a failed
 attempt cannot be retried by replacing the failed metadata.
@@ -73,9 +85,63 @@ operational state change or main merge was performed.
 
 Interfaces: encryptCandidateSource(sourceDirectory, attemptDirectory, env); decryptCandidateSource(input, keyFile, outputDirectory, envelopeSha, scopeFile, scopeSha, exportRunId).
 
-- [ ] Write byte-parity/companion round-trip tests; invalid path/link/fence/secret/missing-backup/tamper/output-exists rejection; default no-I/O and redacted failure fixtures.
-- [ ] Implement narrow inventory, repeated inventory/hash check, encryption and authenticated new-directory extraction. Existing crypto/private I/O helpers stay unchanged.
-- [ ] Verify deterministic manifest and original bytes, randomized ciphertext, no source write and no readiness promotion.
+- [x] Write byte-parity/companion round-trip tests; invalid path/link/fence/secret/missing-backup/tamper/output-exists rejection; default no-I/O and redacted failure fixtures.
+- [x] Implement narrow inventory, repeated inventory/hash check, encryption and authenticated new-directory extraction. Existing crypto/private I/O helpers stay unchanged.
+- [x] Verify deterministic manifest and original bytes, randomized ciphertext, no source write and no readiness promotion.
+
+STEP 3B design rulings:
+- Preserve the old crypto implementation unchanged; reuse encryptPayload,
+  decryptPayload, recipient and private I/O helpers. No default CLI action.
+- Scope/preflight raw-byte receipts and exact before/after cache identity, version,
+  creation time and compressed size are revalidated before and after capture.
+  Compressed cache size is not misrepresented as a sum of uncompressed files.
+- Inventory only the documented pair/optional preview/inputs/scoped companions;
+  reject unknown directories, links, writable-by-others source paths, relevant
+  unknown files, locks/temporaries and credentials. Unrelated root JSON reports
+  are excluded. Bound traversal to 1,100 entries as well as 1,000 captured files.
+- Bound source reads to the stat size; compare descriptor/path identity, metadata,
+  inventory and hashes again after encryption. This detects observed drift but
+  is not writer-quiescence or authentic-run-to-cache evidence.
+- Scoped directories require both original backups, including empty directories.
+  Existing ledger/idempotency attemptId/preWriteHashes references must match bytes.
+  Candidate capture does not certify ledger semantics or absent external inputs.
+- Canonical manifest hashes cover sorted names, original byte sizes and SHA-256;
+  envelope hashes vary intentionally with fresh encryption randomness.
+- Encryption claims are exclusive and consumed on capture failure. Reject source
+  alias/overlap before any attempt write to avoid mutating the source itself.
+- A fresh owner-only decrypt-attempt directory is claimed before authentication;
+  failures retain it and cannot retry there. The nested candidate directory is
+  published only after authentication, allowlist, hashes, backup, secret and
+  extraction checks. Incomplete output is never promoted or overwritten.
+- Local owner-controlled files are the trust boundary; these checks do not attest
+  GitHub token permissions, operational custody, authoritative current state,
+  full source closure, execution readiness or realized P&L.
+
+STEP 3B verification, 2026-11-10:
+- `node --require ./scripts/fixtures/scoped-paper-offline.cjs scripts/test-paper-state-candidate-export.mjs --step3a`: 112 PASS; no test key pair generated.
+- Same command with `--step3b`: STEP 3A 112 PASS plus STEP 3B 205 PASS,
+  temporary synthetic RSA keys/data only. Both suites rerun after interruption.
+- Full command without a phase flag: both phases pass, then exit 1 at
+  STEP_3C_NOT_IMPLEMENTED (workflow and CLI integration), intentionally incomplete.
+- Old exact-cache export 46, runtime private binding 81, GitHub custody 56 checks
+  PASS under the existing offline preload. Typecheck, build, dispatch safety,
+  symbol-agnostic, syntax and diff checks PASS. No default npm test script exists.
+- RED/GREEN observed for absent functions, empty scoped backup directories,
+  source/attempt alias mutation and strict large-file parsing. The shared JSON
+  scanner is iterative to avoid regular-expression stack exhaustion at the
+  existing 8 MiB limit; STEP 3A duplicate-key rejection remains covered.
+- Existing source files, old crypto/exporter/workflows, package/lock, src/state
+  and main are unchanged. No actual broker/API/export/cache/key operation.
+- Resume confirmed local/remote baseline d4d6de2, clean upstream relation and the
+  same three pending files. Their existing implementation was preserved, not
+  rewritten. The original review failed due to usage limit and is not counted
+  as completed. Replacement review found two P2 defects: token-suffixed credential fields were
+  not rejected and valid scoped attempt names containing "lock" were mistaken
+  for fences. RED/GREEN tests now cover capture and authenticated decrypt token
+  rejection, plus valid block/clock/lock attempt directories. Both defects are
+  corrected. An unchanged-snapshot re-review is required before commit/push;
+  its outcome is retained in owner-only evidence and the completion report.
+- No GitHub CI or STEP 3C integration claim; parent goal remains incomplete.
 
 ## Task 3: Workflow and integration
 
