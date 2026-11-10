@@ -1,0 +1,136 @@
+{
+  "name": "paper-state-candidate-export",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "approval_phrase": {
+          "description": "Exact separately authorized one-shot approval; never include secrets",
+          "required": true,
+          "type": "string"
+        },
+        "scope_json": {
+          "description": "Exact approved candidate scope JSON bytes; no account/order identifiers or secrets",
+          "required": true,
+          "type": "string"
+        },
+        "scope_sha256": {
+          "description": "Locally pinned SHA-256 of the exact scope JSON bytes",
+          "required": true,
+          "type": "string"
+        },
+        "recipient_public_key": {
+          "description": "Public RSA SPKI DER base64 only; NEVER a private key",
+          "required": true,
+          "type": "string"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    "actions": "read"
+  },
+  "concurrency": {
+    "group": "paper-state-candidate-export",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "export": {
+      "if": "${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == '1' }}",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 10,
+      "env": {
+        "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24": "true",
+        "ALPHA_ENV": "PAPER",
+        "READ_ONLY": "true",
+        "EXEC_ENABLED": "false",
+        "LIVE_ORDER_SUBMIT_ENABLED": "false",
+        "MARKET_GUARD_MODE": "observe"
+      },
+      "steps": [
+        {
+          "id": "checkout",
+          "uses": "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+          "with": {
+            "ref": "${{ github.sha }}",
+            "persist-credentials": false,
+            "sparse-checkout-cone-mode": false,
+            "sparse-checkout": "/scripts/paper-state-candidate-export.mjs\n/scripts/paper-exact-cache-private-export.mjs"
+          }
+        },
+        {
+          "id": "node",
+          "uses": "actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444",
+          "with": {
+            "node-version": "20"
+          }
+        },
+        {
+          "id": "prepare",
+          "name": "Validate approval and claim private attempt before metadata access",
+          "shell": "bash",
+          "run": "set -euo pipefail\nset -C\numask 077\ntrap 'printf \"%s\\n\" \"CANDIDATE_PREPARE_FAILED\"; exit 1' ERR\nmkdir -m 700 \"${RUNNER_TEMP}/paper-candidate-private\"\nnode scripts/paper-state-candidate-export.mjs prepare \"${RUNNER_TEMP}/paper-candidate-private/attempt\"\n"
+        },
+        {
+          "id": "preflight",
+          "name": "Read three bounded private metadata responses and fail closed",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "GH_DEBUG": "",
+            "GH_PROMPT_DISABLED": "1"
+          },
+          "run": "set -euo pipefail\nset -C\numask 077\ntrap 'printf \"%s\\n\" \"CANDIDATE_METADATA_READ_FAILED\"; exit 1' ERR\nATTEMPT=\"${RUNNER_TEMP}/paper-candidate-private/attempt\"\nSOURCE_RUN_ID=\"$(node -p 'JSON.parse(require(\"node:fs\").readFileSync(process.argv[1])).scope.sourceRunId' \"${ATTEMPT}/prepared.json\")\"\nCACHE_KEY=\"$(node -p 'JSON.parse(require(\"node:fs\").readFileSync(process.argv[1])).scope.cacheKey' \"${ATTEMPT}/prepared.json\")\"\ntimeout 30s gh api --method GET --hostname github.com \"repos/${GITHUB_REPOSITORY}/actions/workflows/paper-state-candidate-export.yml/runs?event=workflow_dispatch&per_page=100\" > \"${ATTEMPT}/history.json\" 2> \"${ATTEMPT}/history.errors\"\ntimeout 30s gh api --method GET --hostname github.com \"repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}\" > \"${ATTEMPT}/source-run.json\" 2> \"${ATTEMPT}/source-run.errors\"\ntimeout 30s gh api --method GET --hostname github.com \"repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=${CACHE_KEY}&per_page=100\" > \"${ATTEMPT}/caches-before.json\" 2> \"${ATTEMPT}/caches-before.errors\"\nnode scripts/paper-state-candidate-export.mjs preflight \"${ATTEMPT}\"\n"
+        },
+        {
+          "id": "restore",
+          "name": "Restore only the exact approved state cache into the disposable runner",
+          "uses": "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
+          "with": {
+            "path": "state",
+            "key": "${{ fromJSON(inputs.scope_json).cacheKey }}",
+            "fail-on-cache-miss": true
+          }
+        },
+        {
+          "id": "restore_check",
+          "name": "Reject non-exact restore outputs before the fourth metadata read",
+          "shell": "bash",
+          "env": {
+            "CACHE_HIT": "${{ steps.restore.outputs.cache-hit }}",
+            "CACHE_MATCHED_KEY": "${{ steps.restore.outputs.cache-matched-key }}"
+          },
+          "run": "set -euo pipefail\nset -C\numask 077\nnode scripts/paper-state-candidate-export.mjs verify-restore\n"
+        },
+        {
+          "id": "encrypt",
+          "name": "Recheck cache metadata then capture an encrypted unverified candidate",
+          "shell": "bash",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "GH_DEBUG": "",
+            "GH_PROMPT_DISABLED": "1",
+            "CACHE_HIT": "${{ steps.restore.outputs.cache-hit }}",
+            "CACHE_MATCHED_KEY": "${{ steps.restore.outputs.cache-matched-key }}"
+          },
+          "run": "set -euo pipefail\nset -C\numask 077\ntrap 'printf \"%s\\n\" \"CANDIDATE_ENCRYPT_STEP_FAILED\"; exit 1' ERR\nATTEMPT=\"${RUNNER_TEMP}/paper-candidate-private/attempt\"\nCACHE_KEY=\"$(node -p 'JSON.parse(require(\"node:fs\").readFileSync(process.argv[1])).scope.cacheKey' \"${ATTEMPT}/prepared.json\")\"\ntimeout 30s gh api --method GET --hostname github.com \"repos/${GITHUB_REPOSITORY}/actions/caches?ref=refs/heads/main&key=${CACHE_KEY}&per_page=100\" > \"${ATTEMPT}/caches-after.json\" 2> \"${ATTEMPT}/caches-after.errors\"\nnode scripts/paper-state-candidate-export.mjs encrypt \"${GITHUB_WORKSPACE}/state\" \"${ATTEMPT}\"\n"
+        },
+        {
+          "id": "upload",
+          "name": "Upload the ciphertext only after successful encryption",
+          "if": "${{ success() && steps.encrypt.outcome == 'success' }}",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+          "with": {
+            "name": "paper-state-candidate-encrypted-${{ github.run_id }}",
+            "path": "${{ runner.temp }}/paper-candidate-private/attempt/candidate.enc.json",
+            "if-no-files-found": "error",
+            "retention-days": 1,
+            "compression-level": 0,
+            "include-hidden-files": false,
+            "overwrite": false
+          }
+        }
+      ]
+    }
+  }
+}
