@@ -1,6 +1,6 @@
 # PAPER State Candidate Export Implementation Plan
 
-> **For agentic workers:** Use superpowers:executing-plans (approved Native implementation). Complete the checkbox tasks with offline fixtures and one independent whole-diff review.
+> **For agentic workers:** Use superpowers:executing-plans (approved Native implementation). STEP 3C uses one main agent only; independent GitHub review is reserved for ChatGPT after delivery, not a new agent.
 
 **Goal:** Obtain a separately authorized, exactly pinned, encrypted PAPER state candidate without adopting it or rerunning the historical export.
 **Architecture:** A new manual-only one-shot workflow and local CLI reuse existing private I/O and RSA-OAEP/AES-GCM helpers. Narrow file enumeration preserves raw bytes and existing scoped companions. Candidate capture is separate from authoritative adoption and current risk/source qualification.
@@ -8,12 +8,14 @@
 **Spec:** Operator-approved CUTOVER_SCOPE_DRAFT.md, preserved outside the repository. The public contract below contains no private evidence.
 **Approval:** 2026-11-05: offline implementation plan, implementation, fixtures, independent review, PR/CI and merge if passing. No runtime export, API acquisition, keys, state adoption or orders.
 
-**Current scope override, 2026-11-10:** STEP 3B only, based on verified STEP 3A
-commit d4d6de2f1137ea8daa8ec6b08a8e6067a5638401. Implement Task 2's two
-functions and offline synthetic encryption/decryption tests; independent review,
-ordinary commit/push on the existing branch only. Preserve STEP 3A. No STEP 3C,
-CLI/workflow wiring, PR/main merge, runtime export, actual cache restore,
-operational key access/provisioning, API calls, state adoption or orders.
+**Current scope override, 2026-11-10:** STEP 3C only, based on verified STEP 3B
+commit 6d15aa29a6558edfdbfe58880e683df483ce521a. Preserve Tasks 1/2; implement
+CLI/workflow/CI wiring and offline fixtures. One main agent, no new subagents or
+independent review agents. Ordinary commit/push and Draft PR/actual CI validation
+are authorized; main merge is not. No runtime export, actual cache restore,
+operational keys, broker/provider calls, state adoption or orders. GitHub source
+control/CI and npm security audit access are development checks, not export
+authorization. ChatGPT's independent commit audit and user approval remain pending.
 The parent goal remains incomplete.
 
 ## Mandatory resume rule for development instructions
@@ -147,11 +149,62 @@ STEP 3B verification, 2026-11-10:
 
 Files: new .github/workflows/paper-state-candidate-export.yml; package.json test entry; .github/workflows/ci.yml offline test step; this plan.
 
-- [ ] Wire prepare -> four pinned metadata reads -> exact restore-only -> post-restore metadata validation -> encrypt -> ciphertext-only upload.
-- [ ] Test workflow trigger/permission/cache/no-secret/output boundaries with fixtures. No workflow execution.
-- [ ] Run new test, old export, runtime private binding, GitHub custody, scoped storage/adapter/operational/IEX/attended, public evidence, notifications, state consistency, dry-run safety, symbol guard, typecheck/build, npm audit --audit-level=high and git diff --check.
-- [ ] Independent whole-diff review; fix demonstrated defects and re-test.
-- [ ] Commit/non-force push/PR/CI; merge only on passing checks. Record main and post-merge CI. No parent/runtime completion claim.
+- [x] Wire prepare -> three pinned metadata reads -> preflight -> exact restore-only -> fourth metadata read/validation -> encrypt -> ciphertext-only upload.
+- [x] Test workflow trigger/permission/cache/no-secret/output boundaries with fixtures. No export workflow execution.
+- [x] Run new test, old export, runtime private binding, GitHub custody, scoped storage/adapter/operational/IEX/attended, public evidence, notifications, state consistency, dry-run safety, symbol guard, typecheck/build, npm audit --audit-level=high and git diff --check.
+- [x] Main-agent whole-diff review; fix demonstrated defects and re-test. Independent ChatGPT audit is a separate post-delivery gate.
+- [ ] Commit/non-force push/Draft PR/actual CI. No merge or post-merge runtime in this step; no parent/runtime completion claim.
+
+STEP 3C resume and implementation rulings, 2026-11-10:
+- Resume found the approved branch at 6d15aa2, matching its remote, with four
+  modified tracked files and the new workflow untracked. No Draft PR existed.
+  All pending changes were preserved. The previous full test passed 112/205
+  cases before its shell-command scanner falsely rejected source-run.json.
+  Restrict the scanner to command-token boundaries; keep source/eval injection
+  regression mutations. No STEP 3A/3B implementation was rewritten.
+- New workflow is serialized as JSON, a YAML subset. This allows complete
+  structural parsing and unsafe-workflow mutation fixtures without a dependency.
+  Platform execution behavior still requires separately authorized runtime proof.
+- Read dispatch inputs from GITHUB_EVENT_PATH inside the CLI, never interpolate
+  unvalidated values into run scripts or step env (which Actions prints). Use
+  generic safe error codes; keep metadata bodies and command stderr in private
+  temporary files. Default CLI returns NOT_RUN without performing work.
+- Exact main SHA is compared to the approved scope before metadata acquisition;
+  immutable action SHAs, sparse checkout without persisted credentials and only
+  contents/actions read permissions keep this workflow separate from trading.
+- Four explicit bounded gh metadata calls have no workflow retry or pagination.
+  Restore-only action transport is separate and may internally retry downloads;
+  this is not another authorized export attempt or a four-total-network-requests
+  guarantee. No action/cache save or prefix fallback is configured.
+- Synthetic gh/timeout executables exercise the actual workflow shell blocks:
+  wrong approval/environment/history/cache, failed reads, exact restore misses
+  and duplicate attempts stop before ciphertext publication. This is not a real
+  cache restore, a test of the remote cache service, or source-byte attestation.
+- The first-dispatch history gate intentionally blocks after any prior attempt,
+  including failure. Further runtime attempts would need a separately reviewed
+  authorization/contract decision, not deletion of history or workflow rerun.
+- Old exporter/crypto/workflows, production src/state and dependency lock remain
+  unchanged. No new subagents; prior STEP 3B review findings remain preserved.
+  No interrupted review is counted as a new independent STEP 3C review.
+
+STEP 3C local verification, 2026-11-10:
+- `npm run ops:test:paper-state-candidate-export`: 388 PASS (STEP 3A 112,
+  STEP 3B 205, STEP 3C 71), zero failures. The offline preload applies to the
+  parent and synthetic child processes. Actual workflow runs/exports: zero.
+- Old export 46, private binding 81 and custody 56 checks PASS. Scoped closeout,
+  adapter, operational, attended lifecycle, IEX, public evidence, notifications,
+  order-state consistency, dispatch safety and both symbol/Telegram safety guards
+  PASS. The 19-command regression batch also includes syntax, typecheck, build
+  and diff checks; all exit 0. All broker/sender behavior is fixture-only.
+- `npm audit --audit-level=high`: exit 0, zero reported vulnerabilities. No
+  dependency or lockfile changes. Workflow JSON and all embedded bash bodies
+  parse successfully; exact structure and malicious variants are fixture-tested.
+- Main-agent review traced dispatch inputs through scope validation, private
+  metadata/preflight, exact restore outputs, unchanged encryption, and the
+  ciphertext-only success upload. No remaining demonstrated STEP 3C defect;
+  this is self-review, not the requested later independent ChatGPT audit.
+- Draft PR and actual GitHub CI are still pending at this implementation
+  checkpoint and must not be inferred from local PASS results.
 
 ## Sources and limits
 

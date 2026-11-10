@@ -86,6 +86,14 @@ jobs:
         run: npm run ops:test:paper-private-evidence-capture
       - name: Exact-cache encrypted export (synthetic files only)
         run: node scripts/test-paper-exact-cache-private-export.mjs
+      - name: PAPER state candidate export (network denied, synthetic keys and files only)
+        env:
+          ALPHA_ENV: PAPER
+          READ_ONLY: "true"
+          EXEC_ENABLED: "false"
+          LIVE_ORDER_SUBMIT_ENABLED: "false"
+          MARKET_GUARD_MODE: observe
+        run: npm run ops:test:paper-state-candidate-export
       - name: Same-run private evidence binding (offline synthetic files only)
         run: npm run ops:test:paper-runtime-private-binding
       - name: Sidecar runtime evidence semantic contract

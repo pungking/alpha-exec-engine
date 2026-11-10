@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { directory as privateDirectory, readBytes, recipient, encryptPayload, decryptPayload } from './paper-exact-cache-private-export.mjs';
 
@@ -381,4 +382,39 @@ export function decryptCandidateSource(input, keyFile, outputDirectory, envelope
     return { ...safe('DECRYPTED_CANDIDATE_NOT_ADOPTED'), fileCount: decoded.files.size,
       envelopeSha256: envelopeSha, manifestSha256: decoded.manifestSha256, sourceStateModified: false };
   }, 'CANDIDATE_DECRYPT_FAILED');
+}
+
+function workflowEnvironment(env) {
+  if (env.GITHUB_ACTIONS !== 'true') return env;
+  check(env.GITHUB_EVENT_NAME === 'workflow_dispatch', 'CANDIDATE_DISPATCH_MAIN_ONLY');
+  // Do not map unvalidated dispatch strings into step env: Actions logs step env before code runs.
+  const inputs = json(readBytes(env.GITHUB_EVENT_PATH, MAX_FILE)).inputs;
+  check(exact(inputs, 'approval_phrase scope_json scope_sha256 recipient_public_key')
+    && Object.values(inputs).every(v => typeof v === 'string'), 'CANDIDATE_WORKFLOW_INPUT_INVALID');
+  return { ...env, APPROVAL_PHRASE: inputs.approval_phrase, CANDIDATE_SCOPE_JSON: inputs.scope_json,
+    CANDIDATE_SCOPE_SHA256: inputs.scope_sha256, RECIPIENT_PUBLIC_KEY: inputs.recipient_public_key };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try {
+    const [command, ...args] = process.argv.slice(2);
+    let result;
+    if (command === undefined) result = safe('CANDIDATE_EXPORT_NOT_RUN');
+    else if (command === 'decrypt' && args.length === 7) result = decryptCandidateSource(...args);
+    else {
+      const env = workflowEnvironment(process.env);
+      if (command === 'prepare' && args.length === 1) result = prepareCandidateAttempt(args[0], env);
+      else if (command === 'preflight' && args.length === 1) result = preflightCandidateAttempt(args[0], env);
+      else if (command === 'encrypt' && args.length === 2) result = encryptCandidateSource(...args, env);
+      else if (command === 'verify-restore' && args.length === 0) {
+        const prepared = authority(env);
+        check(env.CACHE_HIT === 'true' && env.CACHE_MATCHED_KEY === prepared.scope.cacheKey, 'CANDIDATE_EXACT_CACHE_MISS');
+        result = safe('CANDIDATE_RESTORE_OUTPUTS_MATCHED_NOT_ATTESTED');
+      } else throw new CandidateError('CANDIDATE_ARGUMENTS_INVALID');
+    }
+    console.log(JSON.stringify(result));
+  } catch (error) {
+    console.log(JSON.stringify(safe(error instanceof CandidateError ? error.message : 'CANDIDATE_INPUT_UNAVAILABLE')));
+    process.exitCode = 1;
+  }
 }

@@ -193,7 +193,7 @@ try {
     "process.exit(globalThis.fetch?.name === 'deny' && require('node:https').get.name === 'deny' ? 0 : 1)"], { env: {}, encoding: 'utf8' });
   check(() => assert.equal(guardProbe.status, 0, 'Fixture child must preload the offline network guard'));
   const inert = spawnSync(process.execPath, [...childNodeOptions, script], { env: {}, encoding: 'utf8' });
-  check(() => { assert.equal(inert.status, 0); assert.equal(inert.stdout, ''); assert.equal(inert.stderr, ''); });
+  check(() => { assert.equal(inert.status, 0); assert.equal(JSON.parse(inert.stdout).status, 'CANDIDATE_EXPORT_NOT_RUN'); assert.equal(inert.stderr, ''); });
   console.log(JSON.stringify({ status: 'PASS', phase: 'STEP_3A', cases, brokerRequests: 0,
     runtimeExports: 0, stateAdopted: false, ephemeralKeyPairsGenerated: keys === null ? 0 : 1 }));
   if (!step3aOnly) {
@@ -407,13 +407,162 @@ try {
   check(() => { assert.equal(cli.status, 0); assert.equal(JSON.parse(cli.stdout).status, 'CANDIDATE_EXPORT_NOT_RUN'); assert.equal(cli.stderr, ''); });
   const badCli = spawnSync(process.execPath, [...childNodeOptions, script, 'preflight', '/private/SYNTHETIC_PRIVATE_DO_NOT_PRINT'], { env: {}, encoding: 'utf8' });
   check(() => { assert.equal(badCli.status, 1); assert.ok(!badCli.stdout.includes('SYNTHETIC_PRIVATE_DO_NOT_PRINT')); assert.equal(badCli.stderr, ''); });
-  const wf = fs.readFileSync('.github/workflows/paper-state-candidate-export.yml', 'utf8');
-  check(() => assert.ok(wf.includes('workflow_dispatch:') && !/^  (push|schedule|repository_dispatch|workflow_run|pull_request):/m.test(wf)));
-  check(() => assert.ok(wf.includes('contents: read') && wf.includes('actions: read') && wf.includes('cancel-in-progress: false')));
-  check(() => assert.ok(wf.includes('fail-on-cache-miss: true') && !/restore-keys:|actions\/cache\/save|secrets\.|ALPACA|--paginate/.test(wf)));
-  check(() => assert.ok(wf.includes('candidate.enc.json') && wf.includes('include-hidden-files: false')));
-  check(() => assert.equal((wf.match(/gh api /g) || []).length, 4));
-  check(() => assert.ok(!wf.includes('${{ inputs.scope_json }}')));
+
+  const workflowFile = '.github/workflows/paper-state-candidate-export.yml';
+  // JSON is a YAML subset: parse the entire workflow, not security-critical regex fragments.
+  const wf = JSON.parse(fs.readFileSync(workflowFile, 'utf8'));
+  const flags = { ALPHA_ENV: 'PAPER', READ_ONLY: 'true', EXEC_ENABLED: 'false', LIVE_ORDER_SUBMIT_ENABLED: 'false', MARKET_GUARD_MODE: 'observe' };
+  const actionPins = { checkout: 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+    node: 'actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444',
+    restore: 'actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830',
+    upload: 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9' };
+  function assertWorkflow(w) {
+    assert.deepEqual(Object.keys(w).sort(), ['concurrency', 'jobs', 'name', 'on', 'permissions']);
+    assert.deepEqual(Object.keys(w.on), ['workflow_dispatch']);
+    assert.deepEqual(Object.keys(w.on.workflow_dispatch.inputs).sort(), ['approval_phrase', 'recipient_public_key', 'scope_json', 'scope_sha256']);
+    for (const input of Object.values(w.on.workflow_dispatch.inputs)) { assert.equal(input.type, 'string'); assert.equal(input.required, true); assert.equal(input.default, undefined); }
+    assert.deepEqual(w.permissions, { contents: 'read', actions: 'read' });
+    assert.deepEqual(w.concurrency, { group: 'paper-state-candidate-export', 'cancel-in-progress': false });
+    assert.deepEqual(Object.keys(w.jobs), ['export']); const job = w.jobs.export;
+    assert.deepEqual(Object.keys(job).sort(), ['env', 'if', 'runs-on', 'steps', 'timeout-minutes']);
+    assert.equal(job.if, "${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == '1' }}");
+    assert.equal(job['runs-on'], 'ubuntu-latest'); assert.equal(job['timeout-minutes'], 10);
+    assert.deepEqual(job.env, { FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true', ...flags });
+    assert.deepEqual(job.steps.map(x => x.id), ['checkout', 'node', 'prepare', 'preflight', 'restore', 'restore_check', 'encrypt', 'upload']);
+    for (const step of job.steps) {
+      assert.ok(Object.keys(step).every(k => ['id', 'name', 'uses', 'with', 'shell', 'run', 'env', 'if'].includes(k)));
+      if (step.uses) { assert.equal(step.uses, actionPins[step.id]); assert.equal(step.run, undefined); }
+      if (step.run) {
+        assert.equal(step.shell, 'bash'); assert.equal(step.if, undefined);
+        assert.ok(!/\$\{\{|(?:^|[\s;|&])(curl|wget|eval|source)\s|--paginate|--retry|set -x|\|\| true/m.test(step.run));
+        assert.ok(step.run.startsWith('set -euo pipefail\nset -C\numask 077\n'));
+      }
+    }
+    const steps = Object.fromEntries(job.steps.map(x => [x.id, x]));
+    assert.deepEqual(steps.checkout.with, { ref: '${{ github.sha }}', 'persist-credentials': false,
+      'sparse-checkout-cone-mode': false, 'sparse-checkout': '/scripts/paper-state-candidate-export.mjs\n/scripts/paper-exact-cache-private-export.mjs' });
+    assert.deepEqual(steps.node.with, { 'node-version': '20' });
+    assert.deepEqual(steps.restore.with, { path: 'state', key: '${{ fromJSON(inputs.scope_json).cacheKey }}', 'fail-on-cache-miss': true });
+    assert.deepEqual(steps.upload.with, { name: 'paper-state-candidate-encrypted-${{ github.run_id }}',
+      path: '${{ runner.temp }}/paper-candidate-private/attempt/candidate.enc.json',
+      'if-no-files-found': 'error', 'retention-days': 1, 'compression-level': 0, 'include-hidden-files': false, overwrite: false });
+    assert.equal(steps.upload.if, "${{ success() && steps.encrypt.outcome == 'success' }}");
+    const tokenEnv = { GH_TOKEN: '${{ github.token }}', GH_DEBUG: '', GH_PROMPT_DISABLED: '1' };
+    const restoreEnv = { CACHE_HIT: '${{ steps.restore.outputs.cache-hit }}', CACHE_MATCHED_KEY: '${{ steps.restore.outputs.cache-matched-key }}' };
+    assert.equal(steps.prepare.env, undefined); assert.deepEqual(steps.preflight.env, tokenEnv);
+    assert.deepEqual(steps.restore_check.env, restoreEnv); assert.deepEqual(steps.encrypt.env, { ...tokenEnv, ...restoreEnv });
+    assert.equal(steps.checkout.env, undefined); assert.equal(steps.node.env, undefined);
+    assert.equal(steps.restore.env, undefined); assert.equal(steps.upload.env, undefined);
+    const text = JSON.stringify(w); assert.ok(!/secrets\.|restore-keys|actions\/cache\/save|ALPACA|TOSS|scope_json.*\$\{\{ inputs/.test(text));
+    assert.equal((text.match(/gh api /g) || []).length, 4);
+  }
+  check(() => assertWorkflow(wf));
+  for (const mutate of [w => { w.on.schedule = []; }, w => { w.on.push = {}; }, w => { w.on.repository_dispatch = {}; },
+    w => { w.permissions.actions = 'write'; }, w => { w.permissions.contents = 'write'; }, w => { w.jobs.export.permissions = { contents: 'write' }; },
+    w => { w.jobs.export.if = '${{ always() }}'; }, w => { w.concurrency['cancel-in-progress'] = true; },
+    w => { w.jobs.export.env.EXEC_ENABLED = 'true'; }, w => { w.jobs.export.env.READ_ONLY = 'false'; },
+    w => { w.jobs.export.steps[4].with['restore-keys'] = 'sidecar-state-main-'; },
+    w => { w.jobs.export.steps[4].uses = 'actions/cache@v4'; },
+    w => { w.jobs.export.steps[4].with['fail-on-cache-miss'] = false; },
+    w => { w.jobs.export.steps[7].with.path = 'state/**'; },
+    w => { w.jobs.export.steps[7].with['include-hidden-files'] = true; },
+    w => { w.jobs.export.steps[7].if = '${{ always() }}'; },
+    w => { w.jobs.export.steps[3]['continue-on-error'] = true; },
+    w => { w.jobs.export.steps[3].env.BROKER_KEY = '${{ secrets.BROKER_KEY }}'; },
+    w => { w.jobs.export.steps[3].run += '\necho "${{ inputs.scope_json }}"'; },
+    w => { w.jobs.export.steps[3].run += '\nsource /unapproved/input'; },
+    w => { w.jobs.export.steps[3].run += '\neval "$UNAPPROVED"'; },
+    w => { w.jobs.export.steps[0].with.ref = 'main'; },
+  ]) { const bad = structuredClone(wf); mutate(bad); check(() => assert.throws(() => assertWorkflow(bad))); }
+  const callCli = (args, e = env) => spawnSync(process.execPath, [...childNodeOptions, script, ...args], { env: e, encoding: 'utf8' });
+  const cliAttempt = path.join(root, 'cli-attempt');
+  check(() => assert.equal(callCli(['prepare', cliAttempt]).status, 0));
+  check(() => assert.equal(callCli(['prepare', cliAttempt]).status, 1));
+  for (const [n, v] of [['history.json', history], ['source-run.json', run], ['caches-before.json', caches], ['caches-after.json', caches]]) write(path.join(cliAttempt, n), v);
+  check(() => assert.equal(callCli(['preflight', cliAttempt]).status, 0));
+  check(() => assert.equal(callCli(['verify-restore']).status, 0));
+  const cliSource = source(), cliCipher = callCli(['encrypt', cliSource, cliAttempt]);
+  check(() => { assert.equal(cliCipher.status, 0); assert.equal(cliCipher.stderr, ''); assert.ok(!cliCipher.stdout.includes('SYNTHETIC_PRIVATE')); });
+  const cliHash = JSON.parse(cliCipher.stdout).envelopeSha256;
+  const cliDecrypt = callCli(['decrypt', path.join(cliAttempt, 'candidate.enc.json'), keyFile, path.join(root, 'cli-opened'), cliHash, scopeFile, sha(scopeBytes), '789'], {});
+  check(() => { assert.equal(cliDecrypt.status, 0); assert.equal(JSON.parse(cliDecrypt.stdout).executionAuthorized, false); });
+  for (const args of [['unknown'], ['prepare'], ['preflight', root, 'extra'], ['encrypt', root], ['decrypt'], ['verify-restore', root]]) {
+    check(() => { const r = callCli(args); assert.equal(r.status, 1); assert.equal(r.stderr, ''); assert.match(JSON.parse(r.stdout).status, /^CANDIDATE_/); });
+  }
+
+  // Execute the real workflow shell bodies with a fixture-only gh binary. No Actions/cache service runs.
+  const bin = path.join(root, 'mock-bin'); fs.mkdirSync(bin, { mode: 0o700 });
+  write(path.join(bin, 'gh'), Buffer.from(`#!${process.execPath}\nconst fs=require('node:fs'),p=process.env.MOCK_DATA;
+const args=process.argv.slice(2); fs.appendFileSync(p+'/calls.jsonl',JSON.stringify(args)+'\\n');
+const calls=fs.readFileSync(p+'/calls.jsonl','utf8').trim().split('\\n').length;
+if (args[0]!=='api'||args[1]!=='--method'||args[2]!=='GET'||args[3]!=='--hostname'||args[4]!=='github.com'||args.length!==6) process.exit(9);
+if (String(calls)===process.env.MOCK_FAIL_AT) { process.stderr.write('SYNTHETIC_PRIVATE_DO_NOT_PRINT');process.exit(7); }
+const endpoints=['repos/fixture/engine/actions/workflows/paper-state-candidate-export.yml/runs?event=workflow_dispatch&per_page=100','repos/fixture/engine/actions/runs/123','repos/fixture/engine/actions/caches?ref=refs/heads/main&key=sidecar-state-main-123&per_page=100'];
+const which=endpoints.indexOf(args[5]);if(which<0)process.exit(8);
+const name=which===0?'history.json':which===1?'source-run.json':calls===4?'caches-after.json':'caches-before.json';
+process.stdout.write(fs.readFileSync(p+'/'+name));\n`)); fs.chmodSync(path.join(bin, 'gh'), 0o700);
+  write(path.join(bin, 'timeout'), Buffer.from('#!/bin/bash\n[[ "$1" == "30s" ]] || exit 8\nshift\nexec "$@"\n')); fs.chmodSync(path.join(bin, 'timeout'), 0o700);
+  function shellFixture({ inputChanges = {}, environment = {}, metadata = {}, failAt = '', cacheHit = 'true', matchedKey = scope.cacheKey, retry = false } = {}) {
+    const base = path.join(root, 'workflow-' + sequence++); fs.mkdirSync(base, { mode: 0o700 });
+    const workspace = path.join(base, 'workspace'); fs.mkdirSync(workspace, { mode: 0o700 }); fs.mkdirSync(path.join(workspace, 'scripts'), { mode: 0o700 });
+    for (const n of ['paper-state-candidate-export.mjs', 'paper-exact-cache-private-export.mjs']) fs.copyFileSync(path.resolve('scripts', n), path.join(workspace, 'scripts', n));
+    const inputs = { approval_phrase: APPROVAL, scope_json: scopeBytes.toString(), scope_sha256: sha(scopeBytes), recipient_public_key: publicDer.toString('base64'), ...inputChanges };
+    const eventFile = path.join(base, 'event.json'); write(eventFile, { inputs });
+    for (const [n, v] of [['history.json', history], ['source-run.json', run], ['caches-before.json', caches], ['caches-after.json', caches]]) write(path.join(base, n), metadata[n] ?? v);
+    const e = { ...env, ...flags, GITHUB_ACTIONS: 'true', GITHUB_EVENT_PATH: eventFile,
+      GITHUB_WORKSPACE: workspace, RUNNER_TEMP: base, PATH: bin + ':' + path.dirname(process.execPath) + ':/usr/bin:/bin',
+      NODE_OPTIONS: '--require=' + childNodeOptions[1], MOCK_DATA: base, MOCK_FAIL_AT: failAt,
+      CACHE_HIT: cacheHit, CACHE_MATCHED_KEY: matchedKey, GH_TOKEN: 'SYNTHETIC_TOKEN', ...environment };
+    for (const k of ['CANDIDATE_SCOPE_JSON', 'CANDIDATE_SCOPE_SHA256', 'RECIPIENT_PUBLIC_KEY', 'APPROVAL_PHRASE']) delete e[k];
+    let result, phase, publicLog = ''; const beforeSource = source();
+    const beforeHash = sha(fs.readFileSync(path.join(beforeSource, 'order-ledger.json')));
+    for (const step of wf.jobs.export.steps.filter(x => x.run)) {
+      phase = step.id;
+      if (phase === 'restore_check') fs.cpSync(beforeSource, path.join(workspace, 'state'), { recursive: true });
+      result = spawnSync('/bin/bash', ['-c', step.run], { cwd: workspace, env: e, encoding: 'utf8' });
+      publicLog += result.stdout + result.stderr; if (result.status !== 0) break;
+    }
+    const at = path.join(base, 'paper-candidate-private/attempt'), cipher = path.join(at, 'candidate.enc.json');
+    const calls = fs.existsSync(path.join(base, 'calls.jsonl')) ? fs.readFileSync(path.join(base, 'calls.jsonl'), 'utf8').trim().split('\n').length : 0;
+    assert.ok(!publicLog.includes('SYNTHETIC_PRIVATE_DO_NOT_PRINT') && !publicLog.includes('SYNTHETIC_TOKEN') && !publicLog.includes(publicDer.toString('base64')));
+    assert.equal(sha(fs.readFileSync(path.join(beforeSource, 'order-ledger.json'))), beforeHash);
+    if (retry) {
+      const again = spawnSync('/bin/bash', ['-c', wf.jobs.export.steps.find(x => x.id === 'prepare').run], { cwd: workspace, env: e, encoding: 'utf8' });
+      assert.notEqual(again.status, 0); assert.equal(fs.readFileSync(path.join(base, 'calls.jsonl'), 'utf8').trim().split('\n').length, calls);
+    }
+    return { status: result.status, phase, calls, cipherExists: fs.existsSync(cipher), publicLog };
+  }
+  check(() => { const r = shellFixture(); assert.equal(r.status, 0); assert.equal(r.calls, 4); assert.equal(r.cipherExists, true); });
+  for (const inputChanges of [{ approval_phrase: 'WRONG' }, { scope_sha256: 'f'.repeat(64) },
+    { recipient_public_key: '-----BEGIN PRIVATE KEY----- SYNTHETIC_PRIVATE_DO_NOT_PRINT' },
+    { scope_json: '$(touch /SYNTHETIC_PRIVATE_DO_NOT_PRINT)' },
+    { scope_json: JSON.stringify({ ...scope, cacheKey: 'x; echo SYNTHETIC_PRIVATE_DO_NOT_PRINT' }) }, { unexpected: 'SYNTHETIC_PRIVATE_DO_NOT_PRINT' }]) {
+    check(() => { const r = shellFixture({ inputChanges }); assert.notEqual(r.status, 0); assert.equal(r.calls, 0); assert.equal(r.cipherExists, false); });
+  }
+  for (const environment of [{ GITHUB_EVENT_NAME: 'schedule' }, { GITHUB_EVENT_NAME: 'push' }, { GITHUB_REF: 'refs/heads/feature' },
+    { GITHUB_RUN_ATTEMPT: '2' }, { GITHUB_SHA: 'f'.repeat(40) }, { GITHUB_REPOSITORY: 'other/engine' },
+    { ALPHA_ENV: 'LIVE' }, { EXEC_ENABLED: 'true' }, { READ_ONLY: 'false' }, { LIVE_ORDER_SUBMIT_ENABLED: 'true' }, { MARKET_GUARD_MODE: 'execute' }]) {
+    check(() => { const r = shellFixture({ environment }); assert.notEqual(r.status, 0); assert.equal(r.calls, 0); assert.equal(r.cipherExists, false); });
+  }
+  for (const failAt of ['1', '2', '3', '4']) {
+    check(() => { const r = shellFixture({ failAt, retry: true }); assert.notEqual(r.status, 0); assert.equal(r.calls, Number(failAt)); assert.equal(r.cipherExists, false); });
+  }
+  for (const metadata of [ { 'history.json': { ...history, total_count: 2 } }, { 'history.json': { total_count: 1, workflow_runs: [] } },
+    { 'source-run.json': { ...run, run_attempt: 2 } }, { 'caches-before.json': { total_count: 0, actions_caches: [] } },
+    ...['id', 'key', 'version'].map(k => ({ 'caches-before.json': { total_count: 1, actions_caches: [{ ...cache, [k]: k === 'id' ? 999 : 'mismatch' }] } })),
+    { 'caches-after.json': { total_count: 1, actions_caches: [{ ...cache, size_in_bytes: 1001 }] } } ]) {
+    check(() => { const r = shellFixture({ metadata }); assert.notEqual(r.status, 0); assert.equal(r.cipherExists, false); assert.equal(r.calls, metadata['caches-after.json'] ? 4 : 3); });
+  }
+  for (const options of [{ cacheHit: 'false' }, { cacheHit: '' }, { matchedKey: scope.cacheKey + '-prefix' }]) {
+    check(() => { const r = shellFixture(options); assert.notEqual(r.status, 0); assert.equal(r.phase, 'restore_check'); assert.equal(r.calls, 3); assert.equal(r.cipherExists, false); });
+  }
+  check(() => {
+    const pkg = JSON.parse(fs.readFileSync('package.json'));
+    assert.equal(pkg.scripts['ops:test:paper-state-candidate-export'], 'node --require ./scripts/fixtures/scoped-paper-offline.cjs scripts/test-paper-state-candidate-export.mjs');
+    const ci = fs.readFileSync('.github/workflows/ci.yml', 'utf8');
+    assert.ok(ci.includes('run: npm run ops:test:paper-state-candidate-export'));
+  });
+  console.log(JSON.stringify({ status: 'PASS', phase: 'STEP_3C', cases: cases - 317, brokerRequests: 0, actualWorkflowRuns: 0 }));
   console.log(JSON.stringify({ status: 'PASS', cases, brokerRequests: 0, runtimeExports: 0, stateAdopted: false }));
   }
   }
