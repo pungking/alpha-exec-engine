@@ -153,7 +153,7 @@ Files: new .github/workflows/paper-state-candidate-export.yml; package.json test
 - [x] Test workflow trigger/permission/cache/no-secret/output boundaries with fixtures. No export workflow execution.
 - [x] Run new test, old export, runtime private binding, GitHub custody, scoped storage/adapter/operational/IEX/attended, public evidence, notifications, state consistency, dry-run safety, symbol guard, typecheck/build, npm audit --audit-level=high and git diff --check.
 - [x] Main-agent whole-diff review; fix demonstrated defects and re-test. Independent ChatGPT audit is a separate post-delivery gate.
-- [ ] Commit/non-force push/Draft PR/actual CI. No merge or post-merge runtime in this step; no parent/runtime completion claim.
+- [x] Commit/non-force push/Draft PR/actual CI. No merge or post-merge runtime in this step; no parent/runtime completion claim.
 
 STEP 3C resume and implementation rulings, 2026-11-10:
 - Resume found the approved branch at 6d15aa2, matching its remote, with four
@@ -205,6 +205,17 @@ STEP 3C local verification, 2026-11-10:
   this is self-review, not the requested later independent ChatGPT audit.
 - Draft PR and actual GitHub CI are still pending at this implementation
   checkpoint and must not be inferred from local PASS results.
+
+STEP 3C GitHub verification checkpoint:
+- Implementation commit: bbcea298f947c05c103ce06fa639858f141bda15, ordinary push
+  to the existing branch; local and remote HEAD matched and worktree was clean.
+- Draft PR: https://github.com/pungking/alpha-exec-engine/pull/59 (not merged).
+- Actual pull-request CI: https://github.com/pungking/alpha-exec-engine/actions/runs/42816947858
+  completed SUCCESS, including the new candidate-export fixture step. No export
+  workflow dispatch was performed. A documentation-only evidence commit follows
+  this checkpoint; its own final CI/head parity belongs in the delivery report.
+- Independent ChatGPT audit and user approval are still pending. Do not mark the
+  parent operational-binding goal complete or enable a runtime export/adoption.
 
 ## Sources and limits
 
