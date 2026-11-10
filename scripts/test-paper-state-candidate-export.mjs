@@ -10,10 +10,16 @@ const script = path.resolve('scripts/paper-state-candidate-export.mjs');
 assert.ok(fs.existsSync(script), 'Missing independently scoped PAPER state candidate exporter');
 const { APPROVAL, validateCandidateScope, prepareCandidateAttempt, preflightCandidateAttempt,
   encryptCandidateSource, decryptCandidateSource } = await import(pathToFileURL(script));
+const step3aOnly = process.argv.includes('--step3a');
+const childNodeOptions = ['--require', path.resolve('scripts/fixtures/scoped-paper-offline.cjs')];
 const sha = b => createHash('sha256').update(b).digest('hex');
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paper-candidate-fixture-')));
-const keys = generateKeyPairSync('rsa', { modulusLength: 3072 });
-const publicDer = keys.publicKey.export({ type: 'spki', format: 'der' });
+const keys = !step3aOnly && typeof encryptCandidateSource === 'function' && typeof decryptCandidateSource === 'function'
+  ? generateKeyPairSync('rsa', { modulusLength: 3072 }) : null;
+// STEP 3A needs only a synthetic public ASN.1 fixture, not a generated key pair.
+const publicDer = keys ? keys.publicKey.export({ type: 'spki', format: 'der' })
+  : Buffer.from('308201a2300d06092a864886f70d01010105000382018f003082018a0282018100'
+    + '80' + '11'.repeat(383) + '0203010001', 'hex');
 const scope = { schemaVersion: 'paper-state-candidate-scope-v1', repository: 'fixture/engine',
   exportCommit: 'a'.repeat(40), sourceRunId: '123', sourceRunAttempt: 1, sourceHeadSha: 'b'.repeat(40),
   sourceWorkflow: '.github/workflows/dry-run.yml', sourceEvent: 'schedule', sourceConclusion: 'success',
@@ -27,6 +33,7 @@ const env = { CANDIDATE_SCOPE_JSON: scopeBytes.toString(), CANDIDATE_SCOPE_SHA25
   MARKET_GUARD_MODE: 'observe', CACHE_HIT: 'true', CACHE_MATCHED_KEY: scope.cacheKey };
 const history = { total_count: 1, workflow_runs: [{ id: 789, run_attempt: 1, head_sha: scope.exportCommit,
   head_branch: 'main', event: 'workflow_dispatch', path: '.github/workflows/paper-state-candidate-export.yml',
+  status: 'in_progress', conclusion: null, repository: { full_name: scope.repository },
   created_at: '2026-01-02T16:00:00Z' }] };
 const run = { id: 123, run_attempt: 1, head_sha: scope.sourceHeadSha, head_branch: 'main', event: 'schedule',
   path: scope.sourceWorkflow, repository: { full_name: scope.repository }, status: 'completed', conclusion: 'success',
@@ -88,6 +95,108 @@ try {
     ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, key: scope.cacheKey + '-prefix' }] }, 'CANDIDATE_CACHE_MISMATCH'],
     ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, created_at: '2026-01-03T00:00:00Z' }] }, 'CANDIDATE_CACHE_TIME_INVALID'],
   ]) { const a = attempt(); write(path.join(a, file), value); reject(() => preflightCandidateAttempt(a, env), code); }
+  const scoped = value => { const bytes = Buffer.from(JSON.stringify(value)); return () => validateCandidateScope(bytes, sha(bytes)); };
+  for (const value of [null, [], {}, { ...scope, sourceRunAttempt: '1' }, { ...scope, cacheId: 456 },
+    { ...scope, sourceConclusion: 'unknown' }, { ...scope, sourceEvent: 'push' },
+    { ...scope, recipientSha256: 'bad' }, { ...scope, sourceHeadSha: '' }]) reject(scoped(value), 'CANDIDATE_SCOPE_INVALID');
+  for (const bytes of [Buffer.from('{'), Buffer.from('null'), Buffer.from([0xc0, 0xaf]), Buffer.alloc(8193, 0x20),
+    Buffer.from(JSON.stringify(scope).replace('"sourceRunId":"123"', '"sourceRunId":"999","sourceRunId":"123"'))]) {
+    reject(() => validateCandidateScope(bytes, sha(bytes)), 'CANDIDATE_SCOPE_INVALID');
+  }
+  const missing = { ...scope }; delete missing.cacheId;
+  reject(scoped(missing), 'CANDIDATE_SCOPE_INVALID');
+  const frozen = validateCandidateScope(scopeBytes, sha(scopeBytes));
+  check(() => assert.ok(Object.isFrozen(frozen)));
+  for (const name of ['APPROVAL_PHRASE', 'ALPHA_ENV', 'READ_ONLY', 'EXEC_ENABLED', 'LIVE_ORDER_SUBMIT_ENABLED',
+    'MARKET_GUARD_MODE', 'GITHUB_RUN_ID', 'RECIPIENT_PUBLIC_KEY', 'CANDIDATE_SCOPE_SHA256']) {
+    const e = { ...env }; delete e[name]; const target = path.join(root, 'missing-env-' + sequence++);
+    check(() => { assert.throws(() => prepareCandidateAttempt(target, e)); assert.equal(fs.existsSync(target), false); });
+  }
+  for (const name of ['FORCE_SEND_ONCE', 'GUARD_EXECUTE_TIGHTEN_STOPS', 'GUARD_EXECUTE_REDUCE_POSITIONS', 'GUARD_EXECUTE_FLATTEN']) {
+    check(() => assert.throws(() => prepareCandidateAttempt(path.join(root, 'guard-' + sequence++), { ...env, [name]: 'true' })));
+  }
+  for (const id of ['0', '01', '1e3', '789\n']) check(() => assert.throws(() => prepareCandidateAttempt(path.join(root, 'run-id-' + sequence++), { ...env, GITHUB_RUN_ID: id })));
+  const privateParent = path.join(root, 'public-parent'); fs.mkdirSync(privateParent, { mode: 0o755 }); fs.chmodSync(privateParent, 0o755);
+  check(() => assert.throws(() => prepareCandidateAttempt(path.join(privateParent, 'attempt'), env)));
+  const parentLink = path.join(root, 'parent-link'); fs.symlinkSync(root, parentLink);
+  check(() => assert.throws(() => prepareCandidateAttempt(path.join(parentLink, 'linked-attempt'), env)));
+  const prepared = attempt();
+  check(() => assert.equal(fs.statSync(prepared).mode & 0o777, 0o700));
+  check(() => assert.equal(fs.statSync(path.join(prepared, 'prepared.json')).mode & 0o777, 0o600));
+  write(path.join(prepared, 'prepared.json'), { tampered: true });
+  reject(() => preflightCandidateAttempt(prepared, env), 'CANDIDATE_PREPARED_MISMATCH');
+  const rebound = attempt();
+  reject(() => preflightCandidateAttempt(rebound, { ...env, GITHUB_RUN_ID: '790' }), 'CANDIDATE_PREPARED_MISMATCH');
+  for (const [file, value, code] of [
+    ['history.json', { ...history, workflow_runs: [{ ...history.workflow_runs[0], id: 790 }] }, 'CANDIDATE_PRIOR_OR_CONCURRENT_ATTEMPT'],
+    ['history.json', { ...history, workflow_runs: [{ ...history.workflow_runs[0], status: 'completed' }] }, 'CANDIDATE_PRIOR_OR_CONCURRENT_ATTEMPT'],
+    ['history.json', { ...history, workflow_runs: [{ ...history.workflow_runs[0], repository: { full_name: 'other/repo' } }] }, 'CANDIDATE_PRIOR_OR_CONCURRENT_ATTEMPT'],
+    ['history.json', { ...history, workflow_runs: [{ ...history.workflow_runs[0], path: '.github/workflows/other.yml' }] }, 'CANDIDATE_PRIOR_OR_CONCURRENT_ATTEMPT'],
+    ['source-run.json', { ...run, id: 124 }, 'CANDIDATE_SOURCE_RUN_MISMATCH'],
+    ['source-run.json', { ...run, event: 'workflow_dispatch' }, 'CANDIDATE_SOURCE_RUN_MISMATCH'],
+    ['source-run.json', { ...run, conclusion: 'failure' }, 'CANDIDATE_SOURCE_RUN_MISMATCH'],
+    ['source-run.json', { ...run, path: '.github/workflows/market-guard.yml' }, 'CANDIDATE_SOURCE_RUN_MISMATCH'],
+    ['source-run.json', { ...run, head_branch: 'feature' }, 'CANDIDATE_SOURCE_RUN_MISMATCH'],
+    ['source-run.json', { ...run, updated_at: '2026-01-03T00:00:00Z' }, 'CANDIDATE_SOURCE_TIME_INVALID'],
+    ['source-run.json', { ...run, run_started_at: '2026-01-02T14:06:00Z' }, 'CANDIDATE_SOURCE_TIME_INVALID'],
+    ['source-run.json', { ...run, created_at: '2026-02-30T14:00:00Z' }, 'CANDIDATE_SOURCE_TIME_INVALID'],
+    ['caches-before.json', { total_count: 0, actions_caches: [] }, 'CANDIDATE_CACHE_MISMATCH'],
+    ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, version: 'd'.repeat(64) }] }, 'CANDIDATE_CACHE_MISMATCH'],
+    ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, ref: 'refs/heads/feature' }] }, 'CANDIDATE_CACHE_MISMATCH'],
+    ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, size_in_bytes: -1 }] }, 'CANDIDATE_CACHE_MISMATCH'],
+    ['caches-before.json', { total_count: 1, actions_caches: [{ ...cache, created_at: '2026-01-02T14:00:00Z' }] }, 'CANDIDATE_CACHE_TIME_INVALID'],
+  ]) { const a = attempt(); write(path.join(a, file), value); reject(() => preflightCandidateAttempt(a, env), code); }
+  for (const name of ['history.json', 'source-run.json', 'caches-before.json']) {
+    const a = attempt(); write(path.join(a, name), Buffer.from('{"private":"SYNTHETIC_SECRET"'));
+    reject(() => preflightCandidateAttempt(a, env), 'CANDIDATE_METADATA_INVALID');
+    reject(() => preflightCandidateAttempt(a, env), 'CANDIDATE_ATTEMPT_ALREADY_USED');
+  }
+  const linkedMeta = attempt(); fs.unlinkSync(path.join(linkedMeta, 'history.json'));
+  fs.symlinkSync(path.join(d, 'history.json'), path.join(linkedMeta, 'history.json'));
+  reject(() => preflightCandidateAttempt(linkedMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const modeMeta = attempt(); fs.chmodSync(path.join(modeMeta, 'history.json'), 0o644);
+  reject(() => preflightCandidateAttempt(modeMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const duplicateMeta = attempt();
+  write(path.join(duplicateMeta, 'source-run.json'), Buffer.from(JSON.stringify(run).replace('"run_attempt":1', '"run_attempt":2,"run_attempt":1')));
+  reject(() => preflightCandidateAttempt(duplicateMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const aliasedMeta = attempt();
+  write(path.join(aliasedMeta, 'source-run.json'), Buffer.from(JSON.stringify(run).replace('"run_attempt":1', '"run_\\u0061ttempt":2,"run_attempt":1')));
+  reject(() => preflightCandidateAttempt(aliasedMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const nestedMeta = attempt();
+  write(path.join(nestedMeta, 'source-run.json'), { ...run, extra: {
+    actor: { id: 1 }, owner: { id: 2 }, items: [{ id: 3 }, { id: 4 }],
+    text: 'escaped "strings": { and [ are data, not structure' } });
+  check(() => preflightCandidateAttempt(nestedMeta, env));
+  const deepMeta = attempt();
+  write(path.join(deepMeta, 'source-run.json'), Buffer.from('{"extra":' + '['.repeat(101) + '0' + ']'.repeat(101) + '}'));
+  reject(() => preflightCandidateAttempt(deepMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const hardMeta = attempt(); fs.linkSync(path.join(hardMeta, 'history.json'), path.join(hardMeta, 'history-copy.json'));
+  reject(() => preflightCandidateAttempt(hardMeta, env), 'CANDIDATE_METADATA_INVALID');
+  const badKey = path.join(root, 'bad-recipient-' + sequence++);
+  reject(() => prepareCandidateAttempt(badKey, { ...env, RECIPIENT_PUBLIC_KEY: Buffer.from('not a key').toString('base64') }), 'CANDIDATE_RECIPIENT_INVALID');
+  check(() => assert.equal(fs.existsSync(badKey), false));
+  const retry = attempt(); write(path.join(retry, 'source-run.json'), { ...run, run_attempt: 2 });
+  reject(() => preflightCandidateAttempt(retry, env), 'CANDIDATE_SOURCE_RUN_MISMATCH');
+  write(path.join(retry, 'source-run.json'), run);
+  reject(() => preflightCandidateAttempt(retry, env), 'CANDIDATE_ATTEMPT_ALREADY_USED');
+  const complete = ready(), receipt = JSON.parse(fs.readFileSync(path.join(complete, 'preflight.json')));
+  check(() => assert.equal(receipt.metadataSha256['source-run.json'], sha(fs.readFileSync(path.join(complete, 'source-run.json')))));
+  check(() => assert.equal(receipt.cache.version, scope.cacheVersion));
+  check(() => assert.equal(fs.statSync(path.join(complete, 'preflight.json')).mode & 0o777, 0o600));
+  const failedScope = { ...scope, sourceConclusion: 'failure' }, failedBytes = Buffer.from(JSON.stringify(failedScope));
+  const failedEnv = { ...env, CANDIDATE_SCOPE_JSON: failedBytes.toString(), CANDIDATE_SCOPE_SHA256: sha(failedBytes) };
+  const failedSource = attempt(failedEnv); write(path.join(failedSource, 'source-run.json'), { ...run, conclusion: 'failure' });
+  check(() => preflightCandidateAttempt(failedSource, failedEnv));
+  const guardProbe = spawnSync(process.execPath, [...childNodeOptions, '-e',
+    "process.exit(globalThis.fetch?.name === 'deny' && require('node:https').get.name === 'deny' ? 0 : 1)"], { env: {}, encoding: 'utf8' });
+  check(() => assert.equal(guardProbe.status, 0, 'Fixture child must preload the offline network guard'));
+  const inert = spawnSync(process.execPath, [...childNodeOptions, script], { env: {}, encoding: 'utf8' });
+  check(() => { assert.equal(inert.status, 0); assert.equal(inert.stdout, ''); assert.equal(inert.stderr, ''); });
+  console.log(JSON.stringify({ status: 'PASS', phase: 'STEP_3A', cases, brokerRequests: 0,
+    runtimeExports: 0, stateAdopted: false, ephemeralKeyPairsGenerated: keys === null ? 0 : 1 }));
+  if (!step3aOnly) {
+  assert.equal(typeof encryptCandidateSource, 'function', 'STEP_3B_NOT_IMPLEMENTED: encryptCandidateSource');
+  assert.equal(typeof decryptCandidateSource, 'function', 'STEP_3B_NOT_IMPLEMENTED: decryptCandidateSource');
   const s = source(), a = ready(), original = fs.readFileSync(path.join(s, 'order-ledger.json'));
   const result = encryptCandidateSource(s, a, env), encrypted = path.join(a, 'candidate.enc.json');
   check(() => assert.equal(result.status, 'ENCRYPTED_CANDIDATE_CREATED_NOT_ADOPTED'));
@@ -133,9 +242,9 @@ try {
   const drift = ready(); write(path.join(drift, 'caches-after.json'), { ...caches, actions_caches: [{ ...cache, id: 999 }] });
   reject(() => encryptCandidateSource(s, drift, env), 'CANDIDATE_CACHE_MISMATCH');
   reject(() => encryptCandidateSource(s, ready(), { ...env, CACHE_HIT: 'false' }), 'CANDIDATE_EXACT_CACHE_MISS');
-  const cli = spawnSync(process.execPath, [script], { env: {}, encoding: 'utf8' });
+  const cli = spawnSync(process.execPath, [...childNodeOptions, script], { env: {}, encoding: 'utf8' });
   check(() => { assert.equal(cli.status, 0); assert.equal(JSON.parse(cli.stdout).status, 'CANDIDATE_EXPORT_NOT_RUN'); assert.equal(cli.stderr, ''); });
-  const badCli = spawnSync(process.execPath, [script, 'preflight', '/private/SYNTHETIC_PRIVATE_DO_NOT_PRINT'], { env: {}, encoding: 'utf8' });
+  const badCli = spawnSync(process.execPath, [...childNodeOptions, script, 'preflight', '/private/SYNTHETIC_PRIVATE_DO_NOT_PRINT'], { env: {}, encoding: 'utf8' });
   check(() => { assert.equal(badCli.status, 1); assert.ok(!badCli.stdout.includes('SYNTHETIC_PRIVATE_DO_NOT_PRINT')); assert.equal(badCli.stderr, ''); });
   const wf = fs.readFileSync('.github/workflows/paper-state-candidate-export.yml', 'utf8');
   check(() => assert.ok(wf.includes('workflow_dispatch:') && !/^  (push|schedule|repository_dispatch|workflow_run|pull_request):/m.test(wf)));
@@ -145,4 +254,5 @@ try {
   check(() => assert.equal((wf.match(/gh api /g) || []).length, 4));
   check(() => assert.ok(!wf.includes('${{ inputs.scope_json }}')));
   console.log(JSON.stringify({ status: 'PASS', cases, brokerRequests: 0, runtimeExports: 0, stateAdopted: false }));
+  }
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

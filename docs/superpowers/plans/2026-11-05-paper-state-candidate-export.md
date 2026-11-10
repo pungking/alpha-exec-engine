@@ -8,6 +8,12 @@
 **Spec:** Operator-approved CUTOVER_SCOPE_DRAFT.md, preserved outside the repository. The public contract below contains no private evidence.
 **Approval:** 2026-11-05: offline implementation plan, implementation, fixtures, independent review, PR/CI and merge if passing. No runtime export, API acquisition, keys, state adoption or orders.
 
+**Current scope override, 2026-11-10:** STEP 3A only: implement the three Task 1
+functions, offline negative fixtures and independent review; preserve the existing
+branch and verify remote reflection. No STEP 3B/3C implementation, main edit,
+automatic merge, operational key generation or actual export. The parent remains
+incomplete. This narrower instruction supersedes the earlier integration sequence.
+
 ## Global constraints and public contract
 
 - Preserve the old exact-cache exporter, its workflow, and all prior attempts unchanged.
@@ -38,10 +44,30 @@
 Files: new scripts/paper-state-candidate-export.mjs; new scripts/test-paper-state-candidate-export.mjs.
 Interfaces: validateCandidateScope(bytes, expectedSha); prepareCandidateAttempt(directory, env); preflightCandidateAttempt(directory, env).
 
-- [ ] Write failing import/default-inert/scope/first-attempt/source-run/cache-pin fixtures.
-- [ ] Observe the missing implementation assertion fail.
-- [ ] Implement exact allowlisted scope, private exclusive attempt, metadata checks and pinned receipt with existing helper reuse.
-- [ ] Test missing approval/unsafe flags/wrong source/head/event/version/fallback/truncated or duplicate history and pre-existing attempt rejection.
+- [x] Write failing import/default-inert/scope/first-attempt/source-run/cache-pin fixtures.
+- [x] Observe the missing implementation assertion fail.
+- [x] Implement exact allowlisted scope, private exclusive attempt, metadata checks and pinned receipt with existing helper reuse.
+- [x] Test missing approval/unsafe flags/wrong source/head/event/version/fallback/truncated or duplicate history and pre-existing attempt rejection.
+
+STEP 3A command: `node --require ./scripts/fixtures/scoped-paper-offline.cjs scripts/test-paper-state-candidate-export.mjs --step3a`.
+The full test deliberately fails at STEP_3B_NOT_IMPLEMENTED until the separately
+approved remaining steps exist; its later workflow assertions are not exercised.
+No encryption/decryption stubs or executable CLI are added in STEP 3A.
+The dedicated mode uses a fixed synthetic public ASN.1 fixture, not a key pair.
+Preflight consumes an exclusive private claim before reading metadata; a failed
+attempt cannot be retried by replacing the failed metadata.
+Receipts bind the exact scope bytes, run, raw metadata hashes and selected cache.
+These local declarations are not independently authenticated GitHub responses,
+permission evidence, source-byte integrity proof, a cache restore or state authority.
+
+STEP 3A verification, 2026-11-10: dedicated suite 112 cases PASS; full suite
+fails at STEP_3B_NOT_IMPLEMENTED as intended. Syntax, typecheck, build,
+symbol-agnostic guard, dry-run dispatch safety and diff checks PASS.
+Independent review found the child test process lacked the offline preload;
+a no-request RED/GREEN probe and explicit preload on every test child resolve it.
+Targeted independent re-review reports no remaining STEP 3A blockers.
+No generated key pair, broker/API call, workflow execution, actual export,
+operational state change or main merge was performed.
 
 ## Task 2: Private capture and local decrypt
 
