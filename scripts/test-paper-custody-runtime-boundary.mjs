@@ -19,6 +19,9 @@ const COMMIT = '1'.repeat(40);
 const ENV_ID = 26847620868;
 const TOKEN = 'synthetic-offline-github-read-token';
 let checks = 0, providerCalls = 0;
+const boundary = ({ expected, scope, custodyConfig, claim, refSnapshot,
+  reviewEvidence, reviewedCodeSha256 }) =>
+  ({ expected, scope, custodyConfig, claim, refSnapshot, reviewEvidence, reviewedCodeSha256 });
 
 function fixture() {
   const scope = { accountSha256: ACCOUNT, scopeSha256: SCOPE, attemptId: 'OFFLINE_3C' };
@@ -78,11 +81,12 @@ function verify(candidate, reason) {
   }
   checks++;
 }
-const mutate = (change, reason) => { const x = fixture(); change(x); verify(x, reason); };
-verify(fixture());
+const mutate = (change, reason) => { const x = fixture(); change(x); verify(boundary(x), reason); };
+verify(boundary(fixture()));
 for (const input of [null, undefined, [], 'bad', 0, {}, { random: true }])
   verify(input, 'INPUT_SHAPE_INVALID');
-mutate(x => { x.unexpected = 1; }, 'INPUT_SHAPE_INVALID');
+const extraRoot = boundary(fixture()); extraRoot.unexpected = 1;
+verify(extraRoot, 'INPUT_SHAPE_INVALID');
 for (const [field, value] of [
   ['runId', '0'], ['codeSha', 'invalid'], ['workflowPath', '.github/workflows/dry-run.yml'],
   ['accountScopeSha256', 'invalid'],
@@ -172,7 +176,7 @@ async function preflight(c, changes = {}) {
 const valid = client();
 const ok = await preflight(valid);
 assert.equal(valid.calls, 3);
-verify({ ...fixture(), reviewEvidence: inspectGithubPaperReviewEvidence(fixture()) });
+verify(boundary({ ...fixture(), reviewEvidence: inspectGithubPaperReviewEvidence(fixture()) }));
 assert.equal(ok.status, 'HOLD_BOUNDARY_UNTRUSTED_NOT_AUTHORIZED');
 assert.equal(ok.structuralBindingValid, true);
 assert.equal(ok.operationalEligible, false);
