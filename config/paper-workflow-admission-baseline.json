@@ -194,7 +194,7 @@
     "scripts/lib/paper-broker-secret-source-surface.mjs": "5415e8f7e44b5df2de70917a5187af0c2983c17dc9e1aaa54e5348fa5983df6d",
     "scripts/test-paper-broker-secret-source-surface.mjs": "5a3136e21a2a99ea571f7bde35b3fbbef48b0b35831d32bb69024729df38948f",
     "scripts/lib/paper-broker-credential-metadata-candidate.mjs": "8aae8796cadd6b2fac42e1e92f03b1b7a4d727bd12190ff1f6cef1334786c892",
-    "scripts/test-paper-broker-credential-metadata-candidate.mjs": "3f5fdfe5079766acb1e5f271e5f266687ea5c0450c6d66e7cfda0d22bec0044c"
+    "scripts/test-paper-broker-credential-metadata-candidate.mjs": "2e6f90e9bf215438eb40376d0145b1e709318f82e59ba3350f938a6c28c12482"
   },
   "workflows": [
     {
