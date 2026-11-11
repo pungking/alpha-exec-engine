@@ -8,7 +8,7 @@ let checks = 0;
 const ok = fn => { fn(); checks++; };
 const reject = fn => ok(() => assert.throws(fn));
 const run = change => { const x = structuredClone(inputs); change(x); return auditWorkflows(x); };
-ok(() => { const r = auditWorkflows(inputs); assert.equal(r.workflowCount, 17); assert.equal(r.jobCount, 17); assert.equal(r.operationalEligibleJobs, 0); assert.equal(r.operationalHold, true); });
+ok(() => { const r = auditWorkflows(inputs); assert.equal(r.workflowCount, 17); assert.equal(r.jobCount, 21); assert.equal(r.operationalEligibleJobs, 0); assert.equal(r.operationalHold, true); });
 ok(() => assert.deepEqual(auditWorkflows(inputs), auditWorkflows(inputs)));
 for (const bad of ['on: push\non: schedule\njobs: {}', 'on: !!str push\njobs: {}', 'x: &x [*x]\non: push\njobs: {}', 'on: push\njobs: {}\n---\non: schedule', 'on: push\njobs: {}\nfoo: .nan']) reject(() => parseWorkflow(bad));
 reject(() => run(x => { x.files['evil.yml'] = 'on: schedule\njobs: {evil: {runs-on: ubuntu-latest, steps: [{run: "curl -X POST broker"}]}}'; }));
@@ -44,3 +44,4 @@ try {
 } finally { fs.rmSync(root,{recursive:true,force:true}); }
 console.log(JSON.stringify({status:'OFFLINE_ADMISSION_TEST_PASS',checks,brokerRequests:0,operationalChanges:0}));
 await import('./test-paper-mutation-admission-contract.mjs');
+await import('./test-paper-workflow-hard-hold.mjs');
