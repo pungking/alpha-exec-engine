@@ -127,7 +127,7 @@ mutate(x => { x.claim.writer.unexpected = 1; }, 'WRITER_CLAIM_FORMAT_INVALID');
 mutate(x => { x.refSnapshot.object.sha = PARENT; }, 'REMOTE_HEAD_MISMATCH');
 mutate(x => { x.refSnapshot.ref = 'refs/heads/main'; }, 'REMOTE_HEAD_MISMATCH');
 mutate(x => { x.refSnapshot.object.type = 'tag'; }, 'REMOTE_HEAD_MISMATCH');
-mutate(x => { x.reviewEvidence.reviewHistoryBound = false; }, 'GITHUB_REVIEW_NOT_BOUND');
+mutate(x => { x.reviewEvidence = { ...x.reviewEvidence, reviewHistoryBound: false }; }, 'GITHUB_REVIEW_NOT_BOUND');
 mutate(x => { x.reviewEvidence = null; }, 'GITHUB_REVIEW_NOT_BOUND');
 mutate(x => { x.reviewEvidence = { status: 'approved' }; }, 'GITHUB_REVIEW_NOT_BOUND');
 
