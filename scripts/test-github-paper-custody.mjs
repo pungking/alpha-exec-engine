@@ -160,3 +160,4 @@ try {
   } checks++;
   console.log(JSON.stringify({ status: 'OFFLINE_GITHUB_CUSTODY_PASS', checks, brokerRequests: 0, operationalStateChanged: false }));
 } finally { await fs.rm(root, { recursive: true, force: true }); }
+await import('./test-github-paper-custody-rest.mjs');
