@@ -12,10 +12,6 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: paper-five-row-active-limited-state-recovery
-  cancel-in-progress: false
-
 jobs:
   admission:
     name: Protected PAPER approval - operational HOLD
@@ -34,6 +30,9 @@ jobs:
           exit 1
 
   recover:
+    concurrency:
+      group: paper-five-row-active-limited-state-recovery
+      cancel-in-progress: false
     needs: admission
     if: ${{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}
     runs-on: ubuntu-latest

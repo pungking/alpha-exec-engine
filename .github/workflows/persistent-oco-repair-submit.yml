@@ -35,10 +35,6 @@ permissions:
   actions: read
   contents: read
 
-concurrency:
-  group: persistent-oco-repair-submit-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   admission:
     name: Protected PAPER approval - operational HOLD
@@ -57,6 +53,9 @@ jobs:
           exit 1
 
   submit-persistent-repair:
+    concurrency:
+      group: persistent-oco-repair-submit-${{ github.ref }}
+      cancel-in-progress: false
     needs: admission
     if: ${{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}
     runs-on: ubuntu-latest

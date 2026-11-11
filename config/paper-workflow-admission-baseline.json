@@ -134,7 +134,7 @@
     "scripts/test-paper-exact-cache-private-export.mjs": "7c97dc3833cdd7b833172713d110037bc0d97d00c3e177f1e5e21ac1425baee9",
     "scripts/test-paper-mutation-admission-contract.mjs": "8a843b447810a0575e582dadd240ee5813eb64089e4b710380ab2650819be2de",
     "scripts/test-paper-workflow-admission.mjs": "9044ad740a3f16a37dd5e0f7c6d3d29e85cbd4f4fed3626324d7183177322b95",
-    "scripts/test-paper-workflow-hard-hold.mjs": "5694b452f003ce9256113403c1e14183356c8b1acad5e00c68c4d7a69e68e99f",
+    "scripts/test-paper-workflow-hard-hold.mjs": "c8997c7e255c73fdee597d523af37b70e85380ae46d581a7cbb7e05a3ebe9702",
     "scripts/validate-alpaca-oco-response-fixtures.mjs": "86df0641bd0ebae16ed5b3482d80de73345bdc55d59b25b71c118ba460d547cf",
     "scripts/validate-alpaca-order-payload-fixtures.mjs": "90b523607a97dc5e0a2906b9c5620fce756c1f22b4f9f53929eb18faafb9df75",
     "scripts/validate-high-price-min-one-share-contract.mjs": "1fc758c92a40d3f760b906559926481c47436a0b75b8e63a095e41ea72904894",
@@ -465,7 +465,7 @@
     },
     {
       "file": "ledger-filled-migration.yml",
-      "definitionSha256": "2c4a5fa330ad3d40155a9c0cb29f3d56495b338c1c0db34fd204234b3122785a",
+      "definitionSha256": "cc6aa0588ed7022256518d506db03165220e4291c6c884a2c6c14c67631a7926",
       "events": [
         "workflow_dispatch"
       ],
@@ -486,10 +486,7 @@
             "permissions": {
               "contents": "read"
             },
-            "workflowConcurrency": {
-              "group": "sidecar-dry-run-${{ github.ref }}",
-              "cancel-in-progress": false
-            },
+            "workflowConcurrency": null,
             "jobConcurrency": null,
             "secrets": [],
             "dynamicSecretReference": false,
@@ -514,11 +511,11 @@
           "observed": {
             "environment": null,
             "permissions": "INHERITED_UNVERIFIED",
-            "workflowConcurrency": {
+            "workflowConcurrency": null,
+            "jobConcurrency": {
               "group": "sidecar-dry-run-${{ github.ref }}",
               "cancel-in-progress": false
             },
-            "jobConcurrency": null,
             "secrets": [
               "ALPACA_KEY_ID",
               "ALPACA_SECRET_KEY"
@@ -718,7 +715,7 @@
     },
     {
       "file": "paper-five-row-active-limited-state-recovery.yml",
-      "definitionSha256": "b25f841513b2d523cc8717df3b46576c4b82579139276d37af10a0735d3e65ce",
+      "definitionSha256": "fec664b36241502bc105b81d1f61d7f84ac8ad158116c8820e2c3feb0784b99f",
       "events": [
         "workflow_dispatch"
       ],
@@ -739,10 +736,7 @@
             "permissions": {
               "contents": "read"
             },
-            "workflowConcurrency": {
-              "group": "paper-five-row-active-limited-state-recovery",
-              "cancel-in-progress": false
-            },
+            "workflowConcurrency": null,
             "jobConcurrency": null,
             "secrets": [],
             "dynamicSecretReference": false,
@@ -770,11 +764,11 @@
               "contents": "read",
               "actions": "read"
             },
-            "workflowConcurrency": {
+            "workflowConcurrency": null,
+            "jobConcurrency": {
               "group": "paper-five-row-active-limited-state-recovery",
               "cancel-in-progress": false
             },
-            "jobConcurrency": null,
             "secrets": [],
             "dynamicSecretReference": false,
             "effectiveJobFlags": {
@@ -1065,7 +1059,7 @@
     },
     {
       "file": "paper-oco-submit-canary.yml",
-      "definitionSha256": "29e755ccc3171e09a54e8f5a208a8f19c93117211b4cd55c634b9176bd4f12b4",
+      "definitionSha256": "7bddd98b4fd442959a00761a31af7ee3d0fb89f908291b6594f6d87034e90339",
       "events": [
         "workflow_dispatch"
       ],
@@ -1086,10 +1080,7 @@
             "permissions": {
               "contents": "read"
             },
-            "workflowConcurrency": {
-              "group": "paper-oco-submit-canary-${{ github.ref }}",
-              "cancel-in-progress": false
-            },
+            "workflowConcurrency": null,
             "jobConcurrency": null,
             "secrets": [],
             "dynamicSecretReference": false,
@@ -1118,11 +1109,11 @@
               "actions": "read",
               "contents": "read"
             },
-            "workflowConcurrency": {
+            "workflowConcurrency": null,
+            "jobConcurrency": {
               "group": "paper-oco-submit-canary-${{ github.ref }}",
               "cancel-in-progress": false
             },
-            "jobConcurrency": null,
             "secrets": [
               "ALPACA_KEY_ID",
               "ALPACA_SECRET_KEY",
@@ -1406,7 +1397,7 @@
     },
     {
       "file": "persistent-oco-repair-submit.yml",
-      "definitionSha256": "192bc6260f44bb126287f068fd88722883e87b8ae52f952e447d81f23548574c",
+      "definitionSha256": "03a3ad8692120b035084fdad233cefe399ce3a5db1585194e2f7aa0d3b484f86",
       "events": [
         "workflow_dispatch"
       ],
@@ -1427,10 +1418,7 @@
             "permissions": {
               "contents": "read"
             },
-            "workflowConcurrency": {
-              "group": "persistent-oco-repair-submit-${{ github.ref }}",
-              "cancel-in-progress": false
-            },
+            "workflowConcurrency": null,
             "jobConcurrency": null,
             "secrets": [],
             "dynamicSecretReference": false,
@@ -1459,11 +1447,11 @@
               "actions": "read",
               "contents": "read"
             },
-            "workflowConcurrency": {
+            "workflowConcurrency": null,
+            "jobConcurrency": {
               "group": "persistent-oco-repair-submit-${{ github.ref }}",
               "cancel-in-progress": false
             },
-            "jobConcurrency": null,
             "secrets": [
               "ALPACA_KEY_ID",
               "ALPACA_SECRET_KEY"

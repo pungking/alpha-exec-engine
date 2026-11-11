@@ -18,10 +18,6 @@ on:
         default: "1"
         type: string
 
-concurrency:
-  group: sidecar-dry-run-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   admission:
     name: Protected PAPER approval - operational HOLD
@@ -40,6 +36,9 @@ jobs:
           exit 1
 
   ledger-filled-migration:
+    concurrency:
+      group: sidecar-dry-run-${{ github.ref }}
+      cancel-in-progress: false
     needs: admission
     if: ${{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}
     runs-on: ubuntu-latest

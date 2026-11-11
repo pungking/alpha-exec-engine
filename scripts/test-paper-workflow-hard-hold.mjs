@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { parseWorkflow } from './check-paper-workflow-admission.mjs';
 import { MUTATION_TARGETS } from './lib/paper-mutation-admission-contract.mjs';
 
@@ -11,12 +12,21 @@ const HOLD_SCRIPT = [
   "echo '{\"status\":\"BLOCKED_PAPER_CUSTODY_OPERATIONAL_HOLD\",\"operationalAuthorized\":false}'",
   'exit 1',
 ].join('\n');
+const WRITER_GROUPS = {
+  'submit-canary': 'paper-oco-submit-canary-${{ github.ref }}',
+  'submit-persistent-repair': 'persistent-oco-repair-submit-${{ github.ref }}',
+  'ledger-filled-migration': 'sidecar-dry-run-${{ github.ref }}',
+  recover: 'paper-five-row-active-limited-state-recovery',
+};
 let checks = 0;
 function gateContract(w, target) {
   assert.deepEqual(Object.keys(w.on), ['workflow_dispatch'], 'only manual dispatch may target a PAPER mutation');
   assert.deepEqual(Object.keys(w.jobs).sort(), ['admission', target.job].sort(), 'unexpected job/change of writer');
   const admission = w.jobs.admission;
   const mutation = w.jobs[target.job];
+  assert.equal(Object.hasOwn(w, 'concurrency'), false, 'approval wait must not acquire a workflow lock');
+  assert.equal(Object.hasOwn(admission, 'concurrency'), false, 'admission must not acquire any concurrency lock');
+  assert.deepEqual(mutation.concurrency, { group: WRITER_GROUPS[target.job], 'cancel-in-progress': false });
   assert.equal(admission.environment, 'PAPER_CUSTODY_APPROVAL');
   assert.equal(admission.if, REVIEW_IF);
   assert.deepEqual(admission.permissions, { contents: 'read' });
@@ -46,6 +56,22 @@ const negative = (source, target, change) => check(() => {
 for (const [file, target] of Object.entries(MUTATION_TARGETS)) {
   const workflow = parseWorkflow(fs.readFileSync('.github/workflows/' + file, 'utf8'));
   check(() => gateContract(workflow, target));
+  negative(workflow, target, (w, job) => { w.concurrency = w.jobs[job].concurrency; delete w.jobs[job].concurrency; });
+  negative(workflow, target, (w, job) => { w.jobs.admission.concurrency = w.jobs[job].concurrency; });
+  negative(workflow, target, w => { w.jobs.admission.concurrency = { group: 'unrelated-approval-lock' }; });
+  negative(workflow, target, (w, job) => { delete w.jobs[job].concurrency; });
+  negative(workflow, target, (w, job) => { w.jobs[job].concurrency.group += '-changed'; });
+  negative(workflow, target, (w, job) => { w.jobs[job].concurrency['cancel-in-progress'] = true; });
+  // gateContract pins this exact JS-compatible expression; this is not an Actions scheduler emulator.
+  const condition = workflow.jobs[target.job].if.slice(3, -2);
+  for (const result of ['waiting', 'rejected', 'failure', 'cancelled', 'skipped', 'success']) {
+    check(() => assert.equal(runInNewContext(condition, {
+      needs: { admission: { result, outputs: {} } },
+    }, { timeout: 100 }), false, `${file}: ${result} without authority stays blocked`));
+    if (result !== 'success') check(() => assert.equal(runInNewContext(condition, {
+      needs: { admission: { result, outputs: { operational_authorized: 'true' } } },
+    }, { timeout: 100 }), false, `${file}: ${result} cannot be bypassed by an output`));
+  }
   negative(workflow, target, w => { delete w.jobs.admission.environment; });
   negative(workflow, target, w => { w.jobs.admission.environment = 'PAPER_UNPROTECTED'; });
   negative(workflow, target, w => { w.jobs.admission.if = '$' + '{{ always() }}'; });

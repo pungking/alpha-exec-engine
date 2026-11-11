@@ -25,10 +25,6 @@ permissions:
   actions: read
   contents: read
 
-concurrency:
-  group: paper-oco-submit-canary-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   admission:
     name: Protected PAPER approval - operational HOLD
@@ -47,6 +43,9 @@ jobs:
           exit 1
 
   submit-canary:
+    concurrency:
+      group: paper-oco-submit-canary-${{ github.ref }}
+      cancel-in-progress: false
     needs: admission
     if: ${{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}
     runs-on: ubuntu-latest
