@@ -28,10 +28,11 @@ const writer=(id,accountSha256,isLegacy)=>({
 });
 const work=async ()=>{
   const git=memoryGithub({configOverrides:{repository:REPO,workflow:PATH,runId:RUN,codeSha256:CODE}});
-  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'paper-3h-offline-'));
+  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'paper-3h-offline-')));
+  await fs.chmod(root,0o700);
   try {await openGithubCustody({config:git.config,request:git.request,
-    privateKey:git.privateKey,directory:dir});
-  } finally {await fs.rm(dir,{recursive:true,force:true});}
+    privateKey:git.privateKey,directory:path.join(root,'claim')});
+  } finally {await fs.rm(root,{recursive:true,force:true});}
   const cfg={...git.config,expectedCommit:git.head()};
   const scope={accountSha256:cfg.accountSha256,scopeSha256:cfg.scopeSha256,attemptId:cfg.attemptId};
   const expected={runId:RUN,codeSha:SH,workflowPath:PATH,
