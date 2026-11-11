@@ -149,9 +149,9 @@ export function inspectPaperCustodyRuntimeBoundary(input = {}) {
  * This does NOT authenticate claim contents; a future independently reviewed
  * decrypt/lineage checker and account-wide writer exclusion are mandatory.
  */
-export async function inspectPaperCustodyReadOnlyPreflight({
-  expected, scope, custodyConfig, claim, reviewedCodeSha256, token, fetchImpl,
-} = {}) {
+export async function inspectPaperCustodyReadOnlyPreflight(input = {}) {
+  const { expected, scope, custodyConfig, claim, reviewedCodeSha256, token, fetchImpl } =
+    plain(input) ? input : {};
   const base = { expected, scope, custodyConfig, claim,
     refSnapshot: null, reviewEvidence: null, reviewedCodeSha256 };
   const shape = inspectPaperCustodyRuntimeBoundary(base);
