@@ -58,7 +58,8 @@ function runMatches(expected, run) {
  * Pure diagnostic for API-shaped evidence. Caller-supplied objects are NOT
  * authenticated, and every outcome remains HOLD or DENY.
  */
-export function inspectGithubPaperReviewEvidence({ expected, run, reviews } = {}) {
+export function inspectGithubPaperReviewEvidence(input = {}) {
+  const { expected, run, reviews } = object(input) ? input : {};
   const findings = [];
   if (!expectedValid(expected)) return result(['EXPECTED_BOUNDARY_INVALID']);
   if (!runMatches(expected, run)) findings.push('RUN_BOUNDARY_INVALID');
