@@ -180,7 +180,7 @@
     "scripts/lib/paper-external-proof-closure.mjs": "7b25e15e52a24f58bc51313990ed6379d511c5c355b05306c2d8637f4f46ee33",
     "scripts/test-paper-external-proof-closure.mjs": "b01356a55c132ca3100973a9925677b302ac6ceed79753edf75651aab899f934",
     "scripts/lib/paper-protected-writer-topology.mjs": "ff666313c45c30f807f2a1f440c98c26fcbd6da3b3a1198dd1d308cdfb388b86",
-    "scripts/test-paper-protected-writer-topology.mjs": "d0d3754c019b4d93b36dfb9f88fc442f456d8bbc255c05bdf419dbdb67ea734e"
+    "scripts/test-paper-protected-writer-topology.mjs": "bd1e3d73b56edafc1f9e158fa29208f041b332a1f49ef92732d073e916168b6f"
   },
   "workflows": [
     {
