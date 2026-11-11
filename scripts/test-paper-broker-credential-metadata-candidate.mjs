@@ -202,8 +202,10 @@ for(const opts of [
 ]){
  const v=await readFixture(fixture(),opts);
  assert.equal(v.result.status,'DENY_BROKER_CREDENTIAL_METADATA_INVALID');
- assert.ok(v.result.findings.includes(
-  'READ_ONLY_ACCOUNT_OR_GITHUB_METADATA_UNAVAILABLE'));
+ const expected=opts.badAt===0&&opts.body==='[]'
+  ?'REPOSITORY_SECRET_NAME_INVENTORY_INVALID'
+  :'READ_ONLY_ACCOUNT_OR_GITHUB_METADATA_UNAVAILABLE';
+ assert.ok(v.result.findings.includes(expected),JSON.stringify(v.result.findings));
  safe(v.result);checks++;
 }
 for(const args of [
