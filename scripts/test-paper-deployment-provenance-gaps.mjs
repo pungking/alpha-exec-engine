@@ -65,6 +65,12 @@ change(x=>{x.snapshot.approvals[0].created_at='2026-11-11T10:06:00Z';},'APPROVAL
 change(x=>{x.receipt.capturedAt='2026-11-11T10:04:00Z';},'CAPTURE_PRECEDES_EVIDENCE');
 change(x=>{x.snapshot.job.started_at='yesterday';},'JOB_STARTED_TIME_INVALID');
 change(x=>{x.snapshot.run.created_at='2026-11-11T10:00:00+00:00';},'RUN_CREATED_TIME_INVALID');
+change(x=>{x.snapshot.run.created_at='2026-02-30T10:00:00Z';},'RUN_CREATED_TIME_INVALID');
+change(x=>{x.snapshot.run.created_at='2026-11-11T24:00:00Z';},'RUN_CREATED_TIME_INVALID');
+change(x=>{x.snapshot.run.created_at='2026-11-11T10:00:60Z';},'RUN_CREATED_TIME_INVALID');
+change(x=>{x.snapshot.run.created_at='2026-11-11T10:00:00.9999Z';},'RUN_CREATED_TIME_INVALID');
+change(x=>{x.receipt.capturedAt='2026-02-30T11:00:00Z';},'CAPTURE_RECEIPT_INVALID');
+{const leap=example();leap.receipt.capturedAt='2028-02-29T00:00:00Z';held(leap);}
 let missing=example();delete missing.snapshot.approvals[0].created_at;
 held(missing,'RUN_APPROVAL_TIME_MISSING');
 missing=example();delete missing.snapshot.job.started_at;
