@@ -9,6 +9,8 @@
  */
 const REPO = 'pungking/alpha-exec-engine';
 const ENV = 'PAPER_CUSTODY_APPROVAL';
+// Reviewed identity is a pinned candidate, never a live GitHub attestation.
+const REVIEWED_ENV_ID = 26847620868;
 const MAX_BYTES = 128 * 1024;
 const object = value => value !== null && typeof value === 'object'
   && !Array.isArray(value);
@@ -50,7 +52,7 @@ export function inspectPaperProtectedEnvironmentPolicyCandidate(input = {}) {
  const env = x.environment, policies = x.branchPolicies;
  if (Object.keys(x).sort().join(',') !== 'branchPolicies,environment')
   findings.push('POLICY_INPUT_ENVELOPE_INVALID');
- if (!object(env) || !validID(env.id) || env.name !== ENV
+ if (!object(env) || env.id !== REVIEWED_ENV_ID || env.name !== ENV
    || !Array.isArray(env.protection_rules)
    || !object(env.deployment_branch_policy))
   findings.push('ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
