@@ -43,3 +43,4 @@ try {
  ok(()=>assert.throws(()=>loadInputs(root),/BASELINE_UNREVIEWED_CHANGE/, 'Untrusted baseline must fail before reading any declared evidence path'));
 } finally { fs.rmSync(root,{recursive:true,force:true}); }
 console.log(JSON.stringify({status:'OFFLINE_ADMISSION_TEST_PASS',checks,brokerRequests:0,operationalChanges:0}));
+await import('./test-paper-mutation-admission-contract.mjs');
