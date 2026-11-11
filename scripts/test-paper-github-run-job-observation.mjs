@@ -97,8 +97,8 @@ change(x=>{x.jobs[1].conclusion='success';},'UNEXPECTED_MUTATION_JOB_EXECUTION_U
 change(x=>{x.jobs[1].conclusion='failure';},'UNEXPECTED_MUTATION_JOB_EXECUTION_UNDER_HOLD_SOURCE');
 change(x=>{x.run.conclusion='success';},'UNEXPECTED_SUCCESSFUL_WORKFLOW_UNDER_HOLD_SOURCE');
 change(x=>{x.baseline.operationalHold=false;},'REVIEWED_SOURCE_TOPOLOGY_INVALID');
-change(x=>{x.workflowSources[TARGETS[0].file]+='\n# source drift';},
- 'REVIEWED_SOURCE_TOPOLOGY_INVALID'); // this is YAML comment only; canonical hash ignores comment
+change(x=>{x.workflowSources[TARGETS[0].file]=x.workflowSources[TARGETS[0].file].replace('          exit 1','          exit 0');},
+ 'REVIEWED_SOURCE_TOPOLOGY_INVALID');
 const secrets=sample();secrets.jobs[0].privateToken='DO_NOT_PRINT';
 const output=held(secrets,'HOLD_SAME_SOURCE_RUN_JOBS_NOT_ATTESTATION');
 assert.ok(!JSON.stringify(output).includes('DO_NOT_PRINT'));checks++;
