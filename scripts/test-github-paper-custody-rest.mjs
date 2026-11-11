@@ -123,6 +123,14 @@ try {
   await assert.rejects(invoke(ambiguous, { config: { ...ambiguous.git.config,
     expectedCommit: ambiguous.git.head(), runId: '3' } }), /GITHUB_CUSTODY_WRITER_ACTIVE/); checks++;
 
+  const streamless = createGithubPaperCustodyRestRequest({
+    repository: 'fixture/engine', token: TOKEN,
+    fetchImpl: async () => ({ status: 200, text: async () => '{"status":"spoofed"}',
+      headers: { get: () => null } }),
+  });
+  await blocked(() => streamless({ method: 'GET',
+    path: expectedPrefix + 'ref/heads/paper-state', signal }), 'RESPONSE_INVALID');
+
   const malformed = fixture();
   malformed.setMalformed('{malformed');
   await assert.rejects(invoke(malformed), /GITHUB_CUSTODY_/); checks++;
