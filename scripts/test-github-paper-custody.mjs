@@ -182,3 +182,4 @@ await import('./test-paper-reviewed-main-ref-snapshot.mjs');
 await import('./test-paper-github-ruleset-human-review-gap.mjs');
 await import('./test-paper-broker-secret-source-surface.mjs');
 await import('./test-paper-broker-credential-metadata-candidate.mjs');
+await import('./test-paper-broker-endpoint-source-audit.mjs');
