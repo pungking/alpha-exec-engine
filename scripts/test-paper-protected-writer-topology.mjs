@@ -65,7 +65,7 @@ change(x=>{x.baseline.blockers.pop();},'FROZEN_ADMISSION_BOUNDARY_INVALID');
 change(x=>{x.baseline.blockers[0].status='CLOSED';},
  'FROZEN_ADMISSION_BOUNDARY_INVALID');
 change(x=>{x.baseline.workflows[0].jobs[0].operationalEligible=true;},
- 'WORKFLOW_DEFINITION_SHA_DRIFT'); // replaced below with target mutation
+ 'UNREVIEWED_ADMISSION_PROMOTION');
 change(x=>{x.baseline.workflows.find(w=>w.file===first).definitionSha256='f'.repeat(64);},
  'WORKFLOW_DEFINITION_SHA_DRIFT');
 change(x=>{x.baseline.workflows.find(w=>w.file===first).jobs.find(j=>j.id==='admission').observed.environment=null;},
