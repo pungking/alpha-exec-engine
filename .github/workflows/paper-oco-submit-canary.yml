@@ -25,12 +25,29 @@ permissions:
   actions: read
   contents: read
 
-concurrency:
-  group: paper-oco-submit-canary-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
+  admission:
+    name: Protected PAPER approval - operational HOLD
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    environment: PAPER_CUSTODY_APPROVAL
+    steps:
+      - name: Fail-closed PAPER operational custody HOLD
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '{"status":"BLOCKED_PAPER_CUSTODY_OPERATIONAL_HOLD","operationalAuthorized":false}'
+          exit 1
+
   submit-canary:
+    concurrency:
+      group: paper-oco-submit-canary-${{ github.ref }}
+      cancel-in-progress: false
+    needs: admission
+    if: ${{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

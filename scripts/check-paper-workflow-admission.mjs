@@ -5,11 +5,11 @@ import { pathToFileURL } from 'node:url';
 import { parseDocument, visit, isAlias } from 'yaml';
 
 const BASELINE = 'config/paper-workflow-admission-baseline.json';
-const BASELINE_SHA256 = '49fbc26d8f9dc95a8099434d467100616c77351796fbd63aa4202aa2ed33b591';
+const BASELINE_SHA256 = '13b34ca36b294bc31d81ed20bd73d6f14ffeffd67c562ea86197318b71119c04';
 const SOURCE = '4ebc37c29b7ee32001a83ed03375d96cdcd7f961';
 const CLASSES = ['CI_FIXTURES', 'AUTOMATIC_DISPATCHER', 'AUTOMATIC_REPORT_CACHE_WRITER',
   'MANUAL_LEDGER_MIGRATION', 'MANUAL_ENCRYPTED_EXPORT', 'MANUAL_BROKER_READ_REPORT',
-  'MANUAL_REPORT_PUBLISHER', 'MANUAL_ISOLATED_PROBE', 'MANUAL_BROKER_SUBMIT_CANCEL', 'MANUAL_BROKER_SUBMIT'];
+  'MANUAL_REPORT_PUBLISHER', 'MANUAL_ISOLATED_PROBE', 'MANUAL_BROKER_SUBMIT_CANCEL', 'MANUAL_BROKER_SUBMIT', 'MANUAL_ADMISSION_HOLD'];
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const requireContract = (v, code) => { if (!v) throw Error(code); };
 export const canonical = v => {
@@ -70,6 +70,7 @@ export function loadInputs(root = process.cwd()) {
 }
 
 export function auditWorkflows({ files, baseline: b, evidence, packageScripts, now }) {
+
   requireContract(b.schemaVersion === 'paper-workflow-admission-v1' && b.sourceCommit === SOURCE
     && b.sourceRef === 'refs/heads/main' && b.stateRef === 'refs/heads/paper-state'
     && b.operationalHold === true, 'ROLE_OR_HOLD_INVALID');
