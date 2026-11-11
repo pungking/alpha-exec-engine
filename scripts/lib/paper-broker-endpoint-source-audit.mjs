@@ -109,7 +109,31 @@ export function inspectPaperBrokerEndpointSourceAudit(input={}){
   try{parsed=parseWorkflow(source);}catch{errors.push('WORKFLOW_YAML_PARSE_DENY');continue;}
   if(sha256(canonical(parsed))!==expected.definitionSha256)
    errors.push('WORKFLOW_CANONICAL_SOURCE_SHA_DRIFT');
-  const job=parsed.jobs?.[expected.job],env=job?.env;
+  const job=parsed.jobs?.[expected.job];
+  const steps=Array.isArray(job?.steps)?job.steps:[];
+  const brokerKeys=['ALPACA_BASE_URL','ALPACA_KEY_ID','ALPACA_SECRET_KEY'];
+  const stepBindings=steps.filter(s=>obj(s?.env)
+    &&brokerKeys.some(k=>Object.hasOwn(s.env,k)));
+  const isStepBound=expected.file==='paper-five-row-broker-evidence-recovery.yml';
+  let env;
+  if(isStepBound){
+   // The broker credential and base URL are available only to this one
+   // reviewed, conditionally guarded evidence-collection step, NOT the job.
+   const s=stepBindings[0];
+   if(stepBindings.length!==1
+     ||s?.name!=='Collect private PAPER broker evidence once'
+     ||s?.id!=='broker_evidence'
+     ||s?.if!=="steps.preflight.outputs.ready == 'true'"
+     ||brokerKeys.some(k=>obj(job?.env)&&Object.hasOwn(job.env,k)))
+    errors.push('REVIEWED_BROKER_STEP_SCOPE_DRIFT');
+   env=s?.env;
+  }else{
+   // All eight other credential references are job-level, and a
+   // subsequent step must not silently override any broker binding.
+   if(stepBindings.length!==0)
+    errors.push('UNREVIEWED_BROKER_STEP_ENV_OVERRIDE');
+   env={...(obj(parsed.env)?parsed.env:{}),...(obj(job?.env)?job.env:{})};
+  }
   if(!obj(job)||!obj(env)||env.ALPACA_KEY_ID!==KEY_ID
     ||env.ALPACA_SECRET_KEY!==SECRET)
    errors.push('REVIEWED_ALPACA_SECRET_JOB_BINDING_DRIFT');
