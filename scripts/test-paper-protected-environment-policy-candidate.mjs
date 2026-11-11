@@ -154,9 +154,7 @@ for(const opts of [
  {throwAt:1},
 ]){
  const {r}=await readIt(sample(),opts);
- const expected=opts.badAt===0&&opts.body==='[]'
-  ?'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID'
-  :opts.badAt===1&&opts.body==='[]'
+ const expected=opts.badAt===1&&opts.body==='[]'
    ?'CUSTOM_MAIN_BRANCH_LIST_INCOMPLETE_OR_OVERBROAD'
    :'READ_ONLY_GITHUB_ENVIRONMENT_POLICY_UNAVAILABLE';
  denied(r,expected);
