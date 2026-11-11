@@ -1,0 +1,1366 @@
+{
+  "schemaVersion": "paper-workflow-admission-v1",
+  "sourceCommit": "4ebc37c29b7ee32001a83ed03375d96cdcd7f961",
+  "sourceRef": "refs/heads/main",
+  "stateRef": "refs/heads/paper-state",
+  "reviewedAt": "2026-11-11T00:00:00Z",
+  "reviewBy": "2026-12-11T00:00:00Z",
+  "operationalHold": true,
+  "settingsEvidence": "USER_REPORTED_NOT_FETCHED",
+  "blockers": [
+    {
+      "code": "CODE_ONLY",
+      "reason": "CI is not an operational custody admission proof.",
+      "status": "OPEN"
+    },
+    {
+      "code": "DISPATCH_CODE_PIN",
+      "reason": "Dispatcher must remain bound to safe dry-run defaults; no trade authority.",
+      "status": "OPEN"
+    },
+    {
+      "code": "ENV_UNBOUND",
+      "reason": "No existing job references PAPER_CUSTODY_APPROVAL; input phrases are not protected-environment approval.",
+      "status": "OPEN"
+    },
+    {
+      "code": "WRITER_NOT_UNIFIED",
+      "reason": "No account-wide common workflow exclusion plus durable checkpoint writer claim is deployed.",
+      "status": "OPEN"
+    },
+    {
+      "code": "LEGACY_CACHE",
+      "reason": "Prefix/best-effort cache publication is not authoritative custody; concurrent state snapshots can diverge.",
+      "status": "OPEN"
+    },
+    {
+      "code": "P0_SOURCE",
+      "reason": "Current seed authenticity, original input/companion closure and trading-status source qualification remain unproven.",
+      "status": "OPEN"
+    },
+    {
+      "code": "P0_RISK",
+      "reason": "Current-cutoff cash-flow completeness and current risk source evidence remain unproven.",
+      "status": "OPEN"
+    },
+    {
+      "code": "EXPORT_NOT_ADOPTION",
+      "reason": "Encrypted export is a candidate, not custody genesis, completeness or execution authority.",
+      "status": "OPEN"
+    },
+    {
+      "code": "READ_NOT_CUSTODY",
+      "reason": "Report/read path is not a custody writer; any future adoption needs separate reviewed admission.",
+      "status": "OPEN"
+    },
+    {
+      "code": "LEGACY_EVIDENCE",
+      "reason": "Latest/prefix artifacts or plaintext report publication need separately reviewed provenance/redaction boundaries before custody cutover.",
+      "status": "OPEN"
+    }
+  ],
+  "packageScriptsSha256": "cca2999226a3bf5a91fd081e878180b27b1e5376335079c40b1cb6262481d287",
+  "evidenceSha256": {
+    "config/policy.ts": "082ddf364c5b1b95d0fd58eb7ddeac9e95b0dcd6fd754707a6d5ab174a65c071",
+    "package-lock.json": "67341088b55e1e5d20e41c6c9e86baf0b4ba491ae2e1cc202f67b5dcbe6a04bb",
+    "scripts/apply-active-position-limited-recovery.mjs": "7b7be9f859b4e488b366a39df3f82e969ca1d8ad7dfb26d4650c5a2ab7e413dc",
+    "scripts/apply-ledger-filled-migration.mjs": "51f43d9d512e7cafbc03c0cd6f11b42ac4ec98d2c317e9e52a68662bbff85408",
+    "scripts/audit-paper-closeout-private-evidence.mjs": "8c9f20c63171af8748ba9cd248b9cd87396c7b3cf53fcecd2e090e639bc71b63",
+    "scripts/build-broker-child-order-reconciliation.mjs": "8ad7809507186c499c70a914c5d3c1d6072d4dd2e7f9efdd3f56668b96a0de51",
+    "scripts/build-broker-fill-state-evidence.mjs": "3d14cc878646dc1a97312ae5db0c0c709aed16f1b389b73802da659ecdd8d42e",
+    "scripts/build-entry-reprice-policy-decision.mjs": "4e8588f1d685ee0027b59c6f1f62428f8facc638f4acc000a2240ef6ecb1a33c",
+    "scripts/build-fill-state-reconciliation-audit.mjs": "039989d5dcd0135036217f7125b315a12823f1b238a5100eeae32ec45a417573",
+    "scripts/build-fillability-report.mjs": "d4af00d6b58882da845c0a32bf27328e06098920cee1c25c4b5c27bcb01342bf",
+    "scripts/build-guard-metadata-lineage-audit.mjs": "1c47e6e5fe2b0d66f4eea17d43319343ca1da0e21336045694bd40bb6cb8fe6e",
+    "scripts/build-guard-metadata-refresh-plan.mjs": "b47659fbf10e329b6a4826b225b542065983e92b23705f4b0252fa60310db8d2",
+    "scripts/build-guard-source-recovery-plan.mjs": "cdd37c8a98a5b66089878ab9522cae108d5b69c5014283cb13911ac3d468615c",
+    "scripts/build-guarded-child-order-repair-plan.mjs": "f41a0828eda288e06aeb9c7bbcfcfe284e786c178a5d3185c60a38b9c0f8ef0d",
+    "scripts/build-high-price-min-one-share-canary-plan.mjs": "27be7eb40bac607fbb164579d590c876258a76bd6974d699cea19548c97df050",
+    "scripts/build-ledger-filled-migration-plan.mjs": "1c7dfca892efad3ce18ebaa9fe4237e7cb53865d2c4d957152d7b81e9eb51b04",
+    "scripts/build-ledger-filled-migration-public-evidence.mjs": "1d122c6d31bd775b94941759a535eed31a382bf41b1cf5325e113dc30ad7b27c",
+    "scripts/build-ledger-terminalization-migration-package.mjs": "c893462d86534408ab1013f95f1dadc0477353fb9822d508c90d82191086b811",
+    "scripts/build-ledger-terminalization-proposal.mjs": "0977529d360406148642f3202f66cdf4c714d2eb3e42955c4d24bedfe42d64da",
+    "scripts/build-limited-multi-oco-repair-plan.mjs": "b591bff5b2c6e0342172a9d600742b160da46d0e3b38b859c308800c7fd63588",
+    "scripts/build-live-readiness-scorecard.mjs": "20ff24bfdfb8b9f5429f023b6242cf4a7664457104a4b1f5db7ea3e5d779c751",
+    "scripts/build-multi-oco-submit-safety-gate.mjs": "89e9862e3b1c2699a8cdad0a9d6ad315c40d453e2577c07a7962d646e4dafe64",
+    "scripts/build-no-actionable-event-escalation.mjs": "50a12b4d00d638cbc841e6ea8e7b5df62f6b6327d9700e732a411355fe514b2e",
+    "scripts/build-open-order-reprice-proposal.mjs": "d23c1d8f170cf62c6c052b7c27de72f96ddbba2dca11a2e0dbb1498a3ee5de2d",
+    "scripts/build-ops-health-report.mjs": "3decefafbc37765ea8cfe98e20d72018d14f83673803ef3e1982008407fd6e85",
+    "scripts/build-ops-lane-status-report.mjs": "d39e5810707899d650200c133aee0017043b4750724afb4b53a404efff16c56e",
+    "scripts/build-order-state-consistency-report.mjs": "94416b33fbe694f785d3c52223ef3893ce0e4e7dcaa5cb85b7eea34f562f1c74",
+    "scripts/build-paper-five-row-broker-evidence-safe.mjs": "7221abd19910bfc2ecd3399df3fbc656973a1f509ce1de14b04111e434603b82",
+    "scripts/build-paper-oco-canary-approval-gate.mjs": "c5e8f852cf6d7aeee9d616745e103a1e12d5d0ba4ffc1cffb3e329f7f519d094",
+    "scripts/build-paper-oco-canary-candidate.mjs": "f2679641b41b0fe051ea10a128562df71116943aee4d84a064468c2c39b11428",
+    "scripts/build-paper-oco-canary-result-report.mjs": "7ac8ce6c5779638198087aef9da9ef30ee4bb8ee3901ff5b8ea97a3dc9102b03",
+    "scripts/build-performance-dashboard.mjs": "32b97699d2aa4e1adfcdb1934d7ecb942e8bb8810ef541eeea8bad74c93536a7",
+    "scripts/build-persistent-oco-repair-plan.mjs": "c7e6b22789747339ffa2ad92c46c288664c3f6b1ec47a47c674c0f6f3fc6e2be",
+    "scripts/build-position-lifecycle-guard-source-plan.mjs": "b9228ceedadbe8c7681905663b684c9638175b5e83317204657fc06da0348009",
+    "scripts/build-position-ownership-guard-gap-audit.mjs": "4a37e4c925233b57ada07ed9e958c54cd43517e15dbd6d918bea9b83f28a39a1",
+    "scripts/build-position-ownership-recovery-approval-gate.mjs": "22f1fe778271b76b78d4d89eb2d666d2bc5db505ad101299ebb5065e283d9ba0",
+    "scripts/build-position-ownership-recovery-decision.mjs": "ca85ab88ef416112a49071688c1f08355f50ec4d935924862c0d7384cb4b349e",
+    "scripts/build-position-ownership-state-migration-review-plan.mjs": "d3049ef89d86470d46a80d441438769028335bac6f9fff927d98de23187ca5e2",
+    "scripts/build-position-protection-root-cause-audit.mjs": "1bc89b545676801cd31263ffba26a5620d2a8f8b682c0779ed4b19eee491b8d5",
+    "scripts/build-protection-blocker-reduction-plan.mjs": "72f08b5d723c14123e62597885ba249f9ca44387dce6942b2dd530266c1fbcf5",
+    "scripts/build-sidecar-public-evidence.mjs": "4f04914e777616fd8df3b8fdb72b69e1660664255838e0bdce1b03f7eaffb311",
+    "scripts/build-stage6-fillability-mismatch-audit.mjs": "b0521c32ae4188b15cb846f589e175d4c453e7e7dbdd0c8e3765080930575f12",
+    "scripts/build-stop-only-oco-conversion-plan.mjs": "4162c3cd76a376c53e5b29a2b92064e83b0983c1ca7b857a3b3152ce7492038c",
+    "scripts/check-json-parse-guard.mjs": "83446ab67d9b9bd3927b68993909680d73e8ffbe52e3f64d0745c893b16c1fe3",
+    "scripts/check-symbol-agnostic-runtime.mjs": "5a91ed6d88ebb4abd40f7869fb6b7bd8bc5202e0608ee2990d09dd28fc47debb",
+    "scripts/fixtures/scoped-paper-offline.cjs": "08e1306e8d4c5cdcd87b193803fbe855a66e96515d7455e3a9ade712cc701d31",
+    "scripts/lib/active-position-limited-recovery.mjs": "2239b00fe2b12ba40938b4b49b2cc6b8e13c3a1c46ca495f2cdbc651950d964b",
+    "scripts/lib/closeout-decimal.mjs": "6fe46087ac00dae79862355a696c78d81da3b6b9e17d3cfb5bc5cb8d8c1c48d4",
+    "scripts/lib/github-paper-custody.mjs": "51ff93b5461b0ca01e52f5801ea4b0389dca44675283634e9738a62a32864072",
+    "scripts/lib/guard-metadata-risk.mjs": "159734f41496f739f1936287441da73a75768a2e3db2f072b02c0246f8c3a33d",
+    "scripts/lib/position-protection-classification.mjs": "50bf82868d0346b829d9878d31b393c15a90ec333954c45062a67898e43bcd6a",
+    "scripts/lib/scoped-closeout-contract.mjs": "8458d2d37b94844cd9321b282d1831130957eb6881fa502812ceceb71b3f875f",
+    "scripts/lib/scoped-closeout-storage.mjs": "57eb353a90e13e659929d027b18d32b4b3560f9d273f3707b06fe2abc7c987e6",
+    "scripts/lib/scoped-paper-adapter.mjs": "6f489337270e0781b0fbf76fd0b7bbb4ce06fb50672c1f981b46375cbd085874",
+    "scripts/lib/scoped-paper-evidence.mjs": "18fb76bd382678e1d6c29f4c1db71e751888dc07fac435cb3dda4c9eb1bda303",
+    "scripts/lib/scoped-paper-operational.mjs": "e9b0a7aebf2fd56e3ca51ae0b883110e2945522d22fec9f7cdbbbcd1e9bd6b04",
+    "scripts/lib/scoped-paper-transport.mjs": "57df3f477832043e94d34f59a17760baeefee1be43177c6a2d93a39944b3fa4b",
+    "scripts/maybe-trigger-validation-pack.mjs": "67a017c609ddef7b5d4d0c6e0d76cad483254038bb13c27005d232e4e12852f0",
+    "scripts/paper-exact-cache-private-export.mjs": "cb04f633739603f7d5b126bacc8cbf65498e47cd388f703934723e4c8c56aff3",
+    "scripts/paper-order-notifications.mjs": "38862455dc98b6ff9d4ba1fa5fe26f465d63b20dfbe85d93a1e557db9078e44b",
+    "scripts/paper-runtime-private-binding.mjs": "4411139e1718c0c4518d00d36cfca90788a73421c72ebdfc176e5b07525d1393",
+    "scripts/paper-state-candidate-export.mjs": "b8605b76e2f637d7440d02b037f0cb66b76c95eac6c79ebb454b68380bbb8ec0",
+    "scripts/run-paper-oco-canary-submit.mjs": "97e34032b4a0b3c1ebfad4c06cbd85fe612e92969d11f02c058dee9cce54dc3a",
+    "scripts/run-persistent-oco-repair-submit.mjs": "e7c1f62e1f82d7556439c01682e7ca699876199d18b552a7e999f34fbd777101",
+    "scripts/run-private-sidecar-step.sh": "0c76ebca08652738334bf1de2832ef7e5e8fe63f4a17bf4d73b18244f9fe5f2d",
+    "scripts/send-paper-order-notifications.mjs": "3630ef84b4ef5fc23dacf78e9fd6b6e0b17b9870bdcf9785312a0b8f0ce02509",
+    "scripts/sync-notion-summary.mjs": "fe17c978ce2118f24f61a293e6c046cab489eb6f24c25f840a86a28d2ebc9e3a",
+    "scripts/sync-paper-oco-canary-result.mjs": "0f6af59242951df86706f7e138e3c0e6bc4d1652d993420c012abe994d74bc32",
+    "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
+    "scripts/test-paper-exact-cache-private-export.mjs": "7c97dc3833cdd7b833172713d110037bc0d97d00c3e177f1e5e21ac1425baee9",
+    "scripts/validate-alpaca-oco-response-fixtures.mjs": "86df0641bd0ebae16ed5b3482d80de73345bdc55d59b25b71c118ba460d547cf",
+    "scripts/validate-alpaca-order-payload-fixtures.mjs": "90b523607a97dc5e0a2906b9c5620fce756c1f22b4f9f53929eb18faafb9df75",
+    "scripts/validate-high-price-min-one-share-contract.mjs": "1fc758c92a40d3f760b906559926481c47436a0b75b8e63a095e41ea72904894",
+    "scripts/verify-persistent-oco-repair-open-multi.mjs": "8260ae9ea682c514c955f2424d0ed5446649143d979629e7ebd6d7ca60836e72",
+    "scripts/verify-persistent-oco-repair-open.mjs": "911e2d67178cc7fcee4ba5312db80a511713e88bd14fd85ff6ee742e1c35ee29",
+    "src/hf-judgement-core.ts": "cc35b2f01af125124b1d3faf458741fbdf996670621c2a14f419bd96492b3f8e",
+    "src/index.ts": "43d200a6f267c73a54366a2d7199aa6f295bad80274f1df77935bb86137c6275",
+    "src/json-utils.ts": "488a21f1a95156631c93c08dd27278d87100bf4aad32bf978f4629de91a33ff9",
+    "src/market-guard.ts": "32addf344d16551ad619e97f7d32724b28dea65d013901646257034843bef664",
+    "src/order-idempotency-storage.ts": "3646cdd67b858576725a972c6a34946a40134b81431ae8aa5aab364ad7906c34",
+    "src/order-ledger-storage.ts": "2da744de799eef38a2f3ea0dbee2b268e562dcaf5dc9837f15002c35449e8b38",
+    "src/order-state-storage.ts": "22e7ff8e027ec2da0c9dc4127005b50e78d22c187970be893ff1fc00a7c08d63",
+    "src/replay-hf-judgement.ts": "784747656a669b4b7e1eb9c461ba25e0d4a92d3d22ca47eed872d5393a51da61",
+    "src/scoped-management-record.ts": "4a9a1aa6724bb36bb72abbbeeed59d475d72d5111e403e3d8f4dc19f07e1164a",
+    "src/sidecar-runtime-evidence-core.ts": "69719268959c4f8004a6b33eb6cddbe26b0c28af29f94ae50b02014c8c9180c3"
+  },
+  "workflows": [
+    {
+      "file": "ci.yml",
+      "definitionSha256": "98a5d524331c58e9c64bec6acd295abf927a9db5bbaf2ef9d016ad1ca8d061d0",
+      "events": [
+        "pull_request",
+        "push"
+      ],
+      "jobs": [
+        {
+          "id": "build",
+          "classification": "CI_FIXTURES",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO",
+          "effects": "Synthetic local stores/build/replay only; npm dependency cache is not the PAPER state cache.",
+          "blockers": [
+            "CODE_ONLY"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": "INHERITED_UNVERIFIED",
+            "workflowConcurrency": null,
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": [
+              {
+                "step": 10,
+                "names": [
+                  "NODE_OPTIONS"
+                ]
+              },
+              {
+                "step": 11,
+                "names": [
+                  "ALPHA_ENV",
+                  "EXEC_ENABLED",
+                  "LIVE_ORDER_SUBMIT_ENABLED",
+                  "MARKET_GUARD_MODE",
+                  "NODE_OPTIONS",
+                  "READ_ONLY"
+                ]
+              },
+              {
+                "step": 12,
+                "names": [
+                  "ALPHA_ENV",
+                  "EXEC_ENABLED",
+                  "LIVE_ORDER_SUBMIT_ENABLED",
+                  "MARKET_GUARD_MODE",
+                  "READ_ONLY"
+                ]
+              },
+              {
+                "step": 14,
+                "names": [
+                  "ALPHA_ENV",
+                  "EXEC_ENABLED",
+                  "LIVE_ORDER_SUBMIT_ENABLED",
+                  "MARKET_GUARD_MODE",
+                  "NODE_OPTIONS",
+                  "READ_ONLY"
+                ]
+              },
+              {
+                "step": 21,
+                "names": [
+                  "ALPHA_ENV",
+                  "EXEC_ENABLED",
+                  "LIVE_ORDER_SUBMIT_ENABLED",
+                  "MARKET_GUARD_MODE",
+                  "READ_ONLY"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "dry-run-watchdog.yml",
+      "definitionSha256": "110367332dfde49807a4a117552f068e9465df986c23c8aac3a620f505eccfcd",
+      "events": [
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "watchdog",
+          "classification": "AUTOMATIC_DISPATCHER",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO",
+          "effects": "GitHub actions:write dispatches dry-run default-safe inputs, not a broker writer.",
+          "blockers": [
+            "DISPATCH_CODE_PIN"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "write",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "sidecar-dry-run-watchdog-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": [
+              {
+                "step": 2,
+                "names": [
+                  "GH_TOKEN",
+                  "TARGET_BRANCH",
+                  "TARGET_WORKFLOW"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "dry-run.yml",
+      "definitionSha256": "d087452689905f0a07fbb8051ba62b7f120166063577b96fec021cbb88c6a3c6",
+      "events": [
+        "repository_dispatch",
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "dry-run",
+          "classification": "AUTOMATIC_REPORT_CACHE_WRITER",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "SPLIT_FUTURE_WRITER",
+          "effects": "DRY_RUN broker mutation disabled; nevertheless writes reports, notification receipts, guard state and broad state cache; manual presets are not custody admission.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_CACHE",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": "INHERITED_UNVERIFIED",
+            "workflowConcurrency": {
+              "group": "sidecar-dry-run-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY",
+              "ALPHA_VANTAGE_API_KEY",
+              "ALPHA_VANTAGE_KEY",
+              "CNBC_RAPIDAPI_KEY",
+              "FINNHUB_API_KEY",
+              "GDRIVE_CLIENT_ID",
+              "GDRIVE_CLIENT_SECRET",
+              "GDRIVE_REFRESH_TOKEN",
+              "GITHUB_TOKEN",
+              "NOTION_TOKEN",
+              "PERPLEXITY_API_KEY",
+              "RAPID_API_KEY",
+              "TELEGRAM_TOKEN",
+              "VITE_PERPLEXITY_API_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "DRY_RUN",
+              "EXEC_ENABLED": "false",
+              "READ_ONLY": "true",
+              "MARKET_GUARD_MODE": "observe",
+              "ORDER_LIFECYCLE_ENABLED": "false",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}",
+                  "restore-keys": "sidecar-state-${{ github.ref_name }}-\n"
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": "always()",
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}"
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 12,
+                "names": [
+                  "RUN_VERIFY_MODE"
+                ]
+              },
+              {
+                "step": 13,
+                "names": [
+                  "RUN_LIFECYCLE_ACTION_OVERRIDE",
+                  "RUN_LIFECYCLE_ACTION_PRESET"
+                ]
+              },
+              {
+                "step": 14,
+                "names": [
+                  "RUN_DISABLE_ORDER_IDEMPOTENCY",
+                  "RUN_DRY_MAX_ORDERS_OVERRIDE",
+                  "RUN_DRY_MAX_TOTAL_NOTIONAL_OVERRIDE",
+                  "RUN_DRY_NOTIONAL_PER_TRADE_OVERRIDE",
+                  "RUN_ENTRY_HIGH_PRICE_POLICY",
+                  "RUN_ENTRY_MAX_RISK_DOLLARS_PER_TRADE",
+                  "RUN_ENTRY_MIN_ONE_SHARE_MAX_NOTIONAL",
+                  "RUN_ENTRY_PRICE_DISTANCE_SCALE",
+                  "RUN_ENTRY_PRICE_DISTANCE_TRIGGER_PCT",
+                  "RUN_ENTRY_PRICE_MAX_CHASE_PCT",
+                  "RUN_ENTRY_PRICE_MIN_RR",
+                  "RUN_ENTRY_PRICE_MODE"
+                ]
+              },
+              {
+                "step": 15,
+                "names": [
+                  "PAPER_EVIDENCE_PHASE"
+                ]
+              },
+              {
+                "step": 19,
+                "names": [
+                  "SUMMARY_HF_VERIFY_OUTCOME",
+                  "SUMMARY_INCLUDE_PAYLOAD_PROBE",
+                  "SUMMARY_INCLUDE_VALIDATION_PACK",
+                  "SUMMARY_LIFECYCLE_PRESET"
+                ]
+              },
+              {
+                "step": 29,
+                "names": [
+                  "PAPER_EVIDENCE_PHASE"
+                ]
+              },
+              {
+                "step": 34,
+                "names": [
+                  "PAPER_EVIDENCE_PHASE"
+                ]
+              },
+              {
+                "step": 54,
+                "names": [
+                  "PAPER_EVIDENCE_PHASE"
+                ]
+              },
+              {
+                "step": 99,
+                "names": [
+                  "GHA_JOB_STATUS",
+                  "NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED",
+                  "NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED",
+                  "NOTION_DB_AUTOMATION_INCIDENT_LOG",
+                  "NOTION_DB_DAILY_SNAPSHOT",
+                  "NOTION_DB_HF_TUNING_TRACKER",
+                  "NOTION_DB_KEY_ROTATION_LEDGER",
+                  "NOTION_DB_PERFORMANCE_DASHBOARD",
+                  "NOTION_HF_TUNING_TRACKER_SYNC_ENABLED",
+                  "NOTION_HF_TUNING_TRACKER_SYNC_REQUIRED",
+                  "NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED",
+                  "NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED",
+                  "NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED",
+                  "NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED",
+                  "NOTION_SIDECAR_SYNC_ENABLED",
+                  "NOTION_SIDECAR_SYNC_REQUIRED",
+                  "NOTION_SYNC_KIND",
+                  "NOTION_TOKEN"
+                ]
+              },
+              {
+                "step": 100,
+                "names": [
+                  "GITHUB_TOKEN",
+                  "RUN_PAYLOAD_PROBE_INPUT",
+                  "RUN_VALIDATION_PACK_INPUT"
+                ]
+              },
+              {
+                "step": 101,
+                "names": [
+                  "RECIPIENT_PUBLIC_KEY",
+                  "RECIPIENT_SHA256"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "ledger-filled-migration.yml",
+      "definitionSha256": "674487a8a2f752cee1c82fbff91ebba52df5ee63e97e17bdca738b97c100baec",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "ledger-filled-migration",
+          "classification": "MANUAL_LEDGER_MIGRATION",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "REQUIRED_BEFORE_CUSTODY_WRITE",
+          "effects": "Explicit approval gates state-only ledger/idempotency migration despite READ_ONLY=true; prefix restore and cache save exist.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_CACHE",
+            "P0_SOURCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": "INHERITED_UNVERIFIED",
+            "workflowConcurrency": {
+              "group": "sidecar-dry-run-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "EXEC_ENABLED": "false",
+              "READ_ONLY": "true",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false",
+              "MARKET_GUARD_MODE": "observe",
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}",
+                  "restore-keys": "sidecar-state-${{ github.ref_name }}-\n"
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": "success()",
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}"
+                }
+              }
+            ],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "market-guard.yml",
+      "definitionSha256": "b8769423e19913668976e096e9a91564ca977ac9dfa9169430db515afbf3fefa",
+      "events": [
+        "schedule",
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "market-guard",
+          "classification": "AUTOMATIC_REPORT_CACHE_WRITER",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "SPLIT_FUTURE_WRITER",
+          "effects": "Observe mode still writes guard-control/market-guard/action report state and shared cache; no automatic broker mutation.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_CACHE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": "INHERITED_UNVERIFIED",
+            "workflowConcurrency": {
+              "group": "sidecar-market-guard-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY",
+              "CNBC_RAPIDAPI_KEY",
+              "FINNHUB_API_KEY",
+              "GDRIVE_CLIENT_ID",
+              "GDRIVE_CLIENT_SECRET",
+              "GDRIVE_REFRESH_TOKEN",
+              "NOTION_TOKEN",
+              "RAPID_API_KEY",
+              "TELEGRAM_TOKEN"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "DRY_RUN",
+              "EXEC_ENABLED": "false",
+              "READ_ONLY": "true",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false",
+              "MARKET_GUARD_MODE": "observe"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}",
+                  "restore-keys": "sidecar-state-${{ github.ref_name }}-\n"
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": "always()",
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-${{ github.ref_name }}-${{ github.run_id }}"
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 13,
+                "names": [
+                  "GHA_JOB_STATUS",
+                  "NOTION_AUTOMATION_INCIDENT_LOG_SYNC_ENABLED",
+                  "NOTION_AUTOMATION_INCIDENT_LOG_SYNC_REQUIRED",
+                  "NOTION_DB_AUTOMATION_INCIDENT_LOG",
+                  "NOTION_DB_DAILY_SNAPSHOT",
+                  "NOTION_DB_GUARD_ACTION_LOG",
+                  "NOTION_DB_KEY_ROTATION_LEDGER",
+                  "NOTION_DB_PERFORMANCE_DASHBOARD",
+                  "NOTION_GUARD_ACTION_LOG_SYNC_ENABLED",
+                  "NOTION_GUARD_ACTION_LOG_SYNC_REQUIRED",
+                  "NOTION_KEY_ROTATION_LEDGER_SYNC_ENABLED",
+                  "NOTION_KEY_ROTATION_LEDGER_SYNC_REQUIRED",
+                  "NOTION_MARKET_GUARD_SYNC_ENABLED",
+                  "NOTION_MARKET_GUARD_SYNC_REQUIRED",
+                  "NOTION_PERFORMANCE_DASHBOARD_SYNC_ENABLED",
+                  "NOTION_PERFORMANCE_DASHBOARD_SYNC_REQUIRED",
+                  "NOTION_SYNC_KIND",
+                  "NOTION_TOKEN"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-exact-cache-private-export.yml",
+      "definitionSha256": "0ae88573c06245e11e3aaf7e627db407cb8a7d347164fafc5f1a40f103b9adc7",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "export",
+          "classification": "MANUAL_ENCRYPTED_EXPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "SEPARATE_EXPORT_APPROVAL",
+          "effects": "Historical exact cache restore to disposable workspace, ciphertext export, no authoritative state adoption.",
+          "blockers": [
+            "EXPORT_NOT_ADOPTION"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "contents": "read",
+              "actions": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-exact-cache-private-export",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "READ_ONLY": "true",
+              "EXEC_ENABLED": "false",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-main-35610146111",
+                  "fail-on-cache-miss": true
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 3,
+                "names": [
+                  "GH_TOKEN"
+                ]
+              },
+              {
+                "step": 5,
+                "names": [
+                  "CACHE_HIT",
+                  "CACHE_MATCHED_KEY"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-five-row-active-limited-state-recovery.yml",
+      "definitionSha256": "94c073680272223b01a392b36842b48b9b738d0a9b33bf708358fce238d3a136",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "recover",
+          "classification": "MANUAL_LEDGER_MIGRATION",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "REQUIRED_BEFORE_CUSTODY_WRITE",
+          "effects": "Exact cache, approval and sentinel gate idempotency-only recovery; saves backup, sidecar state and sentinel caches.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_CACHE",
+            "P0_SOURCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "contents": "read",
+              "actions": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-five-row-active-limited-state-recovery",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "EXEC_ENABLED": "false",
+              "READ_ONLY": "true",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false",
+              "MARKET_GUARD_MODE": "observe"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": ".one-shot-sentinel/paper-active-limited-recovery",
+                  "key": "paper-active-limited-recovery-main-d437349e-v1"
+                }
+              },
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-main-32742503181",
+                  "fail-on-cache-miss": true
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": null,
+                "with": {
+                  "path": "${{ runner.temp }}/paper-active-limited-backup",
+                  "key": "paper-active-limited-backup-main-${{ github.run_id }}"
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-main-${{ github.run_id }}"
+                }
+              },
+              {
+                "action": "actions/cache/save@v4",
+                "if": null,
+                "with": {
+                  "path": ".one-shot-sentinel/paper-active-limited-recovery",
+                  "key": "paper-active-limited-recovery-main-d437349e-v1"
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 3,
+                "names": [
+                  "APPROVAL_PHRASE"
+                ]
+              },
+              {
+                "step": 5,
+                "names": [
+                  "SENTINEL_HIT"
+                ]
+              },
+              {
+                "step": 6,
+                "names": [
+                  "GH_TOKEN"
+                ]
+              },
+              {
+                "step": 8,
+                "names": [
+                  "CACHE_HIT"
+                ]
+              },
+              {
+                "step": 9,
+                "names": [
+                  "ACTIVE_LIMITED_RECOVERY_APPLY",
+                  "ACTIVE_LIMITED_RECOVERY_APPROVAL",
+                  "ACTIVE_LIMITED_RECOVERY_BACKUP_DIR",
+                  "ACTIVE_LIMITED_RECOVERY_EVIDENCE_FILE",
+                  "ACTIVE_LIMITED_RECOVERY_EVIDENCE_SHA256",
+                  "ACTIVE_LIMITED_RECOVERY_EXPECTED_IDEMPOTENCY_SHA256",
+                  "ACTIVE_LIMITED_RECOVERY_EXPECTED_ORDER_LEDGER_SHA256",
+                  "ACTIVE_LIMITED_RECOVERY_OUTPUT",
+                  "ACTIVE_LIMITED_RECOVERY_RECORDED_AT",
+                  "ACTIVE_LIMITED_RECOVERY_STATE_DIR"
+                ]
+              },
+              {
+                "step": 10,
+                "names": [
+                  "EXPECTED_IDEMPOTENCY_SHA",
+                  "EXPECTED_LEDGER_SHA"
+                ]
+              },
+              {
+                "step": 13,
+                "names": [
+                  "SAVED_CACHE_KEY"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-five-row-broker-evidence-recovery.yml",
+      "definitionSha256": "90b691f49b6862e83657cd301d9dd36f5bf4105d52b7c3f043d37ed6faa7b630",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "restore-and-read",
+          "classification": "MANUAL_BROKER_READ_REPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO_UNLESS_WRITER_ADDED",
+          "effects": "Exact cache copied to RUNNER_TEMP; bounded broker GETs; safe aggregate only, no cache save.",
+          "blockers": [
+            "READ_NOT_CUSTODY"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "contents": "read",
+              "actions": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-five-row-broker-evidence-recovery",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER",
+              "EXEC_ENABLED": "false",
+              "READ_ONLY": "true",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false",
+              "MARKET_GUARD_MODE": "observe"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@v4",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "sidecar-state-main-32742503181",
+                  "fail-on-cache-miss": true
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 3,
+                "names": [
+                  "APPROVAL_PHRASE"
+                ]
+              },
+              {
+                "step": 5,
+                "names": [
+                  "CACHE_HIT",
+                  "PREFLIGHT_FILE",
+                  "PRIVATE_STATE_DIR"
+                ]
+              },
+              {
+                "step": 6,
+                "names": [
+                  "ALPACA_BASE_URL",
+                  "ALPACA_KEY_ID",
+                  "ALPACA_SECRET_KEY",
+                  "BROKER_FILL_STATE_EVIDENCE_STATE_DIR",
+                  "BROKER_FILL_STATE_READ_VERIFY"
+                ]
+              },
+              {
+                "step": 7,
+                "names": [
+                  "BROKER_FILL_STATE_EVIDENCE_STATE_DIR",
+                  "PAPER_FIVE_ROW_BROKER_STEP_OUTCOME",
+                  "PAPER_FIVE_ROW_PREFLIGHT_FILE",
+                  "PAPER_FIVE_ROW_SAFE_PHASE"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-oco-canary-result-sync.yml",
+      "definitionSha256": "270e3d59d145247505ba1930ce12ef83ea91a6517c6dc840c01035afde369474",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "result-sync",
+          "classification": "MANUAL_REPORT_PUBLISHER",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO",
+          "effects": "Artifact result report and Notion write; not read-only externally, but no broker/state-authority writer.",
+          "blockers": [
+            "READ_NOT_CUSTODY"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": null,
+            "jobConcurrency": null,
+            "secrets": [
+              "NOTION_TOKEN"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": [
+              {
+                "step": 7,
+                "names": [
+                  "NOTION_DB_AUTOMATION_INCIDENT_LOG",
+                  "NOTION_PAPER_OCO_CANARY_RESULT_SYNC_ENABLED",
+                  "NOTION_PAPER_OCO_CANARY_RESULT_SYNC_REQUIRED",
+                  "NOTION_TOKEN"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-oco-read-verify.yml",
+      "definitionSha256": "5e132d0466f139b074493fb8d066adf988b4712209b960044bd2980f71139246",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "read-verify",
+          "classification": "MANUAL_BROKER_READ_REPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO_UNLESS_WRITER_ADDED",
+          "effects": "Shared OCO script has mutation capability, but submit flag absent/default false; GET-only assertion; disposable reports and artifact output.",
+          "blockers": [
+            "READ_NOT_CUSTODY",
+            "LEGACY_EVIDENCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-oco-read-verify-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-oco-submit-canary.yml",
+      "definitionSha256": "d44f861f9f4a4bede9350e34003af13b365427f2379de288504058b457d2bbdd",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "submit-canary",
+          "classification": "MANUAL_BROKER_SUBMIT_CANCEL",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "REQUIRED_BEFORE_CUSTODY_WRITE",
+          "effects": "Explicit phrase plus dedicated submit flag enables PAPER POST, then DELETE rollback and private submit-ledger/report writes.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_EVIDENCE",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-oco-submit-canary-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY",
+              "NOTION_TOKEN"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [],
+            "stepOverrides": [
+              {
+                "step": 9,
+                "names": [
+                  "NOTION_DB_AUTOMATION_INCIDENT_LOG",
+                  "NOTION_PAPER_OCO_CANARY_RESULT_SYNC_ENABLED",
+                  "NOTION_PAPER_OCO_CANARY_RESULT_SYNC_REQUIRED",
+                  "NOTION_TOKEN"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "paper-state-candidate-export.yml",
+      "definitionSha256": "8f4e2a8dba0b010b0ecad3c2f9981fffde61facb00ae853d467ae81ff3e5225e",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "export",
+          "classification": "MANUAL_ENCRYPTED_EXPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "SEPARATE_EXPORT_APPROVAL",
+          "effects": "Reviewed main/first-attempt exact cache metadata and encrypted candidate; source authenticity remains false.",
+          "blockers": [
+            "EXPORT_NOT_ADOPTION"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "contents": "read",
+              "actions": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-state-candidate-export",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER",
+              "READ_ONLY": "true",
+              "EXEC_ENABLED": "false",
+              "LIVE_ORDER_SUBMIT_ENABLED": "false",
+              "MARKET_GUARD_MODE": "observe"
+            },
+            "cacheSteps": [
+              {
+                "action": "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
+                "if": null,
+                "with": {
+                  "path": "state",
+                  "key": "${{ fromJSON(inputs.scope_json).cacheKey }}",
+                  "fail-on-cache-miss": true
+                }
+              }
+            ],
+            "stepOverrides": [
+              {
+                "step": 4,
+                "names": [
+                  "GH_DEBUG",
+                  "GH_PROMPT_DISABLED",
+                  "GH_TOKEN"
+                ]
+              },
+              {
+                "step": 6,
+                "names": [
+                  "CACHE_HIT",
+                  "CACHE_MATCHED_KEY"
+                ]
+              },
+              {
+                "step": 7,
+                "names": [
+                  "CACHE_HIT",
+                  "CACHE_MATCHED_KEY",
+                  "GH_DEBUG",
+                  "GH_PROMPT_DISABLED",
+                  "GH_TOKEN"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "file": "payload-probe-isolated.yml",
+      "definitionSha256": "8b386b3ecd895ceebaa47128500acb27dbd2385cead86ca8274fa3a31c2c7f54",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "payload-probe-isolated",
+          "classification": "MANUAL_ISOLATED_PROBE",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "SPLIT_FUTURE_WRITER",
+          "effects": "Index probe with EXEC=false/READ_ONLY=true; variable-driven lifecycle flags, temporary local state/reports and plaintext artifact paths; not custody-ready.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "LEGACY_EVIDENCE",
+            "P0_SOURCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": "INHERITED_UNVERIFIED",
+            "workflowConcurrency": {
+              "group": "sidecar-payload-probe-isolated-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPHA_VANTAGE_API_KEY",
+              "ALPHA_VANTAGE_KEY",
+              "CNBC_RAPIDAPI_KEY",
+              "FINNHUB_API_KEY",
+              "GDRIVE_CLIENT_ID",
+              "GDRIVE_CLIENT_SECRET",
+              "GDRIVE_REFRESH_TOKEN",
+              "PERPLEXITY_API_KEY",
+              "RAPID_API_KEY",
+              "TELEGRAM_TOKEN",
+              "VITE_PERPLEXITY_API_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "EXEC_ENABLED": false,
+              "READ_ONLY": true,
+              "ORDER_LIFECYCLE_ENABLED": "${{ vars.ORDER_LIFECYCLE_ENABLED }}",
+              "LIVE_ORDER_SUBMIT_ENABLED": "${{ vars.LIVE_ORDER_SUBMIT_ENABLED }}"
+            },
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "persistent-oco-repair-open-verify-multi.yml",
+      "definitionSha256": "fd466dacf8a79a36e35bee2b101b2e4ac95596b6d0be2d9f2fb37f31187afe36",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "verify-open-protection-multi",
+          "classification": "MANUAL_BROKER_READ_REPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO_UNLESS_WRITER_ADDED",
+          "effects": "Multiple submit artifacts plus GET-only verification; local reports/artifacts, no remote ledger adoption.",
+          "blockers": [
+            "READ_NOT_CUSTODY",
+            "LEGACY_EVIDENCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "persistent-oco-repair-open-verify-multi-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "persistent-oco-repair-open-verify.yml",
+      "definitionSha256": "eacd43d2968050496953cb3ac48253376c6303305da0b4587cb0ed63f2057aec",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "verify-open-protection",
+          "classification": "MANUAL_BROKER_READ_REPORT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO_UNLESS_WRITER_ADDED",
+          "effects": "Downloads latest-or-explicit artifacts, overlays local reports; broker GET verification and dashboard writes, not custody writes.",
+          "blockers": [
+            "READ_NOT_CUSTODY",
+            "LEGACY_EVIDENCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "persistent-oco-repair-open-verify-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "persistent-oco-repair-plan-verify.yml",
+      "definitionSha256": "b73f2dae07dcba90cab7f61d693d7205442cda9eae40511dc9f3100741187b77",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "verify",
+          "classification": "MANUAL_REPORT_PUBLISHER",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "NO",
+          "effects": "Downloads source artifact, computes local plan/ops reports and uploads artifacts; no broker orders.",
+          "blockers": [
+            "READ_NOT_CUSTODY",
+            "LEGACY_EVIDENCE"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "persistent-oco-repair-plan-verify-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    },
+    {
+      "file": "persistent-oco-repair-submit.yml",
+      "definitionSha256": "f52f7583112a2ac62df233c1d3aabe6642a81d88af6f2e7764e41ec69ea7268e",
+      "events": [
+        "workflow_dispatch"
+      ],
+      "jobs": [
+        {
+          "id": "submit-persistent-repair",
+          "classification": "MANUAL_BROKER_SUBMIT",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "approvalTarget": "REQUIRED_BEFORE_CUSTODY_WRITE",
+          "effects": "Explicit phrase plus dedicated submit flag enables PAPER POST; leaves orders open, writes persistent submit ledger.",
+          "blockers": [
+            "ENV_UNBOUND",
+            "WRITER_NOT_UNIFIED",
+            "LEGACY_EVIDENCE",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": null,
+            "permissions": {
+              "actions": "read",
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "persistent-oco-repair-submit-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [
+              "ALPACA_KEY_ID",
+              "ALPACA_SECRET_KEY"
+            ],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {
+              "ALPHA_ENV": "PAPER"
+            },
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        }
+      ]
+    }
+  ]
+}
