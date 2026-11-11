@@ -8,7 +8,7 @@ const REVIEW_IF = '$' + "{{ github.event_name == 'workflow_dispatch' && github.r
 const MUTATE_IF = '$' + "{{ needs.admission.result == 'success' && needs.admission.outputs.operational_authorized == 'true' }}";
 const HOLD_SCRIPT = [
   'set -euo pipefail',
-  'echo \\'{"status":"BLOCKED_PAPER_CUSTODY_OPERATIONAL_HOLD","operationalAuthorized":false}\\'',
+  "echo '{\"status\":\"BLOCKED_PAPER_CUSTODY_OPERATIONAL_HOLD\",\"operationalAuthorized\":false}'",
   'exit 1',
 ].join('\n');
 let checks = 0;
