@@ -13,8 +13,17 @@ const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const exact=(x,keys)=>obj(x)&&Object.keys(x).length===keys.length
   && keys.every(k=>Object.hasOwn(x,k));
 const ISO=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
-const millis=x=>typeof x==='string'&&ISO.test(x)&&Number.isFinite(Date.parse(x))
-  ?Date.parse(x):null;
+// Date.parse normalizes some invalid UTC calendar dates (e.g. Feb 30).
+// Require a reversible, canonical UTC instant instead of only parseability.
+const millis=x=>{
+ if(typeof x!=='string'||!ISO.test(x))return null;
+ const t=Date.parse(x);
+ if(!Number.isFinite(t))return null;
+ const normalized=/\.\d+Z$/.test(x)
+   ?x.replace(/\.(\d{1,3})Z$/,(_,fraction)=>'.'+fraction.padEnd(3,'0')+'Z')
+   :x.replace(/Z$/,'.000Z');
+ return new Date(t).toISOString()===normalized?t:null;
+};
 const report=(failures,gaps,correlated)=>Object.freeze({
  schemaVersion:'paper-github-provenance-gaps-v1',
  status:failures.length?'DENY_PROVENANCE_SNAPSHOT_INVALID':'HOLD_UNAUTHENTICATED_JOB_DEPLOYMENT_PROVENANCE',
