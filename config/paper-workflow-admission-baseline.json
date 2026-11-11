@@ -137,7 +137,7 @@
     "scripts/sync-paper-oco-canary-result.mjs": "0f6af59242951df86706f7e138e3c0e6bc4d1652d993420c012abe994d74bc32",
     "scripts/test-github-paper-custody-lineage-readonly.mjs": "e39b66e92fe19a7178b3e18b1e93867a8806aa06f0d5699e74671873ef260dc5",
     "scripts/test-github-paper-custody-rest.mjs": "b7c2fd398d29bc895e75ac93645f25927529d258a4552f85bbcca93ed109f57b",
-    "scripts/test-github-paper-custody.mjs": "f893b4de303cc4e2d1018b44d50740c88909da004c0fc376d0d32b5a6f12cdeb",
+    "scripts/test-github-paper-custody.mjs": "818804fbe758de9bdb62e9cc9e904e8e008c5c22e72755fe075e6c2d9a073c52",
     "scripts/test-github-paper-protected-lineage.mjs": "c17ba7815dba25e2ef688684925ad16ba12c6e5f0a26800f864331fa83d00eb9",
     "scripts/test-github-paper-review-evidence.mjs": "49bcfb9d29d3f439348d3e824039d27e6f4107844e7f9672e40aaaa422828abc",
     "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
@@ -176,7 +176,9 @@
     "scripts/lib/paper-evidence-bundle-context.mjs": "59834095d697bd08df9e9b2281b24337deae88c716a7b7f1a14632861f588fa0",
     "scripts/test-paper-evidence-bundle-context.mjs": "a458a8b7eb30cf7af7c712dd95bd26f399d8c35c5cfe4988f75237b404a82977",
     "scripts/lib/paper-evidence-capture-sequence.mjs": "0fa5a72e119d566c2f579f556fe43b6a6d4f9dc1039040902b64f3bc5299cd0a",
-    "scripts/test-paper-evidence-capture-sequence.mjs": "dae8a9f44ac8b86a0c60c054aa2fd584fb7cbbb54840656e82af48656b6f760b"
+    "scripts/test-paper-evidence-capture-sequence.mjs": "dae8a9f44ac8b86a0c60c054aa2fd584fb7cbbb54840656e82af48656b6f760b",
+    "scripts/lib/paper-external-proof-closure.mjs": "7b25e15e52a24f58bc51313990ed6379d511c5c355b05306c2d8637f4f46ee33",
+    "scripts/test-paper-external-proof-closure.mjs": "b01356a55c132ca3100973a9925677b302ac6ceed79753edf75651aab899f934"
   },
   "workflows": [
     {
