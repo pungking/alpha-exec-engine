@@ -109,7 +109,7 @@
     "scripts/fixtures/scoped-paper-offline.cjs": "08e1306e8d4c5cdcd87b193803fbe855a66e96515d7455e3a9ade712cc701d31",
     "scripts/lib/active-position-limited-recovery.mjs": "2239b00fe2b12ba40938b4b49b2cc6b8e13c3a1c46ca495f2cdbc651950d964b",
     "scripts/lib/closeout-decimal.mjs": "6fe46087ac00dae79862355a696c78d81da3b6b9e17d3cfb5bc5cb8d8c1c48d4",
-    "scripts/lib/github-paper-custody-rest.mjs": "9ad6535d1f3d6782688838a356bbb3933f9fef29c960ef69164f45bc86812a5f",
+    "scripts/lib/github-paper-custody-rest.mjs": "78bd1fb896a76d3f14144ec3cbc55d13bf8f33fd6953d8bcf831ae56bf3d5b10",
     "scripts/lib/github-paper-custody.mjs": "51ff93b5461b0ca01e52f5801ea4b0389dca44675283634e9738a62a32864072",
     "scripts/lib/guard-metadata-risk.mjs": "159734f41496f739f1936287441da73a75768a2e3db2f072b02c0246f8c3a33d",
     "scripts/lib/paper-mutation-admission-contract.mjs": "adc0e0e70681eaf7014778974cf23f07f5b5ae1330c8aa0695204c0cb73a94c4",
