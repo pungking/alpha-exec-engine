@@ -184,3 +184,4 @@ await import('./test-paper-broker-secret-source-surface.mjs');
 await import('./test-paper-broker-credential-metadata-candidate.mjs');
 await import('./test-paper-broker-endpoint-source-audit.mjs');
 await import('./test-paper-github-alpaca-variable-proof-gap.mjs');
+await import('./test-paper-variable-run-attempt-scope.mjs');
