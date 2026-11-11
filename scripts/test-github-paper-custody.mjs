@@ -163,3 +163,4 @@ try {
 await import('./test-github-paper-custody-rest.mjs');
 await import('./test-github-paper-review-evidence.mjs');
 await import('./test-paper-custody-runtime-boundary.mjs');
+await import('./test-github-paper-custody-lineage-readonly.mjs');
