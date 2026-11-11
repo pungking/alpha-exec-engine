@@ -133,7 +133,7 @@
     "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
     "scripts/test-paper-exact-cache-private-export.mjs": "7c97dc3833cdd7b833172713d110037bc0d97d00c3e177f1e5e21ac1425baee9",
     "scripts/test-paper-mutation-admission-contract.mjs": "8a843b447810a0575e582dadd240ee5813eb64089e4b710380ab2650819be2de",
-    "scripts/test-paper-workflow-admission.mjs": "f912bb9982426d8fb6d2815ba2ba3ec3327eb178cacef6a0742294c759769b42",
+    "scripts/test-paper-workflow-admission.mjs": "9044ad740a3f16a37dd5e0f7c6d3d29e85cbd4f4fed3626324d7183177322b95",
     "scripts/test-paper-workflow-hard-hold.mjs": "5694b452f003ce9256113403c1e14183356c8b1acad5e00c68c4d7a69e68e99f",
     "scripts/validate-alpaca-oco-response-fixtures.mjs": "86df0641bd0ebae16ed5b3482d80de73345bdc55d59b25b71c118ba460d547cf",
     "scripts/validate-alpaca-order-payload-fixtures.mjs": "90b523607a97dc5e0a2906b9c5620fce756c1f22b4f9f53929eb18faafb9df75",
