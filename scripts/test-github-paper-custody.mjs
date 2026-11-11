@@ -180,3 +180,4 @@ await import('./test-paper-protected-environment-policy-candidate.mjs');
 await import('./test-paper-environment-job-scope-gaps.mjs');
 await import('./test-paper-reviewed-main-ref-snapshot.mjs');
 await import('./test-paper-github-ruleset-human-review-gap.mjs');
+await import('./test-paper-broker-secret-source-surface.mjs');
