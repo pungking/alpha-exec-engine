@@ -11,14 +11,14 @@ export function file(name, bytes) {
   bytes = Buffer.isBuffer(bytes) ? bytes : Buffer.from(JSON.stringify(bytes));
   return { path: name, sha256: sha(bytes), bytes: bytes.toString('base64') };
 }
-export function memoryGithub({ mutatePayload = () => {}, extraFiles = [] } = {}) {
+export function memoryGithub({ mutatePayload = () => {}, extraFiles = [], configOverrides = {} } = {}) {
   const { input } = fixture(), calls = [], objects = new Map();
   const config = { schemaVersion: 'github-paper-custody-config-v1', repository: 'fixture/engine',
     ref: 'refs/heads/paper-state', genesisCommit: '', expectedCommit: '',
     recipientSha256: sha(keys.publicKey.export({ type: 'spki', format: 'der' })),
     accountSha256: input.accountSha256, scopeSha256: input.termsSha256, attemptId: input.attemptId,
     runId: '2', runAttempt: 1, workflow: '.github/workflows/dry-run.yml', codeSha256: sha('fixture-code'),
-    inputFiles: { 'inputs/source.json': sha(sourceBytes) }, maxRequests: 256, maxHistory: 32, timeoutMs: 1000 };
+    inputFiles: { 'inputs/source.json': sha(sourceBytes) }, maxRequests: 256, maxHistory: 32, timeoutMs: 1000, ...configOverrides };
   const context = { repository: config.repository, ref: config.ref, recipientSha256: config.recipientSha256,
     sequence: 0, parentCommit: null, runId: '1', runAttempt: 1, workflow: config.workflow, codeSha256: config.codeSha256 };
   const payload = { schemaVersion: 'github-paper-state-v1', context, environment: 'PAPER',
@@ -47,7 +47,7 @@ export function memoryGithub({ mutatePayload = () => {}, extraFiles = [] } = {})
     if (signal.aborted) throw Error('fixture aborted');
     calls.push({ method, path, body });
     if (f.fail) { const value = await f.fail({ method, path, body }); if (value) return value; }
-    const base = '/repos/fixture/engine/git/';
+    const base = '/repos/' + config.repository + '/git/';
     if (!path.startsWith(base)) throw Error('fixture unexpected route');
     const route = path.slice(base.length);
     if (method === 'GET' && route === 'ref/heads/paper-state') return { status: 200, data: { ref: config.ref, object: { type: 'commit', sha: head } } };
