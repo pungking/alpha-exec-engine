@@ -176,3 +176,4 @@ await import('./test-paper-evidence-capture-sequence.mjs');
 await import('./test-paper-external-proof-closure.mjs');
 await import('./test-paper-protected-writer-topology.mjs');
 await import('./test-paper-github-run-job-observation.mjs');
+await import('./test-paper-protected-environment-policy-candidate.mjs');
