@@ -51,7 +51,8 @@ function validateRoute(prefix, method, path, body) {
  * provide operational entitlements. Nothing automatically invokes this API.
  */
 export function createGithubPaperCustodyRestRequest({ repository, token, fetchImpl } = {}) {
-  safe(REPO.test(repository) && typeof token === 'string'
+  safe(REPO.test(repository) && !repository.split('/').some(x => x === '.' || x === '..')
+    && typeof token === 'string'
     && token.length >= 8 && token.length <= 4096 && /^[\x21-\x7e]+$/.test(token)
     && typeof fetchImpl === 'function', 'CONFIG_INVALID');
   const prefix = '/repos/' + repository + '/git/';
