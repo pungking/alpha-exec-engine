@@ -166,7 +166,7 @@
     "scripts/lib/paper-writer-coverage-gaps.mjs": "c1b9a0791635c19d94a47c93d1ee23bfe18fa9ed673b34f8d0f2c51981cb4bd2",
     "scripts/test-paper-writer-coverage-gaps.mjs": "96b065589082cda03c6277da9d09253dd05286a68dfe5dd9a69bd9ef8d3a5d18",
     "scripts/lib/paper-custody-composite-evidence.mjs": "4e9b6c64839b768a7cc7c12e419e93016a3170179b721dc377c466fca9cd2d14",
-    "scripts/test-paper-custody-composite-evidence.mjs": "31782cbb661982b44fdbe9e3447129e15a4eebad2ec476f269e8e3b9e79bf46c"
+    "scripts/test-paper-custody-composite-evidence.mjs": "e173b96c91d7416a1640e71266b22b5fa31bd52ba4a531b74d5dd1c85daa8a66"
   },
   "workflows": [
     {
