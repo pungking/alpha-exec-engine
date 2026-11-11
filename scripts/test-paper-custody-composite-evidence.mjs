@@ -107,7 +107,8 @@ change(a=>{a.protectedInput.scope.accountSha256='f'.repeat(64);},'PROTECTED_CLAI
 change(a=>{a.protectedInput.expected.codeSha='f'.repeat(40);},'PROTECTED_CLAIM_CONTEXT_UNBOUND');
 change(a=>{a.deploymentInput.expected.scopeSha256='f'.repeat(64);},'DEPLOYMENT_CONTEXT_UNBOUND');
 change(a=>{a.deploymentInput.job.conclusion='success';},'DEPLOYMENT_WRITER_DIAGNOSTIC_INVALID');
-change(a=>{a.deploymentInput.writerInventory.writers.pop();},'DEPLOYMENT_WRITER_DIAGNOSTIC_INVALID');
+change(a=>{a.deploymentInput.writerInventory.writers.pop();},'CUSTODY_WRITER_CARDINALITY_INVALID');
+change(a=>{a.deploymentInput.writerInventory.writers.push({ ...a.deploymentInput.writerInventory.writers[2],id:'custody-extra' });},'CUSTODY_WRITER_CARDINALITY_INVALID');
 change(a=>{a.protectedInput.environment.can_admins_bypass=true;},'PROTECTED_CLAIM_DIAGNOSTIC_INVALID');
 change(a=>{a.protectedInput.lineage.status='APPROVED';},'PROTECTED_CLAIM_DIAGNOSTIC_INVALID');
 change(a=>{a.writerCoverageInput.baseline.workflows.pop();},'SOURCE_WRITER_COVERAGE_DIAGNOSTIC_INVALID');
