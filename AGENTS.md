@@ -671,3 +671,13 @@ A task is complete only when observable criteria are met, such as:
 - LIVE and DRY_RUN use separate state directories.
 - broker clock failure blocks order-adjacent behavior.
 - Stage 6 schema mismatch blocks sidecar processing.
+
+---
+
+## 26. Cross-chat development continuity and ChatGPT/Codex coordination
+
+For new-chat resumption and multi-agent development, read `docs/AI_DEVELOPMENT_CONTINUITY.md` (stable governance) and `docs/DEVELOPMENT_HANDOFF.md` (dated, **non-authoritative** status snapshot). Before resuming any STEP, independently verify the current GitHub main SHA, relevant issues/PRs, reviews, branch protections and exact-HEAD CI; never assume the snapshot is current.
+
+Work **directly through connected GitHub tools where practical and safe**. Delegate implementation to Codex selectively for substantial local development, multi-file test execution or unavailable direct tooling; provide exact base SHA, module boundaries, safeguards, tests and a copy-ready prompt. Codex work always returns to independent diff/CI validation. Never represent a ChatGPT/Codex review as an independent human GitHub APPROVE.
+
+Use dedicated branches, Draft PRs and exact-HEAD CI. **No direct main writes**, even when branch protection is not active. Source merge requires a separate, explicit PR-specific user instruction, then verification of merge parents and new main push CI. A source merge never grants broker, PAPER/LIVE, state mutation or protected Workflow approval. Existing `AGENTS.md` safety rules and all current execution HOLDs take precedence over this process note.
