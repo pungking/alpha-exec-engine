@@ -137,7 +137,7 @@
     "scripts/sync-paper-oco-canary-result.mjs": "0f6af59242951df86706f7e138e3c0e6bc4d1652d993420c012abe994d74bc32",
     "scripts/test-github-paper-custody-lineage-readonly.mjs": "e39b66e92fe19a7178b3e18b1e93867a8806aa06f0d5699e74671873ef260dc5",
     "scripts/test-github-paper-custody-rest.mjs": "b7c2fd398d29bc895e75ac93645f25927529d258a4552f85bbcca93ed109f57b",
-    "scripts/test-github-paper-custody.mjs": "c8f09320336d18b033da7cc7c3ca1c48e114cad5ac2af7856a15b59c430eeeb2",
+    "scripts/test-github-paper-custody.mjs": "72994cf580dc7323b2264725c5589fa3cc97ff2462b6002d6b81275bd5da019f",
     "scripts/test-github-paper-protected-lineage.mjs": "c17ba7815dba25e2ef688684925ad16ba12c6e5f0a26800f864331fa83d00eb9",
     "scripts/test-github-paper-review-evidence.mjs": "49bcfb9d29d3f439348d3e824039d27e6f4107844e7f9672e40aaaa422828abc",
     "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
@@ -167,8 +167,10 @@
     "scripts/test-paper-writer-coverage-gaps.mjs": "96b065589082cda03c6277da9d09253dd05286a68dfe5dd9a69bd9ef8d3a5d18",
     "scripts/lib/paper-custody-composite-evidence.mjs": "a1cff74045f6495c6930eedcffe2fbfb2dd1cb4e696d392aa7e0309e4dd46071",
     "scripts/test-paper-custody-composite-evidence.mjs": "a3cae0223a0bc2d936acbea12cad521db1396603da9064eb38a642f41b8146e8",
-    "scripts/lib/paper-deployment-rest-correlation.mjs": "aaf8ddf3d0ecf428c5c5c3c98dbcec10d718a3865af8325b4628b6d1177b6d6e",
-    "scripts/test-paper-deployment-rest-correlation.mjs": "e301b3f35daadc6d9cb5aed0e75780eac900783d4921bf09610b37cd83bace0f"
+    "scripts/lib/paper-deployment-rest-correlation.mjs": "96758bb05568bd97a799e00cdf9c082e1658d4fcf6c719be4f7f5b32f58e30d9",
+    "scripts/test-paper-deployment-rest-correlation.mjs": "8e3616b2c054420a66beb013eacc50fcd37fbafa6bfe451d7118a86badf13581",
+    "scripts/lib/paper-deployment-provenance-gaps.mjs": "acacf7932a6afe27bb8931cbe9f25272fc985c7434c54def16480edcc2bb39f2",
+    "scripts/test-paper-deployment-provenance-gaps.mjs": "4745c351bf01157813581e82d01c7280acf44699f41fe5c551bf1bccd1a078df"
   },
   "workflows": [
     {
