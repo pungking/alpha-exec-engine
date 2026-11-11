@@ -133,7 +133,8 @@
     "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
     "scripts/test-paper-exact-cache-private-export.mjs": "7c97dc3833cdd7b833172713d110037bc0d97d00c3e177f1e5e21ac1425baee9",
     "scripts/test-paper-mutation-admission-contract.mjs": "8a843b447810a0575e582dadd240ee5813eb64089e4b710380ab2650819be2de",
-    "scripts/test-paper-workflow-admission.mjs": "f77a119153e1b3f3262e0947ed15e0df8779d7473adfcf5f8a12b6eb6ff1afdc",
+    "scripts/test-paper-workflow-admission.mjs": "f912bb9982426d8fb6d2815ba2ba3ec3327eb178cacef6a0742294c759769b42",
+    "scripts/test-paper-workflow-hard-hold.mjs": "5694b452f003ce9256113403c1e14183356c8b1acad5e00c68c4d7a69e68e99f",
     "scripts/validate-alpaca-oco-response-fixtures.mjs": "86df0641bd0ebae16ed5b3482d80de73345bdc55d59b25b71c118ba460d547cf",
     "scripts/validate-alpaca-order-payload-fixtures.mjs": "90b523607a97dc5e0a2906b9c5620fce756c1f22b4f9f53929eb18faafb9df75",
     "scripts/validate-high-price-min-one-share-contract.mjs": "1fc758c92a40d3f760b906559926481c47436a0b75b8e63a095e41ea72904894",
@@ -464,11 +465,39 @@
     },
     {
       "file": "ledger-filled-migration.yml",
-      "definitionSha256": "674487a8a2f752cee1c82fbff91ebba52df5ee63e97e17bdca738b97c100baec",
+      "definitionSha256": "2c4a5fa330ad3d40155a9c0cb29f3d56495b338c1c0db34fd204234b3122785a",
       "events": [
         "workflow_dispatch"
       ],
       "jobs": [
+        {
+          "id": "admission",
+          "classification": "MANUAL_ADMISSION_HOLD",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "blockers": [
+            "CODE_ONLY",
+            "WRITER_NOT_UNIFIED",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": "PAPER_CUSTODY_APPROVAL",
+            "permissions": {
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "sidecar-dry-run-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        },
         {
           "id": "ledger-filled-migration",
           "classification": "MANUAL_LEDGER_MIGRATION",
@@ -689,11 +718,39 @@
     },
     {
       "file": "paper-five-row-active-limited-state-recovery.yml",
-      "definitionSha256": "94c073680272223b01a392b36842b48b9b738d0a9b33bf708358fce238d3a136",
+      "definitionSha256": "b25f841513b2d523cc8717df3b46576c4b82579139276d37af10a0735d3e65ce",
       "events": [
         "workflow_dispatch"
       ],
       "jobs": [
+        {
+          "id": "admission",
+          "classification": "MANUAL_ADMISSION_HOLD",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "blockers": [
+            "CODE_ONLY",
+            "WRITER_NOT_UNIFIED",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": "PAPER_CUSTODY_APPROVAL",
+            "permissions": {
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-five-row-active-limited-state-recovery",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        },
         {
           "id": "recover",
           "classification": "MANUAL_LEDGER_MIGRATION",
@@ -1008,11 +1065,39 @@
     },
     {
       "file": "paper-oco-submit-canary.yml",
-      "definitionSha256": "d44f861f9f4a4bede9350e34003af13b365427f2379de288504058b457d2bbdd",
+      "definitionSha256": "29e755ccc3171e09a54e8f5a208a8f19c93117211b4cd55c634b9176bd4f12b4",
       "events": [
         "workflow_dispatch"
       ],
       "jobs": [
+        {
+          "id": "admission",
+          "classification": "MANUAL_ADMISSION_HOLD",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "blockers": [
+            "CODE_ONLY",
+            "WRITER_NOT_UNIFIED",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": "PAPER_CUSTODY_APPROVAL",
+            "permissions": {
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "paper-oco-submit-canary-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        },
         {
           "id": "submit-canary",
           "classification": "MANUAL_BROKER_SUBMIT_CANCEL",
@@ -1321,11 +1406,39 @@
     },
     {
       "file": "persistent-oco-repair-submit.yml",
-      "definitionSha256": "f52f7583112a2ac62df233c1d3aabe6642a81d88af6f2e7764e41ec69ea7268e",
+      "definitionSha256": "192bc6260f44bb126287f068fd88722883e87b8ae52f952e447d81f23548574c",
       "events": [
         "workflow_dispatch"
       ],
       "jobs": [
+        {
+          "id": "admission",
+          "classification": "MANUAL_ADMISSION_HOLD",
+          "operationalEligible": false,
+          "writerClaimVerified": false,
+          "blockers": [
+            "CODE_ONLY",
+            "WRITER_NOT_UNIFIED",
+            "P0_SOURCE",
+            "P0_RISK"
+          ],
+          "observed": {
+            "environment": "PAPER_CUSTODY_APPROVAL",
+            "permissions": {
+              "contents": "read"
+            },
+            "workflowConcurrency": {
+              "group": "persistent-oco-repair-submit-${{ github.ref }}",
+              "cancel-in-progress": false
+            },
+            "jobConcurrency": null,
+            "secrets": [],
+            "dynamicSecretReference": false,
+            "effectiveJobFlags": {},
+            "cacheSteps": [],
+            "stepOverrides": []
+          }
+        },
         {
           "id": "submit-persistent-repair",
           "classification": "MANUAL_BROKER_SUBMIT",
