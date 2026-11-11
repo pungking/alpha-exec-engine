@@ -102,10 +102,10 @@ mutate(x=>{x.current.bundle.bundleSha256='f'.repeat(64);},'CURRENT_BUNDLE_INVALI
 mutate(x=>{x.previous.bundle.approvalClaim='APPROVED';},'PREVIOUS_BUNDLE_INVALID');
 mutate(x=>{x.previous.commitment.snapshotSha256='f'.repeat(64);},'PREVIOUS_BUNDLE_INVALID');
 mutate(x=>{x.current=x.previous;},'CAPTURE_TIME_NOT_STRICTLY_INCREASING');
-mutate(x=>{x.current=evidence({capture:'2026-11-11T10:06:30Z'});},'CURRENT_BUNDLE_INVALID');
+mutate(x=>{x.current=evidence({capture:'2026-11-11T10:05:30Z'});},'CURRENT_BUNDLE_INVALID');
 mutate(x=>{x.current=evidence({capture:'2026-11-11T10:07:00Z'});},'CAPTURE_TIME_NOT_STRICTLY_INCREASING');
 mutate(x=>{x.current=evidence({capture:'2026-11-11T10:07:00Z'});},'DUPLICATE_BUNDLE_REPLAY');
-mutate(x=>{x.current=evidence({capture:'2026-11-11T10:06:59Z'});},'CURRENT_BUNDLE_INVALID');
+mutate(x=>{x.current=evidence({capture:'2026-11-11T10:06:59Z'});},'CAPTURE_TIME_NOT_STRICTLY_INCREASING');
 mutate(x=>{x.current=evidence({sourceSha:'f'.repeat(40),capture:'2026-11-11T10:08:00Z'});},'CROSS_CAPTURE_CONTEXT_MISMATCH');
 mutate(x=>{x.current=evidence({reviewerId:7,capture:'2026-11-11T10:08:00Z'});},'IMMUTABLE_PROVIDER_RECORD_DRIFT');
 mutate(x=>{x.current.snapshot.run.created_at='2026-11-11T10:00:30Z';
