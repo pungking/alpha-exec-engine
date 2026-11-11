@@ -130,6 +130,16 @@ change(x=>{replace(x,'paper-five-row-broker-evidence-recovery.yml',
  'ALPACA_BASE_URL: https://paper-api.alpaca.markets',
  'ALPACA_BASE_URL: '+String.fromCharCode(36,123,123)+' vars.CUSTOM }}');},
  'REVIEWED_BROKER_URL_BINDING_DRIFT');
+change(x=>{replace(x,'paper-five-row-broker-evidence-recovery.yml',
+ 'id: broker_evidence','id: misidentified_broker_step');},
+ 'REVIEWED_BROKER_STEP_SCOPE_DRIFT');
+change(x=>{replace(x,'paper-five-row-broker-evidence-recovery.yml',
+ "if: steps.preflight.outputs.ready == 'true'","if: always()");},
+ 'REVIEWED_BROKER_STEP_SCOPE_DRIFT');
+change(x=>{replace(x,'paper-oco-read-verify.yml',
+ '      - name: Setup Node\n        uses: actions/setup-node@v4',
+ '      - name: Setup Node\n        env:\n          ALPACA_BASE_URL: https://api.alpaca.markets\n        uses: actions/setup-node@v4');},
+ 'UNREVIEWED_BROKER_STEP_ENV_OVERRIDE');
 const proof=hold(fixture());
 for(const value of ['ALPACA_SECRET_KEY','ALPACA_KEY_ID',
  'https://api.alpaca.markets'])
