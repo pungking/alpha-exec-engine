@@ -14,7 +14,7 @@ const MAX_BYTES = 96 * 1024;
 const obj=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const exact=(x,keys)=>obj(x)&&Object.keys(x).length===keys.length
   &&keys.every(k=>Object.hasOwn(x,k));
-const ROOT=['schemaVersion','reviewedSourceSha','branchBefore','gitRef',
+const ROOT=['schemaVersion','repository','reviewedSourceSha','branchBefore','gitRef',
   'headCommit','branchAfter','authorityClaims'];
 const AUTH=['githubOriginVerified','repositoryRulesetVerified',
   'environmentAtRunVerified','exactWriterJobApproved',
@@ -63,6 +63,7 @@ const status=(errors,head,reviewedSha,parent)=>{
 export function inspectPaperReviewedMainRefSnapshot(input={}){
  const x=obj(input)?input:{},errors=[];
  if(!exact(x,ROOT)||x.schemaVersion!=='paper-reviewed-main-ref-snapshot-v1'
+   ||x.repository!==REPO
    ||x.reviewedSourceSha!==REVIEWED_3S_SOURCE)
   errors.push('REVIEW_ANCHOR_OR_ENVELOPE_INVALID');
  if(!exact(x.authorityClaims,AUTH)||AUTH.some(k=>x.authorityClaims?.[k]!==false))
@@ -94,7 +95,7 @@ export function inspectPaperReviewedMainRefSnapshot(input={}){
 export async function readPaperReviewedMainRefSnapshot(input={}){
  const x=obj(input)?input:{};
  const missing={schemaVersion:'paper-reviewed-main-ref-snapshot-v1',
-  reviewedSourceSha:REVIEWED_3S_SOURCE,branchBefore:null,gitRef:null,
+  repository:REPO,reviewedSourceSha:REVIEWED_3S_SOURCE,branchBefore:null,gitRef:null,
   headCommit:null,branchAfter:null,
   authorityClaims:Object.fromEntries(AUTH.map(k=>[k,false]))};
  if(typeof x.token!=='string'||x.token.length<8||x.token.length>4096
