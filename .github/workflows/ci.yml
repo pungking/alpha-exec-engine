@@ -76,6 +76,10 @@ jobs:
           LIVE_ORDER_SUBMIT_ENABLED: "false"
           MARKET_GUARD_MODE: observe
         run: npm run ops:test:scoped-paper-attended-lifecycle
+      - name: PAPER workflow admission inventory (offline; operational HOLD remains)
+        run: |
+          npm run ops:safety:paper-workflow-admission
+          npm run ops:test:paper-workflow-admission
       - name: Automatic trigger execution safety contract
         run: npm run ops:test:dry-run-dispatch-safety
       - name: Sidecar public evidence boundary
