@@ -135,6 +135,10 @@ export async function readPaperDeploymentRestCorrelation(input={}){
     }
    }catch(err){await reader.cancel().catch(()=>{});throw err;}
    finally{reader.releaseLock();}
+   // The header's declared length must match the bytes actually consumed.
+   // A short-but-otherwise-valid body cannot masquerade as a complete record.
+   if(contentLength!=null&&Number(contentLength)!==size)
+    throw Error('CONTENT_LENGTH_MISMATCH');
    const parsed=JSON.parse(Buffer.concat(chunks,size).toString('utf8'));
    if((k==='statuses'||k==='approvals')?!Array.isArray(parsed):!obj(parsed))
     throw Error('RESPONSE_SHAPE_INVALID');
