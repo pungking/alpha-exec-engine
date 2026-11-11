@@ -137,7 +137,7 @@
     "scripts/sync-paper-oco-canary-result.mjs": "0f6af59242951df86706f7e138e3c0e6bc4d1652d993420c012abe994d74bc32",
     "scripts/test-github-paper-custody-lineage-readonly.mjs": "e39b66e92fe19a7178b3e18b1e93867a8806aa06f0d5699e74671873ef260dc5",
     "scripts/test-github-paper-custody-rest.mjs": "b7c2fd398d29bc895e75ac93645f25927529d258a4552f85bbcca93ed109f57b",
-    "scripts/test-github-paper-custody.mjs": "4b430d69250b6924bd56573c688772a94911158a2e1c544997bdcaafe0a0f1b4",
+    "scripts/test-github-paper-custody.mjs": "e80153fbb68225095e00d6dc298e36bb04cd7ce1dfa175e9dc42fda01d56c6d2",
     "scripts/test-github-paper-protected-lineage.mjs": "c17ba7815dba25e2ef688684925ad16ba12c6e5f0a26800f864331fa83d00eb9",
     "scripts/test-github-paper-review-evidence.mjs": "49bcfb9d29d3f439348d3e824039d27e6f4107844e7f9672e40aaaa422828abc",
     "scripts/test-ownership-recovery-safety-gates.mjs": "2df01bdfad7c6d81f971a6e9903e0a1e5943f11dfebcc537f84fbdffab62c75c",
@@ -160,7 +160,9 @@
     "src/order-state-storage.ts": "22e7ff8e027ec2da0c9dc4127005b50e78d22c187970be893ff1fc00a7c08d63",
     "src/replay-hf-judgement.ts": "784747656a669b4b7e1eb9c461ba25e0d4a92d3d22ca47eed872d5393a51da61",
     "src/scoped-management-record.ts": "4a9a1aa6724bb36bb72abbbeeed59d475d72d5111e403e3d8f4dc19f07e1164a",
-    "src/sidecar-runtime-evidence-core.ts": "69719268959c4f8004a6b33eb6cddbe26b0c28af29f94ae50b02014c8c9180c3"
+    "src/sidecar-runtime-evidence-core.ts": "69719268959c4f8004a6b33eb6cddbe26b0c28af29f94ae50b02014c8c9180c3",
+    "scripts/lib/paper-deployment-writer-exclusion.mjs": "b55d5c437bab2229131906720ab6fefcaec163f6cbc6dacceda048702ce9f103",
+    "scripts/test-paper-deployment-writer-exclusion.mjs": "76668f7496758ee8870d9b9b260326304052cee4dc351343dafbb5fb0df8130e"
   },
   "workflows": [
     {
