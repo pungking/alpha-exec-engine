@@ -174,6 +174,21 @@ async function collect(value=PAPER,options={},source=fixture()){
  safe(r.result);checks++;
 }
 {
+ const input=fixture();input.baseline.operationalHold=false;
+ const r=await collect(PAPER,{},input);
+ assert.equal(r.count,0,'invalid source must make zero GitHub requests');
+ assert.ok(r.result.findings.includes('NINE_JOB_BROKER_ENDPOINT_REVIEW_INVALID'));
+ safe(r.result);checks++;
+}
+{
+ const input=fixture();input.workflowSources['market-guard.yml']=
+ input.workflowSources['market-guard.yml'].replace('vars.ALPACA_BASE_URL','vars.OTHER_HOST');
+ const r=await collect(PAPER,{},input);
+ assert.equal(r.count,0,'unreviewed source must make zero GitHub requests');
+ assert.ok(r.result.findings.includes('NINE_JOB_BROKER_ENDPOINT_REVIEW_INVALID'));
+ safe(r.result);checks++;
+}
+{
  const r=await collect(PAPER,{updatedAtSecond:'2026-11-11T00:00:00Z'});
  assert.equal(r.count,2);
  assert.ok(r.result.findings.includes('NON_ATOMIC_GITHUB_VARIABLE_READ_CHANGED'));
