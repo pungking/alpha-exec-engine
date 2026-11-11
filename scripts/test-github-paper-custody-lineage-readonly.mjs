@@ -97,7 +97,7 @@ try {
     ? { status: 200, data: { sha: uri.split('/').at(-1), encoding: 'base64', content: 'e30=' } } : null;
   await deny(broken, 'BLOB_INVALID');
   const multiParent = memoryGithub();
-  multiParent.objects.get(multiParent.head()).parents.push({ sha: 'a'.repeat(40) });
+  multiParent.objects.get(multiParent.head()).parents.push({ sha: 'a'.repeat(40) }, { sha: 'b'.repeat(40) });
   await deny(multiParent, 'COMMIT_INVALID');
   const noRef = memoryGithub(); noRef.fail = () => ({ status: 404, data: {} });
   await deny(noRef, 'RESPONSE_INVALID');
