@@ -6,7 +6,7 @@
 
 ## Verified findings from nine checked-in workflow YAML sources
 
-The 3V inventory found nine Job scopes referencing both ALPACA_KEY_ID and ALPACA_SECRET_KEY. Their Job-level ALPACA_BASE_URL is configured as follows:
+The 3V inventory found nine Job scopes referencing both ALPACA_KEY_ID and ALPACA_SECRET_KEY. Eight Jobs expose broker settings at Job-level env, while paper-five-row-broker-evidence-recovery.yml#restore-and-read injects them into one conditional Step (Collect private PAPER broker evidence once). Their effective ALPACA_BASE_URL source bindings are:
 
 | Binding class | Actual reviewed workflow Jobs | Result |
 |---|---|---|
@@ -14,7 +14,7 @@ The 3V inventory found nine Job scopes referencing both ALPACA_KEY_ID and ALPACA
 | **GitHub variable, no fallback** | dry-run.yml#dry-run; market-guard.yml#market-guard | **2** unknown actual runtime route values |
 | **GitHub variable with PAPER default** | ledger-filled-migration.yml#ledger-filled-migration | **1** unknown actual runtime route: a configured variable overrides the PAPER fallback |
 
-**Total: 6 literal PAPER / 3 variable-dependent / 9 secret-reference Jobs.** The actual value of ALPACA_BASE_URL has not been fetched or verified. The three variable-dependent Jobs are not evidence of LIVE calls; they are potential routing risks requiring separate investigation. The four protected PAPER_CUSTODY_APPROVAL admission Jobs are distinct and remain fail-closed.
+**Total: 6 literal PAPER (five Job-level, one conditional Step-level) / 3 variable-dependent Job-level / 9 secret-reference Jobs.** The actual value of ALPACA_BASE_URL has not been fetched or verified. The three variable-dependent Jobs are not evidence of LIVE calls; they are potential routing risks requiring separate investigation. The four protected PAPER_CUSTODY_APPROVAL admission Jobs are distinct and remain fail-closed.
 
 IMPORTANT: DRY_RUN, READ_ONLY=true, EXEC_ENABLED=false, a PAPER fallback, GitHub code reviews or a successful CI job **cannot prove** broker key permission scope, effective outbound hostname, PAPER/LIVE account isolation or exclusion of other broker clients.
 
@@ -24,8 +24,8 @@ scripts/lib/paper-broker-endpoint-source-audit.mjs is a pure offline source insp
 
 - Exact frozen source/inventory and reviewed main SHA identities, all operational HOLD and unknown-settings invariants
 - Exactly nine expected Workflow files, correct Job names, correct ALPACA_KEY_ID and ALPACA_SECRET_KEY source references
-- Six fixed PAPER URL declarations and three expected unresolved variable bindings
-- Any previously unknown LIVE URL substitution, changed secret binding, source hash, missing/extra Workflow, environment drift or forged authority claim is DENY
+- Six fixed PAPER URL declarations and three expected unresolved variable bindings; preserve the one reviewed conditional broker-evidence Step identity and preflight condition
+- Any previously unknown LIVE URL substitution, changed secret binding, Step-level override/identity/condition, source hash, missing/extra Workflow, environment drift or forged authority claim is DENY
 
 Valid source evidence yields **HOLD_THREE_BROKER_ENDPOINT_VARIABLES_UNATTESTED**. Modified or mismatched evidence yields **DENY_BROKER_ENDPOINT_REVIEWED_SOURCE_DRIFT**. All returned operational flags remain false. No code path returns READY or execution authority. No actual repository Variables, account keys, outbound network addresses or broker Writer leases are inspected by this module.
 
