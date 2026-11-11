@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { parseDocument, visit, isAlias } from 'yaml';
 
 const BASELINE = 'config/paper-workflow-admission-baseline.json';
-const BASELINE_SHA256 = 'a102b03cab618ab5e0cb1ea4af69691a72345bad4fc815c11bdfe16ea87018bb';
+const BASELINE_SHA256 = '6f2b370799cb30a21de51b6efe1ed5b3c1dcb1b4a6ca26bd88519e7431328fb3';
 const SOURCE = '4ebc37c29b7ee32001a83ed03375d96cdcd7f961';
 const CLASSES = ['CI_FIXTURES', 'AUTOMATIC_DISPATCHER', 'AUTOMATIC_REPORT_CACHE_WRITER',
   'MANUAL_LEDGER_MIGRATION', 'MANUAL_ENCRYPTED_EXPORT', 'MANUAL_BROKER_READ_REPORT',
