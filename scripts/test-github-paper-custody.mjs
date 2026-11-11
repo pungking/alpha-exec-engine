@@ -174,3 +174,4 @@ await import('./test-paper-evidence-snapshot-commitment.mjs');
 await import('./test-paper-evidence-bundle-context.mjs');
 await import('./test-paper-evidence-capture-sequence.mjs');
 await import('./test-paper-external-proof-closure.mjs');
+await import('./test-paper-protected-writer-topology.mjs');
