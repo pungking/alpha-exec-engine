@@ -169,3 +169,4 @@ await import('./test-paper-deployment-writer-exclusion.mjs');
 await import('./test-paper-writer-coverage-gaps.mjs');
 await import('./test-paper-custody-composite-evidence.mjs');
 await import('./test-paper-deployment-rest-correlation.mjs');
+await import('./test-paper-deployment-provenance-gaps.mjs');
