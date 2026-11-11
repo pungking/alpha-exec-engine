@@ -171,3 +171,4 @@ await import('./test-paper-custody-composite-evidence.mjs');
 await import('./test-paper-deployment-rest-correlation.mjs');
 await import('./test-paper-deployment-provenance-gaps.mjs');
 await import('./test-paper-evidence-snapshot-commitment.mjs');
+await import('./test-paper-evidence-bundle-context.mjs');
