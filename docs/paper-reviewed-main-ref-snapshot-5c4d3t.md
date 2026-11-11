@@ -16,6 +16,20 @@ Using the connected read-only GitHub repository API, the following were independ
 
 This confirms that the frozen 3S reviewed-source anchor `6cd26eb4...` and the newer `main` merge commit `73361997...` are **different**. The fact that `main` reports `protected=true` says only that GitHub branch metadata reports protection; it does **not** independently attest the exact current or historical branch rulesets, administrator bypass protections, Environment reviewer decisions, Job-specific approvals or broker Writer custody.
 
+## Actual currently active GitHub Rulesets — independent read-only observation
+
+The GitHub connector independently retrieved the repository's active branch Rulesets (GET /repos/pungking/alpha-exec-engine/rulesets and /rulesets/{id}). These are **current GitHub server configuration snapshots**, not signed evidence of policy enforcement during any historical Job/Deployment attempt:
+
+| Ruleset | Target and current enforcement | Important observed policy |
+|---|---|---|
+| [26952584](https://github.com/pungking/alpha-exec-engine/settings/rules/26952584) — alpha-main-source-protection | main, active, bypass_actors=[] | Reject deletion/non-fast-forward; require PR merge (method merge); strict status check `build` (integration 15368); `required_approving_review_count=0`, code-owner review not required, review-thread resolution not required |
+| [26956735](https://github.com/pungking/alpha-exec-engine/settings/rules/26956735) — alpha-paper-state-admission-hold | paper-state, active, bypass_actors=[] | Creation and update rules active |
+| [26956389](https://github.com/pungking/alpha-exec-engine/settings/rules/26956389) — alpha-paper-state-integrity | paper-state, active, bypass_actors=[] | Deletion and non-fast-forward restrictions active |
+
+**Operational relevance:** A `main` branch ruleset demanding **zero** approving reviews must not be described as independently requiring a human GitHub `APPROVE`. The recorded source-only technical `COMMENT` and explicit conversational merge request are not a GitHub required-approval policy. The user-requested source merge does not authorize PAPER/LIVE trading. Before any operational policy change, independently assess whether to require at least one separate human approval and evaluate code-owner protections under an isolated, separately authorized branch/ruleset modification. This PR **does not edit any Ruleset**.
+
+The branch-protection subresource (`GET /branches/main/protection`) returned GitHub 403 `Resource not accessible by integration`; this access limitation does not contradict the independently accessible active Rulesets. Current Ruleset reads do not validate the protected Environment approval or account-wide brokerage Writer exclusion.
+
 ## New GET-only acquisition and consistency check
 
 `scripts/lib/paper-reviewed-main-ref-snapshot.mjs` adds a pure source-snapshot inspector and an **optional**, strictly GET-only candidate collector. The collector never runs automatically and requires a caller-injected token, transport and AbortSignal. There is no ambient token, worker, cron, GitHub Action dispatch, credential store or broker import.
