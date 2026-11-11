@@ -76,7 +76,7 @@ export function inspectPaperProtectedWriterTopology(input={}){
    ||b.workflows.reduce((sum,w)=>sum+(Array.isArray(w.jobs)?w.jobs.length:0),0)!==21)
    errors.push('FROZEN_ADMISSION_BOUNDARY_INVALID');
  if(Array.isArray(b?.workflows)&&b.workflows.some(w=>
-    !Array.isArray(w.jobs)||w.jobs.some(j=>!obj(j)
+    !obj(w)||!Array.isArray(w.jobs)||w.jobs.some(j=>!obj(j)
       ||j.operationalEligible!==false||j.writerClaimVerified!==false)))
    errors.push('UNREVIEWED_ADMISSION_PROMOTION');
  if(!obj(files)||canonical(Object.keys(files).sort())
