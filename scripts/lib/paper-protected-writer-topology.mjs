@@ -24,7 +24,7 @@ const TARGETS=Object.freeze([
  {file:'persistent-oco-repair-submit.yml',writer:'submit-persistent-repair',
   classification:'MANUAL_BROKER_SUBMIT',
   definitionSha256:'03a3ad8692120b035084fdad233cefe399ce3a5db1585194e2f7aa0d3b484f86'},
-]);
+].map(Object.freeze));
 export const PAPER_PROTECTED_WRITER_TOPOLOGY=TARGETS;
 const ENV='PAPER_CUSTODY_APPROVAL';
 const REQUIRED_NEEDS="admission";
