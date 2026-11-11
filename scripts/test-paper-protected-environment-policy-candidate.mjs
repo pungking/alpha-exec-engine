@@ -56,6 +56,7 @@ denied(inspect(null),'POLICY_INPUT_ENVELOPE_INVALID');
 denied(inspect({}),'POLICY_INPUT_ENVELOPE_INVALID');
 change(x=>{x.operationalEligible=true;},'POLICY_INPUT_ENVELOPE_INVALID');
 change(x=>{x.environment.id=0;},'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
+change(x=>{x.environment.id=26847620869;},'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
 change(x=>{x.environment.name='LIVE_APPROVAL';},'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
 change(x=>{x.environment.protection_rules=null;},'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
 change(x=>{x.environment.deployment_branch_policy=null;},'ENVIRONMENT_IDENTITY_OR_SHAPE_INVALID');
