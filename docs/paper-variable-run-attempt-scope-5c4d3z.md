@@ -8,11 +8,13 @@
 
 3X/3Y previously verified nine real YAML source broker-secret references. Six have a literal PAPER broker host. Three depend on GitHub Actions configuration variable ALPACA_BASE_URL:
 
-| Reviewed workflow | Source Job key | Allowed source events | Boundary |
+| Reviewed workflow | Source Job key | 3Z accepted candidate events | Boundary |
 |---|---|---|---|
 | dry-run.yml | dry-run | schedule, workflow_dispatch | Automatic/report only by source; not a broker permission certificate |
 | market-guard.yml | market-guard | schedule, workflow_dispatch | Observation/report by source; not a broker permission certificate |
 | ledger-filled-migration.yml | ledger-filled-migration | workflow_dispatch only | Separate protected admission Job is hard fail-closed |
+
+The `dry-run.yml` source also declares `repository_dispatch` (`stage6_result_created`). That real trigger is **deliberately outside** this 3Z inspector's accepted candidate event subset: it is rejected as unreviewed by this contract, not asserted to be absent or disabled in GitHub Actions. The table describes the **3Z candidate admission subset**, not an exhaustive source trigger inventory.
 
 None of these three broker-credential-bearing Jobs has a directly bound GitHub Environment. The ledger admission Job is a distinct hard-fail path. Approving it would not automatically approve the separate downstream mutation-capable Job.
 
