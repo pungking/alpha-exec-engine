@@ -45,6 +45,15 @@ function expectedValid(e) {
     && typeof e.accountScopeSha256 === 'string' && SHA64.test(e.accountScopeSha256);
 }
 
+function runMatches(expected, run) {
+  return object(run)
+    && String(run.id) === expected.runId && run.run_attempt === 1
+    && run.event === 'workflow_dispatch' && run.head_branch === 'main'
+    && run.head_sha === expected.codeSha && run.path === expected.workflowPath
+    && run.repository?.full_name === REPOSITORY
+    && run.head_repository?.full_name === REPOSITORY
+    && Array.isArray(run.pull_requests) && run.pull_requests.length === 0;
+}
 /**
  * Pure diagnostic for API-shaped evidence. Caller-supplied objects are NOT
  * authenticated, and every outcome remains HOLD or DENY.
@@ -52,15 +61,7 @@ function expectedValid(e) {
 export function inspectGithubPaperReviewEvidence({ expected, run, reviews } = {}) {
   const findings = [];
   if (!expectedValid(expected)) return result(['EXPECTED_BOUNDARY_INVALID']);
-  if (!object(run)
-    || String(run.id) !== expected.runId || run.run_attempt !== 1
-    || run.event !== 'workflow_dispatch' || run.head_branch !== 'main'
-    || run.head_sha !== expected.codeSha || run.path !== expected.workflowPath
-    || run.repository?.full_name !== REPOSITORY
-    || run.head_repository?.full_name !== REPOSITORY
-    || !Array.isArray(run.pull_requests) || run.pull_requests.length !== 0) {
-    findings.push('RUN_BOUNDARY_INVALID');
-  }
+  if (!runMatches(expected, run)) findings.push('RUN_BOUNDARY_INVALID');
   if (!Array.isArray(reviews) || reviews.length > 100) {
     findings.push('REVIEW_HISTORY_INVALID');
     return result(findings);
@@ -138,13 +139,8 @@ export async function readGithubPaperReviewEvidence({ expected, token, fetchImpl
       return json;
     }
     const run = await get('');
-    // Reject mismatched SHA/event/repository before requesting review records.
-    const preliminary = inspectGithubPaperReviewEvidence({ expected, run, reviews: [{
-      state: 'approved',
-      user: { login: REVIEWER, id: 1 },
-      environments: [{ id: ENVIRONMENT_ID, name: ENVIRONMENT }],
-    }] });
-    valid(!preliminary.findings.includes('RUN_BOUNDARY_INVALID'), 'RUN_BOUNDARY_INVALID');
+    // Validate the exact workflow/run identity before reading review history.
+    valid(runMatches(expected, run), 'RUN_BOUNDARY_INVALID');
     const reviews = await get('/approvals');
     return inspectGithubPaperReviewEvidence({ expected, run, reviews });
   } catch (error) {
