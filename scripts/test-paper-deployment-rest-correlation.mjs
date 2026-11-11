@@ -90,6 +90,8 @@ for(const opt of [
  {badAt:1,status:403},{badAt:2,body:'{not-json'},
  {badAt:3,contentType:'text/html'},
  {badAt:4,length:String(256*1024+1)},
+ {badAt:0,length:'1'},
+ {badAt:0,length:'1000'},
  {badAt:0,body:'[]'},
  {badAt:3,body:'{}'},
  {badAt:2,errorAt:2},
