@@ -73,7 +73,7 @@ change(x=>{x.baseline.workflows.find(w=>w.file===first).jobs.find(j=>j.id==='adm
 change(x=>{x.baseline.workflows.find(w=>w.file===first).jobs.find(j=>j.id==='ledger-filled-migration').observed.environment='PAPER_CUSTODY_APPROVAL';},
  'REVIEWED_JOB_CLASSIFICATION_OR_ENV_DRIFT');
 change(x=>{x.baseline.workflows.find(w=>w.file===canary).jobs.find(j=>j.id==='submit-canary').writerClaimVerified=true;},
- 'REVIEWED_JOB_CLASSIFICATION_OR_ENV_DRIFT');
+ 'UNREVIEWED_ADMISSION_PROMOTION');
 change(x=>{mutate(x,first,'needs: admission','needs: other');},'WRITER_JOB_DEPENDENCY_OR_ENV_DRIFT');
 change(x=>{mutate(x,first,"needs.admission.outputs.operational_authorized == 'true'",
  "needs.admission.outputs.operational_authorized != 'false'");},
