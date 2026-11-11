@@ -9,7 +9,7 @@ const BASELINE_SHA256 = '49fbc26d8f9dc95a8099434d467100616c77351796fbd63aa4202aa
 const SOURCE = '4ebc37c29b7ee32001a83ed03375d96cdcd7f961';
 const CLASSES = ['CI_FIXTURES', 'AUTOMATIC_DISPATCHER', 'AUTOMATIC_REPORT_CACHE_WRITER',
   'MANUAL_LEDGER_MIGRATION', 'MANUAL_ENCRYPTED_EXPORT', 'MANUAL_BROKER_READ_REPORT',
-  'MANUAL_REPORT_PUBLISHER', 'MANUAL_ISOLATED_PROBE', 'MANUAL_BROKER_SUBMIT_CANCEL', 'MANUAL_BROKER_SUBMIT'];
+  'MANUAL_REPORT_PUBLISHER', 'MANUAL_ISOLATED_PROBE', 'MANUAL_BROKER_SUBMIT_CANCEL', 'MANUAL_BROKER_SUBMIT', 'MANUAL_ADMISSION_HOLD'];
 const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const requireContract = (v, code) => { if (!v) throw Error(code); };
 export const canonical = v => {
@@ -70,6 +70,16 @@ export function loadInputs(root = process.cwd()) {
 }
 
 export function auditWorkflows({ files, baseline: b, evidence, packageScripts, now }) {
+
+  // Temporary review evidence for a new manual HOLD job: remove after baseline pins are reviewed.
+  for (const file of ['paper-oco-submit-canary.yml', 'persistent-oco-repair-submit.yml',
+    'ledger-filled-migration.yml', 'paper-five-row-active-limited-state-recovery.yml']) {
+    const w = parseWorkflow(files[file]);
+    console.error('PAPER_GATE_REVIEW_SNAPSHOT ' + JSON.stringify({
+      file, definitionSha256: sha256(canonical(w)),
+      admissionObserved: observeJob(w, w.jobs.admission),
+    }));
+  }
   requireContract(b.schemaVersion === 'paper-workflow-admission-v1' && b.sourceCommit === SOURCE
     && b.sourceRef === 'refs/heads/main' && b.stateRef === 'refs/heads/paper-state'
     && b.operationalHold === true, 'ROLE_OR_HOLD_INVALID');
