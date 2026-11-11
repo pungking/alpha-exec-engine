@@ -73,12 +73,30 @@ export function createGithubPaperCustodyRestRequest({ repository, token, fetchIm
         method, headers: fixedHeaders, body: content, signal, redirect: 'error',
       });
       safe(Number.isInteger(res?.status) && res.status >= 100 && res.status <= 599
-        && typeof res.text === 'function', 'RESPONSE_INVALID');
+        && typeof res.body?.getReader === 'function', 'RESPONSE_INVALID');
       const length = res.headers?.get?.('content-length');
       safe(length === null || length === undefined
         || /^\d+$/.test(length) && Number(length) <= MAX_HTTP_BYTES, 'RESPONSE_TOO_LARGE');
-      const text = await res.text();
-      safe(typeof text === 'string' && Buffer.byteLength(text, 'utf8') <= MAX_HTTP_BYTES, 'RESPONSE_TOO_LARGE');
+      // Limit bytes while streaming, not only after buffering: a response may
+      // omit Content-Length or misrepresent its actual body size.
+      const reader = res.body.getReader();
+      let size = 0; const chunks = [];
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          safe(value instanceof Uint8Array, 'RESPONSE_INVALID');
+          size += value.byteLength;
+          safe(size <= MAX_HTTP_BYTES, 'RESPONSE_TOO_LARGE');
+          chunks.push(Buffer.from(value));
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        throw error;
+      } finally {
+        reader.releaseLock();
+      }
+      const text = Buffer.concat(chunks, size).toString('utf8');
       let data;
       try { data = JSON.parse(text); } catch { throw Error('GITHUB_CUSTODY_REST_RESPONSE_INVALID'); }
       safe(object(data), 'RESPONSE_INVALID');
