@@ -92,6 +92,16 @@ export function inspectPaperCustodyComposite(input = {}) {
       'brokerSubmitAuthorized','stateMutationAuthorized','operationalEligible']);
   if (!components.protectedLineage) findings.push('PROTECTED_CLAIM_DIAGNOSTIC_INVALID');
   if (!components.deploymentWriter) findings.push('DEPLOYMENT_WRITER_DIAGNOSTIC_INVALID');
+  // A declared custodyWriterCount alone is insufficient. 3F currently
+  // validates its format, not the actual count of designated custody writers.
+  const inventory = x.deploymentInput?.writerInventory;
+  const writers = inventory?.writers;
+  if (!Array.isArray(writers)
+      || writers.filter(w => OBJECT(w) && w.legacy !== true
+        && w.disposition === 'MIGRATED_TO_CUSTODY'
+        && w.custodyEnforced === true).length !== 1
+      || inventory.custodyWriterCount !== 1)
+    findings.push('CUSTODY_WRITER_CARDINALITY_INVALID');
   if (!components.sourceWriterCoverage) findings.push('SOURCE_WRITER_COVERAGE_DIAGNOSTIC_INVALID');
 
   const source = x.trustedEvidenceSources;
