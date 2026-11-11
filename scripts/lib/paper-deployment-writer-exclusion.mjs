@@ -89,7 +89,7 @@ export function inspectPaperDeploymentWriterEvidence(input = {}) {
     for (const w of inv.writers) {
       if (!noDangerousKeys(w) || !writerKinds.has(w.kind)
           || !allowedDisposition.has(w.disposition)
-          || w.accountSha256 !== e.accountSha256
+          || w.accountSha256 !== e?.accountSha256
           || typeof w.evidenceDigest !== 'string' || !HASH.test(w.evidenceDigest)
           || w.disposition === 'MIGRATED_TO_CUSTODY' && w.custodyEnforced !== true)
         findings.push('WRITER_CONTROL_INVALID');
