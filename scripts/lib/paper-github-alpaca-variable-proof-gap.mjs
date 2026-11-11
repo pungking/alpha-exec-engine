@@ -131,6 +131,16 @@ export async function readPaperGithubAlpacaVariableProofGap(input={}){
    ||typeof x.signal.addEventListener!=='function'
    ||typeof x.signal.aborted!=='boolean'||x.signal.aborted)
   return report(['READ_ONLY_VARIABLE_COLLECTOR_CONFIG_INVALID']);
+ // Reject unreviewed source BEFORE even attempting a GitHub GET. A matching
+ // snapshot remains HOLD: this check never authenticates repository state.
+ const scope=inspectPaperBrokerEndpointSourceAudit({
+  schemaVersion:'paper-broker-endpoint-source-audit-v1',
+  repository:REPO,reviewedMainSha:PRIOR_MAIN,
+  baseline:x.baseline,workflowSources:x.workflowSources,
+  authorityClaims:Object.fromEntries(PRIOR_AUTH.map(k=>[k,false])),
+ });
+ if(scope.status!=='HOLD_THREE_BROKER_ENDPOINT_VARIABLES_UNATTESTED')
+  return report(['NINE_JOB_BROKER_ENDPOINT_REVIEW_INVALID']);
  const headers=Object.freeze({
   Accept:'application/vnd.github+json',
   'X-GitHub-Api-Version':'2022-11-28',
