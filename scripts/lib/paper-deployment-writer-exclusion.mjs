@@ -33,7 +33,15 @@ const result = (findings, deploymentShape = false, inventoryShape = false) => Ob
 });
 const writerKinds = new Set(['BROKER_SUBMIT', 'STATE_MUTATION', 'CACHE_STATE', 'LEDGER_STATE', 'EXTERNAL_BROKER_WRITER']);
 const allowedDisposition = new Set(['BLOCKED_BY_TESTED_GATE', 'RETIRED_WITH_EVIDENCE', 'MIGRATED_TO_CUSTODY']);
-const noDangerousKeys = v => obj(v) && !Object.keys(v).some(k => /token|secret|password|privatekey|api[_-]?key/i.test(k));
+// Strict allowlists prevent contradictory/claimed-authorized fields from being
+// smuggled alongside the deliberately untrusted diagnostic-only evidence.
+const exactKeys = (v, keys) => obj(v) && Object.keys(v).length === keys.length
+  && keys.every(k => Object.hasOwn(v, k));
+const WRITER_KEYS = ['id','legacy','kind','accountSha256','evidenceDigest',
+  'disposition','custodyEnforced'];
+const INVENTORY_KEYS = ['schemaVersion','accountSha256','scopeSha256','complete',
+  'custodyWriterCount','externalWriterDiscovery','brokerCredentialInventory',
+  'requiredLegacyIds','writers'];
 
 /**
  * Snapshot is not proof of a GitHub job-to-deployment relationship. REST
@@ -69,12 +77,12 @@ export function inspectPaperDeploymentWriterEvidence(input = {}) {
   if (!depShape) findings.push('DEPLOYMENT_STATUS_UNBOUND');
   // Deployment and job REST surfaces do not provide an authenticated
   // join merely from same SHA, run and environment. No fabricated JOIN.
-  if (!obj(x.jobDeploymentAttestation) || x.jobDeploymentAttestation.kind !== 'UNVERIFIED_ONLY'
+  if (!exactKeys(x.jobDeploymentAttestation, ['kind','verified']) || x.jobDeploymentAttestation.kind !== 'UNVERIFIED_ONLY'
       || x.jobDeploymentAttestation.verified !== false) findings.push('JOB_DEPLOYMENT_ATTESTATION_MISSING');
 
   const inv = x.writerInventory;
   let inventoryShape = false;
-  if (!obj(inv) || inv.schemaVersion !== 'paper-account-writer-inventory-v1'
+  if (!exactKeys(inv, INVENTORY_KEYS) || inv.schemaVersion !== 'paper-account-writer-inventory-v1'
       || inv.accountSha256 !== e?.accountSha256 || inv.scopeSha256 !== e?.scopeSha256
       || inv.complete !== true || !Array.isArray(inv.writers) || inv.writers.length === 0
       || inv.writers.length > 128
@@ -87,11 +95,15 @@ export function inspectPaperDeploymentWriterEvidence(input = {}) {
     if (!unique(ids) || ids.some(s => typeof s !== 'string' || !/^[a-z0-9][a-z0-9._/-]{1,99}$/.test(s)))
       findings.push('WRITER_IDS_INVALID');
     for (const w of inv.writers) {
-      if (!noDangerousKeys(w) || !writerKinds.has(w.kind)
+      if (!exactKeys(w, WRITER_KEYS) || !writerKinds.has(w.kind)
           || !allowedDisposition.has(w.disposition)
+          || typeof w.legacy !== 'boolean'
+          || typeof w.custodyEnforced !== 'boolean'
           || w.accountSha256 !== e?.accountSha256
-          || typeof w.evidenceDigest !== 'string' || !HASH.test(w.evidenceDigest)
-          || w.disposition === 'MIGRATED_TO_CUSTODY' && w.custodyEnforced !== true)
+          || !HASH.test(w.evidenceDigest)
+          || (w.legacy && w.custodyEnforced)
+          || (w.disposition === 'MIGRATED_TO_CUSTODY' && (w.legacy || !w.custodyEnforced))
+          || (w.disposition !== 'MIGRATED_TO_CUSTODY' && w.custodyEnforced))
         findings.push('WRITER_CONTROL_INVALID');
     }
     const observedLegacy = inv.writers.filter(w => w?.legacy === true).map(w => w.id);
@@ -101,13 +113,20 @@ export function inspectPaperDeploymentWriterEvidence(input = {}) {
       findings.push('LEGACY_WRITER_COVERAGE_INCOMPLETE');
     if (inv.writers.some(w => w?.legacy === true && !['RETIRED_WITH_EVIDENCE','BLOCKED_BY_TESTED_GATE'].includes(w.disposition)))
       findings.push('LEGACY_WRITER_NOT_EXCLUDED');
+    // A caller's custodyWriterCount is not evidence. Independently derive
+    // the number of designated custody writers from the explicit rows.
+    const designated = inv.writers.filter(w => obj(w) && w.legacy === false
+      && w.disposition === 'MIGRATED_TO_CUSTODY'
+      && w.custodyEnforced === true).length;
+    if (!Number.isSafeInteger(inv.custodyWriterCount)
+        || inv.custodyWriterCount !== 1 || designated !== 1)
+      findings.push('CUSTODY_WRITER_CARDINALITY_INVALID');
     if (inv.externalWriterDiscovery !== 'INDEPENDENT_EVIDENCE_REQUIRED'
-        || inv.brokerCredentialInventory !== 'INDEPENDENT_EVIDENCE_REQUIRED'
-        || inv.custodyWriterCount !== 1)
+        || inv.brokerCredentialInventory !== 'INDEPENDENT_EVIDENCE_REQUIRED')
       findings.push('EXTERNAL_OR_CUSTODY_SCOPE_UNVERIFIED');
     inventoryShape = true;
   }
-  if (!obj(x.durableClaim) || x.durableClaim.status !== 'UNVERIFIED'
+  if (!exactKeys(x.durableClaim, ['status','authorized']) || x.durableClaim.status !== 'UNVERIFIED'
       || x.durableClaim.authorized !== false)
     findings.push('DURABLE_WRITER_CLAIM_UNVERIFIED');
   return result(findings, !!depShape, inventoryShape);
