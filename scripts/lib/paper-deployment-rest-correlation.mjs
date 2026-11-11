@@ -91,7 +91,7 @@ export async function readPaperDeploymentRestCorrelation(input={}){
  const x=obj(input)?input:{};
  if(!validExpected(x.expected))return result(['EXPECTED_BOUNDARY_INVALID']);
  if(typeof x.token!=='string'||x.token.length<8||x.token.length>4096
-   ||!/^\x21-\x7e+$/.test(x.token)||typeof x.fetchImpl!=='function'
+   ||!/^[\x21-\x7e]+$/.test(x.token)||typeof x.fetchImpl!=='function'
    ||!obj(x.signal)||typeof x.signal.addEventListener!=='function'
    ||typeof x.signal.aborted!=='boolean'||x.signal.aborted)
    return result(['TRANSPORT_CONFIG_INVALID']);
