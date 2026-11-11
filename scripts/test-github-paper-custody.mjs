@@ -167,3 +167,4 @@ await import('./test-github-paper-custody-lineage-readonly.mjs');
 await import('./test-github-paper-protected-lineage.mjs');
 await import('./test-paper-deployment-writer-exclusion.mjs');
 await import('./test-paper-writer-coverage-gaps.mjs');
+await import('./test-paper-custody-composite-evidence.mjs');
