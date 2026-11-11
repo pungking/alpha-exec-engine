@@ -236,6 +236,87 @@ async function publish(s, phase) {
   } catch (e) { s.poisoned = true; throw safeError(e); }
   finally { s.busy = false; }
 }
+/**
+ * STEP 5C-4D-3D — Verify encrypted checkpoint ancestry WITHOUT opening a
+ * session, restoring files, publishing a CLAIM, or changing GitHub state.
+ *
+ * This only verifies the bytes returned by an explicitly injected request.
+ * It does not attest the transport, Environment, broker account, or other
+ * writers. Even a cryptographically valid snapshot is NEVER order authority.
+ */
+export async function inspectGithubCustodyLineageReadOnly(input = {}) {
+  const denied = code => Object.freeze({
+    schemaVersion: 'github-paper-custody-readonly-lineage-v1',
+    status: 'DENY_LINEAGE_EVIDENCE_INVALID',
+    findings: Object.freeze([code]),
+    snapshot: null,
+    cryptographicLineageVerified: false,
+    authenticatedEnvironmentVerified: false,
+    accountWideWriterExclusionVerified: false,
+    brokerSubmitAuthorized: false,
+    stateMutationAuthorized: false,
+    operationalEligible: false,
+  });
+  try {
+    check(object(input) && exact(input, 'config request privateKey'), 'READ_ONLY_INPUT_INVALID');
+    const config = structuredClone(input.config);
+    configuration(config);
+    check(typeof input.request === 'function'
+      && input.privateKey?.type === 'private'
+      && input.privateKey.asymmetricKeyType === 'rsa'
+      && input.privateKey.asymmetricKeyDetails?.modulusLength >= 2048, 'READ_ONLY_INPUT_INVALID');
+    const publicKey = createPublicKey(input.privateKey);
+    check(sha(publicKey.export({ type: 'spki', format: 'der' })) === config.recipientSha256,
+      'KEY_MISMATCH');
+    const prefix = '/repos/' + config.repository + '/git/';
+    const allowedGet = route => route === 'ref/heads/paper-state'
+      || /^(?:commits|trees|blobs)\/[a-f0-9]{40}$/.test(route);
+    const request = async ({ method, path: route, body, signal }) => {
+      check(method === 'GET' && body === undefined && typeof route === 'string'
+        && route.startsWith(prefix) && allowedGet(route.slice(prefix.length)),
+        'READ_ONLY_ROUTE_VIOLATION');
+      return input.request({ method, path: route, signal });
+    };
+    const s = {
+      config, request, key: input.privateKey, publicKey, requests: 0,
+      head: config.expectedCommit, poisoned: false, closed: false,
+    };
+    const latest = await history(s);
+    // Detect a changed HEAD during the multi-object verification window.
+    check(await head(s) === config.expectedCommit, 'HEAD_DRIFT_AFTER_READ');
+    const p = latest.payload, c = p.context;
+    const summary = Object.freeze({
+      currentCommit: config.expectedCommit,
+      genesisCommit: config.genesisCommit,
+      parentCommit: c.parentCommit,
+      envelopeSha256: latest.envelopeSha256,
+      sequence: c.sequence,
+      phase: p.phase,
+      accountSha256: p.accountSha256,
+      scopeSha256: p.scopeSha256,
+      attemptId: p.attemptId,
+      writer: p.writer === null ? null : Object.freeze({ ...p.writer }),
+    });
+    return Object.freeze({
+      schemaVersion: 'github-paper-custody-readonly-lineage-v1',
+      status: 'HOLD_CRYPTOGRAPHIC_LINEAGE_NOT_OPERATIONAL_AUTHORITY',
+      findings: Object.freeze([]),
+      snapshot: summary,
+      cryptographicLineageVerified: true,
+      authenticatedEnvironmentVerified: false,
+      accountWideWriterExclusionVerified: false,
+      brokerSubmitAuthorized: false,
+      stateMutationAuthorized: false,
+      operationalEligible: false,
+    });
+  } catch (error) {
+    const message = error?.message;
+    const code = /^GITHUB_CUSTODY_[A-Z_]+$/.test(message)
+      ? message.slice('GITHUB_CUSTODY_'.length) : 'READ_ONLY_CHECK_FAILED';
+    return denied(code);
+  }
+}
+
 // No network or credential defaults. This storage binding never conveys order authority.
 export async function openGithubCustody({ config, request, privateKey, directory }) {
   let s;
