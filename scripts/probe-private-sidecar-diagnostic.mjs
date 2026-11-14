@@ -30,6 +30,11 @@ export async function probeClassifier(command, args, {
     const chunks = [];
     let timeoutHandle;
     let failsafeHandle;
+    const signals = ["SIGTERM", "SIGINT", "SIGHUP"];
+    const onSignal = () => abort();
+    const removeSignalHandlers = () => {
+      for (const signal of signals) process.removeListener(signal, onSignal);
+    };
 
     const killGroup = () => {
       if (!Number.isInteger(child?.pid) || child.pid <= 0) return;
@@ -41,6 +46,7 @@ export async function probeClassifier(command, args, {
       finished = true;
       clearTimeout(timeoutHandle);
       clearTimeout(failsafeHandle);
+      removeSignalHandlers();
       killGroup();
       if (invalid || code !== 0 || stderrBytes !== 0) return resolve(UNKNOWN);
       const output = Buffer.concat(chunks).toString("utf8");
@@ -57,6 +63,8 @@ export async function probeClassifier(command, args, {
       // A bounded fail-closed return is required even in that case.
       failsafeHandle ??= setTimeout(finish, 200);
     };
+    // Preserve process-group cleanup if the outer runner timeout sends TERM.
+    for (const signal of signals) process.on(signal, onSignal);
     try {
       // A new Unix session/group isolates kill(-pid) from the runner/producer.
       child = spawn(command, args, {
@@ -65,7 +73,7 @@ export async function probeClassifier(command, args, {
         env,
         windowsHide: true,
       });
-    } catch { resolve(UNKNOWN); return; }
+    } catch { removeSignalHandlers(); resolve(UNKNOWN); return; }
 
     child.stdout.on("data", data => {
       stdoutBytes += data.length;
