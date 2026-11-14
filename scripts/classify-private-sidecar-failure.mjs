@@ -12,8 +12,9 @@ const UNKNOWN = "UNKNOWN";
 
 export function classifyPrivateBootstrapLog(source) {
   if (typeof source !== "string") return UNKNOWN;
-  for (const [category, pattern] of CLASSES) if (pattern.test(source)) return category;
-  return UNKNOWN;
+  const matches = CLASSES.filter(([, pattern]) => pattern.test(source));
+  // Multiple known failure categories are ambiguous; never infer precedence.
+  return matches.length === 1 ? matches[0][0] : UNKNOWN;
 }
 
 if (process.argv[1] && process.argv[1].endsWith("/classify-private-sidecar-failure.mjs")) {
