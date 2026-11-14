@@ -33,9 +33,9 @@ try {
   // Deterministic EACCES injection also works when the CI process is root.
   const unreadable = path.join(root, 'unreadable.mjs');
   fs.writeFileSync(unreadable, `import fs from 'node:fs';
-    const read = fs.readFileSync; fs.readFileSync = function(p, ...a) {
+    const open = fs.openSync; fs.openSync = function(p, ...a) {
       if (p === ${JSON.stringify(file)}) throw Object.assign(Error('fixture'), {code:'EACCES'});
-      return read.call(this,p,...a);
+      return open.call(this,p,...a);
     };`);
   check('N03-injected-EACCES', () => assert.equal(category(invoke(file, unreadable)), 'UNKNOWN\n'));
   fs.chmodSync(file, 0);
@@ -46,21 +46,21 @@ try {
   const link = path.join(root, 'link.log');
   fs.symlinkSync(file, link);
   const observedLink = category(invoke(link));
-  check('N03-symlink-boundary-observed', () => assert.equal(observedLink, 'ENVIRONMENT_MISSING\n'));
-  results.push({ name: 'N03-symlink-must-be-UNKNOWN', status: 'DEMONSTRATED_GAP', expected: 'UNKNOWN', observed: observedLink.trim() });
+  check('N03-symlink-boundary-observed', () => assert.equal(observedLink, 'UNKNOWN\n'));
+  check('N03-symlink-must-be-UNKNOWN', () => assert.equal(observedLink, 'UNKNOWN\n'));
   // Swap the synthetic pathname AFTER stat; no race timing or host file is involved.
   const race = path.join(root, 'race.mjs');
   fs.writeFileSync(file, 'unclassified\n');
   fs.writeFileSync(race, `import fs from 'node:fs';
-    const stat = fs.statSync; fs.statSync = function(p,...a) {
+    const stat = fs.lstatSync; fs.lstatSync = function(p,...a) {
       const s = stat.call(this,p,...a);
       if (p === ${JSON.stringify(file)}) {
         fs.renameSync(p,p+'.old'); fs.writeFileSync(p,${JSON.stringify(known)});
       } return s;
     };`);
   const observedRace = category(invoke(file, race));
-  check('N03-deterministic-stat-read-swap-observed', () => assert.equal(observedRace, 'ENVIRONMENT_MISSING\n'));
-  results.push({ name: 'N03-TOCTOU-must-be-UNKNOWN', status: 'DEMONSTRATED_GAP', expected: 'UNKNOWN', observed: observedRace.trim() });
+  check('N03-deterministic-stat-read-swap-observed', () => assert.equal(observedRace, 'UNKNOWN\n'));
+  check('N03-TOCTOU-must-be-UNKNOWN', () => assert.equal(observedRace, 'UNKNOWN\n'));
 
   const current = loadInputs();
   denied('N09-real-candidate-old-admission', () => auditWorkflows(current), 'REVIEWED_ENTRYPOINT_DRIFT');
