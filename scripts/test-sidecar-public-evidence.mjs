@@ -135,19 +135,19 @@ const privateCases = [
 const classifier = path.resolve("scripts/classify-private-sidecar-failure.mjs");
 for (const [privateLine, expectedClass] of privateCases) {
   const fixtureLog = path.join(dir, "private-classification-input.log");
-  fs.writeFileSync(fixtureLog, privateLine + "\\n");
+  fs.writeFileSync(fixtureLog, privateLine + "\n");
   const direct = spawnSync(process.execPath, [classifier, fixtureLog], { encoding: "utf8" });
   assert.equal(direct.status, 0);
   assert.equal(direct.stdout.trim(), expectedClass);
   assert.ok(!direct.stdout.includes(secret));
   // Avoid running binding hooks: manual event is entirely synthetic/offline.
-  fs.writeFileSync(step, "cat " + JSON.stringify(fixtureLog) + "; exit 9\\n");
+  fs.writeFileSync(step, "cat " + JSON.stringify(fixtureLog) + "; exit 9\n");
   const syntheticEnv = { ...env, GITHUB_WORKFLOW: "sidecar-dry-run", GITHUB_EVENT_NAME: "workflow_dispatch", PAPER_EVIDENCE_PHASE: "preview" };
   const wrapped = spawnSync("bash", [wrapper, step], { env: syntheticEnv, encoding: "utf8" });
   assert.equal(wrapped.status, 9, "original producer failure code must survive classification");
   assert.match(wrapped.stdout, new RegExp("\\[SIDECAR_BOOTSTRAP_CLASS\\] class=" + expectedClass + " rawOutputPublished=false rootCauseVerified=false"));
   assert.ok(![wrapped.stdout, wrapped.stderr].join("").includes(secret), "private payload must never print");
-  assert.match(wrapped.stdout, /\\[SIDECAR_PRIVATE_STEP\\] exitCode=9 rawOutputPublished=false/);
+  assert.match(wrapped.stdout, /\[SIDECAR_PRIVATE_STEP\] exitCode=9 rawOutputPublished=false/);
 }
 const missingPrivate = spawnSync(process.execPath, [classifier, path.join(dir, "missing-private-file")], { encoding: "utf8" });
 assert.equal(missingPrivate.status, 0);
