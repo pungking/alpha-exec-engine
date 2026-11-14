@@ -33,7 +33,7 @@ function candidateProbe(producerExit, command, args = [], environment = {}) {
     maxBuffer: 1024,
     windowsHide: true,
   });
-  const category = child.error || child.signal || child.status !== 0
+  const category = child.error || child.signal || child.status !== 0 || child.stderr
     ? "UNKNOWN" : candidateSanitize(child.stdout);
   return { producerExit, publicLine:
     "class=" + category + " rawOutputPublished=false rootCauseVerified=false\n" };
@@ -72,7 +72,7 @@ try {
     ["invalid", "UNKNOWN"], ["newline", "UNKNOWN"],
     ["no-newline", "UNKNOWN"], ["crlf", "UNKNOWN"],
     ["ansi", "UNKNOWN"], ["embedded-nul", "UNKNOWN"],
-    ["stderr", "ENVIRONMENT_MISSING"], ["env-isolation", "UNKNOWN"],
+    ["stderr", "UNKNOWN"], ["env-isolation", "UNKNOWN"],
     ["nonzero", "UNKNOWN"],
     ["oversize", "UNKNOWN"], ["timeout", "UNKNOWN"],
   ]) {
