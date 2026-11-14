@@ -198,5 +198,41 @@ assert.equal(malformedRun.status, 0);
 assert.equal(malformedRun.stdout, 'UNKNOWN\n');
 assert.equal(malformedRun.stderr, '');
 
+// STEP #91-11 N07 (partial): synthetic failed private-binding hooks only.
+// Intercept "node" through PATH so no real binding script or provider is called.
+const mockBin = path.join(dir, "binding-hook-fail-bin");
+fs.mkdirSync(mockBin);
+const hookCalls = path.join(dir, "synthetic-binding-hook-calls.txt");
+const mockNode = path.join(mockBin, "node");
+fs.writeFileSync(mockNode, [
+  "#!/bin/sh",
+  'if [ "$1" != "scripts/paper-runtime-private-binding.mjs" ]; then exit 97; fi',
+  'printf "%s|%s|%s\n" "$2" "$3" "$4" >> "$ISSUE91_HOOK_CALLS"',
+  'printf "%s\n" "PRIVATE_FIXTURE_IDENTITY_AND_ORDER" >&2',
+  "exit 23",
+  "",
+].join("\n"), { mode: 0o700 });
+for (const originalExit of [0, 19]) {
+  fs.writeFileSync(hookCalls, "");
+  fs.writeFileSync(summary, "original-summary\n");
+  fs.writeFileSync(step, "exit " + originalExit + "\n");
+  const syntheticEnv = {
+    ...env,
+    PATH: mockBin + path.delimiter + process.env.PATH,
+    ISSUE91_HOOK_CALLS: hookCalls,
+    GITHUB_WORKFLOW: "sidecar-dry-run",
+    GITHUB_EVENT_NAME: "schedule",
+    PAPER_EVIDENCE_PHASE: "preview",
+  };
+  const run = spawnSync("bash", [wrapper, step], { env: syntheticEnv, encoding: "utf8" });
+  assertNoRawPublic(run, originalExit);
+  assert.deepEqual(fs.readFileSync(hookCalls, "utf8").trim().split("\n"), [
+    "begin|preview|",
+    "finish|preview|" + originalExit,
+  ], "failed mock begin and finish hooks must both be attempted");
+  assert.equal(fs.readFileSync(summary, "utf8"), "original-summary\n");
+  assert.ok(!run.stdout.includes("PAPER_RUNTIME_PRIVATE_BINDING_ENCRYPTED"));
+}
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("sidecar public evidence boundary: PASS");
