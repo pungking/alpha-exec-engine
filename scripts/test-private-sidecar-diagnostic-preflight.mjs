@@ -103,8 +103,9 @@ try {
     "ENVIRONMENT_MISSING \n", "ENVIRONMENT_MISSING\n" + SYNTHETIC_SECRET,
     "ENVIRONMENT_MISSING\r\n", "ENVIRONMENT_MISSING\u0000\n",
   ]) assert.equal(candidateSanitize(unsafe), "UNKNOWN");
-  assert.equal(candidateSanitize("ENVIRONMENT_MISSING\n"), "ENVIRONMENT_MISSING");
-  assert.equal(candidateSanitize("UNKNOWN\n"), "UNKNOWN");
+  for (const category of ALLOWED) {
+    assert.equal(candidateSanitize(category + "\n"), category, "entire reviewed enum allowlist");
+  }
 } finally {
   if (priorCanary === undefined) delete process.env.ISSUE91_UNFORWARDED_CANARY;
   else process.env.ISSUE91_UNFORWARDED_CANARY = priorCanary;
