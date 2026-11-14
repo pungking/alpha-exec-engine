@@ -237,5 +237,8 @@ for (const originalExit of [0, 19]) {
 // STEP #91-12: run the isolated N05/N06 candidate pre-admission fixtures.
 await import("./test-private-sidecar-diagnostic-preflight.mjs");
 
+// STEP #91-14B: exercise the actual changed private wrapper using offline fixtures.
+await import("./test-private-sidecar-diagnostic-integration.mjs");
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("sidecar public evidence boundary: PASS");
