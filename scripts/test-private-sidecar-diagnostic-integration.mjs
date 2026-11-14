@@ -37,6 +37,7 @@ fs.writeFileSync(path.join(bin, "node"), [
   "  case \"$(cat " + q(modePath) + ")\" in",
   "    real) exec " + q(process.execPath) + ' "$@" ;;',
   "    absent-log) rm -f \"$2\"; exec " + q(process.execPath) + ' "$@" ;;',
+  "    unreadable-log) chmod 000 \"$2\"; exec " + q(process.execPath) + ' "$@" ;;',
   "    over-limit-log) truncate -s 16777217 \"$2\"; exec " + q(process.execPath) + ' "$@" ;;',
   "    wc-error|delete-output) printf 'DRIVE_AUTH_FAILURE\\n' ;;",
   "    valid) printf 'DRIVE_AUTH_FAILURE\\n' ;;",
@@ -145,6 +146,7 @@ try {
   exercise("N02-success", 0, "real", known, null);
   exercise("N03-unknown", 13, "real", "[unknown] " + secret, "UNKNOWN");
   exercise("N03-missing-input", 13, "absent-log", known, "UNKNOWN");
+  exercise("N03-permission-denied", 13, "unreadable-log", known, "UNKNOWN");
   exercise("N03-over-limit-input", 13, "over-limit-log", known, "UNKNOWN");
   exercise("N04-conflict", 13, "real", known +
     "\n[DRY_RUN] FAIL Google token refresh failed (401): " + secret, "UNKNOWN");
