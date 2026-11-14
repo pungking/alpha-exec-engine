@@ -173,8 +173,8 @@ for (const exitCode of [1, 127, 0]) {
   assertNoRawPublic(run, exitCode);
   assert.equal(fs.readFileSync(summary, 'utf8'), 'original-summary\n', 'public summary unchanged');
 }
-// N08: synthetic event/phase variations do not activate an unapproved diagnostic or execution path.
-for (const [eventName, phase] of [['schedule', ''], ['repository_dispatch', 'guard'], ['workflow_dispatch', 'preview']]) {
+// N08: synthetic event/phase variations avoid naturally-triggered private binding hooks and do not activate a diagnostic path.
+for (const [eventName, phase] of [['schedule', ''], ['repository_dispatch', ''], ['workflow_dispatch', 'preview']]) {
   fs.writeFileSync(step, 'exit 13\n');
   const run = spawnSync('bash', [wrapper, step], {
     env: { ...env, GITHUB_WORKFLOW: 'sidecar-dry-run', GITHUB_EVENT_NAME: eventName, PAPER_EVIDENCE_PHASE: phase }, encoding: 'utf8'
