@@ -50,6 +50,15 @@ fs.writeFileSync(path.join(bin, "node"), [
   "  exit 23",
   "fi",
   'if [ "$1" = "scripts/probe-private-sidecar-diagnostic.mjs" ]; then',
+  "  if [ \"$(cat " + q(modePath) + ")\" = outer-sigterm ]; then",
+  "    " + q(process.execPath) + " " + q(copiedProbe) + ' "$2" &',
+  '    helper_pid=$!',
+  '    counter=0',
+  "    while [ ! -s " + q(childPidFile) + ' ] && [ "$counter" -lt 200 ]; do sleep 0.01; counter=$((counter+1)); done',
+  '    kill -TERM "$helper_pid" 2>/dev/null || true',
+  '    wait "$helper_pid" || true',
+  '    exit 0',
+  '  fi',
   "  exec " + q(process.execPath) + " " + q(copiedProbe) + ' "$2"',
   "fi",
   "exit 96",
@@ -68,6 +77,7 @@ try {
       ["success", "ENVIRONMENT_MISSING"],
       ["timeout", "UNKNOWN"],
       ["stderr-overflow", "UNKNOWN"],
+      ["outer-sigterm", "UNKNOWN"],
     ]) {
       fs.rmSync(childPidFile, { force: true });
       fs.writeFileSync(modePath, mode);
