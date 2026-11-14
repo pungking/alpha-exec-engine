@@ -8,7 +8,7 @@ Verified source baseline: `main` `12f4875cff3488af2bf759d58f9f2f46f4c7c8d3`, 202
 - Naturally dispatched `repository_dispatch` Run [#43476681116](https://github.com/pungking/alpha-exec-engine/actions/runs/43476681116), Job `dry-run`: `Run dry-run bootstrap` **FAILURE**, private wrapper `exitCode=1 rawOutputPublished=false`.
 - Public aggregate artifact `sidecar-state-43476681116` (artifact ID `14062314047`) records `BINDING_INCOMPLETE`. This is **not proven to cause the earlier bootstrap exit**, nor an independent account/order audit.
 - The protected wrapper suppresses stdout, stderr and the Step Summary. It reveals only the exit code, not a failure category; thus the classification visibility gap is established at source level. Exact historic root cause: **UNKNOWN**.
-- [Draft PR #92](https://github.com/pungking/alpha-exec-engine/pull/92) is **not merged**. Its standalone `scripts/classify-private-sidecar-failure.mjs` and synthetic tests are **offline only**, not wired to production. At the 2026-11-14 STEP #91-8 evidence cutoff, HEAD was `8838dff774d99d87c1f803856c202c03f3d4c725` and exact-HEAD PR CI [#43542652932](https://github.com/pungking/alpha-exec-engine/actions/runs/43542652932) SUCCESS. **This is a historical snapshot, not a guarantee of the latest PR #92 HEAD or CI; independently recheck both before any merge decision.** A COMMENTED technical review is **not** independent human APPROVE.
+- At the STEP #91-8 review cutoff, [PR #92](https://github.com/pungking/alpha-exec-engine/pull/92) was **Draft / not merged**. Its standalone `scripts/classify-private-sidecar-failure.mjs` and synthetic tests are **offline only**, not wired to production. At the 2026-11-14 STEP #91-8 evidence cutoff, HEAD was `8838dff774d99d87c1f803856c202c03f3d4c725` and exact-HEAD PR CI [#43542652932](https://github.com/pungking/alpha-exec-engine/actions/runs/43542652932) SUCCESS. **This is a historical snapshot, not a guarantee of the latest PR #92 HEAD or CI; independently recheck both before any merge decision.** A COMMENTED technical review is **not** independent human APPROVE.
 
 ## 2. Existing binding — never bypass the admission gate
 
@@ -20,13 +20,13 @@ The gate fails closed on `REVIEWED_ENTRYPOINT_DRIFT`, `BASELINE_UNREVIEWED_CHANG
 
 ## 3. Minimal phased plan and owned modules
 
-### Phase A — current, safe offline-only source review
+### Phase A — source-only adoption status (updated after PR #92 merge)
 
-Keep #92 as an unmerged dependency. This STEP documents the future change contract only; it must not import, execute, or copy PR #92 code into `main`. No new runtime hooks, workflow YAML edits, configured secrets, broker calls, log uploads, state or credential access.
+PR #92 was subsequently **separately source-merge approved** and merged as `7a417789efe75071a1cff1b05568cc64ab0ffb7a`; exact new-main push CI [#43547028861](https://github.com/pungking/alpha-exec-engine/actions/runs/43547028861) completed SUCCESS. The classifier remains **offline-only**, not integrated into the protected wrapper. This STEP documents a *future* operational change contract only, and does not re-import PR #92 code or change any operational controls. No new runtime hooks, workflow YAML edits, secrets, broker calls, log uploads, state or credential access.
 
 ### Phase B — prospective technical integration; separate authorization required
 
-Only **after** #92 is independently accepted and separately merge-approved, and its resulting main CI is independently confirmed:
+Although #92 is source-merged and its new-main CI is confirmed, **runtime integration and admission-baseline changes are not approved**. Only after separately scoped technical/security approval, and a fresh main/Admission recheck:
 1. Rebase or branch from *then-current* main, re-read `AGENTS.md`, `check-paper-workflow-admission.mjs`, the reviewed baseline, and the private wrapper.
 2. Consider a *single* failure-only, `PAPER_EVIDENCE_PHASE=preview` code path in `scripts/run-private-sidecar-step.sh`, invoking the proven classifier against its own private output file **after** producer exit. No new repo dispatch, no rerun, no external service.
 3. Emit only the exact public fields `class=<ENUM>`, `rawOutputPublished=false`, `rootCauseVerified=false`; supported enums: `ENVIRONMENT_MISSING`, `DRIVE_AUTH_FAILURE`, `STAGE6_READ_FAILURE`, `STAGE6_TRIGGER_REJECTED`, `UNKNOWN`. No raw excerpts, source paths, line numbers, caller-provided labels, hashes, symbols or IDs. Unknown and ambiguous matches default to `UNKNOWN`; a category means a source pattern matched, **never** proof of root cause.
@@ -71,6 +71,6 @@ A CI `SUCCESS` on an offline design or fixture is not permission to trigger `dry
 
 ## 6. This STEP acceptance and rollback
 
-This PR must contain **only this Markdown design file**, based on `main`, with no changes to the runtime wrapper, classifier, tests, workflow, package scripts, hash-locked entrypoints or baseline. CI passing establishes only documentation/source integration safety. Independent technical diff review must identify any overclaim, missing negative test, or unsafe relaxation. Keep PR #92 Draft and Issue #91 OPEN. Do not merge this PR without fresh, PR-specific user approval.
+This PR must contain **only this Markdown design file**, based on `main`, with no changes to the runtime wrapper, classifier, tests, workflow, package scripts, hash-locked entrypoints or baseline. CI passing establishes only documentation/source integration safety. Independent technical diff review must identify any overclaim, missing negative test, or unsafe relaxation. PR #92 is already merged source-only; keep Issue #91 OPEN. Do not merge this PR without fresh, PR-specific user approval.
 
 Rollback: revert this document-only change if eventually merged; no runtime migration, cache, state or credential cleanup.
