@@ -34,7 +34,7 @@ if (process.platform !== 'linux') {
     try {process.kill(r.pid,'SIGKILL');} catch(e) {if(e.code!=='ESRCH') throw e;}
   };
   const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
-  let child, timer, recorded=[];
+  let child, childRecord, timer, recorded=[];
   try {
     // This is read-only capability discovery, never delegated-cgroup creation.
     const cg=fs.readFileSync('/proc/self/cgroup','utf8').split('\n');
@@ -64,7 +64,9 @@ if (process.platform !== 'linux') {
       cwd:root,stdio:'ignore',env:{PATH:process.env.PATH}
     });
     child.on('error',()=>{});
-    timer=setTimeout(()=>safeKill(recorded[0]||stat(child.pid)),5000);
+    childRecord=stat(child.pid);
+    assert.ok(childRecord, 'synthetic worker identity unavailable');
+    timer=setTimeout(()=>safeKill(recorded[0]||childRecord),5000);
     const started=Date.now();
     while(!fs.existsSync(recordPath)&&Date.now()-started<2500) await delay(15);
     assert.ok(fs.existsSync(recordPath),'synthetic worker failed to report');
@@ -89,7 +91,7 @@ if (process.platform !== 'linux') {
   } finally {
     clearTimeout(timer);
     for (const rec of recorded.slice().reverse()) safeKill(rec);
-    if (child) safeKill(stat(child.pid));
+    if (childRecord) safeKill(childRecord);
     await delay(80);
     if (recorded.length) assert.ok(recorded.every(r=>!alive(r)), 'synthetic cleanup incomplete');
     fs.rmSync(root,{recursive:true,force:true});
