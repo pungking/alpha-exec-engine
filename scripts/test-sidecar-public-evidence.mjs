@@ -234,5 +234,8 @@ for (const originalExit of [0, 19]) {
   assert.ok(!run.stdout.includes("PAPER_RUNTIME_PRIVATE_BINDING_ENCRYPTED"));
 }
 
+// STEP #91-12: run the isolated N05/N06 candidate pre-admission fixtures.
+await import("./test-private-sidecar-diagnostic-preflight.mjs");
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("sidecar public evidence boundary: PASS");
