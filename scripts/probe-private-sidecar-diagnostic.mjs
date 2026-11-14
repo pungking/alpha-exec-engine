@@ -4,6 +4,7 @@
 // No original logs, subprocess errors, file paths or identifiers are published.
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 const UNKNOWN = "UNKNOWN";
 const ALLOWED = new Set([
@@ -37,8 +38,8 @@ export function probeClassifier(command, args, {
 }
 
 // Avoid executing the CLI during imported synthetic unit tests.
-if (process.argv[1] && fileURLToPath(import.meta.url) ===
-    fileURLToPath(new URL("file://" + process.argv[1]))) {
+if (process.argv[1] && path.resolve(process.argv[1]) ===
+    fileURLToPath(import.meta.url)) {
   const classifierPath = fileURLToPath(
     new URL("./classify-private-sidecar-failure.mjs", import.meta.url)
   );
