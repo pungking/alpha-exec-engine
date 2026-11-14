@@ -66,13 +66,13 @@ try {
   denied('N09-real-candidate-old-admission', () => auditWorkflows(current), 'REVIEWED_ENTRYPOINT_DRIFT');
   // Restore ONLY independently pinned old bytes in an in-memory baseline fixture.
   // The on-disk candidate and all trusted hashes remain unchanged.
-  const old = spawnSync('git', ['show', '73984070264f6e47cc8ab212b4ea4db0e09d7c20:scripts/run-private-sidecar-step.sh'],
-    { encoding: 'utf8', env: { PATH: process.env.PATH }, timeout: 3000 });
-  assert.equal(old.status, 0);
+  // Checkout is shallow in CI; committed historical bytes are data, never executed.
+  const old = JSON.parse(fs.readFileSync('scripts/fixtures/private-wrapper-main-r4b.json','utf8'));
+  assert.equal(old.sourceCommit, '73984070264f6e47cc8ab212b4ea4db0e09d7c20');
   const original = structuredClone(current);
   const wrapper = 'scripts/run-private-sidecar-step.sh';
-  assert.equal(sha256(old.stdout), original.baseline.evidenceSha256[wrapper]);
-  original.evidence[wrapper] = old.stdout;
+  assert.equal(sha256(old.content), original.baseline.evidenceSha256[wrapper]);
+  original.evidence[wrapper] = old.content;
   check('N10-trusted-old-fixture-control', () => assert.equal(auditWorkflows(original).operationalEligibleJobs, 0));
   const mutation = (name, change, error) => denied(name, () => {
     const x = structuredClone(original); change(x); return auditWorkflows(x);
@@ -99,3 +99,5 @@ try {
 } finally { fs.rmSync(root, {recursive: true, force: true}); }
 console.log(JSON.stringify({status:'R4B_SECURITY_EVIDENCE_COLLECTED_NOT_ADMITTED', checks,
   results, operationalHold:true, runtimeDefectsFixed:false, historicRootCauseVerified:false}));
+// Explicit required-property run stays RED; default evidence mode reaches the old Admission denial in CI.
+if (process.argv.includes('--require-no-gaps') && results.some(r => r.status === 'DEMONSTRATED_GAP')) process.exitCode = 1;

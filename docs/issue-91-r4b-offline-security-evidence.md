@@ -85,8 +85,9 @@ bytes are **UNVERIFIED host/supply-chain boundaries**. No fabricated binary hash
 - N11 five unsafe defaults on both automatic workflows denied.
 
 To avoid masking N10/N11 behind the known wrapper drift, an IN-MEMORY old-source
-control uses exact main wrapper bytes, first checked against the immutable trusted
-hash. No on-disk wrapper or baseline is changed. Its clean control must pass and
+control uses exact main wrapper bytes stored as non-executable JSON fixture data
+(works with shallow CI), first checked against the immutable trusted hash. No
+on-disk wrapper or baseline is changed. Its clean control must pass and
 each mutation must produce its own denial. This is NOT candidate admission.
 
 The evidence collector's exit 0 means assertions about observations passed. It
@@ -94,6 +95,9 @@ does NOT mean the two required UNKNOWN properties passed. Runtime fixes require
 separate approval: no-follow bounded descriptor read, regular-file/ownership/link
 checks and before/after identity checks; reject concurrent change to UNKNOWN.
 Do not silently patch the classifier or re-attest it in R4B.
+Run the same test with `--require-no-gaps` for an explicit exit-1 security-property
+result. Default collection mode records the gaps without preventing CI from
+reaching the unchanged old Admission denial.
 
 ## M3: Linux process boundaries
 
