@@ -150,5 +150,53 @@ const missingPrivate = spawnSync(process.execPath, [classifier, path.join(dir, "
 assert.equal(missingPrivate.status, 0);
 assert.equal(missingPrivate.stdout.trim(), "UNKNOWN");
 
+// STEP #91-10: supplemental N01/N02/N03/N08/N12 synthetic-only checks.
+// The production wrapper and reviewed admission baseline are not modified.
+const assertNoRawPublic = (run, expectedCode) => {
+  assert.equal(run.status, expectedCode, 'producer exit status is unchanged');
+  assert.ok(![run.stdout, run.stderr].join('').includes(secret), 'private identity leaked');
+  assert.ok(![run.stdout, run.stderr].join('').includes('SYNTHETIC_PRIVATE_STACK_PATH'), 'private stack leaked');
+  assert.ok(!run.stdout.includes('[SIDECAR_BOOTSTRAP_CLASS]'), 'classifier must remain offline only');
+  assert.ok(run.stdout.includes('[SIDECAR_PRIVATE_STEP] exitCode=' + expectedCode + ' rawOutputPublished=false'));
+};
+for (const exitCode of [1, 127, 0]) {
+  fs.writeFileSync(summary, 'original-summary\n');
+  fs.writeFileSync(step, [
+    'echo ' + JSON.stringify(secret),
+    'echo ' + JSON.stringify('SYNTHETIC_PRIVATE_STACK_PATH') + ' >&2',
+    'echo ' + JSON.stringify(secret) + ' >> "$GITHUB_STEP_SUMMARY"',
+    'exit ' + exitCode,
+    ''
+  ].join('\n'));
+  const syntheticEnv = { ...env, GITHUB_WORKFLOW: 'sidecar-dry-run', GITHUB_EVENT_NAME: 'workflow_dispatch', PAPER_EVIDENCE_PHASE: 'preview' };
+  const run = spawnSync('bash', [wrapper, step], { env: syntheticEnv, encoding: 'utf8' });
+  assertNoRawPublic(run, exitCode);
+  assert.equal(fs.readFileSync(summary, 'utf8'), 'original-summary\n', 'public summary unchanged');
+}
+// N08: synthetic event/phase variations avoid naturally-triggered private binding hooks and do not activate a diagnostic path.
+for (const [eventName, phase] of [['schedule', ''], ['repository_dispatch', ''], ['workflow_dispatch', 'preview']]) {
+  fs.writeFileSync(step, 'exit 13\n');
+  const run = spawnSync('bash', [wrapper, step], {
+    env: { ...env, GITHUB_WORKFLOW: 'sidecar-dry-run', GITHUB_EVENT_NAME: eventName, PAPER_EVIDENCE_PHASE: phase }, encoding: 'utf8'
+  });
+  assertNoRawPublic(run, 13);
+}
+// N03: unknown, malformed, missing and over-limit log files yield only UNKNOWN.
+const oversizedLog = path.join(dir, 'oversized-private.log');
+fs.writeFileSync(oversizedLog, '[DRY_RUN] FAIL Google token refresh failed (401): ' + secret);
+fs.truncateSync(oversizedLog, 16 * 1024 * 1024 + 1);
+for (const fixture of [oversizedLog, path.join(dir, 'not-present.log')]) {
+  const run = spawnSync(process.execPath, [classifier, fixture], { encoding: 'utf8' });
+  assert.equal(run.status, 0);
+  assert.equal(run.stdout, 'UNKNOWN\n');
+  assert.equal(run.stderr, '');
+}
+const malformed = path.join(dir, 'malformed-private.log');
+fs.writeFileSync(malformed, secret + '\n[unrecognized stack] SYNTHETIC_PRIVATE_STACK_PATH\n');
+const malformedRun = spawnSync(process.execPath, [classifier, malformed], { encoding: 'utf8' });
+assert.equal(malformedRun.status, 0);
+assert.equal(malformedRun.stdout, 'UNKNOWN\n');
+assert.equal(malformedRun.stderr, '');
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("sidecar public evidence boundary: PASS");
