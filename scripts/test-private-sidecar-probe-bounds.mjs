@@ -68,7 +68,7 @@ try {
     'const child = spawn("sleep", ["20"], { stdio: "ignore" });',
     'fs.writeFileSync(process.argv[3], String(child.pid));',
     'if (mode === "success") {',
-    '  child.unref(); process.stdout.write("ENVIRONMENT_MISSING\n");',
+    '  child.unref(); process.stdout.write("ENVIRONMENT_MISSING\\n");',
     '} else if (mode === "stderr-overflow") {',
     '  process.stderr.write("S".repeat(65536));',
     '} else if (mode === "stdout-overflow") {',
