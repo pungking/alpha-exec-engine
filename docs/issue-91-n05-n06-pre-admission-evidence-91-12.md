@@ -23,7 +23,7 @@ Everything else becomes `UNKNOWN`: missing LF, padded token, unknown token, blan
 
 The **candidate** test harness in `scripts/test-private-sidecar-diagnostic-preflight.mjs` uses one synchronous local child invocation, a 2500 ms timeout, a 1024-byte stdout/stderr buffer bound and zero retries. Missing executable, nonzero exit, signal/timeout, excessive output and malformed output must all return the same sanitized `UNKNOWN` line while keeping the already-observed producer exit code **unchanged**. Synthetic cases include producer exits `0` and `37` (timeout exercised with `37`).
 
-These 2500 ms / 1024-byte values are **preflight test policy candidates**, not operational performance requirements or evidence that the protected wrapper currently enforces them. Final bounds require separate design review for host/platform runtime behavior. The test mock executes only from disposable files; no real classifier path, workflow action, provider, broker, token or account is invoked by this preflight.
+These 2500 ms / 1024-byte values are **preflight test policy candidates**, not operational performance requirements or evidence that the protected wrapper currently enforces them. Final bounds require separate design review for host/platform runtime behavior. The test mock executes only from disposable files with a **minimal fixture-only child environment** (a synthetic unforwarded canary confirms runner environment isolation); no real classifier path, workflow action, provider, broker, token or account is invoked by this preflight.
 
 ## Test-only implementation and limitations
 
