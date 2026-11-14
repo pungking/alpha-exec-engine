@@ -71,6 +71,10 @@ fs.writeFileSync(path.join(bin, "head"), [
 ].join("\n") + "\n", { mode: 0o700 });
 fs.writeFileSync(path.join(bin, "wc"), [
   "#!/bin/sh",
+  "if [ \"$(cat " + q(modePath) + ")\" = wc-bad-output ]; then",
+  "  printf '%s\n' " + q("/synthetic/private/malformed-wc-count"),
+  "  exit 0",
+  "fi",
   "if [ \"$(cat " + q(modePath) + ")\" = wc-error ]; then",
   "  printf '%s\n' " + q("/synthetic/private/sidecar-private.classifier.stdout") + " >&2",
   "  exit 23",
@@ -151,7 +155,7 @@ try {
     exercise("N06-" + mode, 13, mode, secret, "UNKNOWN");
   }
   // N12: injected utility failure/path must be suppressed, not leaked.
-  for (const mode of ["wc-error", "delete-output"]) {
+  for (const mode of ["wc-error", "wc-bad-output", "delete-output"]) {
     exercise("N12-" + mode, 13, mode, known, "UNKNOWN");
   }
   // N07: every permitted call above fails the *mock* binding hooks with 23.
