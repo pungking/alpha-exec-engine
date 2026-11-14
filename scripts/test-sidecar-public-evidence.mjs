@@ -124,5 +124,31 @@ assert.equal(fs.readFileSync(env.GITHUB_ENV, "utf8"), "FIXTURE_READY=true\n");
 fs.writeFileSync(step, "false | cat\necho unsafe-success\n");
 result = spawnSync("bash", [wrapper, step], { env, encoding: "utf8" });
 assert.notEqual(result.status, 0, "pipefail must be preserved");
+// Issue #91: offline-only classifier returns a fixed category, never the private log.
+const privateCases = [
+  ["[ENV_GUARD] FAIL missing=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "ENVIRONMENT_MISSING"],
+  ["[DRY_RUN] FAIL Google token refresh failed (401): PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "DRIVE_AUTH_FAILURE"],
+  ["[DRY_RUN] FAIL Drive list failed (503): PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "STAGE6_READ_FAILURE"],
+  ["[TRIGGER_VALIDATE] fail stage6 hash mismatch expected=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "STAGE6_TRIGGER_REJECTED"],
+  ["[DRY_RUN] FAIL unrecognized PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
+  ["[DRY_RUN] FAIL Google token refresh failed (401): PRIVATE_FIXTURE_IDENTITY_AND_ORDER\n[TRIGGER_VALIDATE] fail stage6 hash mismatch expected=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
+  ["[DRY_RUN] FAIL Drive list failed (503): PRIVATE_FIXTURE_IDENTITY_AND_ORDER\n[ENV_GUARD] FAIL missing=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
+];
+const classifier = path.resolve("scripts/classify-private-sidecar-failure.mjs");
+for (const [privateLine, expectedClass] of privateCases) {
+  const fixtureLog = path.join(dir, "private-classification-input.log");
+  fs.writeFileSync(fixtureLog, privateLine + "\n");
+  const direct = spawnSync(process.execPath, [classifier, fixtureLog], { encoding: "utf8" });
+  assert.equal(direct.status, 0);
+  assert.equal(direct.stdout.trim(), expectedClass);
+  assert.ok(!direct.stdout.includes(secret));
+  // No runtime wrapper change: classification stays offline pending admission review.
+  assert.equal(fs.readFileSync(fixtureLog, "utf8"), privateLine + "\n");
+  assert.ok(!direct.stderr.includes(secret));
+}
+const missingPrivate = spawnSync(process.execPath, [classifier, path.join(dir, "missing-private-file")], { encoding: "utf8" });
+assert.equal(missingPrivate.status, 0);
+assert.equal(missingPrivate.stdout.trim(), "UNKNOWN");
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("sidecar public evidence boundary: PASS");
