@@ -163,3 +163,6 @@ await import('./test-private-sidecar-diagnostic-integration.mjs');
 
 // Issue #91 R4D: scoped containment claims, not host-level attestation.
 await import('./test-private-sidecar-containment-contract-r4d.mjs');
+
+// R4E: disposable synthetic host-containment feasibility; no cgroup writes.
+await import('./test-private-sidecar-host-containment-poc-r4e.mjs');
