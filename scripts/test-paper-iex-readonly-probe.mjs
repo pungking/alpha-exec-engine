@@ -156,4 +156,7 @@ try {
 // Issue #91 R4A: temporary pre-Admission, network-denied *test-only* evidence.
 // The existing Admission baseline must continue to reject the changed wrapper.
 await import('./test-private-sidecar-admission-closure-r4.mjs');
+await import('./test-private-sidecar-inventory-r4b.mjs');
+await import('./test-private-sidecar-security-r4b.mjs');
+await import('./test-private-sidecar-process-tree-r4b.mjs');
 await import('./test-private-sidecar-diagnostic-integration.mjs');
