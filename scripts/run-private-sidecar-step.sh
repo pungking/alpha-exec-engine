@@ -21,26 +21,27 @@ fi
 if [[ "$binding" == true && "$PAPER_EVIDENCE_PHASE" == "preview" && "$status" -ne 0 ]]; then
   class=UNKNOWN
   private_class_stdout="$private_dir/classifier.stdout"
-  private_class_stderr="$private_dir/classifier.stderr"
-  # Bound output at 1025 bytes; pipeline failure/overflow cannot masquerade
-  # as a valid classification, even when the child writes endlessly.
-  if (set -o pipefail; timeout --signal=TERM --kill-after=1s 3s \
+  # The helper bounds BOTH classifier stdout and stderr in memory; neither
+  # raw stream nor helper diagnostics may reach the public runner log.
+  # The outer timeout additionally bounds the helper itself.
+  if (set -o pipefail; timeout --signal=TERM --kill-after=1s 4s \
       env -i PATH="$PATH" \
-      node scripts/classify-private-sidecar-failure.mjs "$private_dir/output.log" \
-      2> "$private_class_stderr" | head -c 1025 > "$private_class_stdout"); then
-    # Reject stderr and any bytes beyond the exact single ASCII enum line.
-    if [[ ! -s "$private_class_stderr" ]]; then
-      class_bytes=$(wc -c < "$private_class_stdout") || class_bytes=0
+      node scripts/probe-private-sidecar-diagnostic.mjs "$private_dir/output.log" \
+      | head -c 1025 > "$private_class_stdout") 2>/dev/null; then
+    # Suppress redirection errors BEFORE opening a private file: a failed
+    # redirection must never print its pathname to public stderr.
+    if class_bytes=$(wc -c 2>/dev/null < "$private_class_stdout"); then
       if [[ "$class_bytes" -ge 1 && "$class_bytes" -le 32 ]]; then
         class_candidate=''
-        IFS= read -r class_candidate < "$private_class_stdout" || class_candidate=''
-        expected_bytes=$(printf '%s\n' "$class_candidate" | wc -c) || expected_bytes=0
-        if [[ "$class_bytes" -eq "$expected_bytes" ]]; then
-          case "$class_candidate" in
-            ENVIRONMENT_MISSING|DRIVE_AUTH_FAILURE|STAGE6_READ_FAILURE|STAGE6_TRIGGER_REJECTED|UNKNOWN)
-              class="$class_candidate"
-              ;;
-          esac
+        if IFS= read -r class_candidate 2>/dev/null < "$private_class_stdout"; then
+          expected_bytes=$(printf '%s\n' "$class_candidate" | wc -c) || expected_bytes=0
+          if [[ "$class_bytes" -eq "$expected_bytes" ]]; then
+            case "$class_candidate" in
+              ENVIRONMENT_MISSING|DRIVE_AUTH_FAILURE|STAGE6_READ_FAILURE|STAGE6_TRIGGER_REJECTED|UNKNOWN)
+                class="$class_candidate"
+                ;;
+            esac
+          fi
         fi
       fi
     fi
