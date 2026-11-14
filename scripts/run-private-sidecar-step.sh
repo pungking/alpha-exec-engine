@@ -15,5 +15,14 @@ bash --noprofile --norc -eo pipefail "$1" > "$private_dir/output.log" 2>&1 || st
 if [[ "$binding" == true ]]; then
   node scripts/paper-runtime-private-binding.mjs finish "$PAPER_EVIDENCE_PHASE" "$status" > "$private_dir/binding-end.log" 2>&1 || true
 fi
+if [[ "$status" -ne 0 && "${PAPER_EVIDENCE_PHASE:-}" == "preview" && "${GITHUB_WORKFLOW:-}" == "sidecar-dry-run" ]]; then
+  classification=$(node scripts/classify-private-sidecar-failure.mjs "$private_dir/output.log" 2>/dev/null) || classification=UNKNOWN
+  # Defensive allowlist even if the classifier is replaced or fails unexpectedly.
+  case "$classification" in
+    ENVIRONMENT_MISSING|DRIVE_AUTH_FAILURE|STAGE6_READ_FAILURE|STAGE6_TRIGGER_REJECTED|UNKNOWN) ;;
+    *) classification=UNKNOWN ;;
+  esac
+  printf '[SIDECAR_BOOTSTRAP_CLASS] class=%s rawOutputPublished=false rootCauseVerified=false\n' "$classification"
+fi
 printf '[SIDECAR_PRIVATE_STEP] exitCode=%s rawOutputPublished=false\n' "$status"
 exit "$status"
