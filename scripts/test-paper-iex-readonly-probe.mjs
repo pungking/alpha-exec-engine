@@ -160,3 +160,6 @@ await import('./test-private-sidecar-inventory-r4b.mjs');
 await import('./test-private-sidecar-security-r4b.mjs');
 await import('./test-private-sidecar-process-tree-r4b.mjs');
 await import('./test-private-sidecar-diagnostic-integration.mjs');
+
+// Issue #91 R4D: scoped containment claims, not host-level attestation.
+await import('./test-private-sidecar-containment-contract-r4d.mjs');
