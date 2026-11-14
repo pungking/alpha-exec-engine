@@ -99,6 +99,7 @@ try {
   check('no-baseline-or-candidate-write', () => assert.deepEqual({...loadInputs(), now:current.now}, current));
 } finally { fs.rmSync(root, {recursive: true, force: true}); }
 console.log(JSON.stringify({status:'R4B_SECURITY_EVIDENCE_COLLECTED_NOT_ADMITTED', checks,
-  results, operationalHold:true, n03SymlinkAndPathSwapVerifiedOffline:true,\n  otherRuntimeAndHostLimitsUnresolved:true, historicRootCauseVerified:false}));
+  results, operationalHold:true, n03SymlinkAndPathSwapVerifiedOffline:true,
+  otherRuntimeAndHostLimitsUnresolved:true, historicRootCauseVerified:false}));
 // Explicit required-property run stays RED; default evidence mode reaches the old Admission denial in CI.
 if (process.argv.includes('--require-no-gaps') && results.some(r => r.status === 'DEMONSTRATED_GAP')) process.exitCode = 1;
