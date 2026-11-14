@@ -166,3 +166,6 @@ await import('./test-private-sidecar-containment-contract-r4d.mjs');
 
 // R4E: disposable synthetic host-containment feasibility; no cgroup writes.
 await import('./test-private-sidecar-host-containment-poc-r4e.mjs');
+
+// R4F: read-only delegated-cgroup approval preflight; no host mutation.
+await import('./test-private-sidecar-cgroup-preflight-r4f.mjs');
