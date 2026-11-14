@@ -131,6 +131,8 @@ const privateCases = [
   ["[DRY_RUN] FAIL Drive list failed (503): PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "STAGE6_READ_FAILURE"],
   ["[TRIGGER_VALIDATE] fail stage6 hash mismatch expected=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "STAGE6_TRIGGER_REJECTED"],
   ["[DRY_RUN] FAIL unrecognized PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
+  ["[DRY_RUN] FAIL Google token refresh failed (401): PRIVATE_FIXTURE_IDENTITY_AND_ORDER\n[TRIGGER_VALIDATE] fail stage6 hash mismatch expected=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
+  ["[DRY_RUN] FAIL Drive list failed (503): PRIVATE_FIXTURE_IDENTITY_AND_ORDER\n[ENV_GUARD] FAIL missing=PRIVATE_FIXTURE_IDENTITY_AND_ORDER", "UNKNOWN"],
 ];
 const classifier = path.resolve("scripts/classify-private-sidecar-failure.mjs");
 for (const [privateLine, expectedClass] of privateCases) {
