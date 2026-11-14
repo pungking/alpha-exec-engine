@@ -8,7 +8,7 @@ Verified source baseline: `main` `12f4875cff3488af2bf759d58f9f2f46f4c7c8d3`, 202
 - Naturally dispatched `repository_dispatch` Run [#43476681116](https://github.com/pungking/alpha-exec-engine/actions/runs/43476681116), Job `dry-run`: `Run dry-run bootstrap` **FAILURE**, private wrapper `exitCode=1 rawOutputPublished=false`.
 - Public aggregate artifact `sidecar-state-43476681116` (artifact ID `14062314047`) records `BINDING_INCOMPLETE`. This is **not proven to cause the earlier bootstrap exit**, nor an independent account/order audit.
 - The protected wrapper suppresses stdout, stderr and the Step Summary. It reveals only the exit code, not a failure category; thus the classification visibility gap is established at source level. Exact historic root cause: **UNKNOWN**.
-- At the STEP #91-8 review cutoff, [PR #92](https://github.com/pungking/alpha-exec-engine/pull/92) was **Draft / not merged**. Its standalone `scripts/classify-private-sidecar-failure.mjs` and synthetic tests are **offline only**, not wired to production. At the 2026-11-14 STEP #91-8 evidence cutoff, HEAD was `8838dff774d99d87c1f803856c202c03f3d4c725` and exact-HEAD PR CI [#43542652932](https://github.com/pungking/alpha-exec-engine/actions/runs/43542652932) SUCCESS. **This is a historical snapshot, not a guarantee of the latest PR #92 HEAD or CI; independently recheck both before any merge decision.** A COMMENTED technical review is **not** independent human APPROVE.
+- At the STEP #91-8 review cutoff, [PR #92](https://github.com/pungking/alpha-exec-engine/pull/92) was **Draft / not merged**. Its standalone `scripts/classify-private-sidecar-failure.mjs` and synthetic tests are **offline only**, not wired to production. At the 2026-11-14 STEP #91-8 evidence cutoff, HEAD was `8838dff774d99d87c1f803856c202c03f3d4c725` and exact-HEAD PR CI [#43542652932](https://github.com/pungking/alpha-exec-engine/actions/runs/43542652932) SUCCESS. **This is a historical snapshot; PR #92 was subsequently merged and its new-main CI is separately verified in Phase A.** A COMMENTED technical review is **not** independent human APPROVE.
 
 ## 2. Existing binding — never bypass the admission gate
 
@@ -61,7 +61,7 @@ For any proposed integration, assert **(a)** full original `ops:test:sidecar-pub
 | Gate | Evidence required | Default |
 |---|---|---|
 | G0 | Distinct repo boundary, exact main SHA and current Issue/PR/CI review | HOLD |
-| G1 | PR #92 individually reviewed, separately merge-approved, and post-merge main CI verified | HOLD |
+| G1 | PR #92 individually reviewed, separately merge-approved, and post-merge main CI verified | COMPLETED — source only; no runtime authorization |
 | G2 | Proposed runtime diff and N01–N12 negative results, fixed output-only schema, no secret leakage | HOLD |
 | G3 | Admission baseline re-attestation independently reviewed and explicitly authorized; original blockers maintained | HOLD |
 | G4 | Branch → Draft PR → exact-HEAD CI → independent code review → **new PR-specific user source-merge approval** | HOLD |
