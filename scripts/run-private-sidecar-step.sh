@@ -22,9 +22,12 @@ if [[ "$binding" == true && "$PAPER_EVIDENCE_PHASE" == "preview" && "$status" -n
   class=UNKNOWN
   private_class_stdout="$private_dir/classifier.stdout"
   private_class_stderr="$private_dir/classifier.stderr"
-  if timeout --signal=TERM --kill-after=1s 3s env -i PATH="$PATH" \
-    node scripts/classify-private-sidecar-failure.mjs "$private_dir/output.log" \
-    > "$private_class_stdout" 2> "$private_class_stderr"; then
+  # Bound output at 1025 bytes; pipeline failure/overflow cannot masquerade
+  # as a valid classification, even when the child writes endlessly.
+  if (set -o pipefail; timeout --signal=TERM --kill-after=1s 3s \
+      env -i PATH="$PATH" \
+      node scripts/classify-private-sidecar-failure.mjs "$private_dir/output.log" \
+      2> "$private_class_stderr" | head -c 1025 > "$private_class_stdout"); then
     # Reject stderr and any bytes beyond the exact single ASCII enum line.
     if [[ ! -s "$private_class_stderr" ]]; then
       class_bytes=$(wc -c < "$private_class_stdout") || class_bytes=0
