@@ -152,3 +152,8 @@ try {
   }
   console.log(`PAPER IEX read-only probe: PASS (${cases} offline cases; no real network/state/orders)`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }
+
+// Issue #91 R4A: temporary pre-Admission, network-denied *test-only* evidence.
+// The existing Admission baseline must continue to reject the changed wrapper.
+await import('./test-private-sidecar-admission-closure-r4.mjs');
+await import('./test-private-sidecar-diagnostic-integration.mjs');
