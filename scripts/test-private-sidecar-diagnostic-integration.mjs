@@ -38,6 +38,7 @@ fs.writeFileSync(path.join(bin, "node"), [
   "    real) exec " + q(process.execPath) + ' "$@" ;;',
   "    absent-log) rm -f \"$2\"; exec " + q(process.execPath) + ' "$@" ;;',
   "    over-limit-log) truncate -s 16777217 \"$2\"; exec " + q(process.execPath) + ' "$@" ;;',
+  "    wc-error|delete-output) printf 'DRIVE_AUTH_FAILURE\\n' ;;",
   "    valid) printf 'DRIVE_AUTH_FAILURE\\n' ;;",
   "    multi) printf 'DRIVE_AUTH_FAILURE\\n" + secret + "\\n' ;;",
   "    unknown) printf 'UNREVIEWED_CLASS\\n' ;;",
@@ -56,6 +57,34 @@ fs.writeFileSync(path.join(bin, "node"), [
   "exit 96",
   "",
 ].join("\n"), { mode: 0o700 });
+
+// Fault injection at GNU utility boundary; verify that missing/read-failed
+// classifier files and utility stderr never escape via public job output.
+fs.writeFileSync(path.join(bin, "head"), [
+  "#!/bin/sh",
+  "if [ \"$(cat " + q(modePath) + ")\" = delete-output ]; then",
+  '  /usr/bin/head "$@"',
+  '  find "$RUNNER_TEMP" -type f -name classifier.stdout -delete',
+  "  exit 0",
+  "fi",
+  'exec /usr/bin/head "$@"',
+].join("\n") + "\n", { mode: 0o700 });
+fs.writeFileSync(path.join(bin, "wc"), [
+  "#!/bin/sh",
+  "if [ \"$(cat " + q(modePath) + ")\" = wc-error ]; then",
+  "  printf '%s\n' " + q("/synthetic/private/sidecar-private.classifier.stdout") + " >&2",
+  "  exit 23",
+  "fi",
+  'exec /usr/bin/wc "$@"',
+].join("\n") + "\n", { mode: 0o700 });
+fs.writeFileSync(path.join(bin, "timeout"), [
+  "#!/bin/sh",
+  "if [ \"$(cat " + q(modePath) + ")\" = timeout-missing ]; then",
+  "  printf '%s\n' " + q("/synthetic/private/missing-timeout") + " >&2",
+  "  exit 127",
+  "fi",
+  'exec /usr/bin/timeout "$@"',
+].join("\n") + "\n", { mode: 0o700 });
 
 function exercise(label, code, mode, privateLog, category, changes = {}) {
   for (const p of [hookCalls, classCalls, producerCalls]) fs.writeFileSync(p, "");
@@ -101,7 +130,7 @@ function exercise(label, code, mode, privateLog, category, changes = {}) {
   ] : [];
   const hooks = fs.readFileSync(hookCalls, "utf8").trim().split("\n").filter(Boolean);
   assert.deepEqual(hooks, expectedHooks, label + " binding begin/finish isolation");
-  assert.equal(fs.readFileSync(classCalls, "utf8"), category === null ? "" : "called\n",
+  assert.equal(fs.readFileSync(classCalls, "utf8"), category === null || mode === "timeout-missing" ? "" : "called\n",
     label + " classifier at most once");
   if (mode === "timeout") assert.ok(Date.now() - start < 8000, "bounded classifier");
 }
@@ -118,8 +147,12 @@ try {
   for (const mode of ["unknown", "multi", "no-lf", "crlf", "ansi"]) {
     exercise("N05-" + mode, 13, mode, secret, "UNKNOWN");
   }
-  for (const mode of ["stderr", "nonzero", "missing", "timeout", "oversize"]) {
+  for (const mode of ["stderr", "nonzero", "missing", "timeout", "oversize", "timeout-missing"]) {
     exercise("N06-" + mode, 13, mode, secret, "UNKNOWN");
+  }
+  // N12: injected utility failure/path must be suppressed, not leaked.
+  for (const mode of ["wc-error", "delete-output"]) {
+    exercise("N12-" + mode, 13, mode, known, "UNKNOWN");
   }
   // N07: every permitted call above fails the *mock* binding hooks with 23.
   for (const [label, changes] of [
@@ -132,6 +165,7 @@ try {
   // N09 must block real wrapper changes in the existing Admission gate/CI.
   // N10/N11 already covered by the unchanged Admission offline mutation tests.
   // N12 secret/stack/summary protection is asserted for all cases above.
+  await import("./test-private-sidecar-probe-bounds.mjs");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
