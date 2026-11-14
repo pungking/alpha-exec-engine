@@ -81,6 +81,7 @@ try {
   mutation('N10-review-extension', x => { x.baseline.reviewBy = '2026-12-12T00:00:00Z'; }, 'BASELINE_REVIEW_EXPIRED_OR_INVALID');
   mutation('N10-package-command', x => { x.packageScripts.start = 'node unreviewed.mjs'; }, 'PACKAGE_COMMAND_DRIFT');
   mutation('N10-protected-source', x => { x.evidence['src/index.ts'] += '\n// fixture'; }, 'REVIEWED_ENTRYPOINT_DRIFT');
+  mutation('N10-protected-lockfile', x => { x.evidence['package-lock.json'] += '\n'; }, 'REVIEWED_ENTRYPOINT_DRIFT');
   mutation('N10-workflow-command', x => {
     const w = parseWorkflow(x.files['ci.yml']); w.jobs.build.steps.push({run: 'echo unreviewed'});
     x.files['ci.yml'] = JSON.stringify(w);

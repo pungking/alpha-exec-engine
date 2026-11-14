@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
-import { builtinModules } from 'node:module';
+import { isBuiltin } from 'node:module';
 import { canonical, sha256, parseWorkflow } from './check-paper-workflow-admission.mjs';
 
 const baseline = JSON.parse(fs.readFileSync('config/paper-workflow-admission-baseline.json','utf8'));
@@ -11,7 +11,6 @@ const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
 const lock = JSON.parse(fs.readFileSync('package-lock.json','utf8'));
 const inventoryPath = 'docs/issue-91-r4b-candidate-inventory.json';
 const edges = [], files = new Map(), producers = [], commands = new Set();
-const builtins = new Set(builtinModules.flatMap(n => [n, 'node:'+n]));
 const edge = (from, to, kind, line = null) => edges.push({from,to,kind,line});
 function source(file) {
   const mapped = file.replace(/^dist\//,'').replace(/\.js$/,'.ts');
@@ -31,7 +30,7 @@ function visitFile(file) {
 }
 function dependency(from, target, kind, line) {
   if (target === null) { edge(from,null,'UNVERIFIED_DYNAMIC_'+kind,line); return; }
-  if (builtins.has(target)) { edge(from,target,'NODE_BUILTIN_'+kind,line); return; }
+  if (isBuiltin(target)) { edge(from,target,'NODE_BUILTIN_'+kind,line); return; }
   if (target.startsWith('.')) {
     const file = path.posix.normalize(path.posix.join(path.posix.dirname(from.split('#')[0]),target));
     edge(from,file,kind,line); visitFile(file);
@@ -145,9 +144,9 @@ const inventory={schemaVersion:'r4b-candidate-evidence-v1',candidateOnly:true,op
   reachableFiles:[...files.values()].sort((a,b)=>a.file.localeCompare(b.file)),
   edges:edges.sort((a,b)=>canonical(a).localeCompare(canonical(b))),
   npmScripts:[...commands].sort().map(name=>({name,sha256:sha256(pkg.scripts[name])})),
-  packageLock:{sha256:sha256(fs.readFileSync('package-lock.json')),baselinePinned:false,
+  packageLock:{sha256:sha256(fs.readFileSync('package-lock.json')),baselinePinned:Object.hasOwn(baseline.evidenceSha256,'package-lock.json'),
     packages:Object.entries(lock.packages).map(([name,p])=>({name,version:p.version,integrity:p.integrity??null,hasInstallScript:p.hasInstallScript??false}))},
-  buildInputs:['package.json','tsconfig.json'].map(file=>({file,sha256:sha256(fs.readFileSync(file)),baselinePinned:false})),
+  buildInputs:['package.json','tsconfig.json'].map(file=>({file,sha256:sha256(fs.readFileSync(file)),baselinePinned:Object.hasOwn(baseline.evidenceSha256,file)})),
   hostBoundaries:{node:'UNVERIFIED_BINARY_PROVENANCE; setup-node major selection is not a binary digest',
     gnu:'UNVERIFIED timeout/env/head/wc binaries resolved through PATH',
     shell:'UNVERIFIED bash/mktemp and runner-supplied argv1 bytes; literal shell scan not a shell interpreter',
@@ -162,7 +161,8 @@ if (process.argv.includes('--print-candidate')) {
     (Array.isArray(v)?'[\n'+v.map(row=>'    '+JSON.stringify(row)).join(',\n')+'\n  ]':JSON.stringify(v))).join(',\n')+'\n}\n');
 }
 else {
-  assert.deepEqual(JSON.parse(fs.readFileSync(inventoryPath,'utf8')),inventory,'candidate snapshot drift; review, do not regenerate trusted controls');
+  assert.equal(sha256(canonical(JSON.parse(fs.readFileSync(inventoryPath,'utf8')))),sha256(canonical(inventory)),
+    'candidate snapshot drift; review, do not regenerate trusted controls');
   console.log(JSON.stringify({status:'R4B_CANDIDATE_INVENTORY_MATCH',protectedHashes:140,workflows:17,jobs:21,openBlockers:10,
     reachableFiles:files.size,producerScripts:producers.length,edges:edges.length,completeExecutionClosure:'UNVERIFIED',operationalHold:true}));
 }
