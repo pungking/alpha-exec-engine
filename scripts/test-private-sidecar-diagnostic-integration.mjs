@@ -172,6 +172,8 @@ try {
   // N10/N11 already covered by the unchanged Admission offline mutation tests.
   // N12 secret/stack/summary protection is asserted for all cases above.
   await import("./test-private-sidecar-probe-bounds.mjs");
+  // R2: execute the *changed wrapper* with its real bounded probe and synthetic descendants.
+  await import("./test-private-sidecar-wrapper-no-orphan.mjs");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
