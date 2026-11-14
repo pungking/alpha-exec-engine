@@ -27,7 +27,8 @@ function candidateSanitize(stdout) {
 function candidateProbe(producerExit, command, args = [], environment = {}) {
   const child = spawnSync(command, args, {
     encoding: "utf8",
-    env: { ...process.env, ...environment },
+    // Pass only the test fixture variables; never forward runner credentials.
+    env: { ...environment },
     timeout: 2500,
     maxBuffer: 1024,
     windowsHide: true,
@@ -41,6 +42,8 @@ function candidateProbe(producerExit, command, args = [], environment = {}) {
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "issue91-n05-n06-preflight-"));
 const fixtureScript = path.join(directory, "fake-classifier.mjs");
 const callLog = path.join(directory, "fake-classifier-calls.txt");
+const priorCanary = process.env.ISSUE91_UNFORWARDED_CANARY;
+process.env.ISSUE91_UNFORWARDED_CANARY = SYNTHETIC_SECRET;
 fs.writeFileSync(fixtureScript, [
   'import fs from "node:fs";',
   'fs.appendFileSync(process.env.ISSUE91_PROBE_CALL_LOG, "called\\n");',
@@ -55,6 +58,7 @@ fs.writeFileSync(fixtureScript, [
   '  case "ansi": process.stdout.write("\\x1b[31mSTAGE6_READ_FAILURE\\n"); break;',
   '  case "embedded-nul": process.stdout.write("STAGE6_READ_FAILURE\\x00\\n"); break;',
   '  case "stderr": process.stderr.write(secret); process.stdout.write("ENVIRONMENT_MISSING\\n"); break;',
+  '  case "env-isolation": process.stdout.write(process.env.ISSUE91_UNFORWARDED_CANARY ? "ENVIRONMENT_MISSING\\n" : "UNKNOWN\\n"); break;',
   '  case "nonzero": process.stdout.write("ENVIRONMENT_MISSING\\n"); process.exitCode = 17; break;',
   '  case "oversize": process.stdout.write("Z".repeat(16 * 1024)); break;',
   '  case "timeout": setInterval(() => {}, 10000); break;',
@@ -68,7 +72,8 @@ try {
     ["invalid", "UNKNOWN"], ["newline", "UNKNOWN"],
     ["no-newline", "UNKNOWN"], ["crlf", "UNKNOWN"],
     ["ansi", "UNKNOWN"], ["embedded-nul", "UNKNOWN"],
-    ["stderr", "ENVIRONMENT_MISSING"], ["nonzero", "UNKNOWN"],
+    ["stderr", "ENVIRONMENT_MISSING"], ["env-isolation", "UNKNOWN"],
+    ["nonzero", "UNKNOWN"],
     ["oversize", "UNKNOWN"], ["timeout", "UNKNOWN"],
   ]) {
     for (const producerExit of caseName === "timeout" ? [37] : [0, 37]) {
@@ -101,6 +106,8 @@ try {
   assert.equal(candidateSanitize("ENVIRONMENT_MISSING\n"), "ENVIRONMENT_MISSING");
   assert.equal(candidateSanitize("UNKNOWN\n"), "UNKNOWN");
 } finally {
+  if (priorCanary === undefined) delete process.env.ISSUE91_UNFORWARDED_CANARY;
+  else process.env.ISSUE91_UNFORWARDED_CANARY = priorCanary;
   fs.rmSync(directory, { recursive: true, force: true });
 }
 console.log("issue91 N05/N06 offline candidate pre-admission: PASS (not runtime)");
