@@ -31,11 +31,12 @@ if [[ "$binding" == true && "$PAPER_EVIDENCE_PHASE" == "preview" && "$status" -n
     # Suppress redirection errors BEFORE opening a private file: a failed
     # redirection must never print its pathname to public stderr.
     if class_bytes=$(wc -c 2>/dev/null < "$private_class_stdout"); then
-      if [[ "$class_bytes" -ge 1 && "$class_bytes" -le 32 ]]; then
+      if [[ "$class_bytes" =~ ^[0-9]{1,4}$ ]] && [[ "$class_bytes" -ge 1 && "$class_bytes" -le 32 ]]; then
         class_candidate=''
         if IFS= read -r class_candidate 2>/dev/null < "$private_class_stdout"; then
-          expected_bytes=$(printf '%s\n' "$class_candidate" | wc -c) || expected_bytes=0
-          if [[ "$class_bytes" -eq "$expected_bytes" ]]; then
+          expected_bytes=$((0))
+          expected_bytes=$( (set -o pipefail; printf '%s\n' "$class_candidate" | wc -c) 2>/dev/null ) || expected_bytes=0
+          if [[ "$expected_bytes" =~ ^[0-9]{1,4}$ ]] && [[ "$class_bytes" -eq "$expected_bytes" ]]; then
             case "$class_candidate" in
               ENVIRONMENT_MISSING|DRIVE_AUTH_FAILURE|STAGE6_READ_FAILURE|STAGE6_TRIGGER_REJECTED|UNKNOWN)
                 class="$class_candidate"
