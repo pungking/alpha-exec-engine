@@ -169,3 +169,6 @@ await import('./test-private-sidecar-host-containment-poc-r4e.mjs');
 
 // R4F: read-only delegated-cgroup approval preflight; no host mutation.
 await import('./test-private-sidecar-cgroup-preflight-r4f.mjs');
+
+// R4G: synthetic host-specific approval model; never issues cgroup writes.
+await import('./test-private-sidecar-cgroup-approval-r4g.mjs');
